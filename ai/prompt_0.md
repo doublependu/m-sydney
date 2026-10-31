@@ -1,6 +1,10 @@
 
 
-[Describe the game you want to make here]
+Remake the following experience but using the map of Sydney, Australia
+
+https://github.com/doublependu/slop-newyork-vite
+
+Here's a local checkout: ~/Repos/mine/fork_of_others/slop-newyork-vite
 
 
 

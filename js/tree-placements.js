@@ -1,0 +1,103 @@
+import { blockAt } from './city-config.js';
+
+function hashPos(x, y, z) {
+  const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+// Fit surveyed street trees to the modeled curbs, preserving nearby park and plaza trees.
+function* placeStreetTreesSteps(points, kinds, heights, existingSites, isClear) {
+  const cells = new Map();
+  const insert = (site) => {
+    const key = Math.floor(site.x / 4) + ',' + Math.floor(site.z / 4);
+    if (!cells.has(key)) cells.set(key, []);
+    cells.get(key).push(site);
+  };
+  for (const site of existingSites) insert(site);
+  const occupied = (x, z) => {
+    const cx = Math.floor(x / 4), cz = Math.floor(z / 4);
+    for (let ix = cx - 1; ix <= cx + 1; ix++) {
+      for (let iz = cz - 1; iz <= cz + 1; iz++) {
+        for (const s of cells.get(ix + ',' + iz) || []) {
+          if ((s.x - x) ** 2 + (s.z - z) ** 2 < 9) return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  const sites = [];
+  for (let i = 0; i < points.length; i += 2) {
+    if ((i & 510) === 0) yield;
+    const sourceX = points[i], sourceZ = points[i + 1];
+    const originalBlock = blockAt(sourceX, sourceZ);
+    const kind = kinds[i / 2];
+    const tall = heights[i / 2] || 8 + hashPos(sourceX, 2.2, sourceZ) * 7;
+    if (originalBlock?.median) continue;
+    // Park trees stand where they were surveyed; street trees are fitted to the modelled curbs
+    if (originalBlock && (originalBlock.park > 0.6 || originalBlock.area > 12000)) {
+      if (occupied(sourceX, sourceZ) || !isClear(sourceX, sourceZ)) continue;
+      const site = { x: sourceX, y: 0.22, z: sourceZ, scale: Math.max(0.5, Math.min(1.5, tall / 12)), species: kind, tier: 0 };
+      sites.push(site);
+      insert(site);
+      continue;
+    }
+    const blocks = new Set();
+    if (originalBlock) blocks.add(originalBlock);
+    else {
+      for (const dx of [-2, 0, 2]) for (const dz of [-2, 0, 2]) {
+        const b = blockAt(sourceX + dx, sourceZ + dz);
+        if (b && b.park <= 0.6 && !b.median) blocks.add(b);
+      }
+    }
+
+    let edge = null;
+    for (const block of blocks) {
+      for (let j = 0; j < block.poly.length; j++) {
+        const a = block.poly[j], b = block.poly[(j + 1) % block.poly.length];
+        const dx = b.x - a.x, dz = b.z - a.z, length = Math.hypot(dx, dz);
+        if (length < 0.01) continue;
+        const t = Math.max(0, Math.min(1, ((sourceX - a.x) * dx + (sourceZ - a.z) * dz) / (length * length)));
+        const x = a.x + t * dx, z = a.z + t * dz;
+        const distance = Math.hypot(sourceX - x, sourceZ - z);
+        if (distance > (originalBlock ? 8 : 2) || (edge && distance >= edge.distance)) continue;
+        edge = { block, x, z, dx: dx / length, dz: dz / length, distance };
+      }
+    }
+    if (!edge) continue;
+    let nx = -edge.dz, nz = edge.dx;
+    if (blockAt(edge.x + nx * 0.9, edge.z + nz * 0.9) !== edge.block) { nx = -nx; nz = -nz; }
+    const move = !originalBlock || edge.distance < 0.9;
+    const x = move ? edge.x + nx * 0.9 : sourceX;
+    const z = move ? edge.z + nz * 0.9 : sourceZ;
+    if ((x - sourceX) ** 2 + (z - sourceZ) ** 2 > 9 || blockAt(x, z) !== edge.block) continue;
+    if (!isClear(x, z) || occupied(x, z)) continue;
+
+    const crossStreet = Math.abs(edge.dx) > Math.abs(edge.dz);
+    const narrow = crossStreet && !!blockAt(x - nx * 14, z - nz * 14);
+    const pitS = narrow ? 0.7 : 1;
+    let fits = true;
+    for (const across of [-0.85, 0.85]) for (const along of [-1.3, 1.3]) {
+      if (blockAt(x + across * pitS * nx + along * edge.dx,
+        z + across * pitS * nz + along * edge.dz) !== edge.block) fits = false;
+    }
+    if (!fits) continue;
+
+    const yaw = Math.atan2(edge.dx, edge.dz);
+    const site = { x, y: 0.22, z, scale: Math.max(0.42, Math.min(narrow ? 0.7 : 1.1, tall / 13)),
+      species: kind,
+      yaw, sx: 0.82, tier: crossStreet ? 2 : 1, pitRot: yaw, grate: !crossStreet, pitS };
+    sites.push(site);
+    insert(site);
+  }
+  return sites;
+}
+
+function placeStreetTrees(points, kinds, heights, existingSites, isClear) {
+  const job = placeStreetTreesSteps(points, kinds, heights, existingSites, isClear);
+  let step = job.next();
+  while (!step.done) step = job.next();
+  return step.value;
+}
+
+export { placeStreetTrees, placeStreetTreesSteps };

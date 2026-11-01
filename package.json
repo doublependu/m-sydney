@@ -1,0 +1,30 @@
+{
+  "name": "m-sydney",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && vite build --mode offline",
+    "preview": "vite preview",
+    "test": "node --test \"tests/**/*.test.*\"",
+    "deploy": "npm run build && wrangler deploy",
+    "play": "node tools/play/run.mjs",
+    "bench": "node tools/play/bench.mjs",
+    "viewports": "node tools/play/viewports.mjs",
+    "data:fetch": "node tools/fetch-data.mjs",
+    "data:build": "node --max-old-space-size=8192 tools/build-geodata.mjs && node --max-old-space-size=8192 tools/build-heights.mjs && node tools/build-buildings.mjs && node tools/build-trees.mjs"
+  },
+  "dependencies": {
+    "three": "0.187.0"
+  },
+  "devDependencies": {
+    "@duckdb/node-api": "^2.0.0-r.1",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource/overpass": "^5.3.0",
+    "playwright-core": "^1.64.1",
+    "vite": "^8.3.5",
+    "vite-plugin-singlefile": "^2.3.4",
+    "wrangler": "^4.156.0"
+  }
+}

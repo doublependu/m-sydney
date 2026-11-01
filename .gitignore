@@ -147,3 +147,10 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Game build, local Cloudflare state and play recordings
+.wrangler/
+recordings/
+
+# Raw map snapshots: rebuilt with `npm run data:fetch`, too large to keep
+tools/data/

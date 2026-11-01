@@ -1,0 +1,8 @@
+{
+  "name": "Sydney",
+  "short_name": "Sydney",
+  "start_url": "./",
+  "display": "fullscreen",
+  "background_color": "#0c0d10",
+  "theme_color": "#0c0d10"
+}

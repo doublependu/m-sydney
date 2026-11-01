@@ -165,7 +165,7 @@ Say so if you want any of these changed.
 
 1. **Import the New York code at `c6e6a3f`,** keeping the layout. Its `ai/`, `CLAUDE.md`, git history and data files stay behind.
 2. **This repo stays GPL-3.0.** The New York code is MIT, so its notice is kept in a separate file. Map data keeps its own licences: ODbL for OSM-derived data, CC BY for City of Sydney and NSW, credited in the README and pause screen.
-3. **Named "Slop Sydney".** Worker `m-sydney`, offline file `slop-sydney.html`, links to `github.com/doublependu/m-sydney`, and a credit to `mrdoob/slop-newyork`.
+3. **Named "Sydney".** Worker `m-sydney`, offline file `sydney.html`, links to `github.com/doublependu/m-sydney`, and a credit to `mrdoob/slop-newyork`.
 4. **Play area B.** It has every icon, fewer buildings than New York, and both sides of the bridge: CBD, The Rocks, Barangaroo, Darling Harbour, Pyrmont, Ultimo, Surry Hills, Darlinghurst, Potts Point, the Domain, and Milsons Point to North Sydney. Beyond it is low-detail scenery, as with New York's boroughs.
 5. **Terrain is in, as a render-only lift.** The simulation stays flat, and the lift is CPU-side so it also works on WebGL2. It comes after the flat game works, so it can be dropped if the budget says so.
 6. **The Harbour Bridge is drivable; other motorways are not.** Tunnels and elevated motorways are scenery with ambient traffic. This keeps stacked roads down to one hand-built corridor.

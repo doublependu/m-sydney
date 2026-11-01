@@ -73,27 +73,35 @@ const cityUniforms = {
   uCanyonBounce: uniform(0.52)
 };
 
-// Fast deterministic 2D -> 1D hash in TSL (Dave Hoskins' hash12). No sine: fract(sin(x) * 43758) turns one bit of rounding
-// in x into a different number, and a shader compiler that inlines this rounds a lattice corner differently for the
-// cells either side of it. Noise then jumps along the lattice's lines: straight-edged shapes across the harbour.
+// Fast deterministic 2D -> 1D hash in TSL
 const hash2D = Fn(([p]) => {
+  return fract(sin(dot(p, vec2(127.1, 311.7))).mul(43758.5453));
+});
+
+// The same without a sine (Dave Hoskins' hash12), for noise broad enough to see its lattice. fract(sin(x) * 43758) turns one
+// bit of rounding in x into a different number, and a shader compiler that inlines it rounds a lattice corner differently
+// for the cells either side of it, so the noise jumps along the lattice's lines: straight-edged shapes across the harbour.
+// It costs more to compile, and nearly every material hashes, so the fine-grained noise keeps the sine.
+const steadyHash2D = Fn(([p]) => {
   const q = fract(vec3(p.x, p.y, p.x).mul(0.1031)).toVar();
   q.addAssign(dot(q, q.yzx.add(33.33)));
   return fract(q.x.add(q.y).mul(q.z));
 });
 
 // Smooth 2D value noise in TSL
-const noise2D = Fn(([p]) => {
+const valueNoise = (hash) => Fn(([p]) => {
   const pv = vec2(p).toVar();
   const i = floor(pv).toVar();
   const f = fract(pv).toVar();
   const u = f.mul(f).mul(float(3.0).sub(f.mul(2.0))).toVar();
-  const a = hash2D(i);
-  const b = hash2D(i.add(vec2(1.0, 0.0)));
-  const c = hash2D(i.add(vec2(0.0, 1.0)));
-  const d = hash2D(i.add(vec2(1.0, 1.0)));
+  const a = hash(i);
+  const b = hash(i.add(vec2(1.0, 0.0)));
+  const c = hash(i.add(vec2(0.0, 1.0)));
+  const d = hash(i.add(vec2(1.0, 1.0)));
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 });
+const noise2D = valueNoise(hash2D);
+const steadyNoise2D = valueNoise(steadyHash2D);
 
 /**
  * Mikkelsen's Surface-Gradient Hardware Derivative Bump Mapping (ported from CityGeneratorUtils.js)
@@ -2109,8 +2117,8 @@ function createWaterMaterial() {
     const q = p.mul(mix(float(1.0), float(2.6), pond)); // sheltered ponds: finer ripples
 
     // Wind patches drifting with the breeze: large-scale wave energy that reads from the air and hides tiling
-    const gustA = noise2D(p.mul(0.0047).add(vec2(t.mul(0.011), t.mul(-0.007))));
-    const gustB = noise2D(p.mul(0.0135).add(vec2(t.mul(-0.009), t.mul(0.013))).add(31.7));
+    const gustA = steadyNoise2D(p.mul(0.0047).add(vec2(t.mul(0.011), t.mul(-0.007))));
+    const gustB = steadyNoise2D(p.mul(0.0135).add(vec2(t.mul(-0.009), t.mul(0.013))).add(31.7));
     const gust = smoothstep(0.18, 0.82, gustA.mul(0.62).add(gustB.mul(0.38)));
     const energy = mix(float(0.45), float(1.3), gust).mul(mix(float(1.0), float(0.42), pond)).toVar();
 
@@ -2148,7 +2156,7 @@ function createWaterMaterial() {
 
   // Sediment-laden estuary: deep blue-green grey ↔ silty olive grey; thin sunlit crests transmit a greener tint
   mat.colorNode = Fn(() => {
-    const silt = noise2D(positionWorld.xz.mul(0.0031).add(7.3));
+    const silt = steadyNoise2D(positionWorld.xz.mul(0.0031).add(7.3));
     const body = mix(color(0x162d2c), color(0x2e3f36), smoothstep(0.25, 0.85, silt));
     const lake = mix(color(0x24321f), color(0x33402a), silt);
     const crestTint = smoothstep(0.6, 2.4, waves.w).mul(0.35).add(1.0);

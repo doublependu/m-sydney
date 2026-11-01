@@ -1,7 +1,7 @@
 import { ShapeUtils, Vector2 } from 'three/webgpu';
 import { GEO } from './geodata.js';
 import { landAt, blockAt } from './city-config.js';
-import { LINKS, groundHeight, groundRoadAt, roadHeight, surfaceHeight } from './surfaces.js';
+import { LINKS, STEP, groundHeight, groundRoadAt, roadHeight, surfaceHeight } from './surfaces.js';
 
 // The ground's geometry as plain arrays: the road deck, kerbs, footpaths, lawns and the base under them all.
 // js/city-grid.js turns it into meshes; tools/check-ground.mjs measures it without a browser, so what it reports is
@@ -472,11 +472,14 @@ function wheelGround(sid, x, z, road = null, near = null) {
 // { contacts: [{ x, z, y }], y, pitch, roll }. `near`: the height of the level it's on, where its structure has two
 function wheelContacts(x, z, heading, sid = 0, near = null, track = 0.8, axle = 1.4) {
   const sin = Math.sin(heading), cos = Math.cos(heading);
-  const road = sid ? null : groundRoadAt(x, z);
+  const road = sid ? null : groundRoadAt(x, z, near);
   const contacts = [];
   for (const [side, along] of [[-track, axle], [track, axle], [-track, -axle], [track, -axle]]) {
     const px = x + sin * along + cos * side, pz = z + cos * along - sin * side;
-    contacts.push({ x: px, z: pz, y: wheelGround(sid, px, pz, road, near) });
+    const y = wheelGround(sid, px, pz, road, near);
+    // A wheel over a drop too big to drive off, or against a rise too big to climb, is held at the car's level: the edge of
+    // a cutting, a deck's parapet
+    contacts.push({ x: px, z: pz, y: near !== null && Math.abs(y - near) >= STEP ? near : y });
   }
   const [fl, fr, rl, rr] = contacts.map((c) => c.y);
   // The body rests on the plane through the four, as near as a rigid car can: its middle at their mean

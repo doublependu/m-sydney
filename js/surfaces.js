@@ -312,11 +312,12 @@ function nearestSegment(link, x, z) {
   return best;
 }
 
-/** The road on the ground whose carriageway (x, z) is on, its centre line nearest; null off the roads */
-function groundRoadAt(x, z) {
+/** The road on the ground whose carriageway (x, z) is on, its centre line nearest; null off the roads. `near`: for
+ *  something at that height, only the roads within a step of it, where carriageways overlap at different heights. */
+function groundRoadAt(x, z, near = null) {
   let best = null, bd = Infinity;
   for (const seg of segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || []) {
-    if (seg.link.kind) continue;
+    if (seg.link.kind || (near !== null && Math.abs(roadHeight(seg.link, x, z) - near) >= STEP)) continue;
     const d = project(seg, x, z).d;
     if (d <= seg.link.half && d < bd) { bd = d; best = seg.link; }
   }

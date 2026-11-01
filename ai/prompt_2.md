@@ -18,6 +18,7 @@
 2. I added some reference photos and videos in ref/
     - search the internet and decide on where these photos and videos are
     - update building and road models according to these references
+    - if you generate new data, i.e., extracted video frames, etc, save them in ref/ too, maybe in their own folder
 3. Add a few advertising billboards or company names on top of buildings
     - Man & Bot
     - Maize.Live

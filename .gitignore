@@ -154,3 +154,6 @@ recordings/
 
 # Raw map snapshots: rebuilt with `npm run data:fetch`, too large to keep
 tools/data/
+
+
+ref/

@@ -1,4 +1,4 @@
-# Plan 2: buildings on the ground, real street names, modes that carry over, the references, billboards, quicker tests, and all of Sydney in tiles
+# Plan 2: buildings on the ground, real street names, modes that carry over, the references, company names on two towers, quicker tests, and all of Sydney in tiles
 
 Answers `ai/prompt_2.md`.
 
@@ -9,6 +9,8 @@ Nothing is implemented yet. The experiments ran from the scratchpad, against cop
 **The biggest map with today's approach is about the one we have.** The play area is 26.7 km². On the phone profile it loads in 3.93 s against the Spec's 4 s, and the download is already over budget. Dropping the phone limit might buy twice the area on a desktop. See "Bigger map".
 
 **All of Sydney is possible, but only with tiles.** Palm Beach to Cronulla and Watsons Bay to Katoomba is a box of 97 × 58 km, 5,600 km², about 210 times today's play area. A browser can't hold that, and it doesn't need to: with tiles, what's in memory stays about the size it is today wherever you are. Tiles should also make the first load faster, because the first view stops paying for the whole map. It's the largest job so far, and it's staged so you can stop after any stage.
+
+**It still fits Cloudflare's free plan,** on current estimates: about 8,000 files against a limit of 20,000, and about 110 MB with no total limit listed. Static files are free however often they're requested, as long as the site stays static. See "Bigger map".
 
 **The tests need fixing beyond iteration 1.** `npm run play` takes 40 minutes and writes 771 MB of video by default. Iteration 1's repeated runs made that worse, but the default stays slow without them, so Phase 1 changes it and comes first.
 
@@ -27,7 +29,7 @@ Nothing is implemented yet. The experiments ran from the scratchpad, against cop
 | Feature 2: find where the references are | Done, listed below | 6 |
 | Feature 2: save frames in `ref/` | Sampled for this plan, saved properly in Phase 6 | 6 |
 | Feature 2: update buildings and roads from them | Differences listed | 7, 8, 9 |
-| Feature 3: billboards and company names | New work | 5 |
+| Feature 3: company names on buildings | Towers chosen, mock-up tested in a scratch copy | 5 |
 | Bigger map: how big, and all of Sydney? | Answered | |
 | Bigger map: tiles | New work | 11, 12, 13, 15, 16 |
 | Bigger map: three building models | New work | 7, 10, 14 |
@@ -142,6 +144,29 @@ Seen but not taken, because they aren't buildings or roads: the harbour is teal 
 
 Part heights need checking too: Chifley Tower's reach 217 m, and the real tower is about 244 m. Sydney Tower is modelled separately, so its 309 m parts don't apply.
 
+### Company names
+
+**The two towers: Salesforce Tower and Governor Phillip Tower.** I took prominent to mean large in the skyline and visible from where players spend their time. So I traced sight lines to each tall tower's crown from 25 places: the Opera House, the bridge deck, the harbour, the parks and so on. I weighted busier places more, out of 47 in all. The places and weights are my judgement, so treat the scores as a guide.
+
+| Tower | Use | Height, real and drawn today | Visible from, of 47 | Score | Verdict |
+|---|---|---|---|---|---|
+| **Governor Phillip Tower** | Office | 227 m, 227 m | 26 | 1,346 | **Chosen.** The highest score that can be trusted |
+| **Salesforce Tower** | Office | 263 m, 263 m | 23 | 851 | **Chosen.** The tallest office tower, and the one that dominates the harbour skyline |
+| Gateway Sydney | Offices, not marked in the data | 169 m, 156 m | 27 | 1,429 | Top score, but it's inflated: its record includes the podium, a block about 108 × 94 m |
+| Tower 1, Barangaroo | Apartments | 247 m, 247 m | 26 | 815 | Not commercial |
+| 55 Pitt | Offices, not marked in the data | 230 m, 230 m | 24 | 477 | Mostly behind Salesforce Tower from the harbour |
+| Chifley Tower | Commercial | About 244 m, 77 m | 13 | 335 | Too short until Phase 7. 20 of 47 once corrected |
+| Crown Sydney | Commercial: hotel and casino | 271 m, 40 m | 12 | 167 | Too short until Phase 7, and its crown is curved. 23 of 47 once corrected |
+
+Together the two are visible from 15 of the 25 places, weighted 30 of 47: the Opera House forecourt, the bridge deck, the harbour, Kirribilli, Mrs Macquaries Point, the Gardens, the Domain and Barangaroo Reserve, among others.
+
+**They aren't visible from the start,** because they face the harbour and the first view looks towards it from the south. They come into view when you turn around at the Opera House, drive south over the bridge, or fly over the harbour. Facing north also means they're seen less from inside the CBD.
+
+**A mock-up in a scratch copy settled how they should look:**
+
+- **White letters alone don't work.** They were lost against Salesforce Tower's pale glass and against bright reflections on Governor Phillip Tower. A dark panel behind them fixed both.
+- **A 9 m panel across most of the wall works.** At 1280 × 720 both names could be read from the Opera House forecourt, about 700-750 m away, and from the bridge deck, about 1,100-1,250 m away, where `MAIZE.LIVE` is close to its limit. From the harbour, about 1,000-1,100 m away, they're blurry but clearly signs. I only checked this by day, on one graphics level, on the RTX 3060.
+
 ### Bigger map
 
 **What limits today's approach.** The whole map is loaded and resident at start, whatever the player is near.
@@ -184,7 +209,7 @@ Even at 100 KB a tile, that's well under 1 Mbit/s, so the network isn't the limi
 | Squares of about 1 km² with buildings | 42 tiles | 3,619 |
 | Buildings per square | Fullest tile 1,239 | Median 127, 90th percentile 940, fullest 2,606 (near Bankstown) |
 | Generators | 44 s | Estimated 2 CPU hours, about 15 minutes on 12 cores, if the cost per km² holds. Not tested |
-| Total data, including lower detail | About 1 MB | Estimated under 100 MB, of which a player fetches only what's near them |
+| Total data, including lower detail | About 1 MB | Estimated about 110 MB, of which a player fetches only what's near them |
 
 | Stage | Area | Buildings |
 |---|---|---|
@@ -195,7 +220,42 @@ Even at 100 KB a tile, that's well under 1 Mbit/s, so the network isn't the limi
 
 The claim that memory stays about the same holds up on these counts: the High detail range covers about 20 km², which at the 90th percentile is about 18,000 buildings, near today's 15,785. Low's covers about 7 km². The fullest suburbs would hold more, so the budget counts buildings and triangles, not tiles.
 
-**Hosting.** Cloudflare allows 20,000 files per version on the free plan and 100,000 on paid, 25 MiB each. All levels come to an estimated 6,000 files, which fits the free plan.
+**Does it fit on Cloudflare's free plan? Yes, on these estimates.** You're on the free plan, and all of Sydney comes in well inside its limits. No tiles have been generated yet, so Phases 15 and 16 report the real numbers.
+
+| Free plan | Limit | All of Sydney | Room left |
+|---|---|---|---|
+| Files per version | 20,000 | About 8,000 at most | 60% |
+| Largest file | 25 MiB | 4.4 MB: today's offline file, which stays the largest | Plenty |
+| Total size | None listed | About 110 MB | |
+| Requests for static files | Free and unlimited | | |
+| Storing them | No additional cost | | |
+| Bandwidth | Not mentioned as a limit or a cost | | |
+
+| Files | Count, at most |
+|---|---|
+| Detail, 1 km | 5,626 (only 3,619 squares have buildings) |
+| Outline, 4 km | 375 |
+| Region, 8 km | 104 |
+| Map images, 4 zoom levels of 256 px, finest 8 m to a pixel | 1,872 |
+| Code, fonts, world file, manifest, street index | About 40 |
+| **Total** | **About 8,000** |
+
+| Data | How it's estimated | Size |
+|---|---|---|
+| Buildings, normal | 13.7 bytes a building today × 1.19 million | 16 MB |
+| Outlines | 58% of that, as measured on today's tiles | 10 MB |
+| Heights | 1.2-1.7 KB × 5,626 tiles | 8 MB |
+| Roads, kerbs, footpaths, lawns | Today's 477 KB, scaled by buildings or by the 1,973 busy squares: both give about 35 MB | 36 MB |
+| Trees | Today's 73 KB, scaled by buildings | 6 MB |
+| Region and world levels | A guess | Under 5 MB |
+| Map images | A guess of 15 KB each | 28 MB |
+| Code and fonts | Today's | 0.5 MB |
+| **Total** | Your detailed models come on top | **About 110 MB** |
+
+Two things would break this, so the plan rules them out:
+
+- **A Worker script in front of the files.** Worker requests count against the free plan's 100,000 a day, and requests over the limit get an error instead of the file. A player's session could make hundreds of tile requests, so that could mean only a few hundred players a day. `wrangler.jsonc` has no Worker today, and decision 17 keeps it that way.
+- **Several files per tile.** Five layers in separate files would be 28,000 files, over the limit. Decision 10 keeps one file per tile.
 
 **What has to change, beyond the tiles themselves:**
 
@@ -237,9 +297,9 @@ Say so if you want any of these changed.
    - **Fly:** straight up. **Surrounding buildings means roofs within 200 m**, about two or three CBD blocks each way. Height is the highest of: the 90th percentile of those roofs plus 30 m, 60 m above the ground, and the tallest roof within 40 m plus 15 m. It's capped at the existing 380 m.
 6. **On a bridge or in a tunnel, nearest means nearest on that level.** Getting out mid-span doesn't drop you 50 m. The Harbour Bridge's real footway becomes walkable. Where a viaduct or tunnel has no footpath, you stand at the road's edge. Dropping out of the helicopter over water goes to the nearest shore.
 7. **The vehicle you leave stays parked.** Switching back within 30 m gets you back into it where it is, and from further away it comes to you. It hides once you're over 200 m away.
-8. **Billboards:** six sites, three for each name, on buildings with no name of their own in the data, so nothing suggests a real tower belongs to these companies. Text only, unless you send logos. Lit at night.
+8. **Company names:** `MAN & BOT` on Salesforce Tower and `MAIZE.LIVE` on Governor Phillip Tower, one sign each, across the top of the north face. Text only, in dark panels, lit at night. "Maize.Live" follows the spelling in the prompt and the README.
 9. **Reference material stays reference.** Nothing cut from the videos or photos ships, and textures stay procedural. `ref/` is already ignored by git.
-10. **Tiles are 1 km squares in the world frame,** like today's building chunks, one file per tile and level, gzip like today's data, in a folder named by content hash.
+10. **Tiles are 1 km squares in the world frame,** like today's building chunks, one file per tile and level, gzip like today's data. Each file's name includes a hash of its own contents, so a tile that hasn't changed keeps its name and stays in players' caches.
 11. **Land has four levels of detail, and buildings three models:**
 
     | Level | Holds | Range, High | Range, Low |
@@ -260,6 +320,7 @@ Say so if you want any of these changed.
 14. **Terrain moves to Geoscience Australia's 5 m elevation model** (CC BY 4.0), sampled to the 20 m grid. If it doesn't cover the whole box, NSW's 2 km tiles from ELVIS fill the gaps, once their licence is confirmed: the NSW portal doesn't state one clearly.
 15. **OSM comes from Geofabrik's Australia and Oceania extract** (1.2 GB), cut to the box locally. Overpass isn't suited to downloads this size: even counting the whole box's roads hit a capacity error while planning this.
 16. **Test tiers are the default, and video is opt-in.** I run `npm run check` on every change, the lite set before saying something works, and the full run once at the end of an iteration.
+17. **The site stays static files on Cloudflare's free plan,** with no Worker script and no `run_worker_first`.
 
 ## Phases
 
@@ -269,7 +330,7 @@ Say so if you want any of these changed.
 | 2 | Buildings on the ground, ground floors drawn | Small-Medium |
 | 3 | Signs read the right street, New York names gone | Small |
 | 4 | Modes carry over | Medium |
-| 5 | Billboards | Small |
+| 5 | Company names on two towers | Small |
 | 6 | References saved, side-by-side comparison | Small |
 | 7 | Buildings from data: parts, awnings, façades, roofs | Medium |
 | 8 | Opera House, Harbour Bridge and street icons from the references | Medium-Large |
@@ -337,14 +398,21 @@ Say so if you want any of these changed.
 
 **Done when:** tests and the scenario show each arrival on the right surface, within 3 m of the start where that surface is underfoot, and a helicopter arrival clear of every roof by at least 15 m. Parked vehicles behave as in decision 7.
 
-## Phase 5: Billboards
+## Phase 5: Company names on two towers
 
-- **`js/rooftop-signs.js`:** a short table of sites, and a helper that checks a site's roof height and the wall it faces.
-- **Two forms,** both seen in the references or in Sydney itself: letters on a tower's crown, as the "salesforce" and "UniSuper" signs in `jeremy-huang`, and a steel-framed sign on a mid-rise roof. Kings Cross, at the top of William St, is the obvious place for the second: it's where Sydney's famous Coca-Cola sign is.
-- **Sites, picked from these views with a script, then by eye:** the start of the drive along Macquarie St, Circular Quay, the bridge deck in each direction, the Western Distributor, William St.
-- **One texture and one unlit material,** compiled after the first frame. Rooftop frames get a collider.
+- **`js/tower-signs.js`:** one line per sign, with its text, colours, wall position, facing and size. The height comes from the roof of the building under it, so it follows Phase 2's change to floors.
 
-**Done when:** each site reads from its view by day and night, the phone profile's load time doesn't change, and the download grows by under 5 KB.
+  | Sign | Tower | Wall centre (x, z) | Size | Colours |
+  |---|---|---|---|---|
+  | `MAN & BOT` | Salesforce Tower | (4.8, -1218), 47.5 m wide | 45 × 9 m | White on dark |
+  | `MAIZE.LIVE` | Governor Phillip Tower | (269, -1078.5), 52.1 m wide | 50 × 9 m | Maize yellow on dark |
+
+- **Placed 3 m below the roof,** just proud of the wall, so the towers' own colliders still cover them.
+- **One texture and one unlit material,** in Overpass 700, which the game already loads, compiled after the first frame. Brighter after dusk, using the existing `uInteriorGlow`.
+- **Doesn't wait for Phase 7:** both towers already have the right height. Check the views again after Phase 7, since it makes neighbouring towers taller.
+- **Stays visible with the tower:** when Phases 10 and 13 add far models, these towers and their signs stay until the letters would be under a pixel.
+
+**Done when:** both signs can be read at 1280 × 720 from the Opera House forecourt, and from the bridge deck, by day and at night. The phone profile's load time doesn't change, and the download grows by under 5 KB.
 
 ## Phase 6: References
 
@@ -406,6 +474,7 @@ Say so if you want any of these changed.
 - **Everything in `js/geodata.js` and the `.bin.gz` files moves into tiles,** in binary. This also settles `geodata`'s download (plan 1, decision 11).
 - **What crosses tiles:** roads get stable node ids and appear in each tile they touch. Structures live in a side table, by id. `build-heights` solves each connected structure group, not each tile.
 - **`world.json`:** the manifest, with tile hashes, landmarks and start positions, under 30 KB.
+- **`tools/check-dist.mjs`,** run by `npm run deploy` and `npm run check`: fails over 18,000 files or on any file over 25 MiB, so a change can't quietly break the free plan. `public/_headers` gets the long cache rule for tiles.
 - **Sources** stay the same for this phase, so the output can be checked against today's.
 - **Building floors, outlines and colliders are computed here,** not in the browser.
 
@@ -475,7 +544,7 @@ About 24 × 22 km, 530 km², and 234,445 buildings: Burwood to Bondi, Manly to t
 - **Bush:** forest as land-use colour and near-camera scatter. Nothing is stored for each tree.
 - **Long drive:** a scripted run from the CBD along the M4 to Katoomba in fast mode, about 85 km.
 
-**Done when:** all four named places can be reached by road and air, a full crossing keeps memory flat, and total bytes and file count are reported against Cloudflare's limits.
+**Done when:** all four named places can be reached by road and air, a full crossing keeps memory flat, and total bytes and file count are reported against Cloudflare's free plan limits.
 
 ## Phase 17: Play, budgets, next
 
@@ -506,9 +575,10 @@ Before tiles, the first three stay at today's limits: 2.5 s, 4 s, and 1.4 MB or 
 | Generated quality in the suburbs | Plan 1 needed overrides for the CBD's stacks, and the suburbs get none | Checks by tile, failures listed. You decide whether a stage is good enough |
 | Building data | 65% of the box's buildings have a height in Overture, but only 18% in our CBD snapshot, so most suburban ones come from another source of unknown quality. Most footprints are machine-traced | Sample against known buildings in Phase 15. Fall back to today's guess by kind where a height looks wrong |
 | Shops visible everywhere | Phase 2 turns on drawing nothing has been looked at for since the world was lifted | Look at it in Phase 2, and keep the New York names list in Phase 3 close behind |
-| Shader compile | Already the largest cost of a phone's load, 1.3 s | New looks reuse existing materials where possible. Billboards and landmarks compile after the first frame |
+| Shader compile | Already the largest cost of a phone's load, 1.3 s | New looks reuse existing materials where possible. Tower signs and landmarks compile after the first frame |
 | Licences | NSW elevation data's licence isn't clear | Prefer the CC BY 4.0 national model, and add each source to the README |
-| Cloudflare | Limits checked from a page that may not be current. Bandwidth cost not checked | Confirm before Phase 16. R2 is the fallback |
+| Cloudflare free plan | File and byte counts are estimates. The docs list no bandwidth limit, but the terms let Cloudflare limit sites serving a disproportionate share of large files outside its paid services. Tiles are small, so this looks low risk, but I can't say it doesn't apply | `check-dist` guards the limits, and Phases 15-16 report real counts. Read the terms again before any big launch |
+| Names on real towers | You chose this over unnamed buildings. Both towers are real and have owners, and Salesforce Tower carries its own name in real life | Moving a sign is a one-line change, if an owner ever objects or you'd rather not risk it at launch |
 
 ## Not in this plan
 
@@ -517,16 +587,14 @@ From `ai/next_1.md`: why deck traffic is so slow (`harbour-bridge`'s long run si
 ## What I need from you
 
 1. **A real phone and an Intel laptop** at Phase 12, or sooner if you can. This is still the largest unknown.
-2. **Logos** for Man & Bot and Maize.Live, if you'd prefer them to text.
-3. **Your first detailed building,** when you get to it, and which building it is. The test building holds its place until then.
-4. **Whether you're on Cloudflare's free or paid plan.** The free plan's file limit looks like enough, but what bandwidth costs still needs checking.
-5. **Corrections to the location tables,** especially `christopher-burns` and the routes I read from frames.
+2. **Your first detailed building,** when you get to it, and which building it is. The test building holds its place until then.
+3. **Corrections to the location tables,** especially `christopher-burns` and the routes I read from frames.
 
 ## Sources
 
 - `tools/data/` snapshots; Overture Maps release 2026-10-21.0 (`building`, `building_part`, `segment`), queried through DuckDB; OpenStreetMap through Overpass
 - `js/tsl-materials.js`, `js/buildings.js`, `js/building-footprints.js`, `js/street-details.js`, `js/controllers.js`, `js/main.js`, `js/surfaces.js`, `js/city-config.js`, `tools/geo-common.mjs`, `tools/fetch-data.mjs`, `tools/play/run.mjs`, `recordings/2026-11-01-11-25-04/report.json`, `ai/next_1.md`
-- [Cloudflare Workers limits](https://developers.cloudflare.com/workers/platform/limits/index.md), [100,000-file change](https://developers.cloudflare.com/changelog/post/2025-09-02-increased-static-asset-limits/)
+- [Cloudflare Workers limits](https://developers.cloudflare.com/workers/platform/limits/index.md), [static asset billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/), [service-specific terms](https://www.cloudflare.com/service-specific-terms-application-services/)
 - [Geoscience Australia 5 m elevation model](https://researchdata.edu.au/digital-elevation-model-metre-grid/1278967), [ELVIS](https://catalogue.data.wa.gov.au/app/elvis-elevation-information-system), [NSW Elevation and Depth Theme](https://data.nsw.gov.au/data/dataset/1-f1b1b26b23ab4574a561f890edd3bd7e)
 - [Geofabrik downloads](https://download.geofabrik.de), [Overture buildings guide](https://docs.overturemaps.org/guides/buildings)
 - [Sydney Opera House on Wikipedia](https://en.wikipedia.org/wiki/Sydney_Opera_House), [its spherical solution](https://www.sydneyoperahouse.com/our-story/the-spherical-solution)

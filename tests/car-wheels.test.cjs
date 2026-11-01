@@ -321,9 +321,10 @@ test('renderCar writes per-car wheel styles to both front and rear wheel slots w
     },
     placeWheels(c, idx) { placed.push(idx); },
     placeDummy() {},
-    terrainSlope: () => 0,
-    onDeck: () => false,
-    dummyOnDeck: false
+    edgeHeight: () => 0,
+    slopeOn: () => 0,
+    levelOf: () => null,
+    dummyEdge: null
   };
   const renderCar = vm.runInNewContext(`(${match[0].trim()})`, ctx);
   const policeStyle = carStyleCode({ livery: 1, trim: 2, wheel: 3 });

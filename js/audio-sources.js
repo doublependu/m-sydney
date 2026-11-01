@@ -88,7 +88,6 @@ class CityAudioSources {
     this.cars = [];
     this.buses = [];
     this.peds = [];
-    this.highwayCars = [];
     this.signalSites = [];
     this.motors = new NearestSources(10);
     this.sirens = new NearestSources(2);
@@ -101,11 +100,10 @@ class CityAudioSources {
   }
 
   // Traffic and street furniture arrive after the game is playable
-  attachCity({ trafficSystem, highwayTraffic, streetDetails }) {
+  attachCity({ trafficSystem, streetDetails }) {
     this.cars = trafficSystem.cars;
     this.buses = trafficSystem.buses;
     this.peds = trafficSystem.peds;
-    this.highwayCars = highwayTraffic.cars;
     this.signalSites = streetDetails.audioSignals;
   }
 
@@ -201,16 +199,6 @@ class CityAudioSources {
 
     this.streetVehicles(this.cars, elapsed, 100);
     this.streetVehicles(this.buses, elapsed, 1000);
-    for (let i = 0; i < this.highwayCars.length; i++) {
-      const car = this.highwayCars[i];
-      // Lane ends sink into the road and the Battery tunnel is underground; neither should sound above ground.
-      if (!car.placed || car.y < -0.05) continue;
-      const d2 = this.distanceSq(car.x, car.y + 0.7, car.z);
-      if (!Number.isFinite(d2) || d2 > MOTOR_RANGE * MOTOR_RANGE) continue;
-      this.snapshot.traffic += (1 - d2 / (MOTOR_RANGE * MOTOR_RANGE)) * (0.2 + 0.8 * unit(car.v / 12));
-      this.motor(car, car.engine, car.x, car.y + 0.7, car.z,
-        car.v, roadLoad(car.v, car.acc, 1.6), car.yaw, false, false, seedAt(2000 + i), car.v < 0.5);
-    }
     this.snapshot.traffic = unit(this.snapshot.traffic / 16);
 
     for (let i = 0; i < this.peds.length; i++) {

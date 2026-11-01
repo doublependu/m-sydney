@@ -36,8 +36,10 @@ npm run play        # plays the game like a person and records it in recordings/
 Play options: `npm run play -- --only=first-minute,harbour-bridge --no-video --soak=3 --headed --seed=6 --gap=3`.
 Bench options: `npm run bench -- --profile=desktop --runs=3 --query=quality=low --headed`.
 
-`node tools/play/look.mjs out-dir name:x,z,heading,mode,climbSeconds` saves what the game shows from any place, and
-`node tools/debug-map.mjs out.png` draws the map data from above.
+`node tools/play/look.mjs out-dir name:x,z,heading,mode,climbSeconds` saves what the game shows from any place (`--spots`
+for the stacks, tunnels and bridge ends in `tools/play/spots.mjs`), `node tools/play/flicker.mjs out-dir` holds views still
+and maps the pixels that flicker, and `node tools/debug-map.mjs out.png` draws the map data from above. Add
+`--browser=firefox` to the play, bench, look and flicker tools for the WebGL2 path.
 
 ## Deploy
 
@@ -62,11 +64,18 @@ npm run data:build
 
 ## How it works
 
-- **The simulation is flat.** Colliders, traffic and people live on a plane. Sydney's 50 m of relief is added where things
-  are drawn (`js/terrain.js`), so ground meshes are built on the hills and moving things are lifted as their transforms are
-  written. Keep any new code on the flat side of that line.
-- **The Harbour Bridge is a corridor with its own height** (`js/bridge.js`). Whoever comes on at an end stays on the deck
-  until they leave at the other, so cars on it and on the streets below can share (x, z).
+- **The simulation is flat, on surfaces.** Colliders, traffic and people move in (x, z), each on a surface: the ground, or a
+  structure with heights of its own (`js/surfaces.js`). Sydney's 50 m of relief and the road levels are added where things
+  are drawn, so ground meshes are built on the hills and moving things are lifted as their transforms are written. Keep
+  any new code on the flat side of that line.
+- **Every road has a height.** `tools/build-heights.mjs` solves bridges, viaducts, tunnels, cuttings and motorways so that
+  stacked roads clear each other, and writes the profiles into `js/geodata.js`. `js/structures.js` draws what's off the
+  ground. A surface changes only across a step of 1.5 m or less: anything bigger is a parapet or a tunnel wall, so cars at
+  the same (x, z) on different levels never meet.
+- **The Harbour Bridge is one of those structures,** with its heights from a table of the real deck (`js/bridge.js`).
+- **The ground is one height everywhere.** Roads, footpaths, lawns and kerbs all sample `groundHeight()`, and
+  `node tools/check-ground.mjs` measures how well they agree: wheels against the road, kerbs against what's either side of
+  them, roads at crossings, and steps in the height grid.
 - **There is no street grid.** Every street comes from the centreline graph (`js/road-network.js`). `DRIVE_SIDE` in
   `js/city-config.js` sets which side traffic keeps to.
 - **The game must be playable within 4 seconds,** so only the ground and buildings around the player are built before the

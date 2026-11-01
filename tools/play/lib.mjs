@@ -5,7 +5,7 @@ import http from 'node:http';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { constants, brotliCompressSync } from 'node:zlib';
-import { chromium } from 'playwright-core';
+import { chromium, firefox } from 'playwright-core';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -60,6 +60,12 @@ export function launchChrome({ headed = false } = {}) {
   });
 }
 
+// Playwright's own Firefox build: no WebGPU, and no EXT_clip_control, so the game runs WebGL2 with standard depth there
+export function launchBrowser({ browser = 'chrome', headed = false } = {}) {
+  if (browser === 'firefox') return firefox.launch({ headless: !headed, firefoxUserPrefs: { 'webgl.force-enabled': true } });
+  return launchChrome({ headed });
+}
+
 // Fresh profile each time, so nothing is cached and no saved player position carries over.
 export async function openGame(browser, url, { profile = 'laptop', query = '', storage = null, initScript = null, offline = false, timeout = 120000, stayThrottled = false } = {}) {
   const { viewport, deviceScaleFactor = 1, touch = false, cpuThrottle, mbps } = PROFILES[profile];
@@ -75,9 +81,10 @@ export async function openGame(browser, url, { profile = 'laptop', query = '', s
   if (storage) await page.addInitScript((saved) => localStorage.setItem('sydney-player-state', saved), storage);
   if (initScript) await page.addInitScript(initScript);
   if (offline) await context.setOffline(true);
-  const cdp = await context.newCDPSession(page);
-  if (cpuThrottle) await cdp.send('Emulation.setCPUThrottlingRate', { rate: cpuThrottle });
-  if (mbps) {
+  // Throttling goes through the Chrome DevTools Protocol, which Firefox doesn't speak: it runs unthrottled
+  const cdp = browser.browserType().name() === 'chromium' ? await context.newCDPSession(page) : null;
+  if (cpuThrottle && cdp) await cdp.send('Emulation.setCPUThrottlingRate', { rate: cpuThrottle });
+  if (mbps && cdp) {
     await cdp.send('Network.enable');
     await cdp.send('Network.emulateNetworkConditions', {
       offline: false, latency: 40, downloadThroughput: mbps * 125000, uploadThroughput: mbps * 40000
@@ -85,7 +92,7 @@ export async function openGame(browser, url, { profile = 'laptop', query = '', s
   }
   await page.goto(`${url}?debug=1${query ? `&${query}` : ''}`, { waitUntil: offline ? 'domcontentloaded' : 'commit' });
   await page.waitForFunction(() => document.getElementById('loading-overlay')?.classList.contains('hidden'), null, { timeout, polling: 100 });
-  if (cpuThrottle && !stayThrottled) await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
+  if (cpuThrottle && cdp && !stayThrottled) await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
   return { context, page, cdp, errors, warnings };
 }
 

@@ -1,8 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { CROSSWALK } from './road-network.js';
 import { createRoadPaintMaterial } from './tsl-materials.js';
-import { terrainHeight } from './terrain.js';
-import { bridgeAt } from './bridge.js';
+import { edgeHeight } from './surfaces.js';
 
 // Road markings generated from the drivable road network (js/road-network.js), so the paint matches where traffic
 // actually drives and stops: dashed lane lines, white centre lines (double on main roads), stop lines at signals and
@@ -20,8 +19,8 @@ const WIDEN_SPHERE_PAD = 16; // createRoadPaintMaterial widens thin distant stri
 // off-screen and distant (> 1.65 km) road paint is culled instead of transforming all 12.5 km of vertices every frame.
 function createRoadPaintChunkBuilder(name, { cellSize = PAINT_CELL_SIZE, cullDistance = PAINT_CULL_DISTANCE } = {}) {
   const cells = new Map();
-  let onDeck = false;
-  const groundAt = (x, z) => (onDeck ? bridgeAt(x, z)?.y ?? terrainHeight(x, z) : terrainHeight(x, z));
+  let edge = null; // the road-network edge the paint is on: its own road's height (js/surfaces.js)
+  const groundAt = (x, z) => edgeHeight(edge, x, z);
 
   function pushQuad(ax, ay, az, bx, by, bz, sx, sz, col, period, duty, u0, u1) {
     const mx = (ax + bx) * 0.5;
@@ -105,7 +104,7 @@ function createRoadPaintChunkBuilder(name, { cellSize = PAINT_CELL_SIZE, cullDis
     return group;
   }
 
-  return { strip3D, build, setDeck: (deck) => { onDeck = deck; } };
+  return { strip3D, build, setEdge: (e) => { edge = e || null; } };
 }
 
 function buildRoadPaint(scene, network, sharedBuilder = null) {
@@ -118,9 +117,9 @@ function buildRoadPaint(scene, network, sharedBuilder = null) {
     builder.strip3D(ax, HEIGHT, az, bx, HEIGHT, bz, w, col, period, duty, phase, flow);
   }
   const onEdge = (e, paint) => {
-    builder.setDeck?.(!!e.deck);
+    builder.setEdge?.(e);
     paint();
-    builder.setDeck?.(false);
+    builder.setEdge?.(null);
   };
 
   // Edges run between stop lines; s is measured from the start one and o to the right of the centre line

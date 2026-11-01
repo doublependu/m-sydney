@@ -1,21 +1,19 @@
 import { GEO } from './geodata.js';
 import { terrainHeight } from './terrain.js';
+import { LINKS, structureAt } from './surfaces.js';
 
-// The Harbour Bridge's corridor: a road with its own height. The simulation is flat, so a car on the deck and a car on
-// the street under its approach share (x, z); what tells them apart is whether they came on at the ends.
+// The Harbour Bridge's corridor: a road with its own height, one of the structures of js/surfaces.js. A car on the deck
+// and a car on the street under its approach share (x, z); what tells them apart is the surface each is on. Its height
+// comes from the road graph (tools/build-heights.mjs works out the deck's profile), so the model, the game and the
+// roads that join it all agree. This module adds what the model and the scripts need: the line along it, and where
+// along it a point is.
 
 const PATH = [];
 for (let i = 0; i < GEO.bridge.length; i += 2) PATH.push({ x: GEO.bridge[i], z: GEO.bridge[i + 1], s: 0 });
 for (let i = 1; i < PATH.length; i++) PATH[i].s = PATH[i - 1].s + Math.hypot(PATH[i].x - PATH[i - 1].x, PATH[i].z - PATH[i - 1].z);
 const LENGTH = PATH[PATH.length - 1].s;
 const HALF_WIDTH = 12.5; // of the corridor anything can use
-const ENTRY = 45; // m from each end where the deck meets the ground
-const DECK = 49; // m above the game's zero over the water
-const CROWN = 3; // m higher at mid-span
-
-const startY = terrainHeight(PATH[0].x, PATH[0].z);
-const endY = terrainHeight(PATH[PATH.length - 1].x, PATH[PATH.length - 1].z);
-const smooth = (t) => { t = Math.max(0, Math.min(1, t)); return t * t * (3 - 2 * t); };
+const DECK_SID = LINKS.find((l) => l.deck)?.sid ?? 0;
 
 /** Point on the corridor s metres from its south end, with its direction */
 function bridgePoint(s) {
@@ -29,7 +27,6 @@ function bridgePoint(s) {
 
 // Where the shore lies under the corridor, for the arch: the water runs between these
 const SPAN = (() => {
-  // The arch stands on the deepest part of the corridor's dip in the ground
   let south = 0, north = LENGTH;
   for (let s = 0; s < LENGTH; s += 5) {
     const p = bridgePoint(s);
@@ -42,17 +39,27 @@ const SPAN = (() => {
   return { south, north, middle: (south + north) / 2 };
 })();
 
-/** Deck height s metres along the corridor: ground at both ends, a long gentle climb to the arch, a slight crown over it */
-function deckHeight(s) {
-  const a = SPAN.south, b = SPAN.north;
-  if (s < a) return startY + (DECK - startY) * smooth(s / a);
-  if (s > b) return endY + (DECK - endY) * smooth((LENGTH - s) / (LENGTH - b));
-  return DECK + CROWN * Math.sin(((s - a) / (b - a)) * Math.PI);
+// The deck's height every 2 m along it, from the road graph
+const DECK_STEP = 2;
+const DECK_Y = new Float32Array(Math.ceil(LENGTH / DECK_STEP) + 1);
+for (let i = 0; i < DECK_Y.length; i++) {
+  const p = bridgePoint(Math.min(LENGTH, i * DECK_STEP));
+  DECK_Y[i] = structureAt(DECK_SID, p.x, p.z, 2)?.y ?? terrainHeight(p.x, p.z);
 }
 
-/** Nearest place on the corridor to (x, z), or null when outside it: { s, off (metres to the right of travel north), y } */
-function bridgeAt(x, z) {
-  let best = null, bd = HALF_WIDTH * HALF_WIDTH;
+/** Deck height s metres along the corridor: ground at both ends, a long gentle climb to the arch, a slight crown over it */
+function deckHeight(s) {
+  const f = Math.max(0, Math.min(LENGTH, s)) / DECK_STEP;
+  const i = Math.min(DECK_Y.length - 2, Math.floor(f));
+  return DECK_Y[i] + (DECK_Y[i + 1] - DECK_Y[i]) * (f - i);
+}
+
+/**
+ * Nearest place on the corridor to (x, z), or null when farther than `reach` from it:
+ * { s, off (metres to the right of travel north), y }
+ */
+function bridgeAt(x, z, reach = HALF_WIDTH) {
+  let best = null, bd = reach * reach;
   for (let i = 1; i < PATH.length; i++) {
     const a = PATH[i - 1], b = PATH[i];
     const dx = b.x - a.x, dz = b.z - a.z, L2 = dx * dx + dz * dz || 1;
@@ -69,12 +76,4 @@ function bridgeAt(x, z) {
   return best;
 }
 
-// Whoever is on the deck stays on it until they leave at an end; anyone else passes beneath
-function updateDeckState(entity, x, z) {
-  const here = bridgeAt(x, z);
-  if (entity.deck) entity.deck = !!here && here.s > 1 && here.s < LENGTH - 1;
-  else if (here && (here.s < ENTRY || here.s > LENGTH - ENTRY)) entity.deck = true;
-  return entity.deck ? here : null;
-}
-
-export { HALF_WIDTH, LENGTH as BRIDGE_LENGTH, SPAN as BRIDGE_SPAN, bridgeAt, bridgePoint, deckHeight, updateDeckState };
+export { DECK_SID, HALF_WIDTH, LENGTH as BRIDGE_LENGTH, SPAN as BRIDGE_SPAN, bridgeAt, bridgePoint, deckHeight };

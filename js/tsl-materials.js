@@ -73,9 +73,13 @@ const cityUniforms = {
   uCanyonBounce: uniform(0.52)
 };
 
-// Fast deterministic 2D -> 1D hash in TSL
+// Fast deterministic 2D -> 1D hash in TSL (Dave Hoskins' hash12). No sine: fract(sin(x) * 43758) turns one bit of rounding
+// in x into a different number, and a shader compiler that inlines this rounds a lattice corner differently for the
+// cells either side of it. Noise then jumps along the lattice's lines: straight-edged shapes across the harbour.
 const hash2D = Fn(([p]) => {
-  return fract(sin(dot(p, vec2(127.1, 311.7))).mul(43758.5453));
+  const q = fract(vec3(p.x, p.y, p.x).mul(0.1031)).toVar();
+  q.addAssign(dot(q, q.yzx.add(33.33)));
+  return fract(q.x.add(q.y).mul(q.z));
 });
 
 // Smooth 2D value noise in TSL
@@ -2253,34 +2257,6 @@ function createContactShadowMaterial() {
   return mat;
 }
 
-/**
- * Car lamp flares for distant traffic (instanced sprites on a unit quad): a soft round glow with a hot core per lamp,
- * placed and sized per instance (`flarePos` = x, y, z, world size) and tinted (`flareCol` = rgb (+ an unused w, so
- * the attribute needs no padding on upload), already including the lamp's visibility from the camera), lit only at
- * dusk & night. Additive, so no fog (it would add fog colour).
- */
-function createCarFlareMaterial() {
-  const mat = new THREE.SpriteNodeMaterial({
-    transparent: true,
-    depthWrite: false,
-    fog: false,
-    blending: THREE.AdditiveBlending
-  });
-  mat.mrtNode = _transparentEffectMRT;
-  const p = attribute('flarePos', 'vec4');
-  mat.positionNode = p.xyz;
-  mat.scaleNode = vec2(p.w, p.w);
-  mat.colorNode = Fn(() => {
-    const night = smoothstep(0.35, 1.3, cityUniforms.uInteriorGlow);
-    const r = length(uv().sub(0.5)).mul(2.0);
-    const halo = pow(smoothstep(1.0, 0.0, r), 1.5);
-    const core = smoothstep(0.5, 0.0, r);
-    return attribute('flareCol', 'vec4').rgb.mul(halo.add(core.mul(2.0))).mul(night);
-  })();
-  mat.opacityNode = float(1.0);
-  return mat;
-}
-
 export {
   cityUniforms,
   WALL_KINDS,
@@ -2296,6 +2272,5 @@ export {
   createCurbMaterial,
   createWaterMaterial,
   createParkLawnMaterial,
-  createContactShadowMaterial,
-  createCarFlareMaterial
+  createContactShadowMaterial
 };

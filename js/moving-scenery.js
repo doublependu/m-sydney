@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { GEO } from './geodata.js';
 import { CITY_BOUNDS, DRIVE_SIDE } from './city-config.js';
-import { terrainHeight } from './terrain.js';
+import { groundHeight } from './surfaces.js';
 
 // What keeps the harbour and George St alive: ferries on their real routes, and the light rail. They run on a clock
 // along fixed lines, back and forth, and nothing has to get out of their way.
@@ -93,7 +93,7 @@ function buildMovingScenery(stage) {
         travel(m.line, elapsed + m.phase, m.speed, m.dwell, m.at);
         const { x, z, yaw } = m.at;
         const sx = Math.cos(yaw) * m.side, sz = -Math.sin(yaw) * m.side;
-        m.mesh.position.set(x + sx, m.ground ? terrainHeight(x, z) + 0.05 : CITY_BOUNDS.waterLevel, z + sz);
+        m.mesh.position.set(x + sx, m.ground ? groundHeight(x, z) + 0.05 : CITY_BOUNDS.waterLevel, z + sz);
         m.mesh.rotation.y = yaw;
       }
     }

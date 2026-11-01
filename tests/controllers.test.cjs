@@ -39,7 +39,8 @@ function keyboardHarness(nyc = {}) {
       './helicopter.js': {},
       './pedestrians.js': {},
       './vehicle-lights.js': {},
-      './bridge.js': { HALF_WIDTH: 12.5, updateDeckState: () => null },
+      './bridge.js': { DECK_SID: 0 },
+      './surfaces.js': { edgeHeight: () => 0, groundHeight: () => 0, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), structureAt: () => null, structuresAt: () => [], LINKS: [] },
       './building-collision.js': polygonCollision
     }
   });

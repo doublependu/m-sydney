@@ -185,8 +185,10 @@ function trafficHarness(vehicles) {
     shove(v, dx, dz) { v.x += dx; v.z += dz; },
     reportCollision() {}, spawnCollisionSparks() {}, changeLanes() {},
     accelerate(v) { v.acc = -3; }, steer() {}, enter() {}, leave() {} };
-  context.onDeck = (v) => !!v.edge?.deck;
-  context.onPlayersLevel = (v) => context.onDeck(v) === !!context.player?.entity?.deck;
+  // Levels by height, as js/surfaces.js tells them apart: a car on the Harbour Bridge's deck is 49 m up
+  context.sameLevel = (a, b) => Math.abs(a - b) < 3;
+  context.heightOf = (v) => v.ry ?? (v.edge?.deck ? 49 : 0);
+  context.onPlayersLevel = (v) => context.sameLevel(context.heightOf(v), context.player?.y ?? 0);
   for (const name of ['readTrafficBody', 'writeTrafficVelocity', 'impactSuspension', 'collideWithPlayer', 'collideTraffic', 'drive']) {
     const source = trafficSource.match(new RegExp(`  function ${name}\\([^]*?\\n  \\}`))?.[0];
     assert.ok(source, name);

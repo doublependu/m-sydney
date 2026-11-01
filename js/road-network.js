@@ -1,6 +1,7 @@
 import { CITY_BOUNDS, DRIVE_SIDE, BLOCKS, blockAt, landAt } from './city-config.js';
 import { GEO } from './geodata.js';
 import { polygonBoxOverlaps } from './building-collision.js';
+import { LINKS } from './surfaces.js';
 
 // How far either side of the Harbour Bridge's line a lane counts as on the bridge (its own height, nothing in its way)
 const DECK_REACH = 15;
@@ -137,13 +138,14 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
       }
       return total;
     }
-    const links = RG.links.map(([a, b, ni, w, lanes, dir, inner, major, deck]) => {
+    const links = RG.links.map(([a, b, ni, w, lanes, dir, inner, major, deck], id) => {
       const pts = [pos[a]];
       for (let k = 0; k < inner.length; k += 2) pts.push({ x: inner[k], z: inner[k + 1] });
       pts.push(pos[b]);
       let len = 0;
       for (let k = 0; k + 1 < pts.length; k++) len += Math.hypot(pts[k + 1].x - pts[k].x, pts[k + 1].z - pts[k].z);
-      return { a, b, name: RG.names[ni], w, lanes, dir, major: !!major, deck: !!deck, pts, len };
+      // sid: the structure it's on (js/surfaces.js), 0 on the ground
+      return { id, a, b, name: RG.names[ni], w, lanes, dir, major: !!major, deck: !!deck, sid: LINKS[id].sid, pts, len };
     });
     // Junctions a few metres apart (divided roads, offset corners) are one: collapse links under 14 m
     const parent = pos.map((_, i) => i);
@@ -202,8 +204,9 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
         rest -= Math.hypot(p1.x - pts[k - 1].x, p1.z - pts[k - 1].z);
         let turn = Math.abs(Math.atan2(p2.z - p1.z, p2.x - p1.x) - Math.atan2(p1.z - last.z, p1.x - last.x));
         if (turn > Math.PI) turn = 2 * Math.PI - turn;
-        // (every bend for the deck: a long gentle curve isn't a sharp one, but a chord across it misses the bridge)
-        if ((turn < 12 * DEG && !l.deck) || d0 < 15 || rest < 15) continue;
+        // (every bend off the ground: a long gentle curve isn't a sharp one, but a chord across it misses the deck, and
+        // its height changes along it)
+        if ((turn < 12 * DEG && !l.sid) || d0 < 15 || rest < 15) continue;
         const s = { x: p1.x, z: p1.z, hx: 0, hz: 0, signal: false, in: [], out: [], general: true, shape: true };
         nodes.push(s);
         stations.push(s);
@@ -211,7 +214,7 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
       }
       stations.push(B);
       const lanes = lanesOf(l);
-      for (let k = 0; k + 1 < stations.length; k++) runs.push({ from: stations[k], to: stations[k + 1], deck: l.deck, ...lanes });
+      for (let k = 0; k + 1 < stations.length; k++) runs.push({ from: stations[k], to: stations[k + 1], deck: l.deck, sid: l.sid, link: l.id, ...lanes });
     }
     console.info(`[roads] centreline streets: ${links.length} links, ${runs.length} straight runs`);
     return runs;
@@ -234,16 +237,17 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
     }
     return onKerb <= samples * maxOnKerb;
   };
-  function addEdgeGeneral(from, to, axis, lanes, half, divided, deck, maxOnKerb) {
+  // A lane off the ground (a bridge, a tunnel) has nothing of the ground plan in its way: it's above it or under it
+  function addEdgeGeneral(from, to, axis, lanes, half, divided, run, maxOnKerb) {
     const x0 = from.x;
     const z0 = from.z;
     const span = Math.hypot(to.x - x0, to.z - z0);
     if (span < 8) return false;
     const dx = (to.x - x0) / span;
     const dz = (to.z - z0) / span;
-    const open = deck ? lanes.slice() : lanes.filter((o) => laneOpen(x0, z0, dx, dz, span, o, maxOnKerb));
+    const open = run.sid ? lanes.slice() : lanes.filter((o) => laneOpen(x0, z0, dx, dz, span, o, maxOnKerb));
     if (!open.length) return false;
-    edges.push({ from, to, axis, x0, z0, dx, dz, rx: -dz * DRIVE_SIDE, rz: dx * DRIVE_SIDE, span, half, lanes: open.sort((p, q) => p - q), moves: [], general: true, cand: lanes, divided: !!divided, deck: !!deck });
+    edges.push({ from, to, axis, x0, z0, dx, dz, rx: -dz * DRIVE_SIDE, rz: dx * DRIVE_SIDE, span, half, lanes: open.sort((p, q) => p - q), moves: [], general: true, cand: lanes, divided: !!divided, deck: !!run.deck, sid: run.sid || 0, link: run.link });
     return true;
   }
   // A divided road drawn as two one-way roadways between the same two junctions (most of the Bowery) runs both ways
@@ -274,12 +278,12 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
   }
   let sliced = 0;
   for (const r of genRuns) {
-    const there = r.fwd.length > 0 && addEdgeGeneral(r.from, r.to, r.axis, r.fwd, r.half, r.divided, r.deck);
-    const back = r.back.length > 0 && addEdgeGeneral(r.to, r.from, r.axis, r.back, r.half, r.divided, r.deck);
+    const there = r.fwd.length > 0 && addEdgeGeneral(r.from, r.to, r.axis, r.fwd, r.half, r.divided, r);
+    const back = r.back.length > 0 && addEdgeGeneral(r.to, r.from, r.axis, r.back, r.half, r.divided, r);
     // A kerb lapping over one side only leaves a two-way street one way, against the map: if one way is open, both are
     if (r.fwd.length && r.back.length && there !== back) {
-      if (there) addEdgeGeneral(r.to, r.from, r.axis, r.back, r.half, r.divided, r.deck, 1);
-      else addEdgeGeneral(r.from, r.to, r.axis, r.fwd, r.half, r.divided, r.deck, 1);
+      if (there) addEdgeGeneral(r.to, r.from, r.axis, r.back, r.half, r.divided, r, 1);
+      else addEdgeGeneral(r.from, r.to, r.axis, r.fwd, r.half, r.divided, r, 1);
     }
     if (++sliced % 60 === 0) yield;
   }
@@ -533,8 +537,8 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
   // Paint describes the physical streets, including dead ends and roads AI traffic cannot circulate through.
   // Snapshot their geometry before routing moves stop lines, drops edges and renumbers the surviving junctions.
   const paintNodes = new Map(nodes.map((n, id) => [n, { id, x: n.x, z: n.z, shape: n.shape }]));
-  const paintEdges = edges.map(({ from, to, axis, x0, z0, sx, sz, dx, dz, rx, rz, span, len, half, lanes, deck }) => ({
-    from: paintNodes.get(from), to: paintNodes.get(to), axis, x0, z0, sx, sz, dx, dz, rx, rz, span, len, half, lanes, deck
+  const paintEdges = edges.map(({ from, to, axis, x0, z0, sx, sz, dx, dz, rx, rz, span, len, half, lanes, deck, sid, link }) => ({
+    from: paintNodes.get(from), to: paintNodes.get(to), axis, x0, z0, sx, sz, dx, dz, rx, rz, span, len, half, lanes, deck, sid, link
   }));
 
   yield;
@@ -549,6 +553,7 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
     const c = makeCurve(e, i, f, j);
     const p = { x: 0, z: 0, dx: 0, dz: 0 };
     const street = e.general || f.general; // through a centreline junction: tested like its lanes
+    if (e.sid && f.sid) return true; // a junction off the ground: up in the air, or under it, clear of the ground plan
     const deck = e.deck || f.deck;
     for (let k = 1; k < 10; k++) {
       curvePoint(c, c.len * k / 10, p);

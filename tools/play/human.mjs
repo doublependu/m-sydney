@@ -182,6 +182,13 @@ export class Watchdog {
     const { x, y, z, heading, speed, mode } = player;
     if (![x, y, z, heading, speed].every(Number.isFinite)) this.fail(`non-finite player state in ${mode}: ${JSON.stringify(player)}`);
     if (y < player.ground - 1.5) this.fail(`fell through the world in ${mode} at ${x.toFixed(0)}, ${z.toFixed(0)}: y ${y.toFixed(2)}`);
+    // As drawn: never under the road it's on, or up in the air over it (a helicopter flies, a crash can throw a car)
+    // Twice running: a teleport moves the car a frame before it's drawn at its new height
+    const under = mode === 'car' && player.drawnY !== null && player.drawnY < player.surfaceY - 0.6;
+    if (under && this.wasUnder) {
+      this.fail(`the car is drawn under its road at ${x.toFixed(0)}, ${z.toFixed(0)}: ${player.drawnY.toFixed(2)} on a road at ${player.surfaceY.toFixed(2)}`);
+    }
+    this.wasUnder = under;
     const pushing = !paused && (input.forward || input.backward);
     const moved = this.stuckAt && Math.hypot(x - this.stuckAt.x, z - this.stuckAt.z) > 0.5;
     if (!pushing || moved || !this.stuckAt) {

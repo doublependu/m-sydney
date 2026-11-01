@@ -30,7 +30,7 @@ async function crossBridge(human, page, expect, direction) {
   let lane = DECK_LANES[0];
   const started = Date.now();
   await human.down('KeyW');
-  while (Date.now() - started < 210000) { // at the traffic's pace, about 12 m/s, a crossing is a little over 3 minutes
+  while (Date.now() - started < 330000) { // at the traffic's pace, 8 to 12 m/s, a crossing takes 3 to 5 minutes
     const state = await human.state();
     const aim = await page.evaluate(([x, z, d]) => window.__gameDebug.bridgeAim(x, z, d), [state.x, state.z, direction]);
     const deck = await page.evaluate(() => window.__gameDebug.onDeck());
@@ -71,6 +71,139 @@ async function crossBridge(human, page, expect, direction) {
   return { highest, far, near, left, last };
 }
 
+// Drives a way through the road graph (__gameDebug.route), steering for a point a little ahead on it, and checks at
+// every step that the car is on the level the road is: on the structure (or the ground) the way runs on there, at its
+// height. Near a change of level either is fine. Inside a tunnel the camera must stay under the roof, and the sky's
+// light turned down. Traffic on the way is waited for, or backed away from as driveTo() does.
+const TUNNEL_HEIGHT = 5.6; // js/surfaces.js
+async function followRoute(human, page, waypoints, { limit = 14 } = {}) {
+  const route = await page.evaluate((w) => window.__gameDebug.route(w), waypoints);
+  // At walking pace at worst, for the queues at the lights
+  const timeout = Math.max(120000, (route?.length ?? 0) * 8 / 3 * 1000);
+  const out = { found: !!route, points: route?.length ?? 0, samples: 0, offLevel: 0, worst: null, tunnelSamples: 0, cameraOut: 0, cameraThrough: 0, otherLevelHits: 0, levelJumps: 0, restarts: 0, darkest: 0, reached: false, seconds: 0 };
+  if (!route) return out;
+  const first = route[0], next = route[Math.min(2, route.length - 1)];
+  const toStart = async () => {
+    await human.releaseAll();
+    await page.evaluate(([x, z, h, deck]) => window.__gameDebug.goto(x, z, h, 'car', deck), [first.x, first.z, Math.atan2(next.x - first.x, next.z - first.z), first.sid !== 0]);
+    await human.wait(700);
+  };
+  await toStart();
+  // Within this many points of a change of surface, either level will do
+  const settled = route.map((p, i) => route.slice(Math.max(0, i - 2), i + 3).every((q) => q.sid === p.sid));
+  let at = 0, last = await human.state(), lastMoved = Date.now(), lastY = last.surfaceY, lost = 0, thisTry = { samples: 0, offLevel: 0 };
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    const state = await human.state();
+    // At driving pace nothing gains or loses 3 m of height between two looks, on any road, unless it has jumped a level
+    if (Math.abs(state.surfaceY - lastY) > 3) out.levelJumps++;
+    lastY = state.surfaceY;
+    // Nearest point a little behind to well ahead of the last: never a point on another level of the same ground plan
+    let best = at;
+    for (let i = Math.max(0, at - 3); i < Math.min(route.length, at + 12); i++) {
+      if (Math.hypot(route[i].x - state.x, route[i].z - state.z) < Math.hypot(route[best].x - state.x, route[best].z - state.z)) best = i;
+    }
+    at = best;
+    if (at >= route.length - 2) { out.reached = true; break; }
+    const p = route[at];
+    // Traffic can knock the car off the way where it's still at the ground's height, and it carries on along the streets
+    // under it: no way back from there. That's no fault of the levels, so that try doesn't count.
+    lost = Math.hypot(p.x - state.x, p.z - state.z) > 12 || (settled[at] && Math.abs(state.surfaceY - p.y) > 3) ? lost + 1 : 0;
+    if (lost > 25 && out.restarts < 3) {
+      out.restarts++;
+      out.samples -= thisTry.samples;
+      out.offLevel -= thisTry.offLevel;
+      thisTry = { samples: 0, offLevel: 0 };
+      await toStart();
+      at = 0;
+      lost = 0;
+      last = await human.state();
+      lastY = last.surfaceY;
+      lastMoved = Date.now();
+      continue;
+    }
+    if (settled[at] && Math.hypot(p.x - state.x, p.z - state.z) < 6) {
+      out.samples++;
+      thisTry.samples++;
+      const off = Math.abs(state.surfaceY - p.y);
+      if (state.surface !== p.sid || off > 1.5) {
+        out.offLevel++;
+        thisTry.offLevel++;
+        if (!out.worst || off > out.worst.off) out.worst = { at: `${Math.round(state.x)},${Math.round(state.z)}`, surface: state.surface, want: p.sid, y: +state.surfaceY.toFixed(1), wantY: +p.y.toFixed(1), off: +off.toFixed(1), road: p.name };
+      }
+      const { cam, near } = await page.evaluate(([x, z]) => ({ cam: window.__gameDebug.camera(), near: window.__gameDebug.trafficNear(x, z, 6) }), [state.x, state.z]);
+      if (cam.y > cam.ceiling) out.cameraThrough++;
+      // Whatever is on another level just overhead or underneath can't touch the car
+      out.otherLevelHits += near.filter((v) => v.struck && Math.abs(v.y - state.surfaceY) > 3).length;
+      if (p.tunnel && route[Math.max(0, at - 3)].tunnel) {
+        out.tunnelSamples++;
+        if (cam.y > p.y + TUNNEL_HEIGHT - 0.2) out.cameraOut++;
+        out.darkest = Math.max(out.darkest, cam.shelter);
+      }
+    }
+    // On a two-way road, the left of it, as a driver would: the middle is nose to nose with whatever is coming
+    const aim = route[Math.min(route.length - 1, at + 2)], after = route[Math.min(route.length - 1, at + 3)];
+    const dx = after.x - aim.x, dz = after.z - aim.z, along = Math.hypot(dx, dz) || 1;
+    const keep = aim.twoWay ? 2.8 : 0;
+    const error = await human.steerTowards(state, { x: aim.x + (dz / along) * keep, z: aim.z - (dx / along) * keep }, 0.05);
+    const speed = Math.abs(state.speed);
+    await human.setKey('KeyW', speed < limit && (Math.abs(error) < 0.9 || speed < 4));
+    await human.setKey('KeyS', speed > limit + 3 || (Math.abs(error) > 0.9 && speed > 6));
+    if (Math.hypot(state.x - last.x, state.z - last.z) > 1.5) {
+      last = state;
+      lastMoved = Date.now();
+    } else if (Date.now() - lastMoved > 3000) {
+      await human.backUp(error > 0 ? 'KeyD' : 'KeyA');
+      last = await human.state();
+      lastMoved = Date.now();
+    }
+    await human.wait(100);
+  }
+  await human.releaseAll();
+  out.seconds = Math.round((Date.now() - started) / 1000);
+  return out;
+}
+
+// Ways across the levels, each starting on the ground (or the bridge deck) a little before the structure it's about
+const LEVEL_ROUTES = {
+  // William St under Kings Cross, a tube each way
+  williamEast: [{ x: 1217, z: 27 }, { x: 1400, z: 66 }, { x: 1705, z: 115 }, { x: 1901, z: 97 }],
+  williamWest: [{ x: 1951, z: 136 }, { x: 1707, z: 130 }, { x: 1396, z: 78 }, { x: 1219, z: 34 }],
+  // Cumberland St over the Argyle Cut, and Argyle St through it, under Cumberland St
+  cumberland: [{ x: -148, z: -1790 }, { x: -195, z: -1568 }, { x: -235, z: -1366 }],
+  argyleEast: [{ x: -500, z: -1590, name: 'Argyle Street' }, { x: -112, z: -1548, name: 'Argyle Street' }],
+  // Pier St over Darling Harbour, and Zollner Circuit under it
+  pierStreet: [{ x: -700, z: 620, name: 'Pier Street' }, { x: -300, z: 500, name: 'Pier Street' }],
+  zollnerCircuit: [{ x: -433, z: 535, name: 'Zollner Circuit' }, { x: -526, z: 679, name: 'Zollner Circuit' }],
+  // Railway Colonnade Dr over Eddy Ave at Central, and Eddy Ave under it
+  colonnade: [{ x: 133, z: 789 }, { x: 118, z: 865 }, { x: 59, z: 990 }, { x: 52, z: 996 }],
+  eddyAvenue: [{ x: 196, z: 1023, name: 'Eddy Avenue' }, { x: 35, z: 946, name: 'Eddy Avenue' }],
+  // The Western Distributor up from Darling Harbour and onto the bridge
+  distributorNorth: [{ x: -420, z: -397 }, { x: -465, z: -584 }, { x: -362, z: -1078 }, { x: -312, z: -1348 }, { x: -120, z: -2100, name: 'Sydney Harbour Bridge' }],
+  // Off the bridge by the York St ramp
+  yorkStreetOff: [{ x: -150, z: -2100, name: 'Sydney Harbour Bridge' }, { x: -285, z: -1288, name: 'York Street Offramp' }, { x: -294, z: -1055 }],
+  // The Cahill Expressway over Circular Quay, and back through its tunnel under the Domain end
+  cahillEast: [{ x: -250, z: -1503 }, { x: -246, z: -1365 }, { x: 405, z: -1345 }, { x: 475, z: -1215 }],
+  cahillWest: [{ x: 452, z: -1200 }, { x: 405, z: -1337 }, { x: -345, z: -1382 }]
+};
+
+async function driveLevels(human, page, metric, expect, names) {
+  for (const name of names) {
+    const r = await followRoute(human, page, LEVEL_ROUTES[name]);
+    metric(name, { reached: r.reached, seconds: r.seconds, samples: r.samples, offLevel: r.offLevel, tunnelSamples: r.tunnelSamples, cameraOut: r.cameraOut, cameraThrough: r.cameraThrough, otherLevelHits: r.otherLevelHits, levelJumps: r.levelJumps, restarts: r.restarts, darkest: +r.darkest.toFixed(2), worst: r.worst });
+    expect(r.found, `${name}: no way through the road graph`);
+    expect(r.reached, `${name}: didn't get to the end in ${r.seconds} s`);
+    expect(r.offLevel <= Math.max(1, r.samples * 0.03), `${name}: off its level ${r.offLevel} times of ${r.samples}, worst ${JSON.stringify(r.worst)}`);
+    expect(r.cameraThrough === 0, `${name}: the camera went through what's overhead ${r.cameraThrough} times of ${r.samples}`);
+    expect(r.otherLevelHits === 0, `${name}: traffic on another level was hit ${r.otherLevelHits} times`);
+    expect(r.levelJumps === 0, `${name}: the car jumped a level ${r.levelJumps} times`);
+    if (r.tunnelSamples) {
+      expect(r.cameraOut === 0, `${name}: the camera was above the tunnel's roof ${r.cameraOut} times of ${r.tunnelSamples}`);
+      expect(r.darkest > 0.8, `${name}: the light inside the tunnel only went down to ${r.darkest.toFixed(2)}`);
+    }
+  }
+}
+
 // Where George St passes under the deck, and the way it runs there
 const UNDER_THE_DECK = {
   x: -155.4, z: -1839, heading: 1.2,
@@ -83,7 +216,7 @@ const ROUTE = [{ x: 289, z: 250 }, { x: 291, z: 376 }, { x: 70, z: 376 }];
 
 export const SCENARIOS = {
   'harbour-bridge': {
-    minutes: 8,
+    minutes: 13,
     async run({ human, page, metric, expect }) {
       await human.wait(1000);
       await teleportAndSettle(human, 'harbourBridge');
@@ -97,7 +230,7 @@ export const SCENARIOS = {
 
       // And back into the CBD
       const { x, z, heading } = DECK_NORTH_END;
-      await page.evaluate(([a, b, c]) => window.__gameDebug.goto(a, b, c, 'car'), [x, z, heading]);
+      await page.evaluate(([a, b, c]) => window.__gameDebug.goto(a, b, c, 'car', true), [x, z, heading]);
       await human.wait(600);
       expect(await page.evaluate(() => window.__gameDebug.onDeck()), 'the way back did not start on the deck');
       const south = await crossBridge(human, page, expect, -1);
@@ -105,6 +238,158 @@ export const SCENARIOS = {
       expect(south.near < 200 || south.left, `turned back and stopped at metre ${south.near} of the bridge`);
       const home = await human.state();
       expect(home.z > -1700, `ended short of the CBD, at z ${Math.round(home.z)}`);
+    }
+  },
+
+  // Through the Kings Cross tunnel both ways: on the tunnel's road all the way, the camera inside, the daylight gone
+  tunnel: {
+    minutes: 6,
+    async run({ human, page, metric, expect }) {
+      await human.wait(1000);
+      await driveLevels(human, page, metric, expect, ['williamEast', 'williamWest']);
+    }
+  },
+
+  // Roads over roads, on each level: the Argyle Cut, Pier St, Central, and the Cahill over Circular Quay and back
+  'stacked-roads': {
+    minutes: 20,
+    async run({ human, page, metric, expect }) {
+      await human.wait(1000);
+      await driveLevels(human, page, metric, expect, ['cumberland', 'argyleEast', 'pierStreet', 'zollnerCircuit', 'colonnade', 'eddyAvenue', 'cahillEast', 'cahillWest']);
+    }
+  },
+
+  // The Western Distributor onto the bridge, and off it by the York St ramp
+  motorways: {
+    minutes: 12,
+    async run({ human, page, metric, expect }) {
+      await human.wait(1000);
+      await driveLevels(human, page, metric, expect, ['distributorNorth', 'yorkStreetOff']);
+    }
+  },
+
+  // Off from a standstill on a steep street, now that wheels follow the road: no rolling back, and away up the hill
+  'hill-start': {
+    async run({ human, page, metric, expect }) {
+      await human.wait(1000);
+      // William St, up towards Kings Cross
+      await page.evaluate(() => window.__gameDebug.goto(1243, 29, 1.48, 'car'));
+      await human.wait(1500);
+      const start = await human.state();
+      const ahead = { x: Math.sin(start.heading), z: Math.cos(start.heading) };
+      const along = (s) => (s.x - start.x) * ahead.x + (s.z - start.z) * ahead.z;
+      const climb = await page.evaluate(([x, z, ax, az]) => {
+        const here = window.__gameDebug.route([{ x, z, name: 'William Street' }, { x: x + ax * 100, z: z + az * 100, name: 'William Street' }]);
+        return here && here.length > 3 ? (here[here.length - 1].y - here[0].y) / (8 * (here.length - 1)) : null;
+      }, [start.x, start.z, ahead.x, ahead.z]);
+      metric('grade', climb === null ? null : +climb.toFixed(3));
+      expect(start.surfaceY > 20, `not on the hill: road at ${start.surfaceY}`);
+      expect(Math.abs(start.speed) < 0.3, `moving before the start: ${start.speed} m/s`);
+      const rest = await human.state();
+      expect(Math.abs(along(rest)) < 0.5, `rolled ${along(rest).toFixed(2)} m standing on the hill`);
+      await human.down('KeyW');
+      const started = Date.now();
+      let lowest = 0, at8 = null, last = rest;
+      while (Date.now() - started < 12000) {
+        const s = await human.state();
+        lowest = Math.min(lowest, along(s));
+        if (at8 === null && s.speed >= 8) at8 = (Date.now() - started) / 1000;
+        last = s;
+        if (at8 !== null && along(s) > 60) break;
+        await human.wait(60);
+      }
+      await human.releaseAll();
+      metric('secondsTo8', at8);
+      metric('rolledBack', +lowest.toFixed(2));
+      metric('climbed', +(last.surfaceY - start.surfaceY).toFixed(1));
+      expect(lowest > -0.3, `rolled back ${(-lowest).toFixed(2)} m pulling away`);
+      expect(at8 !== null && at8 < 8, `took ${at8} s to reach 8 m/s up the hill`);
+      expect(last.surfaceY - start.surfaceY > 1.5, `drove along the hill but only climbed ${(last.surfaceY - start.surfaceY).toFixed(1)} m`);
+    }
+  },
+
+  'loading-bar': {
+    async run({ page, metric, expect }) {
+      const seen = [];
+      const started = Date.now();
+      let complete = null, hiddenAfter = null;
+      while (Date.now() - started < 150000) {
+        const [state, done] = await page.evaluate(() => [window.__gameDebug.progress(), window.__gameDebug.worldCompleteAt()]);
+        seen.push({ t: Date.now() - started, ...state });
+        if (done !== null && complete === null) complete = Date.now();
+        if (complete !== null && !state.shown) { hiddenAfter = Date.now() - complete; break; }
+        await page.waitForTimeout(150);
+      }
+      const shown = seen.filter((s) => s.shown);
+      const labels = new Set(shown.map((s) => s.label));
+      const values = shown.map((s) => s.value);
+      metric('shownSeconds', +(shown.length * 0.15).toFixed(1));
+      metric('labels', labels.size);
+      metric('hiddenAfterCompleteMs', hiddenAfter);
+      expect(shown.length > 3, 'the bar never showed while the city was building');
+      expect(values.every((v, i) => !i || v >= values[i - 1] - 1e-6), 'the bar went backwards');
+      expect(values[values.length - 1] > 0.9, `the bar ended at ${Math.round(values[values.length - 1] * 100)}%`);
+      expect(labels.size >= 3, `the bar named only ${[...labels].join(', ')}`);
+      expect(hiddenAfter !== null && hiddenAfter < 1500, `the bar stayed ${hiddenAfter} ms after the city was finished`);
+      const timings = (await page.evaluate(() => window.__gameDebug.progress())).timings;
+      metric('stepMs', Object.fromEntries(timings));
+    }
+  },
+
+  // Along both barriers of the deck, past both pairs of pylons: nothing the driver can't see may stop the car. The
+  // barriers are where the game holds cars, and the pylons stand outside the deck.
+  'bridge-edges': {
+    minutes: 5,
+    async run({ human, page, metric, expect }) {
+      await expectCityCompletes(human, page, expect);
+      const legs = [
+        { from: 640, to: 1360, direction: 1 }, // northbound along the west barrier
+        { from: 1360, to: 640, direction: -1 } // southbound along the east barrier
+      ];
+      let invisibleStops = 0, closest = Infinity;
+      const stops = [];
+      for (const leg of legs) {
+        const start = await page.evaluate(([s, d]) => {
+          const at = window.__gameDebug.bridgePlace(s);
+          return { x: at.x - at.nx * 11 * d, z: at.z - at.nz * 11 * d, h: d > 0 ? at.h : at.h + Math.PI };
+        }, [leg.from, leg.direction]);
+        await page.evaluate(([x, z, h]) => window.__gameDebug.goto(x, z, h, 'car', true), [start.x, start.z, start.h]);
+        await human.wait(600);
+        expect(await page.evaluate(() => window.__gameDebug.onDeck()), 'the leg did not start on the deck');
+        await human.down('KeyW');
+        const speeds = [];
+        const started = Date.now();
+        for (;;) {
+          const state = await human.state();
+          const aim = await page.evaluate(([x, z, d]) => window.__gameDebug.bridgeAim(x, z, d), [state.x, state.z, leg.direction]);
+          expect(aim && await page.evaluate(() => window.__gameDebug.onDeck()), `left the deck at ${Math.round(state.x)}, ${Math.round(state.z)}`);
+          if (!aim || (leg.direction > 0 ? aim.s > leg.to : aim.s < leg.to) || Date.now() - started > 100000) break;
+          // Keep 11 m left of the centre line, hard against the barrier (the tangent points the way we're going)
+          const fx = Math.sin(aim.tangent), fz = Math.cos(aim.tangent);
+          const lx = fz, lz = -fx;
+          await human.steerTowards(state, { x: aim.aheadX + lx * 11, z: aim.aheadZ + lz * 11 }, 0.02);
+          closest = Math.min(closest, 12.5 - Math.abs(aim.off));
+          // Traffic in the way explains a stop; anything else doesn't
+          const ahead = (await page.evaluate(([x, z]) => window.__gameDebug.trafficNear(x, z, 20), [state.x, state.z]))
+            .filter((v) => v.deck && (v.x - state.x) * Math.sin(state.heading) + (v.z - state.z) * Math.cos(state.heading) > 0);
+          speeds.push(state.speed);
+          const before = speeds[speeds.length - 9];
+          if (before > 8 && state.speed < before * 0.5 && !ahead.length) {
+            invisibleStops++;
+            stops.push({ s: aim.s, off: aim.off, from: +before.toFixed(1), to: +state.speed.toFixed(1), near: (await page.evaluate(([x, z]) => window.__gameDebug.trafficNear(x, z, 12), [state.x, state.z])).length });
+          }
+          await human.wait(120);
+        }
+        await human.releaseAll();
+        const end = await page.evaluate(() => window.__gameDebug.player());
+        const reached = await page.evaluate(([x, z, d]) => window.__gameDebug.bridgeAim(x, z, d), [end.x, end.z, leg.direction]);
+        expect(reached && (leg.direction > 0 ? reached.s > leg.to : reached.s < leg.to), `stopped at metre ${reached?.s} of the deck, short of ${leg.to}`);
+      }
+      metric('invisibleStops', invisibleStops);
+      metric('stops', stops.slice(0, 8));
+      metric('closestToBarrierMetres', +closest.toFixed(2));
+      expect(invisibleStops === 0, `${invisibleStops} times the car lost half its speed with nothing in front of it`);
+      expect(closest < 2.5, `never got within ${closest.toFixed(1)} m of a barrier, so this proved nothing`);
     }
   },
 

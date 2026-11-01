@@ -48,27 +48,31 @@ const distanceToLine = (flat, x, z) => {
   return best;
 };
 
-test('the elevated motorways are there, and are not the Harbour Bridge', () => {
-  assert.ok(GEO.viaducts.length > 10);
-  for (const v of GEO.viaducts) {
-    assert.equal(v.pts.length % 2, 0);
-    assert.ok(v.pts.length >= 4);
-    assert.ok(v.lanes >= 1 && v.lanes <= 4);
-    assert.ok(v.layer >= 1 && v.layer <= 3);
-    for (const value of v.pts) assert.ok(Number.isFinite(value));
-  }
-  const near = (x, z) => Math.min(...GEO.viaducts.map((v) => distanceToLine(v.pts, x, z)));
-  assert.ok(near(200, -1343) < 15, 'the Cahill Expressway runs over Circular Quay');
-  assert.ok(near(-467, 84) < 15, 'the Western Distributor runs past Darling Harbour');
-  // All along the deck: the Cahill's lanes on the bridge once came through as a second, lower deck beside the arch
+test('the elevated motorways are roads off the ground, and none runs along the Harbour Bridge', () => {
+  // Links are [a, b, name, width, lanes, dir, inner, major, deck, kind, layer, flags, heights]: kind 1 a bridge
+  const N = GEO.roadGraph.nodes;
+  const structures = GEO.roadGraph.links.filter((l) => l[9] === 1 && !l[8]).map((l) => {
+    const pts = [N[l[0] * 2], N[l[0] * 2 + 1], ...l[6], N[l[1] * 2], N[l[1] * 2 + 1]];
+    return { name: GEO.roadGraph.names[l[2]], pts, ys: l[12] };
+  });
+  assert.ok(structures.length > 50, `${structures.length} links on bridges`);
+  for (const s of structures) assert.equal(s.ys.length * 2, s.pts.length, `${s.name} has a height at every point`);
+  const near = (x, z, name) => Math.min(...structures.filter((s) => !name || s.name.startsWith(name)).map((s) => distanceToLine(s.pts, x, z)));
+  assert.ok(near(200, -1343, 'Cahill') < 15, 'the Cahill Expressway runs over Circular Quay');
+  assert.ok(near(-467, 84, 'Western Distributor') < 20, 'the Western Distributor runs past Darling Harbour');
+  // All along the deck: the Cahill's lanes on the bridge once came through as a second, lower deck beside the arch.
+  // A ramp that joins the deck comes near it for a moment; nothing else may keep it company for long.
+  const alongside = new Map();
   for (let i = 0; i + 3 < GEO.bridge.length; i += 2) {
     const L = Math.hypot(GEO.bridge[i + 2] - GEO.bridge[i], GEO.bridge[i + 3] - GEO.bridge[i + 1]);
     for (let d = 0; d <= L; d += 20) {
       const x = GEO.bridge[i] + ((GEO.bridge[i + 2] - GEO.bridge[i]) * d) / (L || 1);
       const z = GEO.bridge[i + 1] + ((GEO.bridge[i + 3] - GEO.bridge[i + 1]) * d) / (L || 1);
-      assert.ok(near(x, z) > 40, `a viaduct runs along the deck at ${Math.round(x)}, ${Math.round(z)}`);
+      for (const s of structures) if (distanceToLine(s.pts, x, z) < 12) alongside.set(s, (alongside.get(s) || 0) + 1);
     }
   }
+  // Every 20 m along the deck
+  for (const [s, near20] of alongside) assert.ok(near20 <= 5, `${s.name} runs along the deck for ${near20 * 20} m`);
 });
 
 test('street furniture comes as x, z pairs inside the map', () => {

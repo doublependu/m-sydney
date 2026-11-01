@@ -7,7 +7,7 @@ import { cityUniforms, createTreeGrateMaterial } from './tsl-materials.js';
 import { createTreeFieldSteps } from './trees.js';
 import { REAL_TREES, TREE_KINDS, TREE_HEIGHTS } from './tree-geodata.js';
 import { placeStreetTreesSteps } from './tree-placements.js';
-import { terrainHeight } from './terrain.js';
+import { groundHeight } from './surfaces.js';
 
 // Instanced street furniture, traffic signals, trees and nearby light pools.
 
@@ -570,7 +570,7 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
     (x, z) => isClearOfPoles(x, z, 2.2));
   for (const tree of sidewalkTreePositions) treePositions.push(tree);
   sidewalkTreePositions = sidewalkTreePositions.filter((t) => t.tier > 0);
-  for (const t of treePositions) t.y = (t.y || 0) + terrainHeight(t.x, t.z);
+  for (const t of treePositions) t.y = (t.y || 0) + groundHeight(t.x, t.z);
   const treeField = yield* createTreeFieldSteps(scene, treePositions, [...colliders, ...subwayColliders]);
   treeField.group.traverse((o) => { o.userData.lifted = true; }); // placed on the ground already
   group.add(treeField.group);
@@ -647,7 +647,7 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
     }
     return cells;
   }
-  for (const s of [...cobraLampSites, ...streetPointSites]) s.ground = terrainHeight(s.x, s.z);
+  for (const s of [...cobraLampSites, ...streetPointSites]) s.ground = groundHeight(s.x, s.z);
   const cobraCells = indexLights(cobraLampSites);
   const pointCells = indexLights(streetPointSites);
 

@@ -1,19 +1,30 @@
 // Boots the build and saves what the game shows from a list of places, for checking the city by eye.
-// usage: node tools/play/look.mjs out-dir [--query=...] [name:x,z,heading[,mode[,climbSeconds]] ...]
+// usage: node tools/play/look.mjs out-dir [--query=...] [--browser=firefox] [--spots[=a,b]] [name:x,z,heading[,mode[,climbSeconds]] ...]
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { serveDist, launchChrome, openGame } from './lib.mjs';
+import { serveDist, launchBrowser, openGame } from './lib.mjs';
+import { SPOTS } from './spots.mjs';
 
 const args = process.argv.slice(2);
 const out = args.find((a) => !a.startsWith('--') && !a.includes(':')) || 'recordings/look';
 const query = args.find((a) => a.startsWith('--query='))?.slice(8) || '';
-const places = args.filter((a) => a.includes(':')).map((a) => {
+const browserName = args.find((a) => a.startsWith('--browser='))?.slice(10) || 'chrome';
+const spots = args.find((a) => a === '--spots' || a.startsWith('--spots='));
+const places = args.filter((a) => !a.startsWith('--') && a.includes(':')).map((a) => {
   const [name, rest] = a.split(':');
-  const [x, z, heading = 0, mode = 'car', climb = 0] = rest.split(',');
-  return { name, x: +x, z: +z, heading: +heading, mode, climb: +climb };
+  const [x, z, heading = 0, mode = 'car', climb = 0, deck = ''] = rest.split(',');
+  return { name, x: +x, z: +z, heading: +heading, mode, climb: +climb, deck: deck === 'deck' };
 });
+if (spots) {
+  const only = spots.includes('=') ? spots.slice(8).split(',') : Object.keys(SPOTS);
+  for (const name of only) {
+    const [x, z, heading, mode = 'car', climb = 0, deck = ''] = SPOTS[name] ?? [];
+    if (x === undefined) throw new Error(`No spot called ${name}`);
+    places.push({ name, x, z, heading, mode, climb, deck: deck === 'deck' });
+  }
+}
 mkdirSync(out, { recursive: true });
 const server = await serveDist();
-const browser = await launchChrome();
+const browser = await launchBrowser({ browser: browserName });
 const game = await openGame(browser, server.url, { profile: 'laptop', query });
 const { page } = game;
 const t = await page.evaluate(() => window.__gameDebug.load());
@@ -27,7 +38,7 @@ const grab = async (name) => {
 };
 await grab('start');
 for (const p of places) {
-  await page.evaluate(({ x, z, heading, mode }) => window.__gameDebug.goto?.(x, z, heading, mode), p);
+  await page.evaluate(({ x, z, heading, mode, deck }) => window.__gameDebug.goto?.(x, z, heading, mode, deck), p);
   if (p.climb) {
     await page.keyboard.down('Space');
     await page.waitForTimeout(p.climb * 1000);

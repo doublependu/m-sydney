@@ -19,7 +19,8 @@ import {
 import { PersonCrowd, PersonRig } from './pedestrians.js';
 import { HEADLIGHTS, createVehicleHeadlight, placeVehicleHeadlight } from './vehicle-lights.js';
 import { polygonContact, polygonContains } from './building-collision.js';
-import { HALF_WIDTH, updateDeckState } from './bridge.js';
+import { DECK_SID } from './bridge.js';
+import { chooseSurface, structureAt, surfaceHeight } from './surfaces.js';
 
 // Player models, animation and movement for walking, driving, cycling and flying.
 
@@ -346,17 +347,24 @@ class ThirdPersonControllerManager {
     return this.entities[this.activeMode];
   }
 
-  teleportActiveTo(x, z, heading = Math.PI, savedAltitude = null) {
+  // `surface`: the structure to arrive on (js/surfaces.js), or 0 for the ground under (x, z)
+  teleportActiveTo(x, z, heading = Math.PI, savedAltitude = null, surface = 0) {
     const ent = this.getActiveEntity();
     this.resetInput();
     if (!Number.isFinite(heading)) heading = ent.heading;
     const heli = this.activeMode === 'helicopter';
     const altitude = heli ? Math.max(0.25, Math.min(380, savedAltitude ?? Math.max(92, ent.position.y))) : 0;
-    const destination = this.findTeleportPosition(x, z, heading, altitude);
+    const onStructure = !heli && surface && structureAt(surface, x, z)?.inside;
+    // Nothing of the ground is in the way up on a structure; on the ground, a clear spot near (x, z)
+    const destination = onStructure ? { x, z } : this.findTeleportPosition(x, z, heading, altitude);
     if (destination) {
       ent.position.x = destination.x;
       ent.position.z = destination.z;
       ent.heading = heading;
+      ent.surface = onStructure ? surface : 0;
+      ent.surfaceY = surfaceHeight(ent.surface, destination.x, destination.z);
+      ent.deck = !!onStructure && surface === DECK_SID;
+      ent.position.landed = { x: destination.x, z: destination.z };
       ent.position.y = heli ? altitude : this.getGroundHeight(destination.x, destination.z, this.activeMode);
     }
     ent.speed = 0;
@@ -858,7 +866,7 @@ class ThirdPersonControllerManager {
   }
 
   getGroundHeight(x, z, mode = 'person') {
-    if (mode === 'person' && !this.getActiveEntity()?.deck) return this.isPointOnSidewalk(x, z) ? CITY_BOUNDS.sidewalkHeight : 0.0;
+    if (mode === 'person' && !this.getActiveEntity()?.surface) return this.isPointOnSidewalk(x, z) ? CITY_BOUNDS.sidewalkHeight : 0.0;
     return 0.0;
   }
 
@@ -935,23 +943,41 @@ class ThirdPersonControllerManager {
     pos.x = Math.max(CITY_BOUNDS.minX - m, Math.min(CITY_BOUNDS.maxX + m, pos.x));
     pos.z = Math.max(CITY_BOUNDS.minZ - m, Math.min(CITY_BOUNDS.maxZ + m, pos.z));
     if (!heli) {
+      // Which surface is under the player now (js/surfaces.js): the nearest road within a step of where they were.
+      // Where every surface is out of reach (over a deck's edge, into a tunnel's wall), the move stops at the edge, and
+      // slides along it as it would along a wall: a car driven into it loses speed as squarely as it hit.
       const active = this.getActiveEntity();
-      const deck = updateDeckState(active, pos.x, pos.z);
-      if (deck) {
-        // On the Harbour Bridge the only limits are its rails
-        const reach = HALF_WIDTH - radius - 0.6;
-        if (Math.abs(deck.off) > reach) {
-          const k = reach / Math.abs(deck.off);
-          pos.x = deck.px + (pos.x - deck.px) * k;
-          pos.z = deck.pz + (pos.z - deck.pz) * k;
-          if (carEntity && carEntity.speed) carEntity.speed *= 0.92;
+      const last = (pos.landed ??= { x: pos.x, z: pos.z });
+      const sid = active.surface || 0;
+      const y = active.surfaceY ?? surfaceHeight(sid, last.x, last.z);
+      const margin = carEntity ? 1.0 : radius * 0.6;
+      let here = chooseSurface(sid, y, pos.x, pos.z, margin);
+      if (!here) {
+        const intoX = pos.x - last.x, intoZ = pos.z - last.z;
+        // Along the wall where we know which way it runs, a structure's edge: keeping one axis of the move instead would
+        // cost a car skimming a diagonal barrier most of its speed, every frame, and stop it dead for no reason it can see
+        const along = sid ? structureAt(sid, last.x, last.z, 2)?.seg : null;
+        const run = along ? intoX * along.ux + intoZ * along.uz : 0;
+        const slideX = along ? last.x + along.ux * run : 0, slideZ = along ? last.z + along.uz * run : 0;
+        if (along && (here = chooseSurface(sid, y, slideX, slideZ, margin))) { pos.x = slideX; pos.z = slideZ; }
+        else if ((here = chooseSurface(sid, y, pos.x, last.z, margin))) pos.z = last.z;
+        else if ((here = chooseSurface(sid, y, last.x, pos.z, margin))) pos.x = last.x;
+        else { pos.x = last.x; pos.z = last.z; here = { sid, y }; }
+        if (carEntity && carEntity.speed) {
+          const moved = Math.hypot(intoX, intoZ) || 1;
+          const kept = Math.hypot(pos.x - last.x, pos.z - last.z) / moved;
+          carEntity.speed *= 0.5 + 0.5 * kept;
         }
-        const last = (pos.landed ??= { x: pos.x, z: pos.z });
+      }
+      active.surface = here.sid;
+      active.surfaceY = here.y;
+      active.deck = here.sid !== 0 && here.sid === DECK_SID; // the Harbour Bridge, for the scripts that ask
+      if (here.sid) {
+        // On a structure nothing of the ground is in the way: not the water, not the buildings under it
         last.x = pos.x;
         last.z = pos.z;
         return;
       }
-      const last = (pos.landed ??= { x: pos.x, z: pos.z });
       if (clearOfWater(pos.x, pos.z)) {
         last.x = pos.x;
         last.z = pos.z;

@@ -300,17 +300,27 @@ export class Raster {
         rings.push(ring);
       }
     }
+    // Stairs become slopes through the middle of each step. A real corner, long and straight on both sides, stays where
+    // it is: cutting it from midpoint to midpoint took a triangle half each side long, which lost 0.8 km² of North Sydney
+    // at the play area's top corners and opened gaps in footpaths and lawns at every tile corner. (A shallow stair has a
+    // long side and a short one, and still becomes a slope.)
+    const LONG = 4; // cells
     return rings.map((ring) => {
       const corners = [];
       for (let i = 0; i < ring.length; i++) {
         const p = ring[(i + ring.length - 1) % ring.length], q = ring[i], n = ring[(i + 1) % ring.length];
         if ((q[0] - p[0]) * (n[1] - q[1]) - (q[1] - p[1]) * (n[0] - q[0]) !== 0) corners.push(q);
       }
-      const world = corners.map(([i, j]) => [x0 + i * res, z0 + j * res]);
-      return world.map((q, i) => {
-        const n = world[(i + 1) % world.length];
-        return [(q[0] + n[0]) / 2, (q[1] + n[1]) / 2];
-      });
+      const m = corners.length;
+      const out = [];
+      for (let i = 0; i < m; i++) {
+        const p = corners[(i + m - 1) % m], q = corners[i], n = corners[(i + 1) % m];
+        if (Math.min(Math.abs(q[0] - p[0]) + Math.abs(q[1] - p[1]), Math.abs(n[0] - q[0]) + Math.abs(n[1] - q[1])) >= LONG) {
+          out.push([x0 + q[0] * res, z0 + q[1] * res]);
+        }
+        out.push([x0 + ((q[0] + n[0]) / 2) * res, z0 + ((q[1] + n[1]) / 2) * res]);
+      }
+      return out;
     });
   }
 }

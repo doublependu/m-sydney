@@ -25,7 +25,7 @@ import {
   filteredPulse
 } from './tsl-materials.js';
 import { REAL_BUILDINGS } from './building-geodata.js';
-import { terrainHeight } from './terrain.js';
+import { groundHeight } from './surfaces.js';
 import { createBuildingFootprintsSteps } from './building-footprints.js';
 import { polygonContains, polygonBoxOverlaps } from './building-collision.js';
 
@@ -136,10 +136,8 @@ class Quadtree {
   }
 }
 
-// Buildings within this distance of the player are ready before the loading screen drops
-const START_RADIUS = 450;
-
-function* buildCityBlocks(scene, lateStage, landmarkColliders = [], focus = { x: 0, z: 62 }) {
+// Buildings within `startRadius` of the player are ready before the loading screen drops
+function* buildCityBlocks(scene, lateStage, landmarkColliders = [], focus = { x: 0, z: 62 }, startRadius = 450) {
   const group = new THREE.Group();
   group.name = 'CityBlocks';
   const colliders = [];
@@ -594,7 +592,7 @@ function* buildCityBlocks(scene, lateStage, landmarkColliders = [], focus = { x:
     let sum = 0, n = 0, low = Infinity;
     for (const { outer } of b.polygons) {
       for (const p of outer) {
-        const y = terrainHeight(p.x, p.z);
+        const y = groundHeight(p.x, p.z);
         sum += y;
         n++;
         low = Math.min(low, y);
@@ -635,8 +633,8 @@ function* buildCityBlocks(scene, lateStage, landmarkColliders = [], focus = { x:
 
 
   const distanceToFocus = (b) => Math.hypot(b.cx - focus.x, b.cz - focus.z);
-  const nearBuildings = surveyedBuildings.filter((b) => distanceToFocus(b) <= START_RADIUS);
-  const farBuildings = surveyedBuildings.filter((b) => distanceToFocus(b) > START_RADIUS);
+  const nearBuildings = surveyedBuildings.filter((b) => distanceToFocus(b) <= startRadius);
+  const farBuildings = surveyedBuildings.filter((b) => distanceToFocus(b) > startRadius);
   // The roof and street-front details stay in `group`: main.js adds it after the first frame
   const nearGroup = new THREE.Group();
   nearGroup.name = 'CityBlocksNear';

@@ -90,9 +90,10 @@ function wallClearance(pts) {
 }
 
 // --- Roads ---------------------------------------------------------------------------------------------------------------
-const DRIVEN = /^(trunk|primary|secondary|tertiary|unclassified|residential|living_street|trunk_link|primary_link|secondary_link|tertiary_link)$/;
-const MAJOR = /^(trunk|primary|secondary)/;
-const WIDTH = { trunk: 17, primary: 15, secondary: 13.5, tertiary: 11.5, unclassified: 9, residential: 8.8, living_street: 6.5, service: 5.5, trunk_link: 7, primary_link: 7, secondary_link: 7, tertiary_link: 7 };
+const DRIVEN = /^(motorway|motorway_link|trunk|primary|secondary|tertiary|unclassified|residential|living_street|trunk_link|primary_link|secondary_link|tertiary_link)$/;
+const MAJOR = /^(motorway|trunk|primary|secondary)/;
+const MOTORWAY = /^motorway/;
+const WIDTH = { motorway: 11, motorway_link: 7, trunk: 17, primary: 15, secondary: 13.5, tertiary: 11.5, unclassified: 9, residential: 8.8, living_street: 6.5, service: 5.5, trunk_link: 7, primary_link: 7, secondary_link: 7, tertiary_link: 7 };
 const oneWay = (t) => t.oneway === 'yes' || t.oneway === '-1' || t.junction === 'roundabout' || t.junction === 'circular';
 function classWidth(t) {
   const w = parseFloat(t.width);
@@ -102,17 +103,49 @@ function classWidth(t) {
   return WIDTH[t.highway] || 8.8;
 }
 // covered=yes is a street with something built over it: Argyle, George and Cumberland Sts under the bridge's approach and
-// Hickson Rd under the Walsh Bay wharves are the only ways out of The Rocks, and through it to the bridge
-const underground = (t) => t.tunnel && t.tunnel !== 'no';
+// Hickson Rd under the Walsh Bay wharves are the only ways out of The Rocks, and through it to the bridge. They're streets
+// at ground level. Tunnels, bridges and motorways are all kept, each on its own level (KIND below).
+const underground = (t) => t.tunnel && t.tunnel !== 'no' && t.tunnel !== 'building_passage';
 function driven(t) {
   if (t.access === 'private' || t.access === 'no' || t.motor_vehicle === 'no' || t.motorcar === 'no') return false;
-  if (underground(t)) return false;
   if (t.highway === 'service') return !!t.name && !/parking_aisle|driveway/.test(t.service || '');
   return DRIVEN.test(t.highway);
 }
 const osmRoads = load('all_roads.json').elements.filter((e) => e.geometry);
 const inPlay = (w) => w.geometry.some((g) => inDetail(...toWorld(g.lon, g.lat)));
-const kept = osmRoads.filter((w) => driven(w.tags || {}) && inPlay(w));
+
+// The Harbour Bridge: one two-way corridor along the real alignment, from Upper Fort St in The Rocks to the Pacific Hwy
+// at North Sydney, with its own height (js/bridge.js). OSM draws it as several one-way carriageways side by side (the
+// Bradfield Hwy each way, the Cahill along its east side): those that run along the corridor are the corridor.
+const BRIDGE_WAYS = [172606922, 1530533294, 1530532875, 1530532878, 171978153, 1530530701, 1530530700, 1530531824, 1530531818, 388949145, 11900573, 4354223, 723859054];
+const bridgeOsm = BRIDGE_WAYS.map((id) => {
+  const way = osmRoads.find((w) => w.id === id);
+  if (!way) throw new Error(`Bridge way ${id} is gone from the snapshot`);
+  return way;
+});
+const bridgeRaw = [];
+for (const way of bridgeOsm) {
+  const pts = way.geometry.map((g) => toWorld(g.lon, g.lat));
+  bridgeRaw.push(...(bridgeRaw.length ? pts.slice(1) : pts));
+}
+const toBridge = (x, z) => {
+  let best = Infinity;
+  for (let i = 1; i < bridgeRaw.length; i++) {
+    const [ax, az] = bridgeRaw[i - 1], [bx, bz] = bridgeRaw[i];
+    const dx = bx - ax, dz = bz - az;
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+    best = Math.min(best, Math.hypot(ax + dx * t - x, az + dz * t - z));
+  }
+  return best;
+};
+const BRIDGE_IDS = new Set(BRIDGE_WAYS);
+const alongBridge = (w) => {
+  if (BRIDGE_IDS.has(w.id)) return true;
+  if (!MOTORWAY.test(w.tags?.highway || '') && w.tags?.bridge !== 'yes') return false;
+  const pts = w.geometry.map((g) => toWorld(g.lon, g.lat));
+  return pts.filter(([x, z]) => toBridge(x, z) < 30).length >= pts.length * 0.5;
+};
+const kept = osmRoads.filter((w) => driven(w.tags || {}) && inPlay(w) && !alongBridge(w));
 // Plain streets rarely tell the whole story: a short underpass or an unnamed service road can be all that joins a
 // neighbourhood to the rest. Bring back any road that joins two parts of the network, shortest first.
 {
@@ -129,7 +162,7 @@ const kept = osmRoads.filter((w) => driven(w.tags || {}) && inPlay(w));
   for (const w of kept) for (const n of w.nodes) size.set(find(n), (size.get(find(n)) || 0) + 1);
   const lengthOf = (w) => w.geometry.reduce((t, g, i, all) => (i ? t + Math.hypot(...toWorld(g.lon, g.lat).map((v, k) => v - toWorld(all[i - 1].lon, all[i - 1].lat)[k])) : t), 0);
   const allowed = (t) => t.access !== 'private' && t.access !== 'no' && t.motor_vehicle !== 'no' && t.motorcar !== 'no' && !/parking_aisle|driveway/.test(t.service || '') && !/^(motorway|pedestrian)/.test(t.highway || '');
-  const spare = osmRoads.filter((w) => !kept.includes(w) && inPlay(w) && allowed(w.tags || {}) && lengthOf(w) < 160).map((w) => [lengthOf(w), w]).sort((p, q) => p[0] - q[0]);
+  const spare = osmRoads.filter((w) => !kept.includes(w) && inPlay(w) && allowed(w.tags || {}) && !alongBridge(w) && lengthOf(w) < 160).map((w) => [lengthOf(w), w]).sort((p, q) => p[0] - q[0]);
   let restored = 0;
   for (let round = 0; round < 3; round++) {
     for (const [, w] of spare) {
@@ -162,11 +195,84 @@ const links = [];
 const strips = [];
 let narrowed = 0;
 const onLand = (x, z) => land.at(x, z) === 1;
+
+// Each link is on a level. KIND 0: on the ground (covered streets too); 1: a bridge or viaduct, with its own height;
+// 2: a tunnel. js/build-heights.mjs works out every height. A short bridge over nothing mapped (a culvert, a lane over
+// a gully) is a road on the ground: nothing passes under it, and its height comes from the contours like any other.
+const KIND = { GROUND: 0, BRIDGE: 1, TUNNEL: 2 };
+const lengthOfPts = (pts) => pts.reduce((t, p, i) => (i ? t + Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) : 0), 0);
+// Everything a bridge might pass over: roads and paths of every kind, and railways
+const crossables = [];
+{
+  const railWays = load('rail.json').elements.filter((e) => e.type === 'way' && e.geometry && e.tags?.railway);
+  for (const w of [...osmRoads, ...railWays]) {
+    if (!w.geometry.some((g) => inDetail(...toWorld(g.lon, g.lat)))) continue;
+    crossables.push({ id: w.id, nodes: new Set(w.nodes), pts: w.geometry.map((g) => toWorld(g.lon, g.lat)), layer: parseInt(w.tags?.layer, 10) || 0, bridge: !!(w.tags?.bridge && w.tags.bridge !== 'no'), tunnel: underground(w.tags || {}) });
+  }
+}
+const crossCells = new Map();
+for (const c of crossables) {
+  for (let i = 1; i < c.pts.length; i++) {
+    const [ax, az] = c.pts[i - 1], [bx, bz] = c.pts[i];
+    for (let ix = Math.floor(Math.min(ax, bx) / 40); ix <= Math.floor(Math.max(ax, bx) / 40); ix++) {
+      for (let iz = Math.floor(Math.min(az, bz) / 40); iz <= Math.floor(Math.max(az, bz) / 40); iz++) {
+        const k = ix * 100000 + iz;
+        if (!crossCells.has(k)) crossCells.set(k, []);
+        crossCells.get(k).push([c, i]);
+      }
+    }
+  }
+}
+const segmentsCross = (p, q, r, t) => {
+  const d = (q[0] - p[0]) * (t[1] - r[1]) - (q[1] - p[1]) * (t[0] - r[0]);
+  if (Math.abs(d) < 1e-9) return false;
+  const u = ((r[0] - p[0]) * (t[1] - r[1]) - (r[1] - p[1]) * (t[0] - r[0])) / d;
+  const v = ((r[0] - p[0]) * (q[1] - p[1]) - (r[1] - p[1]) * (q[0] - p[0])) / d;
+  return u > 0.01 && u < 0.99 && v > 0.01 && v < 0.99;
+};
+// Whether a way passes over (or under) another without a shared node, which is how OSM draws levels apart
+function crossesAnother(w, pts) {
+  for (let i = 1; i < pts.length; i++) {
+    const p = pts[i - 1], q = pts[i];
+    for (let ix = Math.floor(Math.min(p[0], q[0]) / 40); ix <= Math.floor(Math.max(p[0], q[0]) / 40); ix++) {
+      for (let iz = Math.floor(Math.min(p[1], q[1]) / 40); iz <= Math.floor(Math.max(p[1], q[1]) / 40); iz++) {
+        for (const [c, j] of crossCells.get(ix * 100000 + iz) || []) {
+          if (c.id === w.id || w.nodes.some((n) => c.nodes.has(n) && (n === w.nodes[i - 1] || n === w.nodes[i]))) continue;
+          if (segmentsCross(p, q, c.pts[j - 1], c.pts[j])) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+function kindOf(w, pts) {
+  const t = w.tags;
+  if (underground(t)) return KIND.TUNNEL;
+  const layer = parseInt(t.layer, 10) || 0;
+  const bridge = !!(t.bridge && t.bridge !== 'no');
+  if (!bridge && !(layer > 0 && crossesAnother(w, pts))) return KIND.GROUND;
+  if (MOTORWAY.test(t.highway) || lengthOfPts(pts) >= 80 || pts.some(([x, z]) => !onLand(x, z)) || crossesAnother(w, pts)) return KIND.BRIDGE;
+  return KIND.GROUND;
+}
+// Heights along a structure need points along it: no gap over 15 m
+const densify = (pts, step = 15) => {
+  const out = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    const [ax, az] = pts[i - 1], [bx, bz] = pts[i];
+    const n = Math.ceil(Math.hypot(bx - ax, bz - az) / step);
+    for (let k = 1; k <= n; k++) out.push([ax + ((bx - ax) * k) / n, az + ((bz - az) * k) / n]);
+  }
+  return out;
+};
+const kinds = [0, 0, 0];
 for (const w of kept) {
   const t = w.tags;
   const pts = w.geometry.map((g) => toWorld(g.lon, g.lat));
   const dir = (t.oneway === 'yes' || t.junction === 'roundabout' || t.junction === 'circular') ? 1 : t.oneway === '-1' ? -1 : 0;
   const lanes = parseInt(t.lanes, 10) || 0;
+  const kind = kindOf(w, pts);
+  const layer = Math.max(-5, Math.min(5, parseInt(t.layer, 10) || 0));
+  const flags = MOTORWAY.test(t.highway) ? 1 : 0;
   let a = 0;
   for (let i = 1; i < pts.length; i++) {
     if (i !== pts.length - 1 && !(uses.get(w.nodes[i]) > 1)) continue;
@@ -175,22 +281,26 @@ for (const w of kept) {
     a = i;
     const mid = seg[seg.length >> 1];
     if (!inDetail(...seg[0]) || !inDetail(...seg[seg.length - 1]) || !inDetail(...mid)) continue;
-    if (!onLand(...mid) && !onLand(...seg[0])) continue;
+    // Over the water only on a bridge, under it only in a tunnel
+    if (kind === KIND.GROUND && !onLand(...mid) && !onLand(...seg[0])) continue;
     const want = classWidth(t);
     const least = dir ? 4.8 : 6.4;
-    const walled = (wallClearance(seg) - 2.2) * 2;
+    const walled = kind === KIND.GROUND ? (wallClearance(seg) - 2.2) * 2 : want;
     const width = Math.max(least, Math.min(want, walled));
     if (width < want) narrowed++;
     const ia = idOf(w.nodes[start], pts[start]);
     const ib = idOf(w.nodes[i], pts[i]);
     if (ia === ib) continue;
-    strips.push({ pts: seg, r: width / 2 });
-    links.push([ia, ib, nameOf(t.name || ''), q1(width), lanes, dir, rdp(seg, 0.4).slice(1, -1).flatMap(([x, z]) => [q1(x), q1(z)]), MAJOR.test(t.highway) ? 1 : 0]);
+    // Only roads on the ground cut the curb islands: under a bridge or over a tunnel the ground is whatever is there
+    if (kind === KIND.GROUND) strips.push({ pts: seg, r: width / 2 });
+    kinds[kind]++;
+    const shape = kind === KIND.GROUND ? rdp(seg, 0.4) : densify(rdp(seg, 0.4));
+    links.push([ia, ib, nameOf(t.name || ''), q1(width), lanes, dir, shape.slice(1, -1).flatMap(([x, z]) => [q1(x), q1(z)]), MAJOR.test(t.highway) ? 1 : 0, 0, kind, layer, flags]);
   }
 }
-// The Harbour Bridge: one two-way corridor along the real alignment, from Upper Fort St in The Rocks to the Pacific Hwy
-// at North Sydney. It has its own height (js/bridge.js), so nothing under it stands in its way.
-const BRIDGE_WAYS = [172606922, 1530533294, 1530532875, 1530532878, 171978153, 1530530701, 1530530700, 1530531824, 1530531818, 388949145, 11900573, 4354223, 723859054];
+log(`levels: ${kinds[0]} links on the ground, ${kinds[1]} on bridges, ${kinds[2]} in tunnels`);
+
+// The corridor: links between every node of the bridge's ways that another road meets, so ramps join it where they do
 const nearestNode = (x, z) => {
   let best = -1, bd = Infinity;
   for (let i = 0; i < nodes.length; i += 2) {
@@ -200,26 +310,90 @@ const nearestNode = (x, z) => {
   return best;
 };
 const bridgePath = [];
-for (const id of BRIDGE_WAYS) {
-  const way = osmRoads.find((w) => w.id === id);
-  if (!way) throw new Error(`Bridge way ${id} is gone from the snapshot`);
-  const pts = way.geometry.map((g) => toWorld(g.lon, g.lat));
-  bridgePath.push(...(bridgePath.length ? pts.slice(1) : pts));
-}
 {
-  const a = nearestNode(...bridgePath[0]), b = nearestNode(...bridgePath[bridgePath.length - 1]);
-  const path = [[nodes[a * 2], nodes[a * 2 + 1]], ...rdp(bridgePath, 0.6).slice(1, -1), [nodes[b * 2], nodes[b * 2 + 1]]];
-  links.push([a, b, nameOf('Sydney Harbour Bridge'), 23, 6, 0, path.slice(1, -1).flatMap(([x, z]) => [q1(x), q1(z)]), 1, 1]);
-  bridgePath.length = 0;
-  bridgePath.push(...path);
+  // Every point of the chained ways, each with its OSM node
+  const path = [];
+  for (const way of bridgeOsm) {
+    const pts = way.geometry.map((g) => toWorld(g.lon, g.lat));
+    pts.forEach((p, k) => { if (path.length && k === 0) return; path.push({ p, node: way.nodes[k] }); });
+  }
+  const startNode = nearestNode(...path[0].p), endNode = nearestNode(...path[path.length - 1].p);
+  const stops = [{ i: 0, id: startNode }];
+  for (let i = 1; i < path.length - 1; i++) if (uses.has(path[i].node)) stops.push({ i, id: idOf(path[i].node, path[i].p) });
+  stops.push({ i: path.length - 1, id: endNode });
+  const ends = stops.map((st) => [nodes[st.id * 2], nodes[st.id * 2 + 1]]);
+  for (let k = 0; k + 1 < stops.length; k++) {
+    const pts = [ends[k], ...path.slice(stops[k].i + 1, stops[k + 1].i).map((q) => q.p), ends[k + 1]];
+    const shape = densify(rdp(pts, 0.6), 20);
+    links.push([stops[k].id, stops[k + 1].id, nameOf('Sydney Harbour Bridge'), 23, 6, 0, shape.slice(1, -1).flatMap(([x, z]) => [q1(x), q1(z)]), 1, 1, KIND.BRIDGE, 1, 1]);
+    bridgePath.push(...(bridgePath.length ? shape.slice(1) : shape));
+  }
+  log(`Harbour Bridge: ${stops.length - 1} links, ${stops.length - 2} roads joining it`);
+}
+
+// A motorway the corridor cut off (it ran on along the bridge in OSM) ends beside it: join it to the corridor there
+{
+  const degree = new Map();
+  for (const l of links) { degree.set(l[0], (degree.get(l[0]) || 0) + 1); degree.set(l[1], (degree.get(l[1]) || 0) + 1); }
+  let joined = 0;
+  for (const l of [...links]) {
+    if (!(l[11] & 1) || l[8]) continue;
+    for (const end of [0, 1]) {
+      const n = l[end];
+      if (degree.get(n) !== 1) continue;
+      const x = nodes[n * 2], z = nodes[n * 2 + 1];
+      if (toBridge(x, z) > 45) continue;
+      // The nearest point of a corridor link, which is split there
+      let best = null;
+      for (const c of links) {
+        if (!c[8]) continue;
+        const pts = [[nodes[c[0] * 2], nodes[c[0] * 2 + 1]]];
+        for (let k = 0; k < c[6].length; k += 2) pts.push([c[6][k], c[6][k + 1]]);
+        pts.push([nodes[c[1] * 2], nodes[c[1] * 2 + 1]]);
+        for (let k = 1; k < pts.length; k++) {
+          const [ax, az] = pts[k - 1], [bx, bz] = pts[k];
+          const dx = bx - ax, dz = bz - az;
+          const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+          const px = ax + dx * t, pz = az + dz * t, d = Math.hypot(px - x, pz - z);
+          if (!best || d < best.d) best = { d, c, pts, k, px, pz };
+        }
+      }
+      if (!best || best.d > 45) continue;
+      const { c, pts, k, px, pz } = best;
+      const flatOf = (list) => list.flatMap(([a, b]) => [q1(a), q1(b)]);
+      // Near one of the corridor's nodes, join it there; otherwise split the corridor link at the nearest point
+      let id;
+      const ends = [[c[0], pts[0]], [c[1], pts[pts.length - 1]]];
+      const close = ends.find(([, p]) => Math.hypot(p[0] - px, p[1] - pz) < 12);
+      if (close) id = close[0];
+      else {
+        id = nodes.length / 2;
+        nodes.push(q1(px), q1(pz));
+        const head = [...pts.slice(1, k), [px, pz]], tail = pts.slice(k, -1);
+        links.push([id, c[1], c[2], c[3], c[4], c[5], flatOf(tail), c[7], 1, c[9], c[10], c[11]]);
+        c[1] = id;
+        c[6] = flatOf(head.slice(0, -1));
+      }
+      const [nx, nz] = [nodes[id * 2], nodes[id * 2 + 1]];
+      // Traffic on a one-way road flows from its first node to its last
+      const into = (end === 1) === (l[5] >= 0);
+      const [from, to] = into ? [[n, x, z], [id, nx, nz]] : [[id, nx, nz], [n, x, z]];
+      const shape = flatOf(densify([[from[1], from[2]], [to[1], to[2]]]).slice(1, -1));
+      links.push([from[0], to[0], l[2], l[3], l[4], 1, shape, 1, 0, KIND.BRIDGE, l[10], 1]);
+      degree.set(n, 2);
+      joined++;
+    }
+  }
+  log(`${joined} motorways joined to the corridor`);
 }
 
 log(`roads: ${kept.length} ways, ${nodes.length / 2} nodes, ${links.length} links, ${narrowed} narrowed to fit their walls`);
 
 // Signals sit at stop lines in OSM: move them to the junction they control
 const cell = new Map();
+// Junctions on the ground only: a motorway's merges have no signals, and nothing on a bridge has a kerb
 const degree = new Uint16Array(nodes.length / 2);
-for (const l of links) { degree[l[0]]++; degree[l[1]]++; }
+for (const l of links) if (!l[9]) { degree[l[0]]++; degree[l[1]]++; }
 for (let i = 0; i < nodes.length; i += 2) {
   const k = Math.floor(nodes[i] / 32) * 100000 + Math.floor(nodes[i + 1] / 32);
   if (!cell.has(k)) cell.set(k, []);
@@ -251,7 +425,7 @@ for (const { pts, r } of strips) for (let i = 0; i + 1 < pts.length; i++) curb.s
 // Kerbs round off at junctions, or turning traffic would have to cut the corners
 {
   const reach = new Float32Array(nodes.length / 2);
-  for (const l of links) { reach[l[0]] = Math.max(reach[l[0]], l[3] / 2); reach[l[1]] = Math.max(reach[l[1]], l[3] / 2); }
+  for (const l of links) if (!l[9]) { reach[l[0]] = Math.max(reach[l[0]], l[3] / 2); reach[l[1]] = Math.max(reach[l[1]], l[3] / 2); }
   for (let n = 0; n < reach.length; n++) if (degree[n] >= 3) curb.stampSegment(nodes[n * 2], nodes[n * 2 + 1], nodes[n * 2], nodes[n * 2 + 1], reach[n] + CORNER);
 }
 const { labels, comps } = curb.label();
@@ -331,40 +505,6 @@ const scenery = osmRoads.filter((w) => {
   return [t.name, t.highway === 'pedestrian' ? 'p' : t.tunnel && t.tunnel !== 'no' ? 't' : 'm', flat(rdp(w.geometry.map((g) => toWorld(g.lon, g.lat)), 1.5))];
 });
 
-const lengthOf = (pts) => pts.reduce((t, p, i) => (i ? t + Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) : 0), 0);
-// Elevated motorways: scenery with traffic on it. Ways chained end to end, in their direction of travel; nothing that
-// runs along the Harbour Bridge's corridor, which has its own model.
-const nearBridge = (x, z) => bridgePath.some(([ax, az], i) => {
-  const [bx, bz] = bridgePath[i + 1] ?? [ax, az]; // along each stretch: the span is one straight line a kilometre long
-  const dx = bx - ax, dz = bz - az;
-  const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
-  return Math.hypot(ax + dx * t - x, az + dz * t - z) < 60;
-});
-const elevated = osmRoads.filter((w) => {
-  const t = w.tags || {};
-  if (!/^motorway/.test(t.highway || '') || !t.bridge || t.bridge === 'no' || t.oneway !== 'yes') return false;
-  const pts = w.geometry.map((g) => toWorld(g.lon, g.lat));
-  return pts.some(([x, z]) => inDetail(x, z)) && !pts.some(([x, z]) => nearBridge(x, z));
-});
-const startingAt = new Map(elevated.map((w) => [w.nodes[0], w]));
-const followed = new Set(elevated.map((w) => w.nodes[w.nodes.length - 1]));
-const viaducts = [];
-const chained = new Set();
-// Heads first, so a carriageway stays whole; what's left over is each branch at a split, from the split on
-for (const first of [...elevated.filter((w) => !followed.has(w.nodes[0])), ...elevated]) {
-  if (chained.has(first)) continue;
-  const line = [];
-  let lanes = 0, layer = 1;
-  for (let w = first; w && !chained.has(w); w = startingAt.get(w.nodes[w.nodes.length - 1])) {
-    chained.add(w);
-    lanes = Math.max(lanes, parseInt(w.tags.lanes, 10) || 2);
-    layer = Math.max(layer, parseInt(w.tags.layer, 10) || 1);
-    line.push(...w.geometry.map((g) => toWorld(g.lon, g.lat)));
-  }
-  if (lengthOf(line) > 120) viaducts.push({ lanes: Math.min(4, lanes), layer: Math.min(3, layer), pts: flat(rdp(line, 1)) });
-}
-log(`${viaducts.length} elevated motorways`);
-
 // Street furniture where it really stands
 const furniture = load('nodes.json').elements;
 const pointsOf = (test) => furniture.filter(test).flatMap((e) => toWorld(e.lon, e.lat).map(q1)).reduce((out, v, i, all) => {
@@ -378,7 +518,7 @@ const busShelters = pointsOf((e) => e.tags?.highway === 'bus_stop' && e.tags.she
 const rail = load('rail.json').elements;
 // The light rail as continuous lines, the longest first
 const lightRail = chainRings(rail.filter((e) => e.type === 'way' && e.tags?.railway === 'light_rail' && !(e.tags.tunnel && e.tags.tunnel !== 'no') && e.geometry)
-  .map((e) => e.geometry.map((g) => toWorld(g.lon, g.lat)))).sort((p, q) => lengthOf(q) - lengthOf(p)).slice(0, 4).map((line) => flat(rdp(line, 1)));
+  .map((e) => e.geometry.map((g) => toWorld(g.lon, g.lat)))).sort((p, q) => lengthOfPts(q) - lengthOfPts(p)).slice(0, 4).map((line) => flat(rdp(line, 1)));
 const ferries = rail.filter((e) => e.type === 'way' && e.tags?.route === 'ferry' && /Circular Quay|Barangaroo|Darling Harbour|Milsons Point/.test(e.tags.name || '') && e.geometry)
   .map((e) => flat(rdp(e.geometry.map((g) => toWorld(g.lon, g.lat)), 6))).slice(0, 12);
 const stations = rail.filter((e) => e.type === 'node' && e.tags?.railway === 'station' && e.tags.name)
@@ -447,16 +587,18 @@ const GEO = {
   lightRail,
   ferries,
   stations,
-  viaducts,
   postBoxes,
   busShelters
 };
 const json = JSON.stringify(GEO);
+// A string for JSON.parse, not an object literal: the browser gets through it about four times as fast, and the phone's load
+// time feels that
+const parsedLater = (text) => `JSON.parse('${text.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')`;
 fs.writeFileSync(OUT, `// js/geodata.js: GENERATED by tools/build-geodata.mjs, do not edit by hand.
 // Sydney in the game's world frame: 1 unit = 1 m, x = grid east, z = grid south, origin at Town Hall, axes turned
 // ${BEARING}° from true north. Polygons and polylines are flat [x0, z0, x1, z1, ...] arrays.
 // Sources: © OpenStreetMap contributors (ODbL), City of Sydney open data (CC BY 4.0).
-export const GEO = ${json};
+export const GEO = ${parsedLater(json)};
 `);
 log(`wrote ${OUT} (${(fs.statSync(OUT).size / 1024).toFixed(0)} KB)`);
 for (const [k, v] of Object.entries(GEO)) log(`  ${k}: ${(JSON.stringify(v).length / 1024).toFixed(0)} KB`);

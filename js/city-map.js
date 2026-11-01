@@ -176,10 +176,14 @@ function mapLayers() {
   // Main roads at low zoom, once the gaps between blocks are under a pixel, and the motorways
   L.mainRoads = new TiledLayer(1000);
   L.highways = new Path2D();
+  L.bridges = new TiledLayer(1000); // over what they cross
+  L.tunnels = new TiledLayer(1000); // under it
   for (const r of ROADS) {
     if (r.highway) {
       if (!r.tunnel) addLine(L.highways, r.pts);
     } else if (r.major) L.mainRoads.line(r.pts);
+    if (r.kind === 1) L.bridges.line(r.pts);
+    else if (r.kind === 2) L.tunnels.line(r.pts);
   }
 
   LAYERS = L;
@@ -723,12 +727,25 @@ class CityMapSystem {
       L.mainRoads.each(v, (p) => ctx.stroke(p));
     }
 
-    // 6. Motorways
+    // 6. Roads on other levels: tunnels dashed under everything, bridges and viaducts over what they cross
+    ctx.strokeStyle = MAP.blockEdge;
+    ctx.lineWidth = Math.max(px(1), 4);
+    ctx.setLineDash([Math.max(px(4), 14), Math.max(px(3), 10)]);
+    L.tunnels.each(v, (p) => ctx.stroke(p));
+    ctx.setLineDash([]);
+    ctx.strokeStyle = MAP.blockEdge;
+    ctx.lineWidth = Math.max(px(2.4), 13);
+    L.bridges.each(v, (p) => ctx.stroke(p));
+    ctx.strokeStyle = MAP.streets;
+    ctx.lineWidth = Math.max(px(1.2), 10);
+    L.bridges.each(v, (p) => ctx.stroke(p));
+
+    // 7. Motorways
     ctx.strokeStyle = MAP.highway;
     ctx.lineWidth = Math.max(px(isMinimap ? 2.4 : 1.6), 14);
     ctx.stroke(L.highways);
 
-    // 7. Search highlight: every stretch of the matching streets
+    // 8. Search highlight: every stretch of the matching streets
     if (this.searchPath && !isMinimap) {
       ctx.strokeStyle = MAP.search;
       ctx.lineWidth = Math.max(px(3), 9);

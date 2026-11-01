@@ -1,4 +1,4 @@
-import { terrainHeight } from './terrain.js';
+import { groundHeight } from './surfaces.js';
 import * as THREE from 'three/webgpu';
 import {
   Fn,
@@ -975,7 +975,9 @@ class PersonCrowd {
     this.updates = 0;
     const levels = Number.isFinite(farDistance) ? [1, 0] : [1];
     this.lods = levels.map((detail) => {
-      const pose = attributeArray(maxCount * STRIDE, 'vec4').toReadOnly();
+      // WebGL2 has no storage buffers: three.js reads this one through a texture there, but only when marked as a PBO;
+      // otherwise it reads element k of the buffer as vertex k's attribute, whatever index the shader asks for
+      const pose = attributeArray(maxCount * STRIDE, 'vec4').toReadOnly().setPBO(true);
       const mesh = new THREE.Mesh(buildPersonGeometry(detail), createPersonMaterial(pose, detail));
       mesh.name = detail ? 'PeopleNear' : 'PeopleFar';
       mesh.count = 1; // one (degenerate) person until the crowd is placed, so the pipelines compile up front
@@ -999,7 +1001,7 @@ class PersonCrowd {
     const pose = l.pose.value.array;
     pose.set(rig.pose, offset);
     // The rig walks on the flat simulation: the crowd is drawn on the ground
-    const ground = terrainHeight(rig.x, rig.z);
+    const ground = groundHeight(rig.x, rig.z);
     for (let b = 0; b < BONE_COUNT; b++) pose[offset + b * 8 + 5] += ground;
     l.count++;
   }
@@ -1014,7 +1016,7 @@ class PersonCrowd {
             attr.array.fill(0, 0, STRIDE * 4);
             attr.clearUpdateRanges();
             attr.addUpdateRange(0, STRIDE * 4);
-            attr.needsUpdate = true;
+            markPosesChanged(attr);
             l.hasZero = true;
           }
           l.mesh.count = 1;
@@ -1031,9 +1033,16 @@ class PersonCrowd {
       const attr = l.pose.value;
       attr.clearUpdateRanges();
       attr.addUpdateRange(0, l.count * STRIDE * 4);
-      attr.needsUpdate = true;
+      markPosesChanged(attr);
     }
   }
+}
+
+// On WebGPU the shader reads the storage buffer itself. On WebGL2 three.js reads it through a texture (`pbo`) that it
+// refreshes only after a compute pass, so poses written here are uploaded to it by hand.
+function markPosesChanged(attr) {
+  attr.needsUpdate = true;
+  if (attr.pbo) attr.pbo.needsUpdate = true;
 }
 
 // ============================================================================

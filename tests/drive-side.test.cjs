@@ -23,7 +23,8 @@ function network(side) {
     imports: {
       './city-config.js': { BLOCKS: [], CITY_BOUNDS: { minZ: -500, maxZ: 500 }, DRIVE_SIDE: side, blockAt: () => null, landAt: () => true },
       './geodata.js': { GEO: { roadGraph: graph } },
-      './building-collision.js': { polygonBoxOverlaps: () => false }
+      './building-collision.js': { polygonBoxOverlaps: () => false },
+      './surfaces.js': { LINKS: graph.links.map(() => ({ sid: 0 })) }
     },
     globals: { console: { info() {} }, Math, Map, Set, Array, Object, Number, Infinity, Uint8Array, Float32Array }
   });

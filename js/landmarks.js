@@ -3,8 +3,8 @@ import { color, fract, mix, smoothstep, uv } from 'three/tsl';
 import { cityUniforms } from './tsl-materials.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { LANDMARK_SITES } from './city-config.js';
-import { terrainHeight } from './terrain.js';
-import { buildHarbourBridge } from './harbour-bridge.js';
+import { groundHeight } from './surfaces.js';
+import { buildHarbourBridge, harbourBridgeColliders } from './harbour-bridge.js';
 import { createRoadSurfaceMaterial } from './tsl-materials.js';
 
 // Sydney's icons at their real sites. The Opera House's shells are patches of spheres, the geometry Utzon settled on to
@@ -63,7 +63,7 @@ function shellPatch(a, b, c, depth, steps = 9) {
 
 function buildOperaHouse(group, colliders) {
   const { x, z } = LANDMARK_SITES.operaHouse;
-  const base = terrainHeight(x, z);
+  const base = groundHeight(x, z);
   // The building's axis, pointing out along Bennelong Point
   const yaw = 0.4;
   const ux = Math.sin(yaw), uz = -Math.cos(yaw); // along the point, towards the harbour
@@ -125,7 +125,7 @@ function buildOperaHouse(group, colliders) {
 // Sydney Tower: a slim golden turret on its shaft and the stays around it, standing out of Westfield
 function buildSydneyTower(group) {
   const { x, z } = LANDMARK_SITES.sydneyTower;
-  const base = terrainHeight(x, z);
+  const base = groundHeight(x, z);
   const metal = new THREE.MeshStandardNodeMaterial({ color: 0xc8cbcd, roughness: 0.4, metalness: 0.6 });
   const gold = new THREE.MeshStandardNodeMaterial({ color: 0xd9a441, roughness: 0.32, metalness: 0.85 });
   gold.emissiveNode = color(0xffc25a).mul(smoothstep(0.55, 1.2, cityUniforms.uInteriorGlow).mul(0.9));
@@ -155,7 +155,7 @@ function buildSydneyTower(group) {
 }
 
 function clockTower(group, x, z, w, height, material, roofHeight = 0, roof = null) {
-  const base = terrainHeight(x, z);
+  const base = groundHeight(x, z);
   const shaft = settle(new THREE.Mesh(new THREE.BoxGeometry(w, height, w), material));
   shaft.position.set(x, base + height / 2, z);
   group.add(shaft);
@@ -178,7 +178,7 @@ function clockTower(group, x, z, w, height, material, roofHeight = 0, roof = nul
 function dome(group, x, z, y, radius, material) {
   const mesh = settle(new THREE.Mesh(new THREE.SphereGeometry(radius, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2), material));
   mesh.scale.y = 1.25;
-  mesh.position.set(x, terrainHeight(x, z) + y, z);
+  mesh.position.set(x, groundHeight(x, z) + y, z);
   group.add(mesh);
 }
 
@@ -199,7 +199,7 @@ function buildHeritage(group) {
 // Luna Park: the big face at the gate and the wheel behind it
 function buildLunaPark(group) {
   const { x, z } = LANDMARK_SITES.lunaPark;
-  const base = terrainHeight(x, z);
+  const base = groundHeight(x, z);
   const bright = (hex) => new THREE.MeshStandardNodeMaterial({ color: hex, roughness: 0.5, emissive: hex, emissiveIntensity: 0.25 });
   const face = new THREE.Group();
   face.position.set(x + 10, base, z + 20);
@@ -252,12 +252,17 @@ function buildLandmarks(scene) {
   buildSydneyTower(group);
   buildHeritage(group);
   buildLunaPark(group);
-  const deck = new THREE.Mesh(buildHarbourBridge(group, colliders), createRoadSurfaceMaterial());
-  deck.receiveShadow = true;
-  deck.userData.lifted = true;
-  group.add(deck);
+  harbourBridgeColliders(colliders);
   scene.add(group);
   return { group, colliders };
 }
 
-export { buildLandmarks };
+// The bridge itself is most of the time the landmarks take to build, and nothing shows them before the first frame
+function addHarbourBridge(group) {
+  const deck = new THREE.Mesh(buildHarbourBridge(group), createRoadSurfaceMaterial());
+  deck.receiveShadow = true;
+  deck.userData.lifted = true;
+  group.add(deck);
+}
+
+export { addHarbourBridge, buildLandmarks };

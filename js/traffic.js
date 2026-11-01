@@ -3,10 +3,9 @@ import { buildRoadNetworkSteps } from './road-network.js';
 import { createPedestrianSystem } from './pedestrian-system.js';
 import { vehicleContact, resolveVehicleContact, sweptVehicleContact } from './vehicle-physics.js';
 import { DRIVE_SIDE, signalPhase, walkSignal } from './city-config.js';
-import { terrainHeight, terrainSlope } from './terrain.js';
-import { bridgeAt } from './bridge.js';
-import { cityUniforms, createContactShadowMaterial, createCarFlareMaterial } from './tsl-materials.js';
-import { HEADLIGHTS, createVehicleHeadlight, placeVehicleHeadlight } from './vehicle-lights.js';
+import { edgeHeight, sameLevel, surfaceHeight } from './surfaces.js';
+import { cityUniforms, createContactShadowMaterial } from './tsl-materials.js';
+import { HEADLIGHTS, placeVehicleHeadlight } from './vehicle-lights.js';
 import {
   BODY_SPECS,
   buildCarGeometry,
@@ -438,7 +437,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
   // =========================================================================
   // 3. PEDESTRIAN SYSTEM
   // =========================================================================
-  const player = { active: false, entity: null, x: 0, z: 0, vx: 0, vz: 0, fx: 0, fz: 1,
+  const player = { active: false, entity: null, x: 0, y: 0, z: 0, vx: 0, vz: 0, fx: 0, fz: 1,
     halfW: 0.86, halfL: 2.18 };
   const nearEdges = [];
   const nearSignals = [];
@@ -1480,7 +1479,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     for (let i = 0; i < impacted.length; i++) {
       const v = impacted[i];
       for (const o of vehicles) {
-        if (o === v || !o.edge || o.contactDone === collisionStep || onDeck(o) !== onDeck(v)) continue;
+        if (o === v || !o.edge || o.contactDone === collisionStep || !sameLevel(heightOf(o), heightOf(v))) continue;
         const reach = v.half + o.half + 0.5;
         const dx = v.x - o.x, dz = v.z - o.z;
         if (Math.abs(dx) > reach + Math.abs(dx - v.prevX + o.prevX)
@@ -1589,15 +1588,17 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     attr.needsUpdate = true;
   }
 
-  // Vehicles live on the flat simulation: their transforms are written on the ground
-  let dummyOnDeck = false;
-  const onDeck = (v) => !!(v.edge?.deck || (v.conn && v.move?.to?.deck));
-  // The simulation is flat, so the deck and the streets under it share x and z: the two levels must not see each other
-  const onPlayersLevel = (v) => onDeck(v) === !!player.entity?.deck;
-  const groundAt = (x, z) => (dummyOnDeck ? bridgeAt(x, z)?.y ?? terrainHeight(x, z) : terrainHeight(x, z));
+  // Vehicles live on the flat simulation, each on the surface of the road it's on (js/surfaces.js): the ground, or a
+  // structure. Roads stacked over each other share x and z, so two vehicles meet only when they're on one level.
+  let dummyEdge = null;
+  // The edge a vehicle's height comes from: its own, or the one it's turning into across a junction
+  const levelOf = (v) => (v.edge?.sid || !(v.conn && v.move?.to?.sid) ? v.edge : v.move.to);
+  const heightOf = (v) => (v.ry ??= edgeHeight(levelOf(v), v.x, v.z));
+  const onPlayersLevel = (v) => sameLevel(heightOf(v), player.y);
+  const slopeOn = (edge, x, z, sin, cos) => (edgeHeight(edge, x + sin * 2.5, z + cos * 2.5) - edgeHeight(edge, x - sin * 2.5, z - cos * 2.5)) / 5;
   function placeDummy() {
     const y = dummy.position.y;
-    dummy.position.y = y + groundAt(dummy.position.x, dummy.position.z);
+    dummy.position.y = y + edgeHeight(dummyEdge, dummy.position.x, dummy.position.z);
     dummy.updateMatrix();
     dummy.position.y = y;
   }
@@ -1645,8 +1646,9 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     const bodyInst = near ? bodies[c.bodyType].near : bodies[c.bodyType].far;
     const slot = bodyInst.count++;
 
-    dummyOnDeck = onDeck(c);
-    const slope = dummyOnDeck ? 0 : terrainSlope(c.x, c.z, sinY, cosY);
+    dummyEdge = levelOf(c);
+    c.ry = edgeHeight(dummyEdge, c.x, c.z);
+    const slope = slopeOn(dummyEdge, c.x, c.z, sinY, cosY);
     dummy.position.set(c.x, 0.0, c.z);
     dummy.rotation.set(c.pitch - Math.atan(slope), rotY, c.roll, 'YXZ');
     dummy.scale.set(1, 1, 1);
@@ -1728,7 +1730,8 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     if (hasView && !visible(b.x, b.z, 22)) return;
 
     const i = visibleBuses++;
-    dummyOnDeck = onDeck(b);
+    dummyEdge = levelOf(b);
+    b.ry = edgeHeight(dummyEdge, b.x, b.z);
     dummy.position.set(b.x, 0.018, b.z);
     dummy.rotation.set(0, rotY, 0, 'YXZ');
     dummy.scale.set(2.92, 1.0, 12.4);
@@ -1737,7 +1740,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
 
     // Lofted Bus Body is defined in ground-relative Y (0.35m skirt to 3.23m roof fairing crown)
     dummy.position.set(b.x, 0.0, b.z);
-    dummy.rotation.set(b.pitch - (dummyOnDeck ? 0 : Math.atan(terrainSlope(b.x, b.z, sinY, cosY))), rotY, b.roll, 'YXZ');
+    dummy.rotation.set(b.pitch - Math.atan(slopeOn(dummyEdge, b.x, b.z, sinY, cosY)), rotY, b.roll, 'YXZ');
     dummy.scale.set(1, 1, 1);
     placeDummy();
     busBodyInst.setMatrixAt(i, dummy.matrix);
@@ -1919,6 +1922,8 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
       player.entity = playerEntity;
       player.x = playerEntity.position.x;
       player.z = playerEntity.position.z;
+      // The height of the surface the player is on (js/controllers.js keeps it), for telling levels apart
+      player.y = playerEntity.surfaceY ?? surfaceHeight(playerEntity.surface || 0, player.x, player.z);
       player.fx = Math.sin(heading);
       player.fz = Math.cos(heading);
       player.vx = player.fx * speed + (playerEntity.vx || 0);
@@ -1958,6 +1963,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
       react(v, dt);
       drive(v, dt);
       locate(v);
+      v.ry = edgeHeight(levelOf(v), v.x, v.z); // seen or not, it has to know which level it's on
       knock(v, dt);
       pose(v, dt);
     }
@@ -1969,7 +1975,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
       if (!v.edge) continue;
       if (v.bus) renderBus(v);
       else renderCar(v);
-      dummyOnDeck = false;
+      dummyEdge = null;
     }
     const hideEmpty = ++updates > 2;
     for (const m of bodyMeshes) {
@@ -2042,449 +2048,4 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
   };
 }
 
-// ============================================================================
-// AMBIENT MOTORWAY TRAFFIC (Cahill Expressway, Western Distributor)
-// ============================================================================
-// The elevated motorways city-grid.js builds are not part of the road graph, so a lighter model fills
-// them: cars follow each lane's centre line and keep their distance with the IDM. Nobody changes lanes, so the order
-// in a lane never changes and every car's leader is simply the next one (cyclically: cars dip below the deck at the
-// end of a lane as if into an underpass and come back up at its start). Cars queue behind the player standing or
-// driving in their lane. Within HWY_NEAR_LOD m of the camera they use the full model with wheels and cast shadows,
-// up to HWY_MID_LOD m a wheel-less body, further out a coarse ~250-triangle lofted proxy; beyond HWY_FAR_CULL m (or well behind
-// the camera) they aren't drawn.
-const HWY_DRIVER = { a: 1.6, b: 2.8, T: 1.3, s0: 3.0 };
-const HWY_CAR_LEN = 4.6;
-const HWY_NEAR_LOD = 170;
-const HWY_MID_LOD = 450;
-const HWY_FAR_CULL = 1600;
-const HWY_RAMP = 32; // the dip at the lane ends: 2.4 m down over this many metres
-const HWY_BOX_RUN = 16; // lane segments per bounding box of the player test
-
-function createHighwayTraffic(scene, lanes) {
-  const group = new THREE.Group();
-  group.name = 'HighwayTraffic';
-  scene.add(group);
-  const KINDS = Object.keys(CAR_KINDS);
-  const PALETTES = {
-    taxi: [
-      { hex: 0xffbe14, style: carStyleCode({ livery: 0, metallic: 0, trim: 0, wheel: 0 }) },
-      { hex: 0xffbe14, style: carStyleCode({ livery: 0, metallic: 0, trim: 0, wheel: 1 }) }
-    ],
-    sedan: [
-      { hex: 0x12151a, style: carStyleCode({ livery: 3, metallic: 0, trim: 1, wheel: 1 }) },
-      { hex: 0x161a20, style: carStyleCode({ livery: 3, metallic: 1, trim: 2, wheel: 2 }) },
-      { hex: 0xf2f4f7, style: carStyleCode({ livery: 0, metallic: 0, trim: 0, wheel: 0 }) },
-      { hex: 0xe6eaef, style: carStyleCode({ livery: 4, metallic: 1, trim: 2, wheel: 2 }) },
-      { hex: 0xcfd6de, style: carStyleCode({ livery: 0, metallic: 1, trim: 1, wheel: 0 }) },
-      { hex: 0x8a8f96, style: carStyleCode({ livery: 0, metallic: 1, trim: 0, wheel: 1 }) },
-      { hex: 0x52575e, style: carStyleCode({ livery: 0, metallic: 1, trim: 0, wheel: 2 }) },
-      { hex: 0x1c2026, style: carStyleCode({ livery: 0, metallic: 1, trim: 1, wheel: 3 }) },
-      { hex: 0x1d3b6c, style: carStyleCode({ livery: 0, metallic: 1, trim: 1, wheel: 1 }) },
-      { hex: 0x6e1f24, style: carStyleCode({ livery: 0, metallic: 1, trim: 1, wheel: 0 }) },
-      { hex: 0x5cae3e, style: carStyleCode({ livery: 2, metallic: 0, trim: 0, wheel: 0 }) }
-    ],
-    suv: [
-      { hex: 0x101318, style: carStyleCode({ livery: 3, metallic: 0, trim: 1, wheel: 1 }) },
-      { hex: 0x16191e, style: carStyleCode({ livery: 3, metallic: 1, trim: 2, wheel: 3 }) },
-      { hex: 0xf0f3f7, style: carStyleCode({ livery: 0, metallic: 1, trim: 1, wheel: 0 }) },
-      { hex: 0xe4e8ed, style: carStyleCode({ livery: 4, metallic: 0, trim: 2, wheel: 2 }) },
-      { hex: 0x3a434d, style: carStyleCode({ livery: 0, metallic: 1, trim: 0, wheel: 2 }) },
-      { hex: 0xbec6cf, style: carStyleCode({ livery: 0, metallic: 1, trim: 1, wheel: 0 }) },
-      { hex: 0x28382e, style: carStyleCode({ livery: 0, metallic: 1, trim: 0, wheel: 1 }) },
-      { hex: 0x20385c, style: carStyleCode({ livery: 0, metallic: 1, trim: 1, wheel: 1 }) },
-      { hex: 0x5b2a2a, style: carStyleCode({ livery: 4, metallic: 1, trim: 2, wheel: 2 }) },
-      { hex: 0x5cae3e, style: carStyleCode({ livery: 2, metallic: 0, trim: 0, wheel: 0 }) }
-    ],
-    minivan: [
-      { hex: 0x111419, style: carStyleCode({ livery: 3, metallic: 1, trim: 1, wheel: 1 }) },
-      { hex: 0xf0f2f5, style: carStyleCode({ livery: 0, metallic: 1, trim: 1, wheel: 0 }) },
-      { hex: 0xaab2bb, style: carStyleCode({ livery: 0, metallic: 1, trim: 0, wheel: 1 }) },
-      { hex: 0x4a5058, style: carStyleCode({ livery: 0, metallic: 1, trim: 0, wheel: 2 }) },
-      { hex: 0x26354f, style: carStyleCode({ livery: 0, metallic: 1, trim: 1, wheel: 0 }) },
-      { hex: 0x5a1f24, style: carStyleCode({ livery: 0, metallic: 1, trim: 1, wheel: 0 }) }
-    ],
-    pickup: [
-      { hex: 0x14171b, style: carStyleCode({ livery: 0, metallic: 1, trim: 1, wheel: 1 }) },
-      { hex: 0xf2f3f5, style: carStyleCode({ livery: 0, metallic: 0, trim: 1, wheel: 0 }) },
-      { hex: 0x9da4ab, style: carStyleCode({ livery: 0, metallic: 1, trim: 0, wheel: 2 }) },
-      { hex: 0x3d434a, style: carStyleCode({ livery: 0, metallic: 1, trim: 2, wheel: 3 }) },
-      { hex: 0x1e2f4f, style: carStyleCode({ livery: 0, metallic: 1, trim: 1, wheel: 1 }) },
-      { hex: 0x8f1a1d, style: carStyleCode({ livery: 0, metallic: 0, trim: 2, wheel: 3 }) }
-    ],
-    // Vans: fleet white, silver, grey & black, black plastic trim; never two-tone (see the street palettes)
-    van: [
-      { hex: 0xf4f5f6, style: carStyleCode({ livery: 0, metallic: 0, trim: 2, wheel: 0 }) },
-      { hex: 0xf0f1f2, style: carStyleCode({ livery: 0, metallic: 0, trim: 2, wheel: 3 }) },
-      { hex: 0xf4f5f6, style: carStyleCode({ livery: 0, metallic: 0, trim: 0, wheel: 1 }) },
-      { hex: 0xb9c0c7, style: carStyleCode({ livery: 0, metallic: 1, trim: 2, wheel: 0 }) },
-      { hex: 0x8e959c, style: carStyleCode({ livery: 0, metallic: 0, trim: 2, wheel: 3 }) },
-      { hex: 0x15181c, style: carStyleCode({ livery: 0, metallic: 1, trim: 2, wheel: 3 }) }
-    ]
-  };
-  let seed = 20240917;
-  const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-
-  // Lanes: arc length and heading at every centre-line vertex, bounds for the player test, cars every 24-74 m
-  const cars = [];
-  const counts = Object.fromEntries(KINDS.map((kind) => [kind, 0]));
-  for (const lane of lanes) {
-    const P = lane.pts;
-    lane.cum = [0];
-    for (let i = 1; i < P.length; i++) lane.cum.push(lane.cum[i - 1] + P[i].distanceTo(P[i - 1]));
-    lane.len = lane.cum[P.length - 1];
-    lane.yaw = P.map((p, i) => {
-      const a = P[Math.max(0, i - 1)];
-      const b = P[Math.min(P.length - 1, i + 1)];
-      return Math.atan2(b.x - a.x, b.z - a.z);
-    });
-    // Bounds of every run of HWY_BOX_RUN segments ([x0, x1, z0, z1] after one another): a lane can run for kilometres,
-    // so the player test visits just the runs nearby
-    lane.box = [];
-    for (let s = 0; s + 1 < P.length; s += HWY_BOX_RUN) {
-      const run = P.slice(s, Math.min(P.length, s + HWY_BOX_RUN + 1));
-      lane.box.push(Math.min(...run.map((p) => p.x)), Math.max(...run.map((p) => p.x)), Math.min(...run.map((p) => p.z)), Math.max(...run.map((p) => p.z)));
-    }
-    lane.cars = [];
-    for (let u = rand() * 30; u < lane.len - 12; u += 24 + rand() * 50) {
-      const h = rand();
-      // Fewer vans than in town
-      const kind = h < 0.2 ? 'taxi' : h < 0.56 ? 'sedan' : h < 0.82 ? 'suv' : h < 0.89 ? 'minivan' : h < 0.95 ? 'pickup' : 'van';
-      const entry = PALETTES[kind][Math.floor(rand() * PALETTES[kind].length)];
-      const col = new THREE.Color(entry.hex);
-      const spec = BODY_SPECS[kind];
-      // (float32 values, so update() can tell whether an instance slot's paint changes by comparing with the buffer)
-      const car = {
-        lane, kind, u, v: lane.speed, acc: 0, seg: 0,
-        placed: false, x: 0, y: -1000, z: 0, yaw: 0,
-        len: spec.zFront - spec.zRear, engine: CAR_KINDS[kind].engine,
-        col: [Math.fround(col.r), Math.fround(col.g), Math.fround(col.b)],
-        style: entry.style
-      };
-      lane.cars.push(car);
-      cars.push(car);
-      counts[kind]++;
-    }
-  }
-
-  // Per body type: [near (with wheels, casts shadows), mid (wheel-less), far (lofted proxy)] instanced meshes sharing
-  // the traffic's cached car material (per-instance paintColor & carState)
-  const meshes = {};
-  for (const kind of KINDS) {
-    const spec = BODY_SPECS[kind];
-    const n = Math.max(1, counts[kind]);
-    meshes[kind] = [0, 1, 2].map((lod) => {
-      const geo = lod === 2 ? buildCarProxyGeometry(spec) : buildCarGeometry(spec, lod === 0);
-      geo.setAttribute('paintColor', new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3));
-      geo.setAttribute('carState', new THREE.InstancedBufferAttribute(new Float32Array(n * 4), 4));
-      const mesh = new THREE.InstancedMesh(geo, createLoftedCarMaterial(spec), n);
-      mesh.count = 0;
-      mesh.frustumCulled = false;
-      mesh.castShadow = lod === 0;
-      mesh.receiveShadow = true;
-      group.add(mesh);
-      return mesh;
-    });
-  }
-
-  // Night lamp flares: a soft glow on every head- and tail-lamp, at least a couple of pixels wide, so the highways read
-  // as streams of white and red lights from across the river once the lamp geometry shrinks below a pixel.
-  // (flareCol is rgb + an unused w: 3-component attributes get re-padded to 4 on every upload)
-  const flarePos = new Float32Array(cars.length * 4 * 4); // x, y, z, size
-  const flareCol = new Float32Array(cars.length * 4 * 4); // r, g, b, -
-  const flareGeo = new THREE.PlaneGeometry(1, 1);
-  flareGeo.setAttribute('flarePos', new THREE.InstancedBufferAttribute(flarePos, 4));
-  flareGeo.setAttribute('flareCol', new THREE.InstancedBufferAttribute(flareCol, 4));
-  const flares = new THREE.Mesh(flareGeo, createCarFlareMaterial());
-  flares.name = 'HighwayLampFlares';
-  flares.frustumCulled = false;
-  flares.visible = false;
-  flares.renderOrder = 2;
-  group.add(flares);
-  let flareCount = 0;
-
-  // Clustered SpotLight pool for nearby highway cars (within 105 m)
-  const HWY_SPOT_POOL = 28;
-  const HWY_LIGHT_DIST = 105;
-  const HWY_LIGHT_DIST_SQ = HWY_LIGHT_DIST * HWY_LIGHT_DIST;
-  const hwyLightsGroup = new THREE.Group();
-  hwyLightsGroup.name = 'HighwayClusteredLights';
-  group.add(hwyLightsGroup);
-
-  const hwySpotPool = [];
-  for (let i = 0; i < HWY_SPOT_POOL; i++) {
-    const spot = createVehicleHeadlight();
-    spot.position.set(0, -1000, 0);
-    spot.target.position.set(0, -1001, 0);
-    hwyLightsGroup.add(spot, spot.target);
-    hwySpotPool.push(spot);
-  }
-  const hwyLitCars = [];
-  let hwyLitCount = 0;
-  function addFlare(px, py, pz, size, r, g, b) {
-    const o = flareCount * 4;
-    flarePos[o] = px;
-    flarePos[o + 1] = py;
-    flarePos[o + 2] = pz;
-    flarePos[o + 3] = size;
-    const k = flareCount * 4;
-    flareCol[k] = r;
-    flareCol[k + 1] = g;
-    flareCol[k + 2] = b;
-    flareCount++;
-  }
-  const flareFacing = (f) => { const t = Math.min(1, Math.max(0, (f + 0.3) / 0.9)); return t * t * (3 - 2 * t); };
-
-  const D = HWY_DRIVER;
-  const brakeTerm = 2 * Math.sqrt(D.a * D.b);
-  const ease = (x) => { const t = Math.min(1, Math.max(0, x / HWY_RAMP)); return t * t * (3 - 2 * t); };
-  const easeSlope = (x) => { if (x <= 0 || x >= HWY_RAMP) return 0; const t = x / HWY_RAMP; return (6 * t * (1 - t)) / HWY_RAMP; };
-  const m4 = new THREE.Matrix4();
-  const q = new THREE.Quaternion();
-  const euler = new THREE.Euler(0, 0, 0, 'YXZ');
-  const pos = new THREE.Vector3();
-  const ONE = new THREE.Vector3(1, 1, 1);
-  const fwd = new THREE.Vector3();
-  const dirtyPaint = new Set();
-  const dirtyState = new Set();
-  let updates = 0;
-  // Flags the first n items of an attribute for upload (static usage: once per frame, not once per render pass)
-  function flagRange(attr, n) {
-    attr.clearUpdateRanges();
-    attr.addUpdateRange(0, n * attr.itemSize);
-    attr.needsUpdate = true;
-  }
-
-  // The player's arc position and speed along `lane` if they are in it (within 2 m of the centre line and near
-  // its road height, not on its underground stretches), else null
-  function playerInLane(lane, pl) {
-    const B = lane.box;
-    const P = lane.pts;
-    for (let r = 0; r < B.length; r += 4) {
-      if (pl.x < B[r] - 3 || pl.x > B[r + 1] + 3 || pl.z < B[r + 2] - 3 || pl.z > B[r + 3] + 3) continue;
-      const end = Math.min(P.length - 1, (r / 4 + 1) * HWY_BOX_RUN);
-      for (let i = (r / 4) * HWY_BOX_RUN; i < end; i++) {
-        if (P[i].y < -1 && P[i + 1].y < -1) continue;
-        const ax = P[i].x, az = P[i].z;
-        const sx = P[i + 1].x - ax, sz = P[i + 1].z - az;
-        const horizontalLengthSq = sx * sx + sz * sz;
-        if (horizontalLengthSq === 0) continue;
-        const L = lane.cum[i + 1] - lane.cum[i];
-        const t = ((pl.x - ax) * sx + (pl.z - az) * sz) / horizontalLengthSq;
-        if (t < 0 || t > 1) continue;
-        const y = P[i].y + (P[i + 1].y - P[i].y) * t;
-        if (Math.abs(pl.y - y) >= 2.6) continue;
-        if (Math.abs((pl.z - az) * sx - (pl.x - ax) * sz) / Math.sqrt(horizontalLengthSq) < 2.0) {
-          // Convert horizontal progress to distance along the sloped lane, as with u above.
-          return { u: lane.cum[i] + t * L, v: Math.max(0, ((pl.vx * sx + pl.vz * sz) / horizontalLengthSq) * L) };
-        }
-      }
-    }
-    return null;
-  }
-
-  function update(dt, camera, entity, mode) {
-    // 1. Car following (IDM) in every lane, the player counting as a leader
-    const pl = entity && mode !== 'helicopter' ? {
-      x: entity.position.x, y: entity.position.y, z: entity.position.z,
-      vx: Math.sin(entity.heading || 0) * (entity.speed || 0) + (entity.vx || 0),
-      vz: Math.cos(entity.heading || 0) * (entity.speed || 0) + (entity.vz || 0)
-    } : null;
-    for (const lane of lanes) {
-      const list = lane.cars;
-      const n = list.length;
-      const pIn = pl ? playerInLane(lane, pl) : null;
-      for (let k = 0; k < n; k++) {
-        const c = list[k];
-        let gap = Infinity;
-        let dv = 0;
-        if (n > 1) {
-          const lead = list[(k + 1) % n];
-          gap = lead.u - c.u;
-          if (gap < 0) gap += lane.len;
-          gap -= (c.len + lead.len) / 2;
-          dv = c.v - lead.v;
-        }
-        // The player's car counts as HWY_CAR_LEN long
-        if (pIn && pIn.u > c.u) {
-          const playerGap = pIn.u - c.u - (c.len + HWY_CAR_LEN) / 2;
-          if (playerGap < gap) {
-            gap = playerGap;
-            dv = c.v - pIn.v;
-          }
-        }
-        const sStar = D.s0 + Math.max(0, c.v * D.T + (c.v * dv) / brakeTerm);
-        c.acc = Math.max(-9, D.a * (1 - (c.v / lane.speed) ** 4 - (sStar / Math.max(gap, 0.1)) ** 2));
-      }
-      for (const c of list) {
-        c.v = Math.max(0, c.v + c.acc * dt);
-        c.u += c.v * dt;
-        if (c.u >= lane.len) {
-          c.u -= lane.len;
-          c.seg = 0;
-        }
-      }
-    }
-
-    // 2. Instances: LOD by distance, far cars well behind the camera skipped; lamp flares at dusk & night
-    const cam = camera.position;
-    camera.getWorldDirection(fwd);
-    for (const kind of KINDS) for (const mesh of meshes[kind]) mesh.count = 0;
-    const flaresOn = cityUniforms.uInteriorGlow.value > 0.65;
-    const pxAt1m = (2 * Math.tan(((camera.fov || 55) * Math.PI) / 360)) / Math.max(360, window.innerHeight || 800);
-    flareCount = 0;
-    hwyLitCount = 0;
-    for (const c of cars) {
-      const lane = c.lane;
-      const cum = lane.cum;
-      while (c.seg < cum.length - 2 && cum[c.seg + 1] < c.u) c.seg++;
-      const i = c.seg;
-      const segLen = cum[i + 1] - cum[i];
-      const t = Math.min(1, Math.max(0, (c.u - cum[i]) / segLen));
-      const a = lane.pts[i];
-      const b = lane.pts[i + 1];
-      const x = a.x + (b.x - a.x) * t;
-      const z = a.z + (b.z - a.z) * t;
-      const toEnd = lane.len - c.u;
-      const dip = c.u < toEnd ? c.u : toEnd;
-      const y = a.y + (b.y - a.y) * t - 2.4 * (1 - ease(dip));
-      let dYaw = lane.yaw[i + 1] - lane.yaw[i];
-      if (dYaw > Math.PI) dYaw -= Math.PI * 2;
-      else if (dYaw < -Math.PI) dYaw += Math.PI * 2;
-      const yaw = lane.yaw[i] + dYaw * t;
-      // Keep the current world pose available to audio, including cars behind the camera.
-      c.x = x;
-      c.y = y;
-      c.z = z;
-      c.yaw = yaw;
-      c.placed = true;
-      const dx = x - cam.x;
-      const dz = z - cam.z;
-      const dy = y - cam.y;
-      const d2 = dx * dx + dy * dy + dz * dz;
-      if (d2 > HWY_FAR_CULL * HWY_FAR_CULL) continue;
-      const lod = d2 < HWY_NEAR_LOD * HWY_NEAR_LOD ? 0 : d2 < HWY_MID_LOD * HWY_MID_LOD ? 1 : 2;
-      if (lod > 0 && dx * fwd.x + dz * fwd.z < -40) continue;
-      if (y < -3.6) continue; // in the Battery Park Underpass, out of sight behind the portals' screens
-      const slope = (b.y - a.y) / segLen + 2.4 * easeSlope(dip) * (c.u < toEnd ? 1 : -1);
-      euler.set(-Math.atan(slope), yaw, 0);
-      q.setFromEuler(euler);
-      m4.compose(pos.set(x, y, z), q, ONE);
-      const mesh = meshes[c.kind][lod];
-      const slot = mesh.count++;
-      m4.toArray(mesh.instanceMatrix.array, slot * 16);
-      // Paint & brake lights change only when a slot changes hands or a car brakes: flagged for upload just then
-      const attrs = mesh.geometry.attributes;
-      const paint = attrs.paintColor.array;
-      const o3 = slot * 3;
-      if (paint[o3] !== c.col[0] || paint[o3 + 1] !== c.col[1] || paint[o3 + 2] !== c.col[2]) {
-        paint.set(c.col, o3);
-        dirtyPaint.add(mesh);
-      }
-      const brake = c.acc < -1.2 ? 1 : 0; // brake lights
-      const state = attrs.carState.array;
-      const o4 = slot * 4;
-      if (state[o4] !== brake || state[o4 + 3] !== c.style) {
-        state[o4] = brake;
-        state[o4 + 3] = c.style;
-        dirtyState.add(mesh);
-      }
-
-      if (d2 < HWY_LIGHT_DIST_SQ && dip > 1) {
-        const d = Math.sqrt(d2);
-        const forwardDot = dx * fwd.x + dz * fwd.z;
-        const effDist = d + Math.max(0, 5.0 - forwardDot) * 3.2;
-        if (effDist < HWY_LIGHT_DIST) {
-          c._d2 = d2;
-          c._effDist = effDist;
-          c._mesh = mesh;
-          c._slot = slot;
-          c._brake = brake;
-          hwyLitCars[hwyLitCount++] = c;
-        }
-      }
-
-      // Flares (from 40 m out, full by 120 m): sprites just off the lamp faces, white at the front and red at the back,
-      // brightest seen head-on / from behind, dimmed by haze
-      if (!flaresOn || d2 < 1600 || dip < 1) continue;
-      const d = Math.sqrt(d2);
-      const sy = Math.sin(yaw);
-      const cy = Math.cos(yaw);
-      const facing = -(dx * sy + dz * cy) / d;
-      const k = (Math.min(1, (d - 40) / 80) / (1 + (d / 2000) ** 2)) * ease(dip);
-      const size = Math.max(0.6, d * pxAt1m * 3);
-      const spec = BODY_SPECS[c.kind];
-      for (let e = 0; e < 2; e++) {
-        const front = e === 0;
-        const w = k * (0.3 + 0.7 * flareFacing(front ? facing : -facing));
-        const lz = front ? spec.zFront + 0.3 : spec.zRear - 0.3;
-        const ly = y + (front ? spec.lamps[0] : spec.lamps[1]);
-        for (let s = -1; s <= 1; s += 2) {
-          const lx = s * spec.lampX[front ? 0 : 1];
-          if (front) addFlare(x + lx * cy + lz * sy, ly, z - lx * sy + lz * cy, size, 4.4 * w, 4.1 * w, 3.6 * w);
-          else addFlare(x + lx * cy + lz * sy, ly, z - lx * sy + lz * cy, size, 3.4 * w, 0.16 * w, 0.1 * w);
-        }
-      }
-    }
-    // Upload just the instances in use (the buffers hold every car of the kind), and nothing for empty meshes, which
-    // are hidden too (an empty instanced mesh still costs a render object update in every pass). They stay visible
-    // for the first couple of frames so that the shader precompile (main.js) sees all of them.
-    const hideEmpty = ++updates > 2;
-    for (const kind of KINDS) {
-      for (const mesh of meshes[kind]) {
-        const n = mesh.count;
-        mesh.visible = n > 0 || !hideEmpty;
-        if (n === 0) continue;
-        flagRange(mesh.instanceMatrix, n);
-        if (dirtyPaint.has(mesh)) flagRange(mesh.geometry.attributes.paintColor, n);
-        if (dirtyState.has(mesh)) flagRange(mesh.geometry.attributes.carState, n);
-      }
-    }
-    dirtyPaint.clear();
-    dirtyState.clear();
-    flares.visible = flareCount > 0;
-    flares.count = flareCount;
-    if (flareCount > 0) {
-      flagRange(flareGeo.attributes.flarePos, flareCount);
-      flagRange(flareGeo.attributes.flareCol, flareCount);
-    }
-
-    // Update clustered highway SpotLights (dual left/right beams for nearby cars)
-    hwyLitCars.length = hwyLitCount;
-    if (hwyLitCount > 1) {
-      hwyLitCars.sort((a, b) => a._effDist - b._effDist);
-    }
-    const glow = cityUniforms && cityUniforms.uInteriorGlow ? cityUniforms.uInteriorGlow.value : 0.48;
-    const beamScale = clamp((glow - 0.60) * 1.45, 0.0, 1.28);
-    const maxHwyVeh = HWY_SPOT_POOL >> 1;
-    const hwyCutoff = hwyLitCount > maxHwyVeh
-      ? Math.min(HWY_LIGHT_DIST, hwyLitCars[maxHwyVeh]._effDist)
-      : HWY_LIGHT_DIST;
-    let spotUsed = 0;
-    if (beamScale > 0.001) {
-      for (let i = 0; i < hwyLitCount && spotUsed + 2 <= HWY_SPOT_POOL; i++) {
-        const c = hwyLitCars[i];
-        const t = clamp((hwyCutoff - c._effDist) / Math.max(1, hwyCutoff * 0.38), 0, 1);
-        const fade = (t * t * (3 - 2 * t)) * ease(Math.min(c.u, c.lane.len - c.u));
-        if (fade <= 0.001) continue;
-        const spec = BODY_SPECS[c.kind];
-        const baseInt = HEADLIGHTS.intensity * beamScale * fade;
-        // Reuse the exact rendered transform, including the road slope and underpass dip.
-        c._mesh.getMatrixAt(c._slot, m4);
-        for (let side = -1; side <= 1; side += 2) {
-          const spot = hwySpotPool[spotUsed++];
-          placeVehicleHeadlight(spot, spec, side, m4);
-          spot.intensity = baseInt;
-        }
-      }
-    }
-    for (let i = spotUsed; i < HWY_SPOT_POOL; i++) {
-      const spot = hwySpotPool[i];
-      spot.intensity = 0;
-      spot.position.set(0, -1000, 0);
-    }
-  }
-
-  return { group, update, cars, lanes };
-}
-
-export { createTrafficSystem, createHighwayTraffic };
+export { createTrafficSystem };

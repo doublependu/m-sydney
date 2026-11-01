@@ -1,9 +1,9 @@
-// npm run play [-- --only=first-minute,touch] [--headed] [--no-video] [--soak=10] [--seed=6] [--gap=3]
+// npm run play [-- --only=first-minute,touch] [--headed] [--no-video] [--soak=10] [--seed=6] [--gap=3] [--browser=firefox]
 // Plays every scenario on the production build, writes recordings/<date>/, and exits non-zero on a failed check.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { launchChrome, openGame, ROOT, serveDist, startRecording } from './lib.mjs';
+import { launchBrowser, openGame, ROOT, serveDist, startRecording } from './lib.mjs';
 import { Human, Watchdog } from './human.mjs';
 import { SCENARIOS } from './scenarios.mjs';
 
@@ -26,7 +26,7 @@ for (const [index, name] of names.entries()) {
   // the RTX 3060 here): 3 s between browsers clears it. Nothing a player can reach, as one browser never follows another.
   if (index) await new Promise((resolve) => setTimeout(resolve, Number(option('gap', 3)) * 1000));
   if (!scenario) throw new Error(`Unknown scenario: ${name}`);
-  const browser = await launchChrome({ headed: option('headed', false) });
+  const browser = await launchBrowser({ browser: option('browser', 'chrome'), headed: option('headed', false) });
   const url = scenario.file ? pathToFileURL(join(ROOT, 'dist', scenario.file)).href : server.url;
   const game = await openGame(browser, url, {
     profile: scenario.profile || 'laptop',

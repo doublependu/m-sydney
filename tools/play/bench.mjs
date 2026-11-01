@@ -1,8 +1,8 @@
-// npm run bench [-- --profile=desktop] [--headed] [--runs=N] [--query=quality=low]
+// npm run bench [-- --profile=desktop] [--headed] [--runs=N] [--query=quality=low] [--browser=firefox]
 // Times the production build from navigation to interaction, then frame rate. Fails above the Phase 8 budget.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { launchChrome, openGame, ROOT, serveDist } from './lib.mjs';
+import { launchBrowser, openGame, ROOT, serveDist } from './lib.mjs';
 
 const BUDGET_MS = { desktop: 2500, phone: 4000 };
 const STAGES = { renderer: 'startup', lighting: 'startup', ui: 'startup', postFX: 'startup', controllers: 'startup', compile: 'shaders', firstFrame: 'firstFrame', gpu: 'firstFrame' };
@@ -22,7 +22,7 @@ let failed = false;
 for (const profile of profiles) {
   const samples = [];
   for (let run = 0; run < runs; run++) {
-    const browser = await launchChrome({ headed: option('headed', false) });
+    const browser = await launchBrowser({ browser: option('browser', 'chrome'), headed: option('headed', false) });
     const game = await openGame(browser, server.url, { profile, query, timeout: 180000, stayThrottled: true });
     const { stages, interactiveAt } = await game.page.evaluate(() => window.__gameDebug.load());
     const network = await game.page.evaluate(() => {

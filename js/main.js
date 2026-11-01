@@ -5,7 +5,7 @@ import { createPostProcessing } from './post-processing.js';
 import { ClusteredLighting } from 'three/addons/lighting/ClusteredLighting.js';
 import { getLocationLabel, isTypingInField, ROADS, LANDMARKS, SPAWN, TELEPORT_LOCATIONS } from './city-config.js';
 import { buildCityGrid } from './city-grid.js';
-import { buildLandmarks } from './landmarks.js';
+import { addHarbourBridge, buildLandmarks } from './landmarks.js';
 import { buildMovingScenery } from './moving-scenery.js';
 import { buildCityBlocks } from './buildings.js';
 import { ThirdPersonControllerManager } from './controllers.js';
@@ -15,13 +15,16 @@ import { CameraSystem, CAMERA_PRESETS } from './cameras.js';
 import { LightingSystem } from './lighting.js';
 import { CityMapSystem } from './city-map.js';
 import { setDrawDistance, setupSceneCullingSteps, updateSceneCulling } from './scene-culling.js';
+import { Progress } from './progress.js';
 import { CityAudioSystem } from './audio-system.js';
 import { PauseMenu } from './pause-menu.js';
 import { CHOICES, FrameWatcher, detectQuality, saveChoice } from './quality.js';
 import { createLightPools } from './light-pools.js';
 import { WorldBuilder, runUntilReady } from './world-jobs.js';
-import { terrainHeight, terrainSlope } from './terrain.js';
-import { BRIDGE_LENGTH, bridgeAt, bridgePoint, deckHeight } from './bridge.js';
+import { ceilingOver, groundHeight, inTunnel, roadRoute, structuresAt, surfaceHeight, surfaceSlope } from './surfaces.js';
+import { updateTunnelMouths } from './tunnel-mouths.js';
+import { wheelContacts } from './ground-geometry.js';
+import { BRIDGE_LENGTH, bridgeAt, bridgePoint } from './bridge.js';
 import { fullscreenElement, fullscreenSupported, onFullscreenChange, toggleFullscreen } from './fullscreen.js';
 
 // Application setup, background city build and frame loop.
@@ -40,6 +43,8 @@ async function initApp() {
   const loadingStatus = document.getElementById('loading-status');
   const loadingTrack = loadingOverlay ? loadingOverlay.querySelector('.loader-track') : null;
   const loadingFill = document.getElementById('loading-progress');
+  // Once the overlay drops, the bar at the top left carries on for whatever is still being built
+  const progress = new Progress(document.getElementById('hud-progress'));
   // Only shader compilation has measurable progress; other stages use the sweeping bar.
   const setLoadingProgress = (p) => {
     if (!loadingFill) return;
@@ -102,6 +107,7 @@ async function initApp() {
   };
 
   let interactive = false; // set once the loading screen drops
+  let holdStill = false; // debug only: draw without moving anything
   let compileTargetInUse = false;
   let worldBuilder = null;
   let worldCompleteAt = null;
@@ -133,11 +139,13 @@ async function initApp() {
   const gridStage = new THREE.Group();
   const savedState = readPlayerState();
   const startPosition = savedState?.entities?.[savedState.activeMode] ?? SPAWN;
-  const cityGridJob = buildCityGrid(scene, gridStage, startPosition);
+  // Ground and buildings before the first frame: less of them at the lower levels, where the start is tightest
+  const startRadius = 450 * quality.drawDistance;
+  const cityGridJob = buildCityGrid(scene, gridStage, startPosition, startRadius);
   runUntilReady(cityGridJob);
   markInit('cityGrid');
   const landmarkStage = new THREE.Group();
-  const { colliders: landmarkColliders } = buildLandmarks(landmarkStage);
+  const { colliders: landmarkColliders, group: landmarks } = buildLandmarks(landmarkStage);
   markInit('landmarks');
 
   // 4. Initialize Third-Person Controllers (Person, Car, Cyclist, Helicopter) & Multi-Camera System
@@ -152,7 +160,7 @@ async function initApp() {
         const p = saved.entities?.[mode];
         if (!p || ![p.x, p.y, p.z, p.heading].every(Number.isFinite)) continue;
         controllerManager.setMode(mode);
-        controllerManager.teleportActiveTo(p.x, p.z, p.heading, p.y);
+        controllerManager.teleportActiveTo(p.x, p.z, p.heading, p.y, Number.isInteger(p.surface) ? p.surface : 0);
       }
       controllerManager.setMode(Object.hasOwn(controllerManager.entities, saved.activeMode) ? saved.activeMode : 'car');
     }
@@ -161,7 +169,7 @@ async function initApp() {
 
   await showLoadingStage('Raising the nearest buildings...');
   const blocksStage = new THREE.Group();
-  const cityBlocksJob = buildCityBlocks(scene, blocksStage, landmarkColliders, controllerManager.getActiveEntity().position);
+  const cityBlocksJob = buildCityBlocks(scene, blocksStage, landmarkColliders, controllerManager.getActiveEntity().position, startRadius);
   const cityBlocks = runUntilReady(cityBlocksJob);
   let collidersAdded = cityBlocks.colliders.length;
   controllerManager.addColliders(cityBlocks.colliders);
@@ -172,12 +180,11 @@ async function initApp() {
   let movingScenery = null;
   let streetDetails = null;
   let trafficSystem = null;
-  let highwayTraffic = null;
 
   function savePlayerState() {
     try {
       const entities = Object.fromEntries(Object.entries(controllerManager.entities).map(([mode, entity]) => [mode, {
-        x: entity.position.x, y: entity.position.y, z: entity.position.z, heading: entity.heading
+        x: entity.position.x, y: entity.position.y, z: entity.position.z, heading: entity.heading, surface: entity.surface || 0
       }]));
       localStorage.setItem('sydney-player-state', JSON.stringify({ version: 1, activeMode: controllerManager.activeMode, entities }));
     } catch { /* Storage may be disabled or full. */ }
@@ -439,7 +446,9 @@ async function initApp() {
     // for the scene's render targets, and gets its target back afterwards.
     const compiling = compileTargetInUse;
     if (compiling) setCompileTarget(false);
+    const relight = progress.start('Changing the light', 1);
     lightingSystem.applyPreset(timeId);
+    relight.done();
     if (compiling) setCompileTarget(true);
     colorGrade.applyPreset(lightingSystem.activePresetId);
     timeButtons.forEach((btn) => {
@@ -826,12 +835,15 @@ async function initApp() {
 
   // Runs between frames once the game is interactive, a few objects per frame, so that a shader nobody has reached yet
   // doesn't stall the moment the player turns towards it.
-  async function compileJobs(jobs) {
+  async function compileJobs(jobs, task = null) {
     setCompileTarget(true);
     let sliceStart = performance.now();
+    const total = jobs.reduce((sum, job) => sum + job.length, 0) || 1;
+    let done = 0;
     for (const job of jobs) {
       for (const object of job) {
         await compileObject(object);
+        task?.set(++done / total);
         if (performance.now() - sliceStart > 3) {
           await new Promise((resolve) => requestAnimationFrame(resolve));
           sliceStart = performance.now();
@@ -855,7 +867,7 @@ async function initApp() {
         const array = o.instanceMatrix.array;
         for (let i = 0; i < o.count; i++) {
           at.set(array[i * 16 + 12], array[i * 16 + 13], array[i * 16 + 14]).applyMatrix4(o.matrixWorld);
-          array[i * 16 + 13] += terrainHeight(at.x, at.z);
+          array[i * 16 + 13] += groundHeight(at.x, at.z);
         }
         o.instanceMatrix.needsUpdate = true;
         o.computeBoundingSphere?.();
@@ -867,7 +879,7 @@ async function initApp() {
       const { min, max } = o.geometry.boundingBox;
       if (Math.max(max.x - min.x, max.z - min.z) < 12 || !position.array.length) {
         at.setFromMatrixPosition(o.matrixWorld);
-        o.position.y += terrainHeight(at.x, at.z);
+        o.position.y += groundHeight(at.x, at.z);
         o.updateMatrix();
         o.updateMatrixWorld(true);
         return;
@@ -875,7 +887,7 @@ async function initApp() {
       matrix.copy(o.matrixWorld).invert();
       for (let i = 0; i < position.count; i++) {
         at.fromBufferAttribute(position, i).applyMatrix4(o.matrixWorld);
-        at.y += terrainHeight(at.x, at.z);
+        at.y += groundHeight(at.x, at.z);
         at.applyMatrix4(matrix);
         position.setXYZ(i, at.x, at.y, at.z);
       }
@@ -886,33 +898,58 @@ async function initApp() {
   }
 
   // A stage of the city is built off to the side and joins the scene with its shaders ready, so it appears at once
-  async function revealStage(stage) {
+  async function revealStage(stage, task = null) {
     stage.updateMatrixWorld(true);
     useStorageInstancing(stage);
     liftStage(stage);
     const { now, later } = collectCompileJobs(stage);
-    await compileJobs([...now, ...later]);
+    await compileJobs([...now, ...later], task);
     scene.add(stage);
+    task?.done();
+  }
+
+  // A generator step that moves its task along as it yields: towards done, at a pace set by how many yields it usually
+  // takes, without ever reaching the end before it does
+  function* tracked(job, task, expected) {
+    let n = 0;
+    let step = job.next();
+    while (!step.done) {
+      task.set(1 - Math.exp(-(++n) / expected));
+      const sent = yield step.value;
+      step = job.next(sent);
+    }
+    task.done();
+    return step.value;
   }
 
   function* buildRestOfWorld() {
-    yield compileJobs(laterCompileJobs);
+    // The whole of the work, weighted by how long each step takes (desktop, js/progress.js timings())
+    const [shaders, buildings, download, streets, moreBuildings, suburbs, details, traffic, finishing] = progress.plan([
+      ['Compiling shaders', 3], ['Raising the buildings', 2], ['Downloading the rest of the city', 1],
+      ['Laying the streets', 3], ['Raising the rest of the buildings', 4], ['Building the suburbs', 2],
+      ['Putting out street furniture', 3], ['Starting the traffic', 3], ['Finishing the city', 2]
+    ]);
+    yield compileJobs(laterCompileJobs, shaders).then(() => shaders.done());
     laterCompileJobs = [];
     settled(cityBlocks.group); // streamed around the player, on each building's own base
+    buildings.begin();
     yield revealStage(cityBlocks.group);
-    yield revealStage(landmarkStage);
+    addHarbourBridge(landmarks);
+    yield;
+    yield revealStage(landmarkStage, buildings);
 
     // Code the first view doesn't need stays out of the first download
     let city;
+    download.begin();
     yield Promise.all([import('./surroundings.js'), import('./street-details.js'), import('./traffic.js'), import('./road-paint.js')])
-      .then((modules) => { city = Object.assign({}, ...modules); });
-    const { buildSurroundings, buildStreetDetails, createTrafficSystem, createHighwayTraffic, buildRoadPaint } = city;
+      .then((modules) => { city = Object.assign({}, ...modules); download.done(); });
+    const { buildSurroundings, buildStreetDetails, createTrafficSystem, buildRoadPaint } = city;
 
-    const cityGrid = yield* cityGridJob;
+    const cityGrid = yield* tracked(cityGridJob, streets, 120);
     yield revealStage(gridStage);
     controllerManager.addColliders(cityGrid.colliders || []);
 
-    yield* cityBlocksJob;
+    yield* tracked(cityBlocksJob, moreBuildings, 150);
     controllerManager.addColliders(cityBlocks.colliders.slice(collidersAdded));
     collidersAdded = cityBlocks.colliders.length;
     yield revealStage(blocksStage);
@@ -920,7 +957,7 @@ async function initApp() {
     yield* mapSystem.prepareBlocks(cityBlocks.allBlocks);
 
     const surroundingsStage = new THREE.Group();
-    surroundings = yield* buildSurroundings(surroundingsStage);
+    surroundings = yield* tracked(buildSurroundings(surroundingsStage), suburbs, 200);
     controllerManager.addColliders(surroundings.colliders);
     const scenery = buildMovingScenery(surroundingsStage);
     yield revealStage(surroundingsStage);
@@ -929,42 +966,43 @@ async function initApp() {
 
     const detailStage = new THREE.Group();
     const allColliders = controllerManager.colliders;
-    const details = yield* buildStreetDetails(detailStage, allColliders, lightPools);
+    const builtDetails = yield* tracked(buildStreetDetails(detailStage, allColliders, lightPools), details, 120);
     yield revealStage(detailStage);
-    streetDetails = details;
+    streetDetails = builtDetails;
 
     // Buildings turned along non-grid streets have oriented colliders whose world bounds reach past their lots: they
     // stay inside the property line anyway, so the road network (lanes & sidewalks) doesn't need them.
     // Elevated building sections that clear even a bus don't obstruct ground traffic.
     const trafficStage = new THREE.Group();
-    const traffic = yield* createTrafficSystem(trafficStage, [
+    traffic.begin();
+    const trafficBuilt = yield* createTrafficSystem(trafficStage, [
       ...cityGrid.footprints,
       ...streetDetails.footprints,
       ...allColliders.filter((c) => !c.obb && (c.minY ?? 0) < 3.5)
     ], streetDetails.signalIntersections, { numCars: quality.cars, numBuses: quality.buses, numPeds: quality.pedestrians, lightPools });
+    traffic.set(0.6);
     yield;
-    const highway = createHighwayTraffic(trafficStage, cityGrid.highwayLanes);
+    buildRoadPaint(trafficStage, trafficBuilt.network, cityGrid.roadPaint);
+    traffic.set(0.75);
     yield;
-    buildRoadPaint(trafficStage, traffic.network, cityGrid.roadPaint);
-    yield;
-    yield* traffic.populate(cameraSystem.currentPos);
+    yield* trafficBuilt.populate(cameraSystem.currentPos);
     settled(trafficStage); // writes its own transforms on the ground every frame
-    yield revealStage(trafficStage);
-    trafficSystem = traffic;
-    highwayTraffic = highway;
-    mapSystem.trafficSystem = traffic;
-    audioSystem.attachCity({ trafficSystem, highwayTraffic, streetDetails });
-    dynamicRoots.push(trafficSystem.group, highwayTraffic.group);
+    yield revealStage(trafficStage, traffic);
+    trafficSystem = trafficBuilt;
+    mapSystem.trafficSystem = trafficBuilt;
+    audioSystem.attachCity({ trafficSystem, streetDetails });
+    dynamicRoots.push(trafficSystem.group);
 
     // Island-wide static geometry: chunk & distance-cull the small props, shadow stand-ins for the big casters
     // (scene-culling.js)
     const cullingRoots = ['CityGrid', 'CityGridDetails', 'CityBlocksNear', 'CityBlocks', 'CityBlocksFar', 'StreetDetails', 'Landmarks', 'Surroundings', 'RoadMarkings']
       .map((name) => scene.getObjectByName(name))
       .filter(Boolean);
-    yield* setupSceneCullingSteps(scene, cullingRoots, lightingSystem.sunLight.shadow, renderer.backend.isWebGPUBackend);
+    yield* tracked(setupSceneCullingSteps(scene, cullingRoots, lightingSystem.sunLight.shadow, renderer.backend.isWebGPUBackend), finishing, 40);
     setDrawDistance(quality.drawDistance);
     worldCompleteAt = performance.now();
     console.log(`[world] complete at ${Math.round(worldCompleteAt)} ms`);
+    if (debugFrames) console.log(`[world] steps: ${progress.timings().map(([label, ms]) => `${label} ${ms}ms`).join(', ')}`);
   }
 
   // 6. Animation Loop
@@ -992,6 +1030,12 @@ async function initApp() {
       clock: () => elapsed,
       paused: () => pauseMenu.isOpen,
       worldCompleteAt: () => worldCompleteAt,
+      progress: () => ({ ...progress.state(), shown: progress.shown, timings: progress.timings() }),
+      depthMode: () => ({ reversed: !!renderer.reversedDepthBuffer, logarithmic: !!renderer.logarithmicDepthBuffer, near: cameraSystem.camera.near, far: cameraSystem.camera.far }),
+      holdStill(on) {
+        holdStill = !!on;
+        lightingSystem.sky.cloudSpeed.value = on ? 0 : 0.000015;
+      },
       grab: () => new Promise((resolve) => { grabWanted = resolve; }),
       onDeck: () => !!controllerManager.getActiveEntity().deck,
       // Which side of the road every car on a two-way street is on, measured from where it actually is
@@ -1015,15 +1059,24 @@ async function initApp() {
         return { h: Math.atan2(ahead.x - x, ahead.z - z), tangent: Math.atan2(next.x - at.x, next.z - at.z),
           aheadX: ahead.x, aheadZ: ahead.z, s: Math.round(here.s), off: +here.off.toFixed(1), y: +here.y.toFixed(1) };
       },
-      // For looking at the city, never used by the play scenarios
-      goto(x, z, heading, mode) {
+      // A place on the bridge's corridor s metres from its south end: its centre, the normal to the east and the heading north
+      bridgePlace(s) {
+        const p = bridgePoint(Math.max(0, Math.min(BRIDGE_LENGTH, s)));
+        return { x: p.x, z: p.z, nx: -p.uz, nz: p.ux, h: Math.atan2(p.ux, p.uz) };
+      },
+      // For looking at the city, and for putting a scenario where it needs to start. `deck` puts the player on the Harbour Bridge's deck
+      // above (x, z) instead of the street under it.
+      goto(x, z, heading, mode, deck = false) {
         if (mode) selectMode(mode);
-        teleportTo(x, z, heading);
+        if (!deck) return teleportTo(x, z, heading);
+        // Up on the highest structure there, the Harbour Bridge's deck if it's over (x, z)
+        const top = structuresAt(x, z).sort((a, b) => b.y - a.y)[0];
+        controllerManager.teleportActiveTo(x, z, heading, null, top?.sid ?? 0);
       },
       quality: () => ({ choice: quality.choice, level: quality.level, pixelRatio: renderer.getPixelRatio() }),
       trafficNear: (x, z, radius) => [...(trafficSystem?.cars ?? []), ...(trafficSystem?.buses ?? [])]
         .filter((v) => v.edge && Math.hypot(v.x - x, v.z - z) < radius)
-        .map((v) => ({ x: v.x, z: v.z, deck: !!v.edge.deck, speed: v.speed, struck: v.impactTime > 0 })),
+        .map((v) => ({ x: v.x, z: v.z, y: v.ry, deck: !!v.edge.deck, sid: v.edge.sid || 0, speed: v.speed, struck: v.impactTime > 0 })),
       audioState: () => audioSystem.context?.state ?? 'none',
       input: () => ({ ...controllerManager.keys }),
       player() {
@@ -1033,10 +1086,22 @@ async function initApp() {
         return {
           mode, x, y, z, heading: entity.heading, speed: entity.speed,
           ground: controllerManager.getGroundHeight(x, z, mode),
-          roof: controllerManager.roofHeightAt(x, z, y)
+          roof: controllerManager.roofHeightAt(x, z, y),
+          surface: entity.surface || 0, surfaceY: surfaceHeight(entity.surface || 0, x, z, entity.surfaceY ?? null), drawnY: entity.mesh?.position.y ?? null
         };
       },
-      camera: () => ({ aspect: cameraSystem.camera.aspect, fov: cameraSystem.camera.fov }),
+      // The camera as drawn, on the ground or structure under the player
+      camera: () => {
+        const { x, y, z } = cameraSystem.camera.position;
+        const player = controllerManager.getActiveEntity();
+        const sid = player.surface || 0;
+        const bodyY = surfaceHeight(sid, player.position.x, player.position.z, player.surfaceY ?? null) + Math.max(0, player.position.y);
+        return {
+          aspect: cameraSystem.camera.aspect, fov: cameraSystem.camera.fov, x, y, z, shelter: lightingSystem.shelter,
+          ceiling: Math.min(ceilingOver(sid, bodyY, player.position.x, player.position.z), ceilingOver(sid, bodyY, x, z))
+        };
+      },
+      route: (waypoints) => roadRoute(waypoints),
       // Averages since the previous read, so a script can measure one stretch of play
       frameCost() {
         const { simMs, submitMs, count, gaps } = debugFrames;
@@ -1076,6 +1141,17 @@ async function initApp() {
     // Two frames stay in flight: the completion signal arrives late, so waiting for every frame halves the frame rate.
     if (framesInFlight >= MAX_FRAMES_IN_FLIGHT) return;
 
+    // Scripts looking for flicker draw the same moment over and over (tools/play/flicker.mjs)
+    if (holdStill) {
+      lastTime = now;
+      renderFrame();
+      if (grabWanted) {
+        grabWanted(renderer.domElement.toDataURL('image/jpeg', 0.85));
+        grabWanted = null;
+      }
+      return;
+    }
+
     const frameStart = debugFrames && performance.now();
     const rawDt = (now - lastTime) * 0.001;
     lastTime = now;
@@ -1096,7 +1172,6 @@ async function initApp() {
       controllerManager.activeMode,
       cameraSystem.camera
     );
-    highwayTraffic?.update(dt, cameraSystem.camera, controllerManager.getActiveEntity(), controllerManager.activeMode);
     if (!document.hidden && now >= nextPlayerSave) {
       savePlayerState();
       nextPlayerSave = now + 5000;
@@ -1107,34 +1182,46 @@ async function initApp() {
     streetDetails?.update?.(cameraSystem.camera);
     mapSystem.update();
     audioSystem.update(dt, elapsed, cameraSystem.camera, lightingSystem.activePresetId === 'midnight');
-    // The world so far is the flat simulation. What gets drawn stands on the ground: everyone moved a moment ago, and
-    // the next frame rewrites these from their flat state.
-    const groundUnder = (entity) => {
-      const p = entity.position;
-      if (entity.deck) return bridgeAt(p.x, p.z)?.y ?? terrainHeight(p.x, p.z);
-      return terrainHeight(p.x, p.z);
-    };
+    // The world so far is the flat simulation. What gets drawn stands on its surface (js/surfaces.js): the ground, or
+    // the bridge, viaduct or tunnel it's on. Everyone moved a moment ago, and the next frame rewrites these from their
+    // flat state. A car rests on its four wheels, pitched and rolled to the surface under each.
+    const groundUnder = (entity) => surfaceHeight(entity.surface || 0, entity.position.x, entity.position.z, entity.surfaceY ?? null);
     for (const entity of Object.values(controllerManager.entities)) {
       const p = entity.position;
-      const ground = groundUnder(entity);
-      entity.mesh.position.y = p.y + ground;
-      if (entity.type === 'car' || entity.type === 'cyclist') {
-        const sin = Math.sin(entity.heading), cos = Math.cos(entity.heading);
-        let slope = terrainSlope(p.x, p.z, sin, cos);
-        if (entity.deck) {
-          const here = bridgeAt(p.x, p.z), ahead = bridgeAt(p.x + sin * 2.5, p.z + cos * 2.5);
-          slope = here && ahead ? (deckHeight(ahead.s) - deckHeight(here.s)) / 2.5 : 0;
-        }
-        entity.mesh.rotation.order = 'YXZ';
+      entity.mesh.rotation.order = 'YXZ';
+      if (entity.type === 'car') {
+        const rest = wheelContacts(p.x, p.z, entity.heading, entity.surface || 0, entity.surfaceY ?? null);
+        entity.mesh.position.y = p.y + rest.y;
+        entity.mesh.rotation.x = -rest.pitch;
+        entity.mesh.rotation.z = rest.roll;
+        continue;
+      }
+      entity.mesh.position.y = p.y + groundUnder(entity);
+      if (entity.type === 'cyclist') {
+        const slope = surfaceSlope(entity.surface || 0, p.x, p.z, Math.sin(entity.heading), Math.cos(entity.heading), entity.surfaceY ?? null);
         entity.mesh.rotation.x = -Math.atan(slope);
       }
     }
     // Following the player, the camera rides on their ground; a scenic one on its own
     const eye = cameraSystem.camera.position;
     const follows = cameraSystem.getActivePreset().category === 'follow';
-    const eyeGround = follows ? groundUnder(controllerManager.getActiveEntity()) : terrainHeight(eye.x, eye.z);
+    const followed = controllerManager.getActiveEntity();
+    const eyeGround = follows ? groundUnder(followed) : groundHeight(eye.x, eye.z);
     eye.y += eyeGround;
+    if (follows) {
+      // Under a tunnel's roof or a deck, the camera stays under it too, over the player and where it is itself
+      const sid = followed.surface || 0, { x, z } = followed.position;
+      const bodyY = eyeGround + Math.max(0, followed.position.y);
+      const top = Math.min(ceilingOver(sid, bodyY, x, z), ceilingOver(sid, bodyY, eye.x, eye.z));
+      if (eye.y > top - 0.6) eye.y = Math.max(bodyY + 0.8, top - 0.6);
+      // Inside a tunnel the sky's light fades out, and back in at the far portal
+      const shelterGoal = inTunnel(sid, x, z) && inTunnel(sid, eye.x, eye.z) ? 1 : 0;
+      lightingSystem.setShelter(lightingSystem.shelter + (shelterGoal - lightingSystem.shelter) * Math.min(1, dt * 2.5));
+    } else {
+      lightingSystem.setShelter(0);
+    }
     cameraSystem.camera.updateMatrixWorld();
+    updateTunnelMouths(eye.x, eye.z);
     shadowFocus.copy(cameraSystem.currentPos);
     shadowFocus.y += eyeGround;
     lightingSystem.update(shadowFocus);
@@ -1193,7 +1280,7 @@ async function initApp() {
       const activeEnt = controllerManager.getActiveEntity();
       const mode = controllerManager.activeMode;
       const kmh = Math.round(Math.abs(activeEnt.speed) * 3.6);
-      const altitude = Math.max(0, Math.round(activeEnt.position.y + terrainHeight(activeEnt.position.x, activeEnt.position.z)));
+      const altitude = Math.max(0, Math.round(activeEnt.position.y + surfaceHeight(activeEnt.surface || 0, activeEnt.position.x, activeEnt.position.z)));
 
       if (elFps) {
         elFps.textContent = String(currentFps);

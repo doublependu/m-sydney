@@ -72,9 +72,9 @@ const shortName = (name) => SHORT_WORDS.reduce((s, [re, to]) => s.replace(re, to
 const ROADS = [];
 {
   const RG = GEO.roadGraph;
-  for (const [a, b, ni, w, lanes, dir, inner, major] of RG.links) {
+  for (const [a, b, ni, w, lanes, dir, inner, major, , kind = 0] of RG.links) {
     const pts = [{ x: RG.nodes[a * 2], z: RG.nodes[a * 2 + 1] }, ...toPts(inner), { x: RG.nodes[b * 2], z: RG.nodes[b * 2 + 1] }];
-    ROADS.push({ name: RG.names[ni], short: shortName(RG.names[ni]), w, lanes, dir, major: !!major, highway: false, pts });
+    ROADS.push({ name: RG.names[ni], short: shortName(RG.names[ni]), w, lanes, dir, major: !!major, highway: false, kind, pts });
   }
   for (const [name, kind, flat] of GEO.scenery) {
     ROADS.push({ name, short: shortName(name), w: kind === 'p' ? 8 : 14, lanes: 0, dir: 0, major: kind !== 'p', highway: kind !== 'p', tunnel: kind === 't', pedestrian: kind === 'p', pts: toPts(flat) });
@@ -239,7 +239,7 @@ const TELEPORT_LOCATIONS = {
   centralStation: { x: 174, z: 1001, heading: 1.148 },
   kingsCross: { x: 1451, z: -8, heading: 2.5 },
   northSydney: { x: -541, z: -3570, heading: Math.PI },
-  harbourBridge: { x: -331, z: -1402, heading: 2.0 }
+  harbourBridge: { x: -312, z: -1422, heading: 2.87 } // on the deck's south end, heading north
 };
 const LANDMARKS = [
   { id: 'opera', name: 'Sydney Opera House', short: 'Opera House', x: 511, z: -1862, district: 'Bennelong Point' },

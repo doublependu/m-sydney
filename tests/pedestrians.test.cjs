@@ -130,6 +130,7 @@ const tslStub = {
     const storage = {
       value,
       toReadOnly() { return storage; },
+      setPBO() { return storage; },
       element(idxNode) {
         return new TNode(() => {
           const i = (arr(idxNode)[0] | 0) * 4;
@@ -407,7 +408,7 @@ const { PersonCrowd, PersonRig, buildPersonGeometry, createPersonMaterial } = lo
     'three/webgpu': { Vector3, Quaternion, Matrix4, BufferAttribute, BufferGeometry, Float32BufferAttribute, MeshStandardNodeMaterial, Mesh },
     'three/tsl': tslStub,
     'three/addons/utils/BufferGeometryUtils.js': { mergeGeometries },
-    './terrain.js': { terrainHeight: () => 0 }
+    './surfaces.js': { edgeHeight: () => 0, groundHeight: () => 0, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), structureAt: () => null, structuresAt: () => [], LINKS: [] }
   }
 });
 const STRIDE = 31;
@@ -426,6 +427,16 @@ test('PersonCrowd creates 2 LODs only when farDistance is finite and disables sh
   assert.equal(playerCrowd.lods.length, 1);
   assert.equal(playerCrowd.meshes[0].name, 'PeopleNear');
   assert.equal(playerCrowd.meshes[0].castShadow, true);
+});
+
+test('PersonCrowd poses reach the texture WebGL2 reads them through, as well as the storage buffer', () => {
+  const crowd = new PersonCrowd(4, { farDistance: Infinity });
+  const attr = crowd.lods[0].pose.value;
+  attr.pbo = { needsUpdate: false }; // three.js adds this when it builds the shader on WebGL2
+  crowd.begin();
+  crowd.add({ pose: new Float32Array(STRIDE * 4), x: 0, z: 0 }, 0);
+  crowd.end();
+  assert.equal(attr.pbo.needsUpdate, true);
 });
 
 test('PersonCrowd keeps 1 warm-up instance for 2 updates, then hides empty LODs with zero uploads', () => {
@@ -649,7 +660,8 @@ test('poseCharacters skips stationary inactive cyclist IK/uploads and culls park
     imports: {
       'three/webgpu': {},
       './city-config.js': { SPAWN: { x: 0, z: 0, heading: 0 }, landAt: () => true, isTypingInField: () => false },
-      './bridge.js': { HALF_WIDTH: 12.5, updateDeckState: () => null },
+      './bridge.js': { DECK_SID: 0 },
+      './surfaces.js': { edgeHeight: () => 0, groundHeight: () => 0, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), structureAt: () => null, structuresAt: () => [], LINKS: [] },
       './terrain.js': { terrainHeight: () => 0, terrainSlope: () => 0 },
       './tsl-materials.js': {},
       './cars.js': {},

@@ -209,6 +209,7 @@ class LightingSystem {
     this.hemiLight = new THREE.HemisphereLight(0x9abbe6, 0xc88a62, 1.05);
     this.hemiLight.position.set(0, 300, 0);
     this.scene.add(this.hemiLight);
+    this.shelter = 0;
 
     this.applyPreset('golden');
 
@@ -260,13 +261,11 @@ class LightingSystem {
     this.activePresetId = p.id;
 
     this.sunLight.color.setHex(p.sunColor);
-    this.sunLight.intensity = p.sunIntensity;
     this.sunLight.position.copy(p.sunDir);
     this.sunLight.updateMatrixWorld();
 
     this.hemiLight.color.setHex(p.hemiSky);
     this.hemiLight.groundColor.setHex(p.hemiGround);
-    this.hemiLight.intensity = p.hemiIntensity;
 
     this.scene.fog.color.setHex(p.fogColor);
     this.scene.fog.density = p.fogDensity;
@@ -291,8 +290,24 @@ class LightingSystem {
     cityUniforms.uRoadWetness.value = p.roadWetness;
     cityUniforms.uCanyonBounce.value = p.canyonBounce;
 
-    this.scene.environmentIntensity = p.envIntensity;
+    this.levels = { sun: p.sunIntensity, hemi: p.hemiIntensity, env: p.envIntensity };
+    this.applyShelter();
     this.bakeEnvironmentMap();
+  }
+
+  /** How far under cover the view is, 0 under open sky to 1 well inside a tunnel: the sun, sky and their reflections
+   *  are turned down, leaving the tunnel's own lights */
+  setShelter(amount) {
+    if (Math.abs(amount - this.shelter) < 1e-3) return;
+    this.shelter = amount;
+    this.applyShelter();
+  }
+
+  applyShelter() {
+    const s = this.shelter;
+    this.sunLight.intensity = this.levels.sun * (1 - 0.95 * s);
+    this.hemiLight.intensity = this.levels.hemi * (1 - 0.75 * s);
+    this.scene.environmentIntensity = this.levels.env * (1 - 0.75 * s);
   }
 
   update(focusPos) {

@@ -32,4 +32,7 @@ Can you study the map and make sure you get the 3D structure, especially the hei
     - etc
     - whatever that makes the current scene short of its full potential
     - when the full potential is reached, hide the loading bar
+2. Whatever leftover items in ai/next_0.md that are related to what I described in this prompt
+
+
 

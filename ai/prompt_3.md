@@ -30,4 +30,7 @@ I also notice a few issues:
     - worth looking into what's going on here
 4. Traffic lights seem to take forever to turn green even when cars from other directions have stopped moving
 5. Repeated run of the full test is still slow, when possible, perhaps you can keep implementing while waiting for tests to finish
+    - another option, instead of testing with manual play to see if a road can be driven well
+    - maybe you can come up with some criteria on the "smoothness" of a road for it to drive hassle-free
+    - There are still protrusion and artificial "bumps" in some roads that can stop an otherwise good drive. 
 

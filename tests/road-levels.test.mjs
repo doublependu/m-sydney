@@ -234,3 +234,13 @@ test('wheels stay on the level the car is on, where sunk roads overlap at differ
   const rest = wheelContacts(x, z, 3.1, 0, y);
   assert.ok(Math.abs(rest.y - y) < 0.6, `a car on the ground at ${y.toFixed(2)} is drawn at ${rest.y.toFixed(2)}`);
 });
+
+test('a road over a creek with no bridge on the map doesn\'t stop you, and the water beside it still does', async () => {
+  const { landAt } = await import('../js/city-config.js');
+  const { clearOfWater } = await import('../js/surfaces.js');
+  // Centenary Drive, which crosses water here with no bridge
+  const [x, z] = [1774, -4373];
+  assert.equal(landAt(x, z) && landAt(x + 2.5, z) && landAt(x - 2.5, z) && landAt(x, z + 2.5) && landAt(x, z - 2.5), false, 'the map has changed: pick another crossing');
+  assert.equal(clearOfWater(x, z), true);
+  assert.equal(clearOfWater(1000, -1700), false, 'the middle of the harbour');
+});

@@ -114,7 +114,14 @@ async function followRoute(human, page, waypoints, { limit = 14, resume = false 
     // On the fast clock nothing's built between steps, so the map has to be given the time as the car goes, or it drives off the end of it
     if (human.fast && Math.hypot(state.x - readyAt.x, state.z - readyAt.z) > 300) {
       readyAt = state;
-      await page.evaluate(([x, z]) => window.__gameDebug.mapReady(x, z), [state.x, state.z]);
+      await human.releaseAll();
+      await page.evaluate(async ([x, z]) => {
+        const debug = window.__gameDebug;
+        // It's the real clock's frames that build it
+        debug.setFast(false);
+        await debug.mapReady(x, z);
+        debug.setFast(true);
+      }, [state.x, state.z]);
     }
     // At driving pace nothing gains or loses 3 m of height between two looks, on any road, unless it has jumped a level
     if (Math.abs(state.surfaceY - lastY) > 3) out.levelJumps++;

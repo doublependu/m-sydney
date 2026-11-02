@@ -20,7 +20,7 @@ const LANE_LEVEL = 4; // m: how far above or below your level a road can be and 
 const LEVEL_COST = 3; // m of distance a metre of height counts as, when choosing between roads on nearby levels
 const SEARCH = 3000; // m: the furthest anyone is taken
 
-const SHORE = 2.5; // js/controllers.js keeps everyone this far from the water
+const SHORE = 2.5; // js/surfaces.js keeps everyone this far from the water, and nobody arrives on a road over it
 const clearOfWater = (x, z) => [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].every(([u, v]) => landAt(x + u * SHORE, z + v * SHORE));
 
 /** Could someone walk here: on a kerbed island of footpath or park, not a traffic island, not in the water? */

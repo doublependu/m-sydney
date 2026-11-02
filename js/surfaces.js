@@ -277,12 +277,20 @@ function project(seg, x, z) {
 }
 
 // Ground roads under (x, z): whether it's on one's carriageway
-function onGroundRoad(x, z) {
+// `margin` can be as much as segCells holds around a road: 2 m
+function onGroundRoad(x, z, margin = 0.6) {
   for (const seg of segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || []) {
     if (seg.link.kind) continue;
-    if (project(seg, x, z).d < seg.link.width / 2 + 0.6) return true;
+    if (project(seg, x, z).d < seg.link.width / 2 + margin) return true;
   }
   return false;
+}
+
+// How far from the water a car, a rider or a walker has to stay. A road at ground level that meets water crosses it on a
+// culvert the map doesn't show, as most creeks are crossed, so the road and its edges count as land.
+const SHORE_CLEARANCE = 2.5;
+function clearOfWater(x, z) {
+  return [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].every(([u, v]) => landAt(x + u * SHORE_CLEARANCE, z + v * SHORE_CLEARANCE)) || onGroundRoad(x, z, 2);
 }
 
 // --- The ground --------------------------------------------------------------------------------------------------------
@@ -856,6 +864,6 @@ function roadRoute(waypoints, step = 8) {
 
 export {
   setFloor, clearFloor, DECK_DEPTH, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, deriveTunnels, linkById, SAME_LEVEL, SEGMENTS, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
-  edgeHeight, floorBelow, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, roadHeight, roadRoute, sameLevel,
+  clearOfWater, edgeHeight, floorBelow, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, roadHeight, roadRoute, sameLevel,
   structureAt, structuresAt, surfaceHeight, surfaceSlope, tunnelCovered
 };

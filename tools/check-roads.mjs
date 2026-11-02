@@ -13,7 +13,7 @@
 // usage: node tools/check-roads.mjs [--json] [--strict] [--list] [--tiles=0_-2,1_-2]
 console.info = () => {};
 const { heldList, heldTiles } = await import('../js/geodata.js');
-const { LINKS, chooseSurface, linkById, onGroundRoad, roadHeight } = await import('../js/surfaces.js');
+const { LINKS, chooseSurface, clearOfWater, linkById, onGroundRoad, roadHeight } = await import('../js/surfaces.js');
 const { GroundCells, SIDEWALK_TOP, addSurface, groundLinks, wheelContacts } = await import('../js/ground-geometry.js');
 const { blockAt } = await import('../js/city-config.js');
 const { buildRoadNetworkSteps } = await import('../js/road-network.js');
@@ -175,6 +175,7 @@ function walk(path, sid0, y0, name, out) {
     y = here.y; sid = here.sid;
     ys.push(y);
     if (sid) { prevRoll = null; continue; }
+    if (!clearOfWater(p.x, p.z)) out.water.add(p.x, p.z, name);
     if (out.buildings) {
       for (const [a, b] of BODY) {
         const hit = buildingAt(p.x + p.ux * b + p.uz * a, p.z + p.uz * b - p.ux * a);
@@ -198,7 +199,7 @@ function walk(path, sid0, y0, name, out) {
     if (step > 0.05) out.step.add(path[i].x, path[i].z, name, step);
   }
 }
-const walker = (rollLimit) => ({ metres: 0, stops: new Places(), step: new Places(), roll: new Places(), rollLimit, buildings: new Places(), kerbs: new Places(), kerbMiddle: 0, touched: new Set() });
+const walker = (rollLimit) => ({ metres: 0, stops: new Places(), water: new Places(), step: new Places(), roll: new Places(), rollLimit, buildings: new Places(), kerbs: new Places(), kerbMiddle: 0, touched: new Set() });
 const over = (places, limit) => places.all.filter((w) => w[0] > limit).length;
 {
   const out = walker(2);
@@ -218,6 +219,7 @@ const over = (places, limit) => places.all.filter((w) => w[0] > limit).length;
   report.lanes = {
     km: +(out.metres / 1000).toFixed(0),
     stops: out.stops.summary(),
+    water: out.water.summary(),
     step: { over5cm: over(out.step, 0.05), over25cm: over(out.step, 0.25), ...out.step.summary() },
     roll: { over2: over(out.roll, 2), over4: over(out.roll, 4), ...out.roll.summary() },
     buildings: { touched: out.touched.size, ...out.buildings.summary() },
@@ -347,6 +349,7 @@ else {
   console.log(`grade     ${r.grade.km} km: ${r.grade.over3}% change over 3%, ${r.grade.over6}% over 6%, worst ${r.grade.worst}%`);
   console.log(`          ${where(r.grade)}`);
   console.log(`stops     ${r.lanes.km} lane km: ${r.lanes.stops.metres} m at ${r.lanes.stops.places} places${where(r.lanes.stops)}`);
+  console.log(`water     ${r.lanes.water.metres} m of lane the water test would stop a car on, at ${r.lanes.water.places} places${where(r.lanes.water)}`);
   console.log(`step      ${r.lanes.step.over5cm} m over 5 cm, ${r.lanes.step.over25cm} m over 25 cm, at ${r.lanes.step.places} places, worst ${r.lanes.step.worst} m${where(r.lanes.step)}`);
   console.log(`roll      ${r.lanes.roll.over2} m over 2% a metre, ${r.lanes.roll.over4} m over 4%, at ${r.lanes.roll.places} places, worst ${r.lanes.roll.worst}%${where(r.lanes.roll)}`);
   console.log(`buildings ${r.lanes.buildings.metres} m at ${r.lanes.buildings.places} places, ${r.lanes.buildings.touched} buildings${where(r.lanes.buildings)}`);
@@ -371,6 +374,7 @@ if (strict) {
     [r.grade.over3, 2.3, 'grade changing over 3%, %'],
     [r.grade.over6, 0.45, 'grade changing over 6%, %'],
     [r.lanes.stops.metres, 700, 'lane metres with no surface to stop on'],
+    [r.lanes.water.metres, 0, 'lane metres the water test would stop a car on'],
     [r.lanes.step.over25cm, 320, 'lane metres with a step over 25 cm'],
     [r.lanes.roll.over4, 3900, 'lane metres with the roll changing over 4% a metre'],
     [r.lanes.buildings.metres, 30, 'lane metres with a building under the car'],

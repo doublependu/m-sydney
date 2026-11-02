@@ -53,6 +53,7 @@ const report = {
   lanes: {
     km: sum((r) => r.lanes.km),
     stops: { metres: sum((r) => r.lanes.stops.metres), places: sum((r) => r.lanes.stops.places), where: places((r) => r.lanes.stops) },
+    water: { metres: sum((r) => r.lanes.water.metres), places: sum((r) => r.lanes.water.places), where: places((r) => r.lanes.water) },
     step: { over5cm: sum((r) => r.lanes.step.over5cm), over25cm: sum((r) => r.lanes.step.over25cm), worst: worst((r) => r.lanes.step.worst) },
     roll: { over2: sum((r) => r.lanes.roll.over2), over4: sum((r) => r.lanes.roll.over4), worst: worst((r) => r.lanes.roll.worst) },
     buildings: { metres: sum((r) => r.lanes.buildings.metres), places: sum((r) => r.lanes.buildings.places) },
@@ -69,6 +70,7 @@ else {
   console.log(`lean      ${report.lean.km} km: ${report.lean.over4}% over 4%, ${report.lean.over6}% over 6%, ${report.lean.over10}% over 10%, worst ${report.lean.worst}%`);
   console.log(`grade     ${report.grade.over3}% change over 3%, ${report.grade.over6}% over 6%, worst ${report.grade.worst}%`);
   console.log(`stops     ${l.km} lane km: ${l.stops.metres} m at ${l.stops.places} places  ${l.stops.where.map(([, x, z, n]) => `${n} (${x}, ${z})`).join('; ')}`);
+  console.log(`water     ${l.water.metres} m of lane the water test would stop a car on, at ${l.water.places} places`);
   console.log(`step      ${l.step.over5cm} m over 5 cm, ${l.step.over25cm} m over 25 cm, worst ${l.step.worst} m`);
   console.log(`roll      ${l.roll.over2} m over 2% a metre, ${l.roll.over4} m over 4%, worst ${l.roll.worst}%`);
   console.log(`buildings ${l.buildings.metres} m at ${l.buildings.places} places`);

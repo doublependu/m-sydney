@@ -1,13 +1,13 @@
 # Next 3: Stop 2, Palm Beach and Cronulla are ready for your phone
 
-Answers `ai/plan_3.md`, up to its second stop. **Phase 16a is done, with the Palm Beach drive still to confirm (below).** The map is now Parramatta to the sea, Palm Beach to Cronulla, and the three parts moved at Stop 1 are done. Nothing has been committed or deployed: that's yours. I won't start Katoomba until you say so.
+Answers `ai/plan_3.md`, up to its second stop. **Phase 16a is done.** The map is now Parramatta to the sea, Palm Beach to Cronulla, and the three parts moved at Stop 1 are done. You committed the map as `f24faea`. The water fix below came after that and isn't committed. I won't start Katoomba until you say so.
 
 ## What you need to do
 
-1. **Commit and deploy.** `public/tiles/` is 66 MB and `public/map/` 17 MB. The whole deploy is 3,983 files and 85 MB, against Cloudflare's limits of 20,000 files and 25 MiB a file. The largest file is 10.6 MB. There are new untracked files to add.
+1. **Commit and deploy.** `public/tiles/` is 66 MB and `public/map/` 17 MB. The whole deploy is 3,983 files and 85 MB, against Cloudflare's limits of 20,000 files and 25 MiB a file. The largest file is 10.6 MB. There are new untracked files to add. The water fix below changes code only, not the tiles.
 2. **10 minutes on your phone,** with `?stats=1`:
    - Open it fresh, and note the load time.
-   - Teleport or drive to Palm Beach and to Cronulla. The menu now also has Dee Why, Hornsby, Parramatta, Bankstown and Sutherland. Drive a stretch of Pittwater Rd if you can, since that's the one drive I couldn't confirm.
+   - Teleport or drive to Palm Beach and to Cronulla. The menu now also has Dee Why, Hornsby, Parramatta, Bankstown and Sutherland. Drive a stretch of Pittwater Rd if you can: a creek crossing used to stop the car there.
    - Open the map, zoom right out, and search for a street far from you. All of that is new.
    - Send me the readout, and whether the tab was killed.
    - **Please also tell me how the road surface, lights and buttons feel, and whether the drive is smooth.** That wasn't in your last report, and most of the road limits are still unmet, so your opinion of the drive is what decides whether road work comes before Katoomba.
@@ -71,11 +71,19 @@ These are slower than Inner Sydney's, which is the plan's "acceptable" stretched
 |---|---|---|
 | `mode-map` | Failed: a check fired behind the teleport's fade, where the coarser ground under a tile about to arrive is up to 8 m off | Check fixed, passes |
 | `crash-recovery` | Failed, then passed on rerun | Passes |
-| `long-drive` to Bondi | Failed on the fast clock, which outran the map | Passes in real time, no restarts, 558 s |
-| `long-drive-south` to Cronulla | Passed, 3 restarts | |
-| `long-drive-north` to Palm Beach | **Failed** | See below |
+| `long-drive` to Bondi | Failed on the fast clock, which outran the map | Passes, no restarts |
+| `long-drive-south` to Cronulla | Passed, 3 restarts | Passes, 1 restart |
+| `long-drive-north` to Palm Beach | Failed on the fast clock, then at a creek on Pittwater Rd | Fixed, passes, 4 restarts |
 
-**The drive to Palm Beach hasn't been completed.** On the fast clock the scripted car gets stuck at (2128, -8680) in Seaforth, with no tiles built around it, even when it stops to wait for the map. In real time it got past there, and with one car on the map it drives through at 24 m/s, so the road's fine and this looks like the fast clock starving the map's builder. I haven't found out why. In real time it got as far as Dee Why, where a bus knocked it onto a footpath, and it ran out of its 45 minutes. It now picks up where it was knocked off, and a real-time run with that was still going when I wrote this.
+**The cause of the fast clock's failures:** the map only builds on the real clock's frames, so on the fast clock the car outran it, and waiting didn't help. The drives now switch to real time while they wait for the map, and pick up where they were knocked off. That way Cronulla passes in 510 s with 1 restart, and Bondi in 190 s with none, both on the final tiles.
+
+**The drive to Palm Beach:** passes on the fast clock in 562 s, with 4 restarts and no level jumps. It has passed once, and not in real time: I stopped the real-time run after about an hour, as it was still on the old build.
+
+With the map waits fixed it still failed, stuck at (5780, -14977) after 12 restarts. Pittwater Rd crosses a creek there with no bridge on the map, and the test that keeps everyone out of the water stopped the car on the road. The same thing happened at 95 places across the map, about 1.7 km of road, including Pittwater Rd twice, Hume Hwy, Epping Rd and Foreshore Rd. `check-roads` never looked at water, so it didn't show up.
+
+A road at ground level, and 2 m either side of it, now counts as land (`clearOfWater` in `js/surfaces.js`), and the water beside it still stops you. `check-roads` now tests for this: 0 m across the whole map, and anything over 0 on the CBD sample fails `npm run check`. The whole-map check is otherwise unchanged, at 1,791 of 1,811 tiles.
+
+**Still unknown:** the test counts restarts but doesn't record where they happen, so I don't know what caused these 4.
 
 ## What changed since Stop 1
 
@@ -94,7 +102,8 @@ Your 836 ms at 0:26 came just before the city finished. On the phone profile the
 Everything under "What isn't right yet" for Stop 1 below still stands, as do the road limits. New since then:
 
 - **The first look at far suburbs is rough up close.** Houses in new suburbs still look like the CBD's brick blocks.
-- **A brown wall by a lagoon.** At about (5760, -15005) on Pittwater Rd, Dee Why, the shore eases down to sea level in a way that left a tall bare wall by the lawn. I saw it in a recording and haven't fixed it. There may be more beside the new rivers.
+- **A brown wall by a creek.** At about (5760, -15005) beside Pittwater Rd, Dee Why, there's a bare brown wall by the lawn, along the creek. It isn't what stopped the car: that was the water test, fixed above. It still looks wrong, and I haven't confirmed what draws it, as the ground heights there are gentle. There may be more beside the new rivers.
+- **Test screenshots are black behind the HUD.** 38 of the last 41 saved by `play` and `viewports` are, in real time as well as on the fast clock. It looks like `page.screenshot` doesn't catch the WebGPU canvas here: the game's own `grab()` shows the world normally. So a report's screenshot says nothing about what was on screen.
 - **Traffic is slower out here,** as in the table above.
 - **Memory hasn't been measured on the phone profile on this map.** The last figures, 350-440 MB, are from Inner Sydney, and the long flight on the laptop profile stayed flat.
 

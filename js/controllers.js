@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { CITY_BOUNDS, SPAWN, isTypingInField, blockAt, landAt } from './city-config.js';
+import { CITY_BOUNDS, SPAWN, isTypingInField, blockAt } from './city-config.js';
 import { cityUniforms, createCarPaintMaterial, createContactShadowMaterial } from './tsl-materials.js';
 import {
   BODY_SPECS,
@@ -22,13 +22,10 @@ import { anchorToOrigin } from './world-origin.js';
 import { polygonContact, polygonContains } from './building-collision.js';
 import { DECK_SID } from './bridge.js';
 import { FLY, arrivalFor, holdOnFootway } from './arrivals.js';
-import { chooseSurface, floorBelow, groundHeight, structureAt, surfaceHeight } from './surfaces.js';
+import { chooseSurface, clearOfWater, floorBelow, groundHeight, structureAt, surfaceHeight } from './surfaces.js';
 
 // Player models, animation and movement for walking, driving, cycling and flying.
 
-// How far from the water a car, a rider or a walker has to stay
-const SHORE_CLEARANCE = 2.5;
-const clearOfWater = (x, z) => [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].every(([u, v]) => landAt(x + u * SHORE_CLEARANCE, z + v * SHORE_CLEARANCE));
 const groundCollider = { type: 'ground' };
 
 const CAR_DRIVE = {

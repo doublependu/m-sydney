@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { edgeHeight, groundRoadAt } from './surfaces.js';
+import { edgeHeight, groundRoadAt, roadHeight } from './surfaces.js';
 import { heldTags } from './geodata.js';
 
 // Road paint from OpenStreetMap's tags (js/road-paint.js draws the rest): red bus lanes, green cycle lanes and cycleways,
@@ -81,7 +81,8 @@ function addRoadWords(group) {
   const word = (w, x, z, ux, uz, along, across) => {
     const row = WORDS.indexOf(w);
     if (row < 0) return;
-    const y = (groundRoadAt(x, z) ? edgeHeight(null, x, z) : edgeHeight(null, x, z)) + 0.02;
+    const road = groundRoadAt(x, z);
+    const y = (road ? roadHeight(road, x, z) : edgeHeight(null, x, z)) + 0.02;
     const k = positions.length / 3;
     // The text reads from a driver's seat coming along (ux, uz): its top is further away
     for (const [a, b] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {

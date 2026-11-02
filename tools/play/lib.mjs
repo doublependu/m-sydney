@@ -22,8 +22,8 @@ const CONTENT_TYPES = {
 };
 
 // Stands in for Cloudflare: brotli on text, already-compressed files as they are.
-export function serveDist(port = 0) {
-  const root = join(ROOT, 'dist');
+// `root`: a copy of the build, so a run isn't disturbed by the next rebuild
+export function serveDist(port = 0, root = join(ROOT, 'dist')) {
   if (!existsSync(join(root, 'index.html'))) throw new Error('No build found: run "npm run build" first.');
   const compressed = new Map();
   const server = http.createServer((req, res) => {

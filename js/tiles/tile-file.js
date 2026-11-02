@@ -1,5 +1,5 @@
-// One tile's file (tools/build-tiles.mjs): a 16 byte head giving the length of each part, then JSON for what's sparse,
-// and binary for buildings, trees and heights.
+// One tile's file (tools/build-tiles.mjs): a 20 byte head giving the length of each part, then JSON for what's sparse,
+// and binary for buildings, trees, heights and how far the ground moves to meet the roads.
 
 function reader(data, start, end) {
   let cursor = start;
@@ -93,16 +93,33 @@ function unpackHeights(data, start, end, size) {
   return out;
 }
 
+// How far the ground moves to meet the roads: steps as differences along each row. None until the tiles have been through it.
+function unpackGround(data, start, end, size) {
+  if (start === end) return null;
+  const r = reader(data, start, end);
+  const out = new Int16Array(size * size);
+  for (let j = 0; j < size; j++) {
+    let v = 0;
+    for (let i = 0; i < size; i++) {
+      v += r.sint();
+      out[j * size + i] = v;
+    }
+  }
+  return out;
+}
+
 /** What a tile's (unzipped) file holds */
-function unpackTile(data, heightSize) {
-  const head = new DataView(data.buffer, data.byteOffset, 16);
-  const json = 16 + head.getUint32(0, true), buildings = json + head.getUint32(4, true);
+function unpackTile(data, heightSize, groundSize = 0) {
+  const head = new DataView(data.buffer, data.byteOffset, 20);
+  const json = 20 + head.getUint32(0, true), buildings = json + head.getUint32(4, true);
   const trees = buildings + head.getUint32(8, true), heights = trees + head.getUint32(12, true);
-  if (heights !== data.length) throw new Error('Tile data is the wrong length.');
-  const tile = JSON.parse(new TextDecoder().decode(data.subarray(16, json)));
+  const ground = heights + head.getUint32(16, true);
+  if (ground !== data.length) throw new Error('Tile data is the wrong length.');
+  const tile = JSON.parse(new TextDecoder().decode(data.subarray(20, json)));
   tile.buildings = unpackBuildings(data, json, buildings);
   tile.trees = unpackTrees(data, buildings, trees);
   tile.heights = unpackHeights(data, trees, heights, heightSize);
+  tile.ground = unpackGround(data, heights, ground, groundSize);
   return tile;
 }
 

@@ -27,6 +27,7 @@ import {
   smoothstep
 } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { origin } from './world-origin.js';
 
 // Skinned characters for pedestrian-system.js and the player controllers.
 // Each crowd level uses one instanced draw, with 15-bone poses in a storage buffer and seeded appearance.
@@ -1000,9 +1001,14 @@ class PersonCrowd {
     const offset = l.count * STRIDE * 4;
     const pose = l.pose.value.array;
     pose.set(rig.pose, offset);
-    // The rig walks on the flat simulation: the crowd is drawn on the ground
+    // The rig walks on the flat simulation: the crowd is drawn on the ground. Its pose is from the origin as it was when it was last written.
     const ground = groundHeight(rig.x, rig.z);
-    for (let b = 0; b < BONE_COUNT; b++) pose[offset + b * 8 + 5] += ground;
+    const dx = rig.poseOriginX - origin.x, dz = rig.poseOriginZ - origin.z;
+    for (let b = 0; b < BONE_COUNT; b++) {
+      pose[offset + b * 8 + 4] += dx;
+      pose[offset + b * 8 + 5] += ground;
+      pose[offset + b * 8 + 6] += dz;
+    }
     l.count++;
   }
 
@@ -1240,6 +1246,7 @@ class PersonRig {
     this.diveGround = 0;
     this.feet = [makeFoot(1), makeFoot(-1)];
     this.pose = new Float32Array(STRIDE * 4);
+    this.poseOriginX = this.poseOriginZ = 0;
     this.pose.set([seed, this.female, girth, hair], (STRIDE - 1) * 4);
   }
 
@@ -1628,9 +1635,11 @@ class PersonRig {
     a[o + 1] = q.y;
     a[o + 2] = q.z;
     a[o + 3] = q.w;
-    a[o + 4] = p.x - _v2.x;
+    this.poseOriginX = origin.x;
+    this.poseOriginZ = origin.z;
+    a[o + 4] = p.x - _v2.x - origin.x;
     a[o + 5] = p.y - _v2.y;
-    a[o + 6] = p.z - _v2.z;
+    a[o + 6] = p.z - _v2.z - origin.z;
     a[o + 7] = s;
   }
 
@@ -1790,6 +1799,8 @@ class PersonRig {
     this.run = 0;
     root.updateWorldMatrix(true, false);
     root.matrixWorld.decompose(_rootPos, _qRoot, _v);
+    _rootPos.x += origin.x; // back into the game's frame, as everything writing a bone is
+    _rootPos.z += origin.z;
     const toWorld = (local) => local.applyQuaternion(_qRoot).add(_rootPos);
 
     // Pelvis on the saddle, leaning forward; chest further forward, head up looking ahead

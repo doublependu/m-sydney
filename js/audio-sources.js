@@ -1,4 +1,4 @@
-import { signalPhase, walkSignal } from './city-config.js';
+import { walkSignal } from './city-config.js';
 
 const MOTOR_RANGE = 180;
 const SIREN_RANGE = 220;
@@ -101,6 +101,7 @@ class CityAudioSources {
 
   // Traffic and street furniture arrive after the game is playable
   attachCity({ trafficSystem, streetDetails }) {
+    this.traffic = trafficSystem;
     this.cars = trafficSystem.cars;
     this.buses = trafficSystem.buses;
     this.peds = trafficSystem.peds;
@@ -158,7 +159,7 @@ class CityAudioSources {
       if (d2 <= MOTOR_RANGE * MOTOR_RANGE) {
         this.snapshot.traffic += (1 - d2 / (MOTOR_RANGE * MOTOR_RANGE)) * (0.2 + 0.8 * unit(v.speed / 12));
       }
-      const green = !v.edge.to.signal || signalPhase(elapsed, v.edge.axisIndex === 0) === 'green';
+      const green = !v.edge.to.signal || this.traffic.phaseOf(v.edge) === 'green';
       const blocked = v.wait > 2 && v.speed < 0.5 && v.gap < 8 && v.leaderSpeed < 0.5 && green && !v.conn && !v.yielding;
       this.motor(v, v.bus ? 'bus' : v.engine, v.x, 0.7, v.z,
         v.speed, roadLoad(v.speed, v.acc, v.driver.a), v.yaw + v.yawOffset, !!v.isPolice, false, seedAt(seedOffset + i), blocked);
@@ -218,7 +219,8 @@ class CityAudioSources {
       item.x = site.x;
       item.y = site.y;
       item.z = site.z;
-      item.walk = walkSignal(elapsed, site.isAvenue);
+      const heads = this.traffic?.headsAt(site.jx, site.jz);
+      item.walk = heads ? heads.lights.mayWalk(site.isAvenue ? heads.side : heads.main) : walkSignal(elapsed, site.isAvenue);
       item.seed = seedAt(10000 + i);
     }
     return this.snapshot;

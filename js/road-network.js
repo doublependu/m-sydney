@@ -22,6 +22,7 @@ const LANE_CLEAR = 1.2; // half width each lane keeps free of obstacles
 const MAX_ON_KERB = 0.7;
 const CROSSWALK = 2.5; // depth between an intersection box and its stop lines
 const RIM = 0.85; // of an area's radius
+const MAX_STRAY = 1; // m a straight lane may leave the curve of its road
 
 // `area`: { x, z, radius }, the roads to take in. All those held if there's none.
 function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null) {
@@ -221,6 +222,7 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
       // stations along it: the ends and every bend over 12° at least 15 m from the last station and from the far end
       const stations = [A];
       let last = pts[0];
+      let lastAt = 0;
       let rest = l.len;
       for (let k = 1; k < pts.length - 1; k++) {
         const p1 = pts[k];
@@ -230,12 +232,16 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
         let turn = Math.abs(Math.atan2(p2.z - p1.z, p2.x - p1.x) - Math.atan2(p1.z - last.z, p1.x - last.x));
         if (turn > Math.PI) turn = 2 * Math.PI - turn;
         // (every bend off the ground: a long gentle curve isn't a sharp one, but a chord across it misses the deck, and
-        // its height changes along it)
-        if ((turn < 12 * DEG && !l.sid) || d0 < 15 || rest < 15) continue;
+        // its height changes along it. On the ground too, once a chord would stray over a metre from the road: lanes would leave it)
+        let strays = false;
+        const cx = p2.x - last.x, cz = p2.z - last.z, cl = Math.hypot(cx, cz) || 1;
+        for (let m = lastAt + 1; m <= k && !strays; m++) strays = Math.abs((pts[m].x - last.x) * cz - (pts[m].z - last.z) * cx) / cl > MAX_STRAY;
+        if ((turn < 12 * DEG && !l.sid && !strays) || d0 < 15 || rest < 15) continue;
         const s = { x: p1.x, z: p1.z, hx: 0, hz: 0, signal: false, in: [], out: [], general: true, shape: true };
         nodes.push(s);
         stations.push(s);
         last = p1;
+        lastAt = k;
       }
       stations.push(B);
       const lanes = lanesOf(l);
@@ -868,7 +874,10 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
       const d = Math.hypot(m.x - s.x, m.z - s.z);
       if (d < best && !m.shape) { best = d; n = m; }
     }
-    if (n) n.signal = true;
+    if (n) {
+      n.signal = true;
+      (n.points ||= []).push(s); // the heads drawn for it (js/street-details.js)
+    }
   }
 
   yield;

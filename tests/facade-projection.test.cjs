@@ -43,7 +43,7 @@ const buildFrame = vm.runInNewContext(`(function (normalLocal, modelNormalMatrix
   ${frame[0]}
   return {
     normal: facadeWorldNormal, axis: facadeAlongZ,
-    project(boxLocal, normalGeometry, positionWorld) { ${projection} return { alongZ, uCoord, isRoof }; },
+    project(boxLocal, normalGeometry, positionWorld) { const patternXZ = { x: positionWorld.x, y: positionWorld.z }; ${projection} return { alongZ, uCoord, isRoof }; },
     interior(positionWorld, cameraPosition) { ${interior} return { dirX, dirY, dirZ }; }
   };
 })`, {

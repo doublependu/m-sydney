@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { Fn, attribute, color, cameraPosition, float, floor, fract, fwidth, length, mix, positionWorld, sin, smoothstep, step, vec2, dot } from 'three/tsl';
 import { cityUniforms } from './tsl-materials.js';
+import { patternXZ } from './world-origin.js';
 
 // The far model of a building: up to six points and a height, in the plain colours of its facade. Beyond the detail range
 // one of these meshes stands in for each 1 km of normal buildings: a fraction of the triangles and far cheaper to shade.
@@ -49,7 +50,7 @@ function outlineMaterial(hideWhereShown) {
   const wall = attribute('outlineColor', 'vec3');
   const isRoof = step(0.5, attribute('normal', 'vec3').y);
   // Storeys and bays, settling to their average once they're too small to see: so the swap from the full model is gentle
-  const storey = positionWorld.y.div(3.7), bay = positionWorld.x.add(positionWorld.z).div(5);
+  const storey = positionWorld.y.div(3.7), bay = patternXZ.x.add(patternXZ.y).div(5);
   const fade = float(1).sub(smoothstep(0.2, 0.7, fwidth(storey).add(fwidth(bay)))).mul(float(1).sub(isRoof));
   const rows = smoothstep(0.25, 0.35, fract(storey)).mul(float(1).sub(smoothstep(0.75, 0.85, fract(storey))));
   material.colorNode = wall.mul(mix(float(1), float(0.72).add(rows.mul(0.4)), fade));

@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { abs, dot, positionWorld, uniform, vec2 } from 'three/tsl';
 import { PORTALS, TUNNEL_HEIGHT } from './surfaces.js';
+import { onOriginMove, origin } from './world-origin.js';
 
 // The ground over a tunnel's mouth. The ground is a lattice of points metres apart: between the cutting's floor and the
 // ground over the tube it can only slope, and that slope would close the mouth. So the ground's materials leave out
@@ -34,6 +35,7 @@ function outsideTunnelMouths() {
 
 /** Points the boxes at the mouths nearest (x, z), once it has moved a few metres */
 let lastX = Infinity, lastZ = Infinity;
+onOriginMove(() => { lastX = Infinity; });
 function updateTunnelMouths(x, z) {
   if ((x - lastX) ** 2 + (z - lastZ) ** 2 < 16) return;
   lastX = x;
@@ -42,7 +44,7 @@ function updateTunnelMouths(x, z) {
   for (let i = 0; i < COUNT; i++) {
     const m = near[i];
     if (m && m.d < 400 * 400) {
-      mouths[i].a.value.set(m.p.x, m.p.z, m.p.ux, m.p.uz);
+      mouths[i].a.value.set(m.p.x - origin.x, m.p.z - origin.z, m.p.ux, m.p.uz);
       mouths[i].b.value.set(m.p.y, m.p.half, m.p.open + REACH, m.p.rise);
     } else {
       mouths[i].a.value.set(FAR, FAR, 1, 0);

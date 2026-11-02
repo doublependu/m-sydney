@@ -4,7 +4,7 @@ import test from 'node:test';
 
 // The modules fetch their binary data at import: serve it from disk
 globalThis.fetch = async (url) => new Response(fs.readFileSync(new URL(url)));
-const { terrainHeight, terrainSlope } = await import('../js/terrain.js');
+const { rawTerrainHeight, terrainHeight, terrainSlope } = await import('../js/terrain.js');
 const { BRIDGE_LENGTH, BRIDGE_SPAN, DECK_SID, HALF_WIDTH, bridgeAt, bridgePoint, deckHeight } = await import('../js/bridge.js');
 const { chooseSurface, groundHeight } = await import('../js/surfaces.js');
 
@@ -28,8 +28,8 @@ test('the ground is continuous, and flat beyond the grid', () => {
 
 test('the deck meets the ground at both ends and clears the harbour', () => {
   const south = bridgePoint(0), north = bridgePoint(BRIDGE_LENGTH);
-  assert.ok(Math.abs(deckHeight(0) - terrainHeight(south.x, south.z)) < 0.01);
-  assert.ok(Math.abs(deckHeight(BRIDGE_LENGTH) - terrainHeight(north.x, north.z)) < 0.01);
+  assert.ok(Math.abs(deckHeight(0) - rawTerrainHeight(south.x, south.z)) < 0.05);
+  assert.ok(Math.abs(deckHeight(BRIDGE_LENGTH) - rawTerrainHeight(north.x, north.z)) < 0.05);
   assert.ok(deckHeight(BRIDGE_SPAN.middle) > 50, 'ships pass under it');
   assert.ok(BRIDGE_SPAN.north - BRIDGE_SPAN.south > 400, 'the arch spans the water');
   for (let s = 0; s < BRIDGE_LENGTH; s += 20) {

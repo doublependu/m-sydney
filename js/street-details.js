@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
-import { Fn, attribute, float, color, positionGeometry, texture, uniform, uv, vec2, mod, fract, step, smoothstep, mix } from 'three/tsl';
+import { Fn, attribute, float, floor, color, positionGeometry, texture, uniform, uv, vec2, mod, fract, step, smoothstep, mix } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { SIGNAL_TIMING, blockAt, BLOCKS, nearestRoads } from './city-config.js';
+import { blockAt, BLOCKS, nearestRoads, signalPhase, walkSignal } from './city-config.js';
 import { heldList, heldTrees } from './geodata.js';
 import { cityUniforms, createTreeGrateMaterial } from './tsl-materials.js';
 import { createTreeFieldSteps } from './trees.js';
@@ -90,12 +90,16 @@ function createSignTexts(group, sites) {
       }
       near.sort((a, b) => a.away - b.away);
       atlas.begin();
+      // From a corner near here, which comes to the GPU small
+      mesh.position.set(Math.round(x / 256) * 256, 0, Math.round(z / 256) * 256);
+      mesh.updateMatrix();
+      mesh.updateMatrixWorld(true);
       let count = 0;
       for (const site of near) {
         if (count === NEAR_BLADES) break;
         const cell = atlas.cellFor(site.text);
         if (cell < 0) continue;
-        dummy.position.set(site.x, site.y + site.ground, site.z);
+        dummy.position.set(site.x - mesh.position.x, site.y + site.ground, site.z - mesh.position.z);
         dummy.rotation.set(0, site.yaw, 0);
         dummy.updateMatrix();
         mesh.setMatrixAt(count, dummy.matrix);
@@ -111,32 +115,51 @@ function createSignTexts(group, sites) {
   };
 }
 
+// What every signal head and walk light shows, one texel each, written as the lights change (updateSignalHeads()): red is what a
+// head shows, green what its walk light shows. Junctions keep their place in it as the street furniture is rebuilt around the player.
+const BOARD = 64;
+let signalBoardTexture = null;
+function signalBoard() {
+  if (!signalBoardTexture) {
+    signalBoardTexture = new THREE.DataTexture(new Uint8Array(BOARD * BOARD * 4), BOARD, BOARD, THREE.RGBAFormat);
+    signalBoardTexture.magFilter = signalBoardTexture.minFilter = THREE.NearestFilter;
+    signalBoardTexture.generateMipmaps = false;
+    signalBoardTexture.needsUpdate = true;
+  }
+  return signalBoardTexture;
+}
+const boardTexel = (name) => {
+  const index = attribute(name, 'float');
+  return texture(signalBoard(), vec2(mod(index, BOARD).add(0.5), floor(index.div(BOARD)).add(0.5)).div(BOARD)).level(0);
+};
+const HEAD_STATE = { red: 0, amber: 128, green: 255 };
+const WALK_STATE = { stop: 0, flash: 128, walk: 255 };
+const junctionSlots = new Map();
+function junctionSlot(x, z) {
+  const key = `${Math.round(x)},${Math.round(z)}`;
+  if (!junctionSlots.has(key)) {
+    if (junctionSlots.size >= (BOARD * BOARD) / 2) junctionSlots.clear(); // far more than are ever in reach at once
+    junctionSlots.set(key, junctionSlots.size);
+  }
+  return junctionSlots.get(key);
+}
+
 /**
- * TSL 3-Aspect Traffic Signal Lens Material (Red y=5.78, Amber y=5.42, Green y=5.06)
- * Driven by the shared signal clock and SIGNAL_TIMING (city-config.js), which js/traffic.js obeys.
+ * TSL 3-Aspect Traffic Signal Lens Material (Red y=5.78, Amber y=5.42, Green y=5.06). Each head reads its state off the board.
  */
-function createTrafficSignalLensMaterial(isAvenueHead, clock) {
-  const { cycle, avenueAmber, avenueRed, streetAmber } = SIGNAL_TIMING;
+function createTrafficSignalLensMaterial() {
   const mat = new THREE.MeshBasicNodeMaterial();
   mat.colorNode = Fn(() => {
-    const t = mod(clock, cycle);
+    const state = boardTexel('signalHead').r;
     // Which lens this is, by where it is in the head (LENS_Y): the same on any hill
     const inHead = positionGeometry.y;
     const isTopRed = step(0.18, inHead);
     const isBottomGreen = float(1.0).sub(step(-0.18, inHead));
     const isMidAmber = float(1.0).sub(isTopRed).mul(float(1.0).sub(isBottomGreen));
 
-    // Avenue phase: Green, then Amber from avenueAmber, Red from avenueRed
-    // Street phase: Red until avenueRed, then Green, Amber from streetAmber
-    const greenActive = isAvenueHead
-      ? float(1.0).sub(step(avenueAmber, t))
-      : step(avenueRed, t).mul(float(1.0).sub(step(streetAmber, t)));
-    const amberActive = isAvenueHead
-      ? step(avenueAmber, t).mul(float(1.0).sub(step(avenueRed, t)))
-      : step(streetAmber, t);
-    const redActive = isAvenueHead
-      ? step(avenueRed, t)
-      : float(1.0).sub(step(avenueRed, t));
+    const greenActive = step(0.75, state);
+    const amberActive = step(0.25, state).mul(float(1.0).sub(greenActive));
+    const redActive = float(1.0).sub(step(0.25, state));
 
     const activeMask = isTopRed.mul(redActive)
       .add(isMidAmber.mul(amberActive))
@@ -152,16 +175,14 @@ function createTrafficSignalLensMaterial(isAvenueHead, clock) {
   return mat;
 }
 
-// Pedestrian signal for crossing alongside the avenue: WALK, then a flashing hand until the avenue's amber, then a
-// steady hand
+// Pedestrian signal: WALK, then a flashing hand while people finish crossing, then a steady hand
 function createWalkSignalMaterial(clock) {
-  const { cycle, avenueAmber, walk } = SIGNAL_TIMING;
   const mat = new THREE.MeshBasicNodeMaterial();
   mat.colorNode = Fn(() => {
-    const t = mod(clock, cycle);
-    const isWalk = float(1.0).sub(step(walk, t));
-    const isFlashing = step(walk, t).mul(float(1.0).sub(step(avenueAmber, t)));
-    const handLit = float(1.0).sub(isFlashing.mul(step(0.5, fract(t))));
+    const state = boardTexel('signalHead').g;
+    const isWalk = step(0.75, state);
+    const isFlashing = step(0.25, state).mul(float(1.0).sub(isWalk));
+    const handLit = float(1.0).sub(isFlashing.mul(step(0.5, fract(clock))));
     const hand = mix(color(0x14181e), color(0xff5518), handLit);
     return mix(hand, color(0xf4f9ff), isWalk);
   })();
@@ -195,8 +216,7 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
     metalness: 0.35,
     side: THREE.DoubleSide // the tunnel visors are open half-tubes
   }));
-  const aveSignalLensMat = once('aveLens', () => createTrafficSignalLensMaterial(true, signalClock));
-  const streetSignalLensMat = once('streetLens', () => createTrafficSignalLensMaterial(false, signalClock));
+  const signalLensMat = once('signalLens', () => createTrafficSignalLensMaterial());
   const walkSignalGlow = once('walkGlow', () => createWalkSignalMaterial(signalClock));
   // Cobra-head LED streetlight lens & pedestrian post-top globe: pale diffuser by day, warm white after dusk
   const lampBulbGlow = once('lampBulb', () => {
@@ -250,8 +270,10 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
   const poleMatrices = [];
   const armMatrices = [];
   const yellowBoxMatrices = []; // Signal housings
-  const aveLensMatrices = [];
-  const streetLensMatrices = [];
+  const lensMatrices = [];
+  const lensHeads = []; // each lens's place on the signal board
+  const walkHeads = [];
+  const signalJunctions = []; // { x, z, slot }, for updateSignalHeads()
   const streetBladeMatrices = [];
   const signSites = [];
   const silverPostMatrices = [];
@@ -326,6 +348,7 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
     if ((i & 30) === 0) yield;
     const jx = signalPoints[i], jz = signalPoints[i + 1];
     let placedSignal = false;
+    const slot = junctionSlot(jx, jz);
     const used = [];
     // Corners: curb points around the junction, found by walking out along eight directions
     const corners = [];
@@ -345,6 +368,7 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
       addPole(px, pz, 0.5);
       if (!placedSignal) {
         signalIntersections.push({ x: jx, z: jz });
+        signalJunctions.push({ x: jx, z: jz, slot });
         placedSignal = true;
       }
       const armYaw = Math.atan2(c.uz, -c.ux); // the arm points from the curb to the junction
@@ -368,7 +392,9 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
       walkBoxMatrices.push(dummy.matrix.clone());
-      audioSignals.push({ x: dummy.position.x, y: dummy.position.y, z: dummy.position.z, isAvenue: used.length === 1 });
+      // The first post's walk light is for walking alongside the main road, the second's alongside the other
+      walkHeads.push(slot * 2 + (used.length === 1 ? 0 : 1));
+      audioSignals.push({ x: dummy.position.x, y: dummy.position.y, z: dummy.position.z, isAvenue: used.length === 1, jx, jz });
       dummy.position.set(px, 1.12, pz);
       dummy.scale.set(0.19, 0.19, 0.19);
       dummy.updateMatrix();
@@ -396,7 +422,8 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
           dummy.scale.set(1, 1, 1);
           dummy.updateMatrix();
           yellowBoxMatrices.push(dummy.matrix.clone());
-          (armDist < 4.0 ? aveLensMatrices : streetLensMatrices).push(dummy.matrix.clone());
+          lensMatrices.push(dummy.matrix.clone());
+          lensHeads.push(slot * 2 + (armDist < 4.0 ? 0 : 1));
         }
       } else {
         // A head either side of the post, one for each road through the junction
@@ -407,7 +434,8 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
           dummy.scale.set(1, 1, 1);
           dummy.updateMatrix();
           yellowBoxMatrices.push(dummy.matrix.clone());
-          (avenue ? aveLensMatrices : streetLensMatrices).push(dummy.matrix.clone());
+          lensMatrices.push(dummy.matrix.clone());
+          lensHeads.push(slot * 2 + (avenue ? 0 : 1));
         }
       }
       dummy.rotation.set(0, 0, 0);
@@ -611,6 +639,15 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
     return inst;
   }
 
+  // A geometry with each instance's place on the signal board. scene-culling.js carries it along as it splits them up.
+  const onBoard = (geo, heads) => {
+    const own = new THREE.BufferGeometry();
+    for (const [name, a] of Object.entries(geo.attributes)) own.setAttribute(name, a);
+    if (geo.index) own.setIndex(geo.index);
+    own.setAttribute('signalHead', new THREE.InstancedBufferAttribute(new Float32Array(heads), 1));
+    return own;
+  };
+
   addMatrixArrayInstanced(unitCyl, poleMetalMat, poleMatrices);
   yield;
   addMatrixArrayInstanced(unitBox, poleMetalMat, armMatrices);
@@ -620,9 +657,7 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
   yield;
   addMatrixArrayInstanced(signalHousingGeo, signalHousingMat, yellowBoxMatrices);
   yield;
-  addMatrixArrayInstanced(signalLensGeo, aveSignalLensMat, aveLensMatrices, false);
-  yield;
-  addMatrixArrayInstanced(signalLensGeo, streetSignalLensMat, streetLensMatrices, false);
+  addMatrixArrayInstanced(onBoard(signalLensGeo, lensHeads), signalLensMat, lensMatrices, false);
   yield;
   addMatrixArrayInstanced(unitBox, signalHousingMat, streetBladeMatrices);
   yield;
@@ -630,7 +665,7 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
   yield;
   addMatrixArrayInstanced(walkHousingGeo, signalHousingMat, walkBoxMatrices);
   yield;
-  addMatrixArrayInstanced(walkPanelGeo, walkSignalGlow, walkBoxMatrices, false);
+  addMatrixArrayInstanced(onBoard(walkPanelGeo, walkHeads), walkSignalGlow, walkBoxMatrices, false);
   yield;
   addMatrixArrayInstanced(lampHousingGeo, poleMetalMat, lampHeadMatrices);
   yield;
@@ -951,7 +986,40 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
   }
 
   scene.add(group);
-  return { group, footprints, signalClock, signalIntersections, audioSignals, treeField, update };
+  const updateSignals = (elapsed, dt, traffic) => updateSignalHeads(signalJunctions, elapsed, dt, traffic);
+  return { group, footprints, signalClock, signalIntersections, audioSignals, treeField, update, updateSignals };
+}
+
+// How often the board is rewritten, and how far the junctions out of traffic's reach are apart in their own slow cycle
+const BOARD_STEP = 0.25, FAR_OFFSET = 7.3;
+let boardTimer = 0;
+/** Sets what every head and walk light shows, from the lights at each junction traffic reaches, and a plain clock beyond that */
+function updateSignalHeads(junctions, elapsed, dt, traffic) {
+  boardTimer += dt;
+  if (boardTimer < BOARD_STEP) return;
+  boardTimer = 0;
+  const board = signalBoard();
+  const data = board.image.data;
+  let changed = false;
+  const write = (texel, head, walk) => {
+    const i = texel * 4;
+    if (data[i] === head && data[i + 1] === walk) return;
+    data[i] = head;
+    data[i + 1] = walk;
+    changed = true;
+  };
+  for (const j of junctions) {
+    const at = traffic?.headsAt(j.x, j.z);
+    if (at) {
+      write(j.slot * 2, HEAD_STATE[at.lights.phaseOf(at.main)], WALK_STATE[at.lights.walkState(at.side)]);
+      write(j.slot * 2 + 1, HEAD_STATE[at.lights.phaseOf(at.side)], WALK_STATE[at.lights.walkState(at.main)]);
+    } else {
+      const t = elapsed + j.slot * FAR_OFFSET;
+      write(j.slot * 2, HEAD_STATE[signalPhase(t, true)], walkSignal(t, true) ? WALK_STATE.walk : WALK_STATE.stop);
+      write(j.slot * 2 + 1, HEAD_STATE[signalPhase(t, false)], walkSignal(t, false) ? WALK_STATE.walk : WALK_STATE.stop);
+    }
+  }
+  if (changed) board.needsUpdate = true;
 }
 
 export { buildStreetDetails };

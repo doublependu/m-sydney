@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
-import { DATA, inDetail, load, toWorld } from './geo-common.mjs';
+import { dataPath, inDetail, load, toWorld } from './geo-common.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const OUT = process.argv[2] || path.join(ROOT, 'tools/data/generated/tree-geodata.js');
@@ -22,7 +22,7 @@ const RULES = [
 const classOf = (name) => RULES.find(([re]) => re.test(name))?.[1] ?? CLASS.small;
 
 const register = load('cos_trees.json');
-const digest = crypto.createHash('sha256').update(fs.readFileSync(path.join(DATA, 'cos_trees.json'))).digest('hex');
+const digest = crypto.createHash('sha256').update(fs.readFileSync(dataPath('cos_trees.json'))).digest('hex');
 const trees = [];
 const taken = new Set();
 const key = (x, z) => Math.round(x / 2) * 100000 + Math.round(z / 2);
@@ -34,17 +34,77 @@ for (const [lon, lat, name, height, status] of register) {
   trees.push({ x, z, kind: classOf(name), height: Math.min(40, parseInt(height, 10) || 0) });
 }
 const fromRegister = trees.length;
-// OSM fills in the north shore: anywhere the register has nothing nearby
+// OSM fills in everywhere else: anywhere the City's register has nothing nearby
+const surveyed = new Set(trees.map((t) => `${Math.floor(t.x / 200)},${Math.floor(t.z / 200)}`));
 const west = Math.min(...trees.map((t) => t.x));
 for (const e of load('nodes.json').elements) {
   if (e.tags?.natural !== 'tree') continue;
   const [x, z] = toWorld(e.lon, e.lat);
-  if (!inDetail(x, z) || z > -2350) continue;
+  if (!inDetail(x, z) || surveyed.has(`${Math.floor(x / 200)},${Math.floor(z / 200)}`)) continue;
   if (taken.has(key(x, z))) continue;
   taken.add(key(x, z));
   trees.push({ x, z, kind: classOf(e.tags.species || e.tags['species:en'] || e.tags.genus || ''), height: parseInt(e.tags.height, 10) || 0 });
 }
 void west;
+// Where there's no count of them, seeded by where it is: street trees along the quieter roads, and trees in the parks. Nothing's stored about
+// them but this, so it comes out the same every time.
+{
+  const { GEO } = await import('./data/generated/geodata.js');
+  const seeded = (x, z, salt = 0) => {
+    const s = Math.sin(x * 12.9898 + z * 78.233 + salt * 37.719) * 43758.5453;
+    return s - Math.floor(s);
+  };
+  const isSurveyed = (x, z) => surveyed.has(`${Math.floor(x / 200)},${Math.floor(z / 200)}`);
+  const plant = (x, z) => {
+    if (!inDetail(x, z) || isSurveyed(x, z) || taken.has(key(x, z))) return;
+    taken.add(key(x, z));
+    const r = seeded(x, z, 2);
+    trees.push({ x, z, kind: r < 0.4 ? CLASS.broadleaf : r < 0.65 ? CLASS.small : r < 0.92 ? CLASS.gum : CLASS.jacaranda, height: 6 + Math.floor(seeded(x, z, 3) * 12) });
+  };
+  const STREET_EVERY = 35, STREET_SHARE = 0.5, PARK_EVERY = 40, PARK_SHARE = 0.35;
+  const RG = GEO.roadGraph, N = RG.nodes;
+  for (const link of RG.links) {
+    const [a, b, , width, lanes, , inner, major, , kind = 0] = link;
+    if (kind || major || lanes > 3) continue;
+    const pts = [[N[a * 2], N[a * 2 + 1]]];
+    for (let k = 0; k < inner.length; k += 2) pts.push([inner[k], inner[k + 1]]);
+    pts.push([N[b * 2], N[b * 2 + 1]]);
+    for (let i = 1; i < pts.length; i++) {
+      const [ax, az] = pts[i - 1], [bx, bz] = pts[i], L = Math.hypot(bx - ax, bz - az);
+      if (L < 1) continue;
+      const ux = (bx - ax) / L, uz = (bz - az) / L;
+      for (let s = STREET_EVERY / 2; s < L; s += STREET_EVERY) {
+        for (const side of [-1, 1]) {
+          const x = ax + ux * s, z = az + uz * s;
+          if (seeded(Math.round(x), Math.round(z), side) > STREET_SHARE) continue;
+          const off = width / 2 + 1.8 + seeded(Math.round(x), Math.round(z), 5) * 1.2;
+          plant(x + uz * off * side, z - ux * off * side);
+        }
+      }
+    }
+  }
+  const inRing = (flat, x, z) => {
+    let c = false;
+    for (let i = 0, j = flat.length - 2; i < flat.length; j = i, i += 2) {
+      if ((flat[i + 1] > z) !== (flat[j + 1] > z) && x < ((flat[j] - flat[i]) * (z - flat[i + 1])) / (flat[j + 1] - flat[i + 1]) + flat[i]) c = !c;
+    }
+    return c;
+  };
+  for (const rings of GEO.lawns) {
+    const outer = rings[0];
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let i = 0; i < outer.length; i += 2) {
+      x0 = Math.min(x0, outer[i]); x1 = Math.max(x1, outer[i]); z0 = Math.min(z0, outer[i + 1]); z1 = Math.max(z1, outer[i + 1]);
+    }
+    for (let x = Math.ceil(x0 / PARK_EVERY) * PARK_EVERY; x < x1; x += PARK_EVERY) {
+      for (let z = Math.ceil(z0 / PARK_EVERY) * PARK_EVERY; z < z1; z += PARK_EVERY) {
+        if (seeded(x, z, 7) > PARK_SHARE) continue;
+        const px = x + seeded(x, z, 8) * 18, pz = z + seeded(x, z, 9) * 18;
+        if (inRing(outer, px, pz) && !rings.slice(1).some((h) => inRing(h, px, pz))) plant(px, pz);
+      }
+    }
+  }
+}
 trees.sort((p, q) => p.z - q.z || p.x - q.x);
 
 const xs = [], zs = [], kinds = [], heights = [];

@@ -7,7 +7,7 @@ import zlib from 'node:zlib';
 const { GEO, TILE, heldTiles, holdTile, isHeld, releaseTile, tileExists, tileKeyAt, tilesNear } = await import('../js/geodata.js');
 const { BLOCKS, LAWNS, PAVEMENTS, ROADS, blockAt, nearestRoads } = await import('../js/city-config.js');
 const { LINKS, SEGMENTS, STRUCTURES, groundHeight, linkById, structuresAt } = await import('../js/surfaces.js');
-const { terrainHeight } = await import('../js/terrain.js');
+const { rawTerrainHeight, terrainHeight } = await import('../js/terrain.js');
 const { unpackTile } = await import('../js/tiles/tile-file.js');
 
 const DIR = new URL('../public/tiles/', import.meta.url);
@@ -103,7 +103,7 @@ test('the tiles hold the same ground and trees as the generated map', { skip: !f
   for (const t of heldTiles()) {
     for (let i = 0; i < 40; i++) {
       const x = (t.ix + ((i * 0.618) % 1)) * TILE, z = (t.iz + ((i * 0.381) % 1)) * TILE;
-      assert.ok(Math.abs(terrainHeight(x, z) - source(x, z)) < 1e-3, `ground at ${x}, ${z}`);
+      assert.ok(Math.abs(rawTerrainHeight(x, z) - source(x, z)) < 1e-3, `ground at ${x}, ${z}`);
       checked++;
     }
   }

@@ -18,6 +18,7 @@ const OUT = path.join(ROOT, 'public/tiles');
 const DERIVED = path.join(SRC, 'derived.json');
 const SIZE = 1000;
 const MARGIN = 3; // cells of the height grid past each edge, for what stands on the edge
+const GROUND = { size: SIZE / 5 + 1, cell: 5, unit: 0.05 }; // the ground beside the roads: a grid per tile
 const KEY = (ix, iz) => `${ix}_${iz}`;
 const tileOf = (x, z) => [Math.floor(x / SIZE), Math.floor(z / SIZE)];
 
@@ -117,7 +118,7 @@ function cutMap(derived) {
   const REACH = 40; // m: wide enough for a cutting's slope and a junction's disc beside the road
   const { table, sid } = findStructures();
   RG.links.forEach((l, id) => {
-    const [a, b, ni, width, lanes, dir, inner, major, deck, kind = 0, layer = 0, flags = 0, ys = null] = l;
+    const [a, b, ni, width, lanes, dir, inner, major, deck, kind = 0, layer = 0, flags = 0, ys = null, profile = null, lean = null] = l;
     const pts = [[RG.nodes[a * 2], RG.nodes[a * 2 + 1]]];
     for (let k = 0; k < inner.length; k += 2) pts.push([inner[k], inner[k + 1]]);
     pts.push([RG.nodes[b * 2], RG.nodes[b * 2 + 1]]);
@@ -140,7 +141,7 @@ function cutMap(derived) {
     }
     const open = derived?.tunnels?.[id] || [0, 0, 0];
     // The name itself: each tile's file stands alone
-    const record = [id, a, b, RG.names[ni], width, lanes, dir, inner, major ? 1 : 0, deck ? 1 : 0, kind, layer, flags, ys, sid.get(id) || 0, ...open];
+    const record = [id, a, b, RG.names[ni], width, lanes, dir, inner, major ? 1 : 0, deck ? 1 : 0, kind, layer, flags, ys, sid.get(id) || 0, ...open, profile, lean];
     for (const key of homes) {
       const [ix, iz] = key.split('_').map(Number);
       const t = tile(ix, iz);
@@ -337,7 +338,22 @@ function bridgeLinks(derived) {
   return out;
 }
 
-function write(derived) {
+// How far the ground moves to meet the roads (tools/tiles/grade-ground.mjs): 5 cm steps as differences along each row
+function packGround(cells) {
+  if (!cells) return Buffer.alloc(0);
+  const out = [];
+  for (let j = 0; j < GROUND.size; j++) {
+    let v = 0;
+    for (let i = 0; i < GROUND.size; i++) {
+      const q = cells[j * GROUND.size + i];
+      sint(out, q - v);
+      v = q;
+    }
+  }
+  return Buffer.from(out);
+}
+
+function write(derived, graded_ = null) {
   const { tiles, table } = cutMap(derived);
   fs.rmSync(OUT, { recursive: true, force: true });
   fs.mkdirSync(OUT, { recursive: true });
@@ -349,12 +365,14 @@ function write(derived) {
       nodes: [...t.nodes].flatMap(([id, [x, z]]) => [id, x, z]), links: t.links, home: t.home, scenery: t.scenery, awnings: t.awnings, tags: t.tags
     }));
     const buildings = packBuildings(t.buildings, derived?.floors), trees = packTrees(t.trees), heights = packHeights(t.ix, t.iz);
-    const head = Buffer.alloc(16);
+    const graded = packGround(graded_?.[KEY(t.ix, t.iz)]);
+    const head = Buffer.alloc(20);
     head.writeUInt32LE(json.length, 0);
     head.writeUInt32LE(buildings.length, 4);
     head.writeUInt32LE(trees.length, 8);
     head.writeUInt32LE(heights.length, 12);
-    const packed = zlib.gzipSync(Buffer.concat([head, json, buildings, trees, heights]), { level: 9 });
+    head.writeUInt32LE(graded.length, 16);
+    const packed = zlib.gzipSync(Buffer.concat([head, json, buildings, trees, heights, graded]), { level: 9 });
     const hash = crypto.createHash('sha256').update(packed).digest('hex').slice(0, 10);
     names[KEY(t.ix, t.iz)] = hash;
     fs.writeFileSync(path.join(OUT, `${KEY(t.ix, t.iz)}.${hash}.bin.gz`), packed);
@@ -392,11 +410,11 @@ function write(derived) {
   fs.writeFileSync(path.join(OUT, 'map.json.gz'), mapFile);
   fs.writeFileSync(path.join(OUT, 'far-heights.bin.gz'), packFarHeights());
   fs.writeFileSync(path.join(OUT, 'far.json.gz'), zlib.gzipSync(JSON.stringify({
-    surroundings: GEO.surroundings, landuse: GEO.landuse, bridgeLinks: bridgeLinks(derived)
+    surroundings: GEO.surroundings, bridgeLinks: bridgeLinks(derived)
   }), { level: 9 }));
   const world = {
-    version: 2, tileSize: SIZE, frame: GEO.frame, heights: { margin: MARGIN, size: SAMPLES }, far: FAR, tiles: names, farFile: FAR_FILE, farFiles,
-    shores: GEO.shores, bridge: GEO.bridge, ferries: GEO.ferries, lightRail: GEO.lightRail,
+    version: 2, tileSize: SIZE, frame: GEO.frame, heights: { margin: MARGIN, size: SAMPLES }, ground: GROUND, far: FAR, tiles: names, farFile: FAR_FILE, farFiles,
+    shores: GEO.shores, bridge: GEO.bridge, ferries: GEO.ferries, lightRail: GEO.lightRail, suburbs: GEO.suburbs ?? [],
     nodeCount: RG.nodes.length / 2, structures: table, portals: derived?.portals || [], landmarkBoxes: derived?.landmarkBoxes || [],
     ...(derived?.deckProfile && { deckProfile: derived.deckProfile, bridgeSpan: derived.bridgeSpan })
   };
@@ -406,7 +424,12 @@ function write(derived) {
   return `far files ${(farTotal / 1024).toFixed(0)} KB, map ${(mapFile.length / 1024).toFixed(0)} KB; ${tiles.size} tiles, ${(total / 1024).toFixed(0)} KB, median ${(sizes[sizes.length >> 1] / 1024).toFixed(1)} KB, largest ${(largest / 1024).toFixed(1)} KB; world.json ${(worldBytes / 1024).toFixed(0)} KB, ${(zlib.gzipSync(fs.readFileSync(path.join(OUT, 'world.json'))).length / 1024).toFixed(0)} KB zipped`;
 }
 
+// Three passes. The ground's grid wants the roads; each building's floor and the rest want the ground.
 write(null);
+const GRADED = path.join(SRC, 'graded.json');
+execFileSync(process.execPath, [fileURLToPath(new URL('./tiles/grade-ground.mjs', import.meta.url)), GRADED], { stdio: ['ignore', 'inherit', 'inherit'] });
+const graded = JSON.parse(fs.readFileSync(GRADED, 'utf8'));
+write(null, graded);
 execFileSync(process.execPath, [fileURLToPath(new URL('./tiles/derive.mjs', import.meta.url)), DERIVED], { stdio: ['ignore', 'inherit', 'inherit'] });
-const summary = write(JSON.parse(fs.readFileSync(DERIVED, 'utf8')));
+const summary = write(JSON.parse(fs.readFileSync(DERIVED, 'utf8')), graded);
 console.log(`[tiles] ${summary}, in ${((Date.now() - started) / 1000).toFixed(1)} s`);

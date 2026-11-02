@@ -1,3 +1,4 @@
+import { anchorToOrigin } from './world-origin.js';
 import { Ready } from './world-jobs.js';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -158,6 +159,8 @@ function buildWater(target) {
   const water = new THREE.Mesh(geometry, createWaterMaterial());
   water.position.set(0, CITY_BOUNDS.waterLevel, 0);
   water.userData.lifted = true;
+  water.userData.farAway = true;
+  anchorToOrigin(water); // the sea goes with you
   target.add(water);
   return water;
 }

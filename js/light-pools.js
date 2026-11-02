@@ -46,8 +46,16 @@ function createLightPools(scene) {
     policeLights.push(point);
   }
 
+  // Inside a building with a model (js/interiors.js)
+  const interiorLights = [];
+  for (let i = 0; i < 3; i++) {
+    const point = park(new THREE.PointLight(0xfff0dc, 0, 26, 1.2));
+    street.add(point);
+    interiorLights.push(point);
+  }
+
   scene.add(street, traffic);
-  return { street, traffic, streetSpots, streetPoints, headlights, policeLights };
+  return { street, traffic, streetSpots, streetPoints, headlights, policeLights, interiorLights };
 }
 
 export { createLightPools };

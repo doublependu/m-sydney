@@ -285,9 +285,27 @@ const SUBURBS = [
   ['Ultimo', -2100, -300, 780, 2100], ['Haymarket', -300, 200, 420, 1080], ['Chippendale', -300, 400, 1080, 2100], ['Surry Hills', 400, 1450, 760, 2100],
   ['Darlinghurst', 1120, 2000, -240, 760], ['Paddington', 2000, 2700, 0, 2100], ['Sydney CBD', -220, 1120, -1250, 420]
 ];
+// Beyond those, the nearest named place on the map. In 2 km cells, so it's not a walk through all of them.
+const SUBURB_CELL = 2000;
+const suburbCells = new Map();
+for (const place of GEO.suburbs ?? []) {
+  const key = `${Math.floor(place[1] / SUBURB_CELL)},${Math.floor(place[2] / SUBURB_CELL)}`;
+  if (!suburbCells.has(key)) suburbCells.set(key, []);
+  suburbCells.get(key).push(place);
+}
 function suburbAt(x, z) {
   for (const [name, x0, x1, z0, z1] of SUBURBS) if (x >= x0 && x < x1 && z >= z0 && z < z1) return name;
-  return 'Sydney';
+  let best = 'Sydney', bestAway = Infinity;
+  const ix = Math.floor(x / SUBURB_CELL), iz = Math.floor(z / SUBURB_CELL);
+  for (let a = ix - 1; a <= ix + 1; a++) {
+    for (let b = iz - 1; b <= iz + 1; b++) {
+      for (const place of suburbCells.get(`${a},${b}`) || []) {
+        const away = (place[1] - x) ** 2 + (place[2] - z) ** 2;
+        if (away < bestAway) { bestAway = away; best = place[0]; }
+      }
+    }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -310,7 +328,14 @@ const TELEPORT_LOCATIONS = {
   centralStation: { x: 174, z: 1001, heading: 1.148 },
   kingsCross: { x: 1451, z: -8, heading: 2.5 },
   northSydney: { x: -541, z: -3570, heading: Math.PI },
-  harbourBridge: { x: -312, z: -1422, heading: 2.87 } // on the deck's south end, heading north
+  harbourBridge: { x: -312, z: -1422, heading: 2.87 }, // on the deck's south end, heading north
+  bondi: { x: 6198, z: 1149, heading: 2.64 },
+  bondiJunction: { x: 4088, z: 1418, heading: -1.55 },
+  manly: { x: 6116, z: -9396, heading: -0.04 },
+  chatswood: { x: -3495, z: -8015, heading: 2.07 },
+  newtown: { x: -2397, z: 3305, heading: 2.09 },
+  burwood: { x: -9389, z: 1753, heading: 3.12 },
+  mascot: { x: -459, z: 6937, heading: 0.42 }
 };
 const LANDMARKS = [
   { id: 'opera', name: 'Sydney Opera House', short: 'Opera House', x: 505, z: -1862, district: 'Bennelong Point' },
@@ -337,11 +362,9 @@ function isTypingInField(e) {
   return e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT');
 }
 
-// Traffic signal cycle shared by the signal heads (street-details.js) and the traffic (traffic.js), in seconds: the main
-// road is green until mainAmber, amber until mainRed; the side road is green from mainRed until sideAmber, amber until
-// the end of the cycle. Pedestrians cross with the traffic that runs parallel to them, stepping off only on the WALK,
-// the first `walk` seconds of its green: long enough before the cross traffic's green for the slowest walker to get
-// across the widest road.
+// Signal heads beyond traffic's reach run on this plain cycle, in seconds, with nobody there to respond to: the main road is green
+// until mainAmber, amber until mainRed; the side road is green from mainRed until sideAmber, amber until the end of the cycle.
+// Where there's traffic, each junction runs its own lights (js/signals.js).
 const SIGNAL_TIMING = { cycle: 60, avenueAmber: 26, avenueRed: 30, streetAmber: 56, walk: 7 };
 
 // 'green', 'amber' or 'red' for main road (or side road) traffic at a given time

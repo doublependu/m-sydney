@@ -6,6 +6,7 @@ class TouchControls {
   constructor(controllerManager) {
     this.controller = controllerManager;
     this.root = document.getElementById('touch-controls');
+    this.zone = document.getElementById('touch-zone');
     this.stick = document.getElementById('touch-stick');
     this.knob = document.getElementById('touch-stick-knob');
     this.buttons = this.root ? [...this.root.querySelectorAll('[data-touch-action]')] : [];
@@ -15,30 +16,33 @@ class TouchControls {
     this.available = false;
     this.touchSeen = false;
     this.onAvailabilityChange = null;
+    this.onStickPressed = null;
     this.media = window.matchMedia('(any-pointer: coarse)');
 
-    if (!this.root || !this.stick || !this.knob) return;
+    if (!this.root || !this.zone || !this.stick || !this.knob) return;
 
-    this.stick.addEventListener('pointerdown', (event) => {
+    // The stick appears wherever the thumb lands, and isn't drawn otherwise
+    this.zone.addEventListener('pointerdown', (event) => {
       if (!this.canInteract() || event.button !== 0 || this.stickPointer !== null || this.buttonPointers.has(event.pointerId)) return;
       event.preventDefault();
       event.stopPropagation();
-      const rect = this.stick.getBoundingClientRect();
-      this.stickCenter = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-      this.stickRadius = Math.min(MAX_RADIUS, Math.min(rect.width, rect.height) / 2) || MAX_RADIUS;
+      this.stickCenter = { x: event.clientX, y: event.clientY };
+      this.stick.style.setProperty('--stick-left', `${event.clientX}px`);
+      this.stick.style.setProperty('--stick-top', `${event.clientY}px`);
       this.stickPointer = event.pointerId;
-      this.stick.setPointerCapture(event.pointerId);
+      this.zone.setPointerCapture(event.pointerId);
       this.stick.classList.add('is-pressed');
+      this.onStickPressed?.();
       this.moveStick(event);
     });
-    this.stick.addEventListener('pointermove', (event) => {
+    this.zone.addEventListener('pointermove', (event) => {
       if (event.pointerId !== this.stickPointer) return;
       event.preventDefault();
       event.stopPropagation();
       this.moveStick(event);
     });
     for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
-      this.stick.addEventListener(type, (event) => this.releaseStick(event.pointerId));
+      this.zone.addEventListener(type, (event) => this.releaseStick(event.pointerId));
     }
 
     for (const button of this.buttons) {
@@ -111,12 +115,12 @@ class TouchControls {
     const dx = event.clientX - this.stickCenter.x;
     const dy = event.clientY - this.stickCenter.y;
     const distance = Math.hypot(dx, dy);
-    const reach = Math.min(distance / this.stickRadius, 1);
+    const reach = Math.min(distance / MAX_RADIUS, 1);
     const strength = Math.max(0, (reach - DEAD_ZONE) / (1 - DEAD_ZONE));
     const x = distance ? dx / distance : 0;
     const y = distance ? dy / distance : 0;
-    this.knob.style.setProperty('--stick-x', `${x * reach * this.stickRadius}px`);
-    this.knob.style.setProperty('--stick-y', `${y * reach * this.stickRadius}px`);
+    this.knob.style.setProperty('--stick-x', `${x * reach * MAX_RADIUS}px`);
+    this.knob.style.setProperty('--stick-y', `${y * reach * MAX_RADIUS}px`);
     this.controller.setTouchInput('left', Math.max(0, -x * strength));
     this.controller.setTouchInput('right', Math.max(0, x * strength));
     this.controller.setTouchInput('forward', Math.max(0, -y * strength));
@@ -130,7 +134,7 @@ class TouchControls {
   releaseStick(pointerId) {
     if (pointerId !== this.stickPointer || this.stickPointer === null) return;
     this.stickPointer = null;
-    this.releaseCapture(this.stick, pointerId);
+    this.releaseCapture(this.zone, pointerId);
     this.stick.classList.remove('is-pressed');
     this.knob.style.setProperty('--stick-x', '0px');
     this.knob.style.setProperty('--stick-y', '0px');

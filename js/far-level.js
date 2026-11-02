@@ -5,6 +5,7 @@ import { landAt } from './city-config.js';
 import { terrainHeight } from './terrain.js';
 import { FACADE_TONES, ROOF_COLOURS } from './buildings.js';
 import { outlineMesh } from './building-outlines.js';
+import { originXZ } from './world-origin.js';
 
 // The city beyond the tiles held: for each 4 km square, every building as a few points and a height, on plain ground coloured
 // by how green it is, with the main roads across it. One mesh of each per square, so it costs a few draws wherever you look.
@@ -32,13 +33,15 @@ function mask() {
   return maskTexture;
 }
 const hideWhereShown = (tile) => texture(mask(), tile.sub(vec2(X0, Z0)).add(0.5).div(vec2(W, H))).level(0).r.lessThan(0.5);
+/** For the horizon: false where this level has a square of its own, which is drawn instead */
+const hideWhereFarLevel = () => texture(mask(), positionWorld.xz.add(originXZ).div(TILE).floor().sub(vec2(X0, Z0)).add(0.5).div(vec2(W, H))).level(0).g.lessThan(0.5);
 
 let groundMaterial = null;
 function farGroundMaterial() {
   if (groundMaterial) return groundMaterial;
   groundMaterial = new THREE.MeshStandardNodeMaterial({ roughness: 0.95 });
   groundMaterial.colorNode = attribute('farColor', 'vec3');
-  groundMaterial.maskNode = hideWhereShown(positionWorld.xz.div(TILE).floor());
+  groundMaterial.maskNode = hideWhereShown(positionWorld.xz.add(originXZ).div(TILE).floor());
   return groundMaterial;
 }
 
@@ -119,7 +122,7 @@ function createFarLevel() {
   let footprintVersion = 0;
 
   /** Fetches and builds one square, returning its meshes for the caller to add to the scene */
-  function* addSquare(key) {
+  function* addSquare(key, { forMap = false } = {}) {
     if (squares.has(key)) return [];
     const record = { meshes: [] };
     squares.set(key, record);
@@ -138,12 +141,36 @@ function createFarLevel() {
     }
     const buildings = yield* outlineMesh(file.buildings, hideWhereShown);
     if (buildings) record.meshes.push(buildings);
-    // The map screen draws these too
-    for (const b of file.buildings) {
-      footprints.push({ footprints: b.rings.map((pts) => ({ h: b.height + 0.22, pts, holes: [] })) });
+    // The map screen draws the first few too
+    if (forMap) {
+      for (const b of file.buildings) {
+        footprints.push({ footprints: b.rings.map((pts) => ({ h: b.height + 0.22, pts, holes: [] })) });
+      }
+      footprintVersion++;
     }
-    footprintVersion++;
     return record.meshes;
+  }
+
+  /** The horizon gives way to this square's tiles, once it's there, and takes over again when it's gone */
+  function setSquareHeld(key, held) {
+    const [fx, fz] = key.split('_').map(Number);
+    const texture = mask();
+    const cells = SQUARE / TILE;
+    for (let iz = fz * cells; iz < (fz + 1) * cells; iz++) {
+      for (let ix = fx * cells; ix < (fx + 1) * cells; ix++) {
+        const i = (iz - Z0) * W + (ix - X0);
+        if (iz < Z0 || iz >= Z0 + H || ix < X0 || ix >= X0 + W) continue;
+        // Only where the map has this tile: past the map's edge, in a square it only half fills, the horizon goes on
+        texture.image.data[i * 4 + 1] = held && Object.hasOwn(GEO.tiles, `${ix}_${iz}`) ? 255 : 0;
+      }
+    }
+    texture.needsUpdate = true;
+  }
+
+  /** Lets go of a square's meshes. The caller takes them out of the scene. */
+  function dropSquare(key) {
+    squares.delete(key);
+    setSquareHeld(key, false);
   }
 
   function setShown(ix, iz, shown) {
@@ -154,7 +181,7 @@ function createFarLevel() {
     texture.needsUpdate = true;
   }
 
-  return { addSquare, setShown, footprints, footprintsVersion: () => footprintVersion };
+  return { addSquare, dropSquare, setSquareHeld, setShown, footprints, footprintsVersion: () => footprintVersion };
 }
 
 /** The far squares there are, nearest (x, z) first */
@@ -170,4 +197,4 @@ function farSquaresNear(x, z, radius) {
     .map((s) => s.key);
 }
 
-export { createFarLevel, farSquaresNear };
+export { createFarLevel, farSquaresNear, hideWhereFarLevel };

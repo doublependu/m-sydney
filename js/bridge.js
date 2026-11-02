@@ -1,5 +1,5 @@
 import { GEO } from './geodata.js';
-import { terrainHeight } from './terrain.js';
+import { rawTerrainHeight as terrainHeight } from './terrain.js';
 import { DECK_STRUCTURE, structureAt } from './surfaces.js';
 
 // The Harbour Bridge's corridor: a road with its own height, one of the structures of js/surfaces.js. A car on the deck

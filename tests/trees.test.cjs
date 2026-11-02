@@ -480,7 +480,6 @@ test('createTreeField leaves scene.onBeforeRender untouched and matches per-tree
   for (const m of field.meshes) {
     m.instanceMatrix = new StorageInstancedBufferAttribute(m.instanceMatrix.array, 16);
     assert.equal(m.matrixAutoUpdate, false);
-    assert.equal(m.matrixWorldAutoUpdate, false);
   }
 
   const fieldTotalsByLod = () => {

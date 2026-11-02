@@ -33,17 +33,38 @@ const far = new Float32Array(FAR.w * FAR.h);
 const SLOTS = 4096;
 const slotOf = (ix, iz) => ((ix + SLOTS / 2) * SLOTS + iz + SLOTS / 2);
 const grids = new Map();
+const moved = new Map(); // how far the ground moves to meet the roads, by tile
 onMap({
   addTile(tile) {
     // The grid's lines, not the tile's edge, set where its samples lie
     const gx = x0 + Math.ceil((tile.ix * TILE - margin * cell - x0) / cell) * cell;
     const gz = z0 + Math.ceil((tile.iz * TILE - margin * cell - z0) / cell) * cell;
     grids.set(slotOf(tile.ix, tile.iz), { gx, gz, heights: tile.heights });
+    if (tile.ground) moved.set(slotOf(tile.ix, tile.iz), { ox: tile.ix * TILE, oz: tile.iz * TILE, cells: tile.ground });
   },
   removeTile(tile) {
     grids.delete(slotOf(tile.ix, tile.iz));
+    moved.delete(slotOf(tile.ix, tile.iz));
   }
 });
+
+// How far the ground at (x, z) has been moved to meet the roads (tools/tiles/grade-ground.mjs), over a 5 m grid
+const G = GEO.ground ?? { size: 0, cell: 5, unit: 0.05 };
+let lastMoved = null;
+function groundMoved(x, z) {
+  let g = lastMoved;
+  if (!g || x < g.ox || z < g.oz || x >= g.ox + TILE || z >= g.oz + TILE) {
+    g = moved.get(slotOf(Math.floor(x / TILE), Math.floor(z / TILE)));
+    if (!g) return 0;
+    lastMoved = g;
+  }
+  const fx = (x - g.ox) / G.cell, fz = (z - g.oz) / G.cell;
+  const i = fx | 0, j = fz | 0, tx = fx - i, tz = fz - j;
+  const k = j * G.size + i, C = g.cells;
+  const a = C[k] + (C[k + 1] - C[k]) * tx;
+  const b = C[k + G.size] + (C[k + G.size + 1] - C[k + G.size]) * tx;
+  return (a + (b - a) * tz) * G.unit;
+}
 
 // The last grid asked: most queries in a row fall in one tile
 let last = null;
@@ -61,7 +82,8 @@ function sample(g, x, z) {
   return a + (b - a) * tz;
 }
 
-function terrainHeight(x, z) {
+/** The land as surveyed, before it's moved for the roads */
+function rawTerrainHeight(x, z) {
   const hx = (x - x0) / cell, hz = (z - z0) / cell;
   if (hx < 0 || hz < 0 || hx >= w - 1 || hz >= h - 1) return 0;
   if (last && inGrid(last, x, z)) return sample(last, x, z);
@@ -88,13 +110,18 @@ function terrainHeight(x, z) {
   return a + (b - a) * tz;
 }
 
+/** The ground's height at (x, z), where everything on it stands */
+function terrainHeight(x, z) {
+  return rawTerrainHeight(x, z) + groundMoved(x, z);
+}
+
 /** Rise per metre at (x, z) heading along (sin, cos) */
 function terrainSlope(x, z, sin, cos) {
   return (terrainHeight(x + sin * 2.5, z + cos * 2.5) - terrainHeight(x - sin * 2.5, z - cos * 2.5)) / 5;
 }
 
 /** Forgets the grid in use: a tile's going away */
-function forgetLastGrid() { last = null; }
+function forgetLastGrid() { last = null; lastMoved = null; }
 onMap({ removeTile: forgetLastGrid });
 
-export { terrainHeight, terrainSlope };
+export { groundMoved, rawTerrainHeight, terrainHeight, terrainSlope };

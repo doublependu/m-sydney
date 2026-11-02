@@ -26,6 +26,8 @@ import { GEO, TILE } from './geodata.js';
 import { groundHeight } from './surfaces.js';
 import { createBuildingFootprintsSteps } from './building-footprints.js';
 import { polygonContains, polygonBoxOverlaps } from './building-collision.js';
+import { siteOfBuilding } from './model-sites.js';
+import { anchorToOrigin, onOriginMove, origin } from './world-origin.js';
 import { buildingLook, mulberry32 } from './building-look.js';
 
 // Surveyed footprints define buildings and collisions; architectural details stream around the player.
@@ -221,6 +223,7 @@ class Quadtree {
 function createCityBlocks(scene) {
   const group = new THREE.Group();
   group.name = 'CityBlocks';
+  anchorToOrigin(group);
   const tiles = new Map(); // key -> { x, z, quadtree, details, colliders, reserves }
 
   const materials = FACADES.map(([create, opts]) => create({ ...opts, footprintLocal: true }));
@@ -422,15 +425,20 @@ function createCityBlocks(scene) {
     attribute.needsUpdate = true;
   }
 
+  const standIns = new Map(); // model site -> what's drawn until the model comes
+  // These pools are written from the origin
+  let originMoved = false;
+  onOriginMove(() => { originMoved = true; });
   function update(focusX, focusZ, force = false) {
     const dx = focusX - lastStreamX;
     const dz = focusZ - lastStreamZ;
-    if (!force && (dx * dx + dz * dz) < 324) {
+    if (!force && !originMoved && (dx * dx + dz * dz) < 324) {
       // Player moved less than 18m since last Quadtree stream update
       return;
     }
     lastStreamX = focusX;
     lastStreamZ = focusZ;
+    originMoved = false;
 
     const nearbyBlocks = [];
     for (const tile of tiles.values()) {
@@ -460,7 +468,7 @@ function createCityBlocks(scene) {
       for (let i = 0; i < blk.cornices.length && corniceCount < MAX_CORNICES; i++) {
         const c = blk.cornices[i];
         dummy.rotation.set(0, c.ry || 0, 0);
-        dummy.position.set(c.x, base + c.y - c.h * 0.6, c.z);
+        dummy.position.set(c.x - origin.x, base + c.y - c.h * 0.6, c.z - origin.z);
         dummy.scale.set(c.w, c.h, c.d);
         dummy.updateMatrix();
         corniceInst.setMatrixAt(corniceCount++, dummy.matrix);
@@ -470,7 +478,7 @@ function createCityBlocks(scene) {
       for (let i = 0; i < blk.hvacUnits.length && hvacCount < MAX_HVAC; i++) {
         const u = blk.hvacUnits[i];
         dummy.rotation.set(0, u.ry || 0, 0);
-        dummy.position.set(u.x, base + u.y + u.h * 0.5, u.z);
+        dummy.position.set(u.x - origin.x, base + u.y + u.h * 0.5, u.z - origin.z);
         dummy.scale.set(u.w, u.h, u.d);
         dummy.updateMatrix();
         hvacInst.setMatrixAt(hvacCount++, dummy.matrix);
@@ -482,7 +490,7 @@ function createCityBlocks(scene) {
       for (let i = 0; i < blk.awnings.length && awningCount < MAX_AWNINGS; i++) {
         const a = blk.awnings[i];
         dummy.rotation.set(0, a.ry || 0, 0);
-        dummy.position.set(a.x, base + a.y, a.z);
+        dummy.position.set(a.x - origin.x, base + a.y, a.z - origin.z);
         dummy.scale.set(a.w, 0.75, a.d);
         dummy.updateMatrix();
         awningInst.setMatrixAt(awningCount, dummy.matrix);
@@ -490,7 +498,7 @@ function createCityBlocks(scene) {
 
         const themeIdx = a.colorIdx % signInsts.length;
         if (signCounts[themeIdx] < MAX_SIGNS_PER_THEME) {
-          dummy.position.set(a.x, base + 4.68, a.z);
+          dummy.position.set(a.x - origin.x, base + 4.68, a.z - origin.z);
           dummy.scale.set(0.28, 0.86, a.d * 0.92);
           dummy.updateMatrix();
           signInsts[themeIdx].setMatrixAt(signCounts[themeIdx]++, dummy.matrix);
@@ -505,7 +513,7 @@ function createCityBlocks(scene) {
       for (let i = 0; i < blk.scaffoldSheds.length && shedCount < MAX_SHEDS; i++) {
         const s = blk.scaffoldSheds[i];
         dummy.rotation.set(0, s.ry || 0, 0);
-        dummy.position.set(s.x, base + s.y + 3.6, s.z);
+        dummy.position.set(s.x - origin.x, base + s.y + 3.6, s.z - origin.z);
         dummy.scale.set(s.w, 0.85, s.d);
         dummy.updateMatrix();
         shedInst.setMatrixAt(shedCount++, dummy.matrix);
@@ -631,6 +639,24 @@ function createCityBlocks(scene) {
     const surveyedBuckets = materials.map(() => []);
     const detailsToPlace = [];
     for (const b of buildings) {
+      // A building with a model of its own: by itself, so the model can take its place when it comes (js/interiors.js)
+      const site = siteOfBuilding(b);
+      if (site) {
+        const { mat, tone } = buildingLook(b, b);
+        const top = b.height + 0.22;
+        const own = b.polygons.map((polygon) => {
+          const xs = polygon.outer.map((p) => p.x), zs = polygon.outer.map((p) => p.z);
+          return { minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs), minY: b.bottom || 0, maxY: top, baseY: b.floor, polygon };
+        });
+        const made = yield* createBuildingFootprintsSteps(materials[mat], [{ ...b, tone, storefronts: false, base: b.floor }], undefined, roofMaterials, {
+          groundAt: groundHeight, storey: { width: FACADES[mat][1].windowWidth, height: FACADES[mat][1].floorHeight }
+        });
+        const meshes = [...made.children];
+        for (const mesh of meshes) target.add(mesh);
+        colliders.push(...own);
+        standIns.set(site.id, { meshes, colliders: own, floor: b.floor, tile: tile.key });
+        continue;
+      }
       // The pieces of one building share its look and its floor
       const whole = b.group ? wholes.get(b.group) : b;
       const { mat, tone, seed } = buildingLook(b, whole);
@@ -682,12 +708,13 @@ function createCityBlocks(scene) {
     if (!record) return;
     tiles.delete(tile.key);
     removeReserves(record.reserves);
+    for (const [id, standIn] of standIns) if (standIn.tile === tile.key) standIns.delete(id);
     tile.wholes = null;
     update(lastStreamX, lastStreamZ, true);
   }
 
   scene.add(storeLightGroup);
-  return { group, addBuildings, removeTile, update, updateLights };
+  return { group, addBuildings, removeTile, update, updateLights, standIn: (id) => standIns.get(id) ?? null };
 }
 
 export { FACADE_TONES, ROOF_COLOURS, createCityBlocks };

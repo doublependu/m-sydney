@@ -31,7 +31,7 @@ function planTiles({ x, z, vx = 0, vz = 0, range, built, exists = tileExists, ke
   let x0 = Math.floor((Math.min(x, ax) - range) / TILE), x1 = Math.floor((Math.max(x, ax) + range) / TILE);
   let z0 = Math.floor((Math.min(z, az) - range) / TILE), z1 = Math.floor((Math.max(z, az) + range) / TILE);
   // No need to look where the map doesn't reach
-  if (exists === tileExists) {
+  if (exists === tileExists || range > 100000) {
     x0 = Math.max(x0, BOUNDS.x0);
     x1 = Math.min(x1, BOUNDS.x1);
     z0 = Math.max(z0, BOUNDS.z0);

@@ -1519,82 +1519,91 @@ body[data-mode='helicopter'] .gauge-alt {
   .camera-switch { border-top: 0; }
 }
 
-/* Touch controls reserve the bottom corners; mode and camera selection remain within reach. */
-#touch-controls {
+/* Touch: the left half of the screen is the stick, which appears under the thumb. Nothing is drawn there until then. */
+#touch-controls[hidden],
+.touch-action[hidden],
+.touch-hint[hidden] { display: none; }
+
+#touch-zone {
   position: fixed;
-  z-index: 12;
-  left: max(var(--edge), env(safe-area-inset-left));
-  right: max(var(--edge), env(safe-area-inset-right));
-  bottom: calc(max(var(--edge), env(safe-area-inset-bottom)) + 72px);
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  pointer-events: none;
+  z-index: 5; /* over the city, under the HUD */
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  touch-action: none;
   -webkit-touch-callout: none;
 }
 
-#touch-controls[hidden],
-.touch-action[hidden] { display: none; }
-
-.touch-movement { text-align: center; }
-
 #touch-stick {
-  position: relative;
-  width: 136px;
-  height: 136px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  position: fixed;
+  z-index: 12;
+  left: var(--stick-left, 0);
+  top: var(--stick-top, 0);
+  width: 112px;
+  height: 112px;
+  margin: -56px 0 0 -56px;
+  display: none;
+  border: 1px solid rgba(255, 255, 255, 0.28);
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.06) 32%, transparent 33%), var(--glass);
-  box-shadow: var(--shadow), inset 0 0 0 12px rgba(255, 255, 255, 0.025);
-  pointer-events: auto;
-  touch-action: none;
+  background: rgba(10, 12, 16, 0.18);
+  pointer-events: none;
 }
+#touch-stick.is-pressed { display: block; }
 
 .touch-stick-axis::before,
 .touch-stick-axis::after {
   content: '';
   position: absolute;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.16);
 }
-.touch-stick-axis::before { top: 16px; bottom: 16px; width: 1px; left: 50%; }
-.touch-stick-axis::after { left: 16px; right: 16px; height: 1px; top: 50%; }
+.touch-stick-axis::before { top: 14px; bottom: 14px; width: 1px; left: 50%; }
+.touch-stick-axis::after { left: 14px; right: 14px; height: 1px; top: 50%; }
 
 #touch-stick-knob {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 48px;
-  height: 48px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.45);
-  background: rgba(246, 245, 242, 0.8);
+  background: rgba(246, 245, 242, 0.55);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
   transform: translate(calc(-50% + var(--stick-x, 0px)), calc(-50% + var(--stick-y, 0px)));
+}
+
+/* How to drive, the first time only */
+.touch-hint {
+  position: fixed;
+  z-index: 11;
+  left: max(20px, env(safe-area-inset-left));
+  bottom: calc(max(20px, env(safe-area-inset-bottom)) + 28px);
+  max-width: 45%;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-shadow: 0 1px 5px #000;
   pointer-events: none;
 }
-
-#touch-stick.is-pressed #touch-stick-knob { background: var(--taxi); border-color: var(--taxi); }
-
-.touch-caption,
-.touch-look-hint {
-  color: var(--text-2);
-  font-size: 11px;
-  font-weight: 550;
-  text-shadow: 0 1px 5px #000;
-}
-.touch-caption { display: block; margin-top: 8px; }
-.touch-look-hint {
-  position: fixed;
-  top: calc(max(var(--edge), env(safe-area-inset-top)) + 120px);
-  right: max(var(--edge), env(safe-area-inset-right));
-  padding: 4px;
+.touch-hint-ring {
+  display: block;
+  width: 72px;
+  height: 72px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 50%;
+  background: rgba(10, 12, 16, 0.2);
 }
 
 .touch-actions {
+  position: fixed;
+  z-index: 12;
+  right: max(var(--edge), env(safe-area-inset-right));
+  bottom: calc(max(var(--edge), env(safe-area-inset-bottom)) + 72px);
   display: flex;
   gap: 10px;
-  padding-bottom: 22px;
 }
 .touch-action {
   width: 64px;
@@ -1636,22 +1645,116 @@ body.touch-enabled .hud-bottom-right { top: calc(max(var(--edge), env(safe-area-
 body.touch-enabled .cluster { width: 230px; }
 body.touch-enabled .camera-switch { border: 0; }
 body.touch-enabled .camera-switch .icon-btn { width: 44px; height: 44px; }
-body.touch-enabled .hud-bottom-left { left: max(var(--edge), env(safe-area-inset-left)); bottom: calc(max(var(--edge), env(safe-area-inset-bottom)) + 254px); max-width: calc(100% - 2 * var(--edge)); }
+body.touch-enabled .hud-bottom-left { left: max(var(--edge), env(safe-area-inset-left)); bottom: calc(max(var(--edge), env(safe-area-inset-bottom)) + 72px); max-width: calc(100% - 2 * var(--edge)); }
 body.touch-enabled .fullmap-header { top: max(var(--edge), env(safe-area-inset-top)); left: max(var(--edge), env(safe-area-inset-left)); right: max(var(--edge), env(safe-area-inset-right)); }
 body.touch-enabled .map-controls .icon-btn { width: 44px; height: 44px; }
 body.touch-enabled .pop-item { min-height: 44px; }
 
-@media (max-width: 520px) {
-  body.touch-enabled .toolbar { width: 300px; height: auto; flex-wrap: wrap; justify-content: center; }
-  body.touch-enabled .hud-top-left { top: calc(max(var(--edge), env(safe-area-inset-top)) + 114px); }
-  body.touch-enabled .hud-bottom-right { top: calc(max(var(--edge), env(safe-area-inset-top)) + 114px); }
-  .touch-look-hint { top: calc(max(var(--edge), env(safe-area-inset-top)) + 172px); }
-}
+/* A phone: one button, the current mode, how fast and on what street. Nothing in the middle of the screen, and what's left fades
+   back after a few seconds without a touch (js/phone-hud.js). Everything else is behind the menu. */
+#btn-phone-menu,
+.hud-mini { display: none; }
 
-@media (max-height: 500px) {
-  body.touch-enabled .hud-bottom-left { display: none; }
-  body.touch-enabled .hud-bottom-right { top: calc(max(var(--edge), env(safe-area-inset-top)) + 58px); }
-  #touch-controls { bottom: max(var(--edge), env(safe-area-inset-bottom)); }
+@media (max-width: 600px), (max-height: 600px) {
+  body.touch-enabled #app-version,
+  body.touch-enabled .mode-indicator,
+  body.touch-enabled .mode-label { display: none; }
+
+  /* Fades, but stays where a thumb expects it */
+  body.touch-enabled .hud-top-left,
+  body.touch-enabled .hud-top-right,
+  body.touch-enabled .hud-bottom-center,
+  body.touch-enabled .touch-actions { transition: opacity 0.5s ease; }
+  body.hud-idle.touch-enabled .hud-top-left,
+  body.hud-idle.touch-enabled #btn-phone-menu,
+  body.hud-idle.touch-enabled .hud-bottom-center,
+  body.hud-idle.touch-enabled .touch-actions { opacity: 0.4; }
+
+  /* Top left: how fast, with the street's name under it for a moment after it changes */
+  body.touch-enabled .hud-top-left { top: max(var(--edge), env(safe-area-inset-top)); left: max(var(--edge), env(safe-area-inset-left)); gap: 2px; pointer-events: none; }
+  body.touch-enabled .brand { display: none; }
+  body.touch-enabled .hud-mini {
+    display: block;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+    pointer-events: none;
+  }
+  body.touch-enabled .hud-bottom-left {
+    top: calc(max(var(--edge), env(safe-area-inset-top)) + 20px);
+    bottom: auto;
+    max-width: 60%;
+    pointer-events: none;
+  }
+  body.touch-enabled .location { gap: 2px; opacity: 0; transition: opacity 0.5s ease; }
+  body.touch-enabled .location.is-fresh { opacity: 1; }
+  body.touch-enabled .location-place,
+  body.touch-enabled .location-near { display: none; }
+  body.touch-enabled .location-signs { transform: scale(0.72); transform-origin: left top; flex-wrap: nowrap; }
+  body.touch-enabled .location-signs > :nth-child(n + 2) { display: none; }
+
+  /* The city's progress: a line along the top edge */
+  body.touch-enabled .hud-progress {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 13;
+    width: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    pointer-events: none;
+  }
+  body.touch-enabled .hud-progress-head { display: none; }
+  body.touch-enabled .hud-progress-track { height: 3px; margin: 0; border-radius: 0; }
+
+  /* Top right: the menu, and behind it everything else */
+  body.touch-enabled .hud-top-right { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+  body.touch-enabled #btn-phone-menu { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; border-radius: 12px; }
+  body.touch-enabled .toolbar,
+  body.touch-enabled .hud-bottom-right { display: none; }
+  body.phone-menu-open.touch-enabled .toolbar { display: flex; width: min(300px, calc(100vw - 2 * var(--edge))); height: auto; flex-wrap: wrap; justify-content: center; }
+  body.phone-menu-open.touch-enabled .hud-bottom-right {
+    display: block;
+    top: var(--phone-sheet-y, 170px);
+    right: max(var(--edge), env(safe-area-inset-right));
+    bottom: auto;
+  }
+  body.phone-menu-open.touch-enabled .cluster { width: min(300px, calc(100vw - 2 * var(--edge))); }
+  body.phone-menu-open.touch-enabled .brand {
+    display: flex;
+    position: fixed;
+    top: calc(var(--phone-sheet-y, 170px) + 62px);
+    right: max(var(--edge), env(safe-area-inset-right));
+    height: 44px;
+    padding: 0 12px;
+    pointer-events: auto;
+  }
+  body.phone-menu-open.touch-enabled .brand > .brand-bullet,
+  body.phone-menu-open.touch-enabled .brand-heading h1,
+  body.phone-menu-open.touch-enabled .brand-subtitle { display: none; }
+  body.phone-menu-open.touch-enabled .repo-link { display: flex; align-items: center; gap: 4px; min-height: 44px; font-size: 12px; }
+
+  /* Bottom right: the current mode. A tap on it opens the others. */
+  body.touch-enabled .hud-bottom-center { left: auto; right: max(var(--edge), env(safe-area-inset-right)); bottom: max(var(--edge), env(safe-area-inset-bottom)); transform: none; }
+  body.touch-enabled .mode-switch { flex-direction: column-reverse; gap: 2px; padding: 3px; border-radius: 14px; }
+  body.touch-enabled .mode-btn { width: 44px; height: 44px; padding: 0; justify-content: center; }
+  body.touch-enabled .mode-btn.active { background: var(--taxi); color: var(--taxi-ink); }
+  body.touch-enabled .mode-switch:not(.is-open) .mode-btn:not(.active) { display: none; }
+  body.touch-enabled .touch-actions { flex-direction: column; bottom: calc(max(var(--edge), env(safe-area-inset-bottom)) + 62px); }
+  body.touch-enabled .touch-action { width: 52px; height: 52px; font-size: 0; }
+  body.phone-modes-open.touch-enabled .touch-actions { display: none; }
+
+  /* Clean view: only the menu's own button is left */
+  body.hud-minimized.touch-enabled .hud-mini,
+  body.hud-minimized.touch-enabled .location { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -47,12 +47,13 @@ function harness({ coarse = true, mode = 'person' } = {}) {
   window.matchMedia = () => media;
   const root = element();
   const stick = element();
+  const ring = element();
   const knob = element();
   const buttons = Object.fromEntries(['up', 'down'].map((action) => [action, element({ 'data-touch-action': action })]));
   const labels = Object.fromEntries(Object.keys(buttons).map((action) => [action, element()]));
   root.querySelectorAll = () => Object.values(buttons);
   root.querySelector = (selector) => labels[selector.match(/"(.*?)"/)[1]];
-  document.getElementById = (id) => ({ 'touch-controls': root, 'touch-stick': stick, 'touch-stick-knob': knob })[id];
+  document.getElementById = (id) => ({ 'touch-controls': root, 'touch-zone': stick, 'touch-stick': ring, 'touch-stick-knob': knob })[id];
   const input = Object.fromEntries(['forward', 'backward', 'left', 'right', 'up', 'down'].map((action) => [action, 0]));
   const controller = {
     activeMode: mode,
@@ -61,12 +62,32 @@ function harness({ coarse = true, mode = 'person' } = {}) {
   };
   const { TouchControls } = loadModule(source, { globals: { window, document } });
   const controls = new TouchControls(controller);
-  return { controls, window, document, media, root, stick, knob, buttons, labels, input };
+  return { controls, window, document, media, root, stick, ring, knob, buttons, labels, input };
 }
 
 function near(actual, expected) {
   assert.ok(Math.abs(actual - expected) < 1e-10, `${actual} should be close to ${expected}`);
 }
+
+// A press lands in the middle of the stick, wherever it is, so what moves the car is the drag after it
+function hold(stick, position) {
+  stick.dispatch('pointerdown');
+  stick.dispatch('pointermove', position);
+}
+
+test('the stick appears where the thumb lands, and is only as far off as the thumb has dragged', () => {
+  const { stick, ring, input } = harness();
+  stick.dispatch('pointerdown', { clientX: 90, clientY: 500 });
+  assert.equal(ring.style.getPropertyValue('--stick-left'), '90px');
+  assert.equal(ring.style.getPropertyValue('--stick-top'), '500px');
+  assert.equal(ring.classList.contains('is-pressed'), true);
+  assert.equal(input.forward, 0, 'landing on it drives nowhere');
+  stick.dispatch('pointermove', { clientX: 90, clientY: 456 });
+  assert.equal(input.forward, 1);
+  stick.dispatch('pointerup');
+  assert.equal(ring.classList.contains('is-pressed'), false);
+  assert.equal(input.forward, 0);
+});
 
 test('stick preserves analog strength and normalizes diagonal input with a radial deadzone', () => {
   const { stick, knob, input } = harness();
@@ -87,7 +108,7 @@ test('stick preserves analog strength and normalizes diagonal input with a radia
 
 test('stick and multiple held button pointers release independently', () => {
   const { stick, buttons, input } = harness({ mode: 'helicopter' });
-  stick.dispatch('pointerdown', { clientY: 20 });
+  hold(stick, { clientY: 20 });
   buttons.up.dispatch('pointerdown', { pointerId: 2 });
   buttons.up.dispatch('pointerdown', { pointerId: 3 });
   buttons.down.dispatch('pointerdown', { pointerId: 4 });
@@ -112,13 +133,13 @@ test('stick and multiple held button pointers release independently', () => {
 
 for (const type of ['pointercancel', 'lostpointercapture']) {
   test(`${type} clears only the affected pointer and its feedback`, () => {
-    const { stick, knob, buttons, input } = harness();
-    stick.dispatch('pointerdown', { clientX: 20 });
+    const { stick, ring, knob, buttons, input } = harness();
+    hold(stick, { clientX: 20 });
     buttons.up.dispatch('pointerdown', { pointerId: 2 });
     stick.dispatch(type);
     assert.equal(input.left, 0);
     assert.equal(input.up, 1);
-    assert.equal(stick.classList.contains('is-pressed'), false);
+    assert.equal(ring.classList.contains('is-pressed'), false);
     assert.equal(knob.style.getPropertyValue('--stick-x'), '0px');
     buttons.up.dispatch(type, { pointerId: 2 });
     assert.equal(input.up, 0);
@@ -131,7 +152,7 @@ test('mode changes clear touches and expose the relevant actions', () => {
   assert.equal(labels.up.textContent, 'Jump');
   assert.equal(buttons.up.hidden, false);
   assert.equal(buttons.down.hidden, true);
-  stick.dispatch('pointerdown', { clientY: 20 });
+  hold(stick, { clientY: 20 });
   buttons.up.dispatch('pointerdown', { pointerId: 2 });
   controls.setMode('helicopter');
   assert.equal(Object.values(input).some(Boolean), false);
@@ -152,24 +173,24 @@ test('mode changes clear touches and expose the relevant actions', () => {
 
 test('disabling controls clears held input and blocks new input until enabled', () => {
   const { controls, root, stick, buttons, input } = harness();
-  stick.dispatch('pointerdown', { clientY: 20 });
+  hold(stick, { clientY: 20 });
   buttons.up.dispatch('pointerdown', { pointerId: 2 });
   controls.setEnabled(false);
   assert.equal(root.hidden, true);
   assert.equal(Object.values(input).some(Boolean), false);
-  stick.dispatch('pointerdown', { clientY: 20 });
+  hold(stick, { clientY: 20 });
   buttons.up.dispatch('pointerdown', { pointerId: 3 });
   assert.equal(Object.values(input).some(Boolean), false);
   controls.setEnabled(true);
   assert.equal(root.hidden, false);
-  stick.dispatch('pointerdown', { clientY: 20 });
+  hold(stick, { clientY: 20 });
   assert.equal(input.forward, 1);
 });
 
 for (const interruption of ['blur', 'hidden', 'resize']) {
   test(`${interruption} resets all held input and pointer captures`, () => {
     const { window, document, stick, buttons, input } = harness();
-    stick.dispatch('pointerdown', { clientY: 20 });
+    hold(stick, { clientY: 20 });
     buttons.up.dispatch('pointerdown', { pointerId: 2 });
     if (interruption === 'hidden') {
       document.hidden = true;
@@ -190,7 +211,7 @@ test('desktop controls stay hidden until a coarse pointer or first touch is avai
   media.matches = true;
   media.dispatch('change');
   assert.equal(root.hidden, false);
-  stick.dispatch('pointerdown', { clientY: 20 });
+  hold(stick, { clientY: 20 });
   media.matches = false;
   media.dispatch('change');
   assert.equal(root.hidden, true);

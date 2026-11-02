@@ -1,44 +1,16 @@
-// tools/build-heights.mjs: writes js/height-grid.bin.gz, the ground height of the play area and the land around it, from
-// surveyed contours: City of Sydney's 1 m contours, then the NSW 2 m contours for everything north of the harbour and
-// beyond the City's boundary. Global DEMs are no use here: they smear the CBD's towers into the ground.
+// tools/build-heights.mjs: writes js/height-grid.bin.gz, the ground height of the play area and the land around it, from NSW's
+// 5 m elevation model (tools/fetch-elevation.mjs), then every road's height. Global DEMs are no use here: they smear the CBD's towers
+// into the ground.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
-import { GRID, Raster, load, toWorld } from './geo-common.mjs';
+import { GRID, Raster, fromWorld, load, toWorld } from './geo-common.mjs';
+import { heightSampler } from './fetch-elevation.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const { x0, z0, x1, z1, cell } = GRID;
 const w = Math.round((x1 - x0) / cell) + 1, h = Math.round((z1 - z0) / cell) + 1;
-
-// Contour samples in a coarse hash; each grid point is the inverse-distance mean of the nearest ones
-const BUCKET = 40;
-const buckets = new Map();
-const put = (x, z, y, fine) => {
-  const k = Math.floor(x / BUCKET) * 100000 + Math.floor(z / BUCKET);
-  let b = buckets.get(k);
-  if (!b) buckets.set(k, (b = []));
-  b.push(x, z, y, fine ? 1 : 0);
-};
-function addLines(features, heightOf, fine, step) {
-  for (const f of features) {
-    const y = heightOf(f.properties);
-    const g = f.geometry;
-    if (!g || !Number.isFinite(y) || y < -3) continue;
-    for (const line of g.type === 'LineString' ? [g.coordinates] : g.coordinates) {
-      const pts = line.map(([lon, lat]) => toWorld(lon, lat));
-      for (let i = 0; i + 1 < pts.length; i++) {
-        const [ax, az] = pts[i], [bx, bz] = pts[i + 1];
-        if (Math.max(ax, bx) < x0 - 200 || Math.min(ax, bx) > x1 + 200 || Math.max(az, bz) < z0 - 200 || Math.min(az, bz) > z1 + 200) continue;
-        const n = Math.max(1, Math.floor(Math.hypot(bx - ax, bz - az) / step));
-        for (let k = 0; k < n; k++) put(ax + ((bx - ax) * k) / n, az + ((bz - az) * k) / n, y, fine);
-      }
-    }
-  }
-}
-addLines(load('cos_contours.json'), (p) => p.Contour, true, 10);
-addLines(load('nsw_contours.json'), (p) => p.elevation, false, 14);
-console.log('[heights] contour buckets', buckets.size);
 
 // Water pulls the height to sea level at the shore
 const { GEO } = await import('./data/generated/geodata.js');
@@ -48,29 +20,13 @@ for (const rings of GEO.shores) rings.forEach((flat, i) => { const ring = []; fo
 
 const raw = new Float32Array(w * h);
 const missing = [];
+const fiveMetre = heightSampler(5);
 for (let j = 0; j < h; j++) {
   for (let i = 0; i < w; i++) {
-    const x = x0 + i * cell, z = z0 + j * cell;
-    let sw = 0, sy = 0, near = Infinity, fineNear = false;
-    const reach = 160;
-    for (let a = Math.floor((x - reach) / BUCKET); a <= Math.floor((x + reach) / BUCKET); a++) {
-      for (let b = Math.floor((z - reach) / BUCKET); b <= Math.floor((z + reach) / BUCKET); b++) {
-        const list = buckets.get(a * 100000 + b);
-        if (!list) continue;
-        for (let k = 0; k < list.length; k += 4) {
-          const d2 = (list[k] - x) ** 2 + (list[k + 1] - z) ** 2;
-          if (d2 > reach * reach) continue;
-          const weight = (list[k + 3] ? 3 : 1) / (d2 * d2 + 16);
-          sw += weight;
-          sy += weight * list[k + 2];
-          if (d2 < near) near = d2;
-          if (list[k + 3] && d2 < 3600) fineNear = true;
-        }
-      }
-    }
-    void fineNear;
-    if (sw > 0) raw[j * w + i] = sy / sw;
-    else missing.push(j * w + i);
+    const [lon, lat] = fromWorld(x0 + i * cell, z0 + j * cell);
+    const y = fiveMetre(lon, lat);
+    if (y === null) missing.push(j * w + i);
+    else raw[j * w + i] = y;
   }
 }
 console.log('[heights] grid', w, 'x', h, 'no contour nearby:', missing.length);
@@ -153,6 +109,7 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
   const MAX_CUT = 8; // m a street may sink below the ground: a cutting, not a tunnel
   const UNDER_WATER = -20; // m a tunnel's road lies at under the harbour
   const SAMPLE = 5; // m between the points heights are worked out at
+  const DECK_SHOULDER = 2; // m past a structure's carriageway that the ground under it is lowered (js/surfaces.js)
   const grid = (x, z) => {
     const fx = (x - x0) / cell, fz = (z - z0) / cell;
     if (fx < 0 || fz < 0 || fx >= w - 1 || fz >= h - 1) return 0;
@@ -539,6 +496,33 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
   let short = 0;
   for (const smp of samples) if (!smp.fixed && (smp.y < smp.lo - 0.3 || smp.y > smp.hi + 0.3)) short++;
 
+  // Leaving a structure, a road eases away from it: the land under the end of a ramp can fall away far quicker than anyone could drive
+  const easeFromStructures = (movable, field) => {
+    const GRADE = 0.14; // as steep as the approach to a real bridge gets. It goes on as far as it has to, or it would leave a cliff where it stopped.
+    const LEVEL = 0.03; // ...and hardly at all while the structure is still under you, as its end runs its own half-width past the last point
+    let frontier = [];
+    const seed = (idx, half) => frontier.push({ i: idx, left: half + 1 });
+    for (const l of structures) { seed(l.chain[0], l.width / 2); seed(l.chain[l.chain.length - 1], l.width / 2); }
+    for (const l of corridor) for (const n of [l.a, l.b]) if (nodeSample.has(n)) seed(nodeSample.get(n), l.width / 2);
+    while (frontier.length) {
+      const next = [];
+      for (const { i, left } of frontier) {
+        const a = samples[i];
+        for (const [j, d] of nbr[i]) {
+          if (!movable(j)) continue;
+          const b = samples[j];
+          const grade = left > 0 ? LEVEL : GRADE;
+          const limited = Math.max(a[field] - grade * d, Math.min(a[field] + grade * d, b[field]));
+          if (Math.abs(limited - b[field]) < 1e-4) continue;
+          b[field] = limited;
+          next.push({ i: j, left: left - d });
+        }
+      }
+      frontier = next;
+    }
+  };
+  easeFromStructures((idx) => samples[idx].ground && !samples[idx].fixed, 'y');
+
   // Profiles into the links: [y at a, y at each inner point..., y at b]. A street sunk into a cutting becomes KIND 3: on
   // the ground (js/surfaces.js lowers the ground along it), with a point every SAMPLE m so the cut keeps its shape.
   const q10 = (v) => Math.round(v * 10) / 10;
@@ -562,6 +546,202 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
     cuttings++;
   }
   console.log(`[heights] roads: ${structures.length} structure links, ${cuttings} streets sunk into cuttings, ${samples.length} samples, ${short} short of their clearance`);
+
+  // Every other road on the ground gets a shape of its own: its height smoothed along it, with the bumps of the lattice gone but its
+  // grade true to the hill, and no more than a little lean across it. The ground then follows the road, not the other way round
+  // (tools/tiles/grade-ground.mjs). A road across a hillside would otherwise lean with the hillside, up to 39% on some streets.
+  {
+    const SMOOTH = 40; // m each way along the road
+    const MAX_LEAN = 0.04;
+    const LEAN_FADE = 12; // m: down to level by the junction
+    const PROFILE_STEP = 10; // m between the heights kept
+    const plain = others.filter((l) => !l.kind && l.raw[9] !== 3);
+    const isPlain = new Set(plain);
+    const at = new Map();
+    for (const l of others) {
+      if (l.kind && l.raw[9] === 0) continue;
+      for (const n of [l.a, l.b]) (at.get(n) || at.set(n, []).get(n)).push(l);
+    }
+    // The height of each point of each road, all solved together: near the land, smooth along the road, shared at junctions, and level
+    // with any road it overlaps. A divided road's two sides are often mapped closer together than they're wide, and on a hillside
+    // each would otherwise sit at its own height, a metre or more apart, on the same piece of road.
+    {
+      const LAND = 0.02, ALONG = 1, OVERLAP = 1, ROUNDS = 300;
+      const free = new Set();
+      const ownerOf = new Map(); // sample -> { links, half }
+      for (const l of plain) {
+        for (const idx of l.chain) {
+          free.add(idx);
+          const o = ownerOf.get(idx);
+          if (o) { o.links.push(l); o.half = Math.max(o.half, l.width / 2); } else ownerOf.set(idx, { links: [l], half: l.width / 2 });
+        }
+      }
+      // Pinned where a structure or cutting meets the road, and where a road passes under or over one: they've been solved already
+      for (const l of others) if (!isPlain.has(l)) for (const idx of l.chain) free.delete(idx);
+      const heldClear = (sg) => {
+        if (!isPlain.has(sg.l)) return;
+        for (const idx of [sg.i, sg.j]) free.delete(idx);
+      };
+      for (const { a, b } of pairs) if (!isPlain.has(a.l) || !isPlain.has(b.l)) { heldClear(a); heldClear(b); }
+      for (const { a } of fixedPairs) heldClear(a);
+      const OCELL = 30;
+      const cells = new Map();
+      for (const idx of ownerOf.keys()) {
+        const q = samples[idx];
+        const k = Math.floor(q.x / OCELL) * 100000 + Math.floor(q.z / OCELL);
+        if (!cells.has(k)) cells.set(k, []);
+        cells.get(k).push(idx);
+      }
+      const overlaps = new Map();
+      for (const idx of free) {
+        const q = samples[idx], mine = ownerOf.get(idx);
+        const bestOf = new Map(); // nearest point of each other road
+        const cx = Math.floor(q.x / OCELL), cz = Math.floor(q.z / OCELL);
+        for (let a = -1; a <= 1; a++) {
+          for (let c = -1; c <= 1; c++) {
+            for (const other of cells.get((cx + a) * 100000 + cz + c) || []) {
+              if (other === idx) continue;
+              const theirs = ownerOf.get(other);
+              if (theirs.links.some((l) => mine.links.includes(l))) continue;
+              const o = samples[other], d = Math.hypot(o.x - q.x, o.z - q.z);
+              if (d >= (mine.half + theirs.half) * 0.9) continue;
+              const road = theirs.links[0];
+              const known = bestOf.get(road);
+              if (!known || d < known.d) bestOf.set(road, { d, other });
+            }
+          }
+        }
+        if (bestOf.size) overlaps.set(idx, [...bestOf.values()].map((b) => b.other));
+      }
+      const ids = [...free];
+      for (const idx of ids) samples[idx].shape = samples[idx].grid;
+      for (const q of samples) if (q.shape === undefined) q.shape = q.y;
+      for (let round = 0; round < ROUNDS; round++) {
+        for (const idx of ids) {
+          const q = samples[idx];
+          let sum = LAND * q.grid, weight = LAND;
+          for (const [j] of nbr[idx]) { sum += ALONG * samples[j].shape; weight += ALONG; }
+          for (const j of overlaps.get(idx) || []) { sum += OVERLAP * samples[j].shape; weight += OVERLAP; }
+          q.shape = sum / weight;
+        }
+      }
+      easeFromStructures((idx) => free.has(idx), 'shape');
+      const moved = ids.map((idx) => Math.abs(samples[idx].shape - samples[idx].grid)).sort((p, q) => p - q);
+      console.log(`[heights] road shape: ${overlaps.size} points share a surface with another road; off the land by ${moved[moved.length >> 1].toFixed(2)} m median, ${moved[Math.floor(moved.length * 0.99)].toFixed(2)} m at the 99th percentile`);
+    }
+    // Roads that simply continue into each other are one run, so nothing kinks where they join
+    const continues = (n) => (at.get(n) || []).length === 2 && at.get(n).every((l) => isPlain.has(l));
+    const seen = new Set();
+    let runs = 0, worstLean = 0;
+    for (const start of plain) {
+      if (seen.has(start)) continue;
+      // Back to where this run begins
+      const run = [];
+      let l = start, from = start.a;
+      const visited = new Set([start]);
+      for (;;) {
+        if (!continues(from)) break;
+        const next = at.get(from).find((o) => o !== l);
+        if (!next || visited.has(next)) break;
+        visited.add(next);
+        from = next.a === from ? next.b : next.a;
+        l = next;
+      }
+      // ...and along it: `from` is where l starts in this run's direction
+      for (let n = from, link = l; link && !seen.has(link);) {
+        seen.add(link);
+        const forward = link.a === n;
+        run.push({ link, forward });
+        n = forward ? link.b : link.a;
+        link = continues(n) ? at.get(n).find((o) => o !== link) : null;
+      }
+      runs++;
+      // Stations along the run
+      const st = [];
+      let s = 0;
+      for (const { link, forward } of run) {
+        const chain = forward ? link.chain : [...link.chain].reverse();
+        chain.forEach((idx, k) => {
+          const q = samples[idx];
+          if (k) s += Math.hypot(q.x - samples[chain[k - 1]].x, q.z - samples[chain[k - 1]].z);
+          if (!k && st.length) return;
+          st.push({ x: q.x, z: q.z, s, shape: q.shape, half: link.width / 2, ux: 0, uz: 0, link });
+        });
+      }
+      for (let i = 0; i < st.length; i++) {
+        const a = st[Math.max(0, i - 1)], b = st[Math.min(st.length - 1, i + 1)], L = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+        st[i].ux = (b.x - a.x) / L;
+        st[i].uz = (b.z - a.z) / L;
+      }
+      const total = s || 1;
+      const leanRaw = st.map((q) => (grid(q.x + q.uz * q.half, q.z - q.ux * q.half) - grid(q.x - q.uz * q.half, q.z + q.ux * q.half)) / (2 * q.half));
+      const smooth = (values, i) => {
+        let sum = 0, weight = 0;
+        for (let j = i; j >= 0 && st[i].s - st[j].s < SMOOTH; j--) { const w = 1 - (st[i].s - st[j].s) / SMOOTH; sum += values[j] * w; weight += w; }
+        for (let j = i + 1; j < st.length && st[j].s - st[i].s < SMOOTH; j++) { const w = 1 - (st[j].s - st[i].s) / SMOOTH; sum += values[j] * w; weight += w; }
+        return sum / weight;
+      };
+      st.forEach((q, i) => {
+        const end = Math.min(q.s, total - q.s);
+        q.profile = q.shape;
+        q.lean = Math.max(-MAX_LEAN, Math.min(MAX_LEAN, smooth(leanRaw, i))) * Math.min(1, end / LEAN_FADE);
+        worstLean = Math.max(worstLean, Math.abs(q.lean));
+      });
+      // Into each link, its own way round: heights and lean at even steps from its a to its b
+      let cursor = 0;
+      for (const { link, forward } of run) {
+        const length = linkLen(link);
+        const startS = cursor;
+        const count = Math.max(2, Math.ceil(length / PROFILE_STEP) + 1);
+        const heights = [], leans = [];
+        let previous = 0;
+        for (let k = 0; k < count; k++) {
+          const along = (length * k) / (count - 1);
+          const target = startS + (forward ? along : length - along);
+          let i = 1;
+          while (i < st.length - 1 && st[i].s < target) i++;
+          const a = st[i - 1], b = st[i] ?? a;
+          const t = b.s > a.s ? Math.max(0, Math.min(1, (target - a.s) / (b.s - a.s))) : 0;
+          const y = a.profile + (b.profile - a.profile) * t;
+          const lean = (a.lean + (b.lean - a.lean) * t) * (forward ? 1 : -1);
+          // Whole 5 cm as differences, which pack to almost nothing; lean in 0.1%
+          const q = Math.round(y * 20);
+          heights.push(q - previous);
+          previous = q;
+          leans.push(Math.round(lean * 1000));
+        }
+        link.raw[12] = null;
+        link.raw[13] = heights;
+        link.raw[14] = leans;
+        cursor += length;
+      }
+    }
+    console.log(`[heights] ${plain.length} roads shaped in ${runs} runs, worst lean ${(worstLean * 100).toFixed(1)}%`);
+  }
+
+  // Where a ramp or viaduct is low over the ground, the footpaths have to stop at its sides, or they'd be drawn over it. Only
+  // roads on the ground cut the kerb islands in tools/build-geodata.mjs, and it can't know this until heights are solved, so
+  // it reads this file on its second run. Past LOW_DECK (js/surfaces.js) there's room for the ground to run on underneath.
+  const LOW_DECK = 3;
+  const lowDecks = [];
+  const lowSegment = (ax, az, ay, bx, bz, by, r) => {
+    if (Math.min(ay - grid(ax, az), by - grid(bx, bz)) < LOW_DECK) lowDecks.push([ax, az, bx, bz, r].map(q10));
+  };
+  for (const l of structures) {
+    if (l.kind !== 1) continue;
+    for (let k = 1; k < l.chain.length; k++) {
+      const p = samples[l.chain[k - 1]], q = samples[l.chain[k]];
+      lowSegment(p.x, p.z, p.y, q.x, q.z, q.y, l.width / 2 + DECK_SHOULDER);
+    }
+  }
+  for (const l of corridor) {
+    for (let k = 1; k < l.pts.length; k++) {
+      const [ax, az] = l.pts[k - 1], [bx, bz] = l.pts[k];
+      lowSegment(ax, az, deckHeight(sOf(ax, az)), bx, bz, deckHeight(sOf(bx, bz)), DECK_WIDTH / 2 + 1.4);
+    }
+  }
+  fs.writeFileSync(path.join(ROOT, 'tools/data/generated/low-decks.json'), JSON.stringify(lowDecks));
+  console.log(`[heights] ${lowDecks.length} stretches of structure low over the ground`);
 
   const src = fs.readFileSync(path.join(ROOT, 'tools/data/generated/geodata.js'), 'utf8');
   const head = src.slice(0, src.indexOf('export const GEO = '));

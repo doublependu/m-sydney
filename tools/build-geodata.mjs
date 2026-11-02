@@ -3,15 +3,28 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
-  BEARING, DETAIL_BOUNDS, DETAIL_RECTS, GRID, Raster, bbox, chainRings, elementRings, flat, inDetail, load, log, q1, rdp,
+  BEARING, DETAIL_BOUNDS, DETAIL_RECTS, GRID, Raster, dataPath, bbox, fromWorld, chainRings, elementRings, flat, inDetail, load, log, q1, rdp,
   rdpRing, ringArea, tiledPolygons, toWorld
 } from './geo-common.mjs';
+
+import { heightSampler } from './fetch-elevation.mjs';
 
 const OUT = process.argv[2] || fileURLToPath(new URL('./data/generated/geodata.js', import.meta.url));
 const B = DETAIL_BOUNDS;
 const RES = 1;
+const KERB_CLEAR = 0.4; // m past a road's edge that its kerbs stand: what's drawn runs 0.6 m past it, under them
+const ISLAND_EPS = 0.5; // m a kerb island's outline may stray when simplified
 
-// --- Land: the detail rectangles minus Port Jackson, plus the piers -----------------------------------------------------
+// The ocean and what opens off it, like Botany Bay: everything east of the coastline, whose chains run from north to south
+const WIDE = { x0: -24000, x1: 11000, z0: -24000, z1: 16000 };
+function seaRing() {
+  const chains = chainRings(load('coast.json').elements.filter((e) => e.geometry).map((e) => e.geometry.map((g) => toWorld(g.lon, g.lat))))
+    .filter((c) => c.length > 200 && bbox(c).x1 > 5000).sort((p, q) => bbox(q).z1 - bbox(p).z1);
+  const shore = chains.flat();
+  return [...shore, [shore[shore.length - 1][0], WIDE.z0 - 100], [WIDE.x1 + 100, WIDE.z0 - 100], [WIDE.x1 + 100, WIDE.z1 + 100], [shore[0][0], WIDE.z1 + 100]];
+}
+
+// --- Land: the detail rectangles minus the sea and Port Jackson, plus the piers ------------------------------------------
 const harbour = load('harbour.json').elements.find((e) => e.id === 15522136);
 const { outer: harbourOuter, inner: harbourInner } = elementRings(harbour);
 log(`harbour: ${harbourOuter.length} outer, ${harbourInner.length} inner rings`);
@@ -28,8 +41,30 @@ for (const r of DETAIL_RECTS) {
 }
 {
   const water = new Raster(B.x0, B.z0, B.x1, B.z1, RES);
+  water.fillRing(seaRing(), 1);
   for (const r of harbourOuter) water.fillRing(r, 1);
   for (const r of harbourInner) water.fillRing(r, 0);
+  // Rivers, canals and lagoons at the level of the sea, like the Cooks River. A pond in a park or a reservoir up a hill stays out of it: the water
+  // here is one sheet at sea level, and those would need one of their own.
+  const seaLevel = heightSampler(5);
+  let rivers = 0;
+  for (const e of load('land.json').elements) {
+    if (e.tags?.natural !== 'water' || /^(pond|basin|wastewater|reservoir|reflecting_pool|pool|stream_pool|fountain)$/.test(e.tags.water || '')) continue;
+    const { outer, inner } = elementRings(e);
+    let added = false;
+    for (const ring of outer) {
+      if (ring.length < 4 || Math.abs(ringArea(ring)) < 1500) continue;
+      if (!ring.some(([x, z]) => inDetail(x, z))) continue;
+      const heights = ring.map(([x, z]) => seaLevel(...fromWorld(x, z))).filter((y) => y !== null);
+      if (heights.length && heights.reduce((t, y) => t + y, 0) / heights.length > 3) continue;
+      water.fillRing(ring, 1);
+      added = true;
+    }
+    if (!added) continue;
+    rivers++;
+    for (const ring of inner) water.fillRing(ring, 0);
+  }
+  log(`${rivers} rivers, canals and lagoons`);
   for (let i = 0; i < land.d.length; i++) if (water.d[i]) land.d[i] = 0;
 }
 const osmLand = load('land.json').elements;
@@ -62,7 +97,7 @@ for (let i = 0; i < land.d.length; i++) if (!landComps[landLabels[i] - 1] || lan
 log(`land: ${shores.length} masses, ${(land.d.reduce((t, v) => t + v, 0) / 1e6).toFixed(2)} km²`);
 
 // --- Building walls keep the curbs honest: OSM rarely has road widths --------------------------------------------------
-const overture = fs.readFileSync(new URL('../tools/data/overture_syd.json', import.meta.url), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+const overture = fs.readFileSync(dataPath('overture_syd.json'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 const walls = new Raster(B.x0, B.z0, B.x1, B.z1, RES);
 for (const b of overture) {
   if (b.class === 'roof' || b.is_underground) continue;
@@ -292,7 +327,7 @@ for (const w of kept) {
     const ib = idOf(w.nodes[i], pts[i]);
     if (ia === ib) continue;
     // Only roads on the ground cut the curb islands: under a bridge or over a tunnel the ground is whatever is there
-    if (kind === KIND.GROUND) strips.push({ pts: seg, r: width / 2 });
+    if (kind === KIND.GROUND) strips.push({ pts: seg, r: width / 2 + KERB_CLEAR });
     kinds[kind]++;
     const shape = kind === KIND.GROUND ? rdp(seg, 0.4) : densify(rdp(seg, 0.4));
     links.push([ia, ib, nameOf(t.name || ''), q1(width), lanes, dir, shape.slice(1, -1).flatMap(([x, z]) => [q1(x), q1(z)]), MAJOR.test(t.highway) ? 1 : 0, 0, kind, layer, flags]);
@@ -331,7 +366,9 @@ const bridgePath = [];
   log(`Harbour Bridge: ${stops.length - 1} links, ${stops.length - 2} roads joining it`);
 }
 
-// A motorway the corridor cut off (it ran on along the bridge in OSM) ends beside it: join it to the corridor there
+// A motorway the corridor cut off (it ran on along the bridge in OSM) ends beside it: join it to the corridor there. Further off than
+// this, a join runs over other roads with no room between them.
+const JOIN_REACH = 45;
 {
   const degree = new Map();
   for (const l of links) { degree.set(l[0], (degree.get(l[0]) || 0) + 1); degree.set(l[1], (degree.get(l[1]) || 0) + 1); }
@@ -342,7 +379,7 @@ const bridgePath = [];
       const n = l[end];
       if (degree.get(n) !== 1) continue;
       const x = nodes[n * 2], z = nodes[n * 2 + 1];
-      if (toBridge(x, z) > 45) continue;
+      if (toBridge(x, z) > JOIN_REACH) continue;
       // The nearest point of a corridor link, which is split there
       let best = null;
       for (const c of links) {
@@ -358,7 +395,7 @@ const bridgePath = [];
           if (!best || d < best.d) best = { d, c, pts, k, px, pz };
         }
       }
-      if (!best || best.d > 45) continue;
+      if (!best || best.d > JOIN_REACH) continue;
       const { c, pts, k, px, pz } = best;
       const flatOf = (list) => list.flatMap(([a, b]) => [q1(a), q1(b)]);
       // Near one of the corridor's nodes, join it there; otherwise split the corridor link at the nearest point
@@ -419,9 +456,19 @@ const signals = [...signalIds].flatMap((n) => [nodes[n * 2], nodes[n * 2 + 1]]);
 log(`${signals.length / 2} signalised junctions`);
 
 // --- Curb islands: land minus every roadway ----------------------------------------------------------------------------
+// (They're cut KERB_CLEAR past each road's edge, and traced no looser than this, so a kerb can't come into a lane)
 const curb = new Raster(B.x0, B.z0, B.x1, B.z1, RES);
 curb.d.set(land.d);
 for (const { pts, r } of strips) for (let i = 0; i + 1 < pts.length; i++) curb.stampSegment(...pts[i], ...pts[i + 1], r);
+// Structures low over the ground too, as tools/build-heights.mjs found on the run before this one
+{
+  const lowDecks = new URL('./data/generated/low-decks.json', import.meta.url);
+  if (fs.existsSync(lowDecks)) {
+    const stretches = JSON.parse(fs.readFileSync(lowDecks, 'utf8'));
+    for (const [ax, az, bx, bz, r] of stretches) curb.stampSegment(ax, az, bx, bz, r);
+    log(`${stretches.length} stretches of low structure cut from the curb islands`);
+  } else log('no low structures yet: run this again after tools/build-heights.mjs');
+}
 // Kerbs round off at junctions, or turning traffic would have to cut the corners
 {
   const reach = new Float32Array(nodes.length / 2);
@@ -453,7 +500,7 @@ log(`${parkShapes.length} park shapes`);
 const blocks = [];
 for (const c of comps) {
   if (c.n < 24) continue;
-  const rings = curb.traceRings(labels, c).map((r) => rdpRing(r, 0.75)).filter((r) => r.length >= 3);
+  const rings = curb.traceRings(labels, c).map((r) => rdpRing(r, ISLAND_EPS)).filter((r) => r.length >= 3);
   if (!rings.length) continue;
   rings.sort((p, q) => Math.abs(ringArea(q)) - Math.abs(ringArea(p)));
   const [outer, ...rest] = rings;
@@ -476,6 +523,23 @@ log(`${blocks.length} curb islands, ${blocks.filter((b) => b[2] > 0.6).length} p
 // Lawn wherever parkland lies on a curb island, whichever block it shares
 const lawnRaster = new Raster(B.x0, B.z0, B.x1, B.z1, RES);
 for (let i = 0; i < lawnRaster.d.length; i++) lawnRaster.d[i] = parkRaster.d[i] && curb.d[i] ? 1 : 0;
+// Past the CBD and the streets around it, only the footpath is paved. Further back from the road, it's yards.
+{
+  const FOOTPATH = 3.5; // m back from the road
+  const PAVED_AREA = { x0: -2100, x1: 2700, z0: -4500, z1: 2100 };
+  const toRoad = curb.edt((v) => v === 0);
+  for (let j = 0; j < curb.h; j++) {
+    const z = curb.z0 + (j + 0.5) * RES;
+    const inPavedRows = z >= PAVED_AREA.z0 && z <= PAVED_AREA.z1;
+    for (let i = 0; i < curb.w; i++) {
+      const k = j * curb.w + i;
+      if (!curb.d[k] || toRoad[k] <= (FOOTPATH / RES) ** 2) continue;
+      const x = curb.x0 + (i + 0.5) * RES;
+      if (inPavedRows && x >= PAVED_AREA.x0 && x <= PAVED_AREA.x1) continue;
+      lawnRaster.d[k] = 1;
+    }
+  }
+}
 lawnRaster.open(1.5);
 const lawns = tiledPolygons(lawnRaster, 240, 1, 40, 12).map((rings) => rings.map(flat));
 log(`${lawns.length} lawns, ${(lawnRaster.d.reduce((t, v) => t + v, 0) / 1e6).toFixed(2)} km²`);
@@ -486,7 +550,7 @@ const paved = new Raster(B.x0, B.z0, B.x1, B.z1, RES);
   const toEdge = lawnRaster.edt((v) => v === 0);
   for (let i = 0; i < paved.d.length; i++) paved.d[i] = curb.d[i] && toEdge[i] <= 2.5 && comps[labels[i] - 1]?.n >= 24 ? 1 : 0;
 }
-const pavements = tiledPolygons(paved, 240, 0.75).map((rings) => rings.map(flat));
+const pavements = tiledPolygons(paved, 240, ISLAND_EPS).map((rings) => rings.map(flat));
 // Scraps of land too small to be a curb island, left between the roads: road surface
 const fills = [];
 for (const c of comps) {
@@ -512,6 +576,12 @@ const pointsOf = (test) => furniture.filter(test).flatMap((e) => toWorld(e.lon, 
   return out;
 }, []);
 const postBoxes = pointsOf((e) => e.tags?.amenity === 'post_box');
+// Which suburb you're in, for the labels and the map
+const suburbs = load('nodes.json').elements.filter((e) => /^(suburb|quarter|neighbourhood)$/.test(e.tags?.place || '') && e.tags.name).map((e) => {
+  const [x, z] = toWorld(e.lon, e.lat);
+  return [e.tags.name, Math.round(x), Math.round(z)];
+});
+log(`${suburbs.length} suburbs`);
 const busShelters = pointsOf((e) => e.tags?.highway === 'bus_stop' && e.tags.shelter === 'yes');
 
 // --- Light rail, for the moving scenery ---------------------------------------------------------------------------------
@@ -525,15 +595,9 @@ const stations = rail.filter((e) => e.type === 'node' && e.tags?.railway === 'st
   .map((e) => [e.tags.name, ...toWorld(e.lon, e.lat).map(q1)]);
 
 // --- Everything beyond the detail: harbour, ocean and the land around them, with the play area cut out ----------------
-const WIDE = { x0: -24000, x1: 11000, z0: -24000, z1: 16000 };
 const wide = new Raster(WIDE.x0, WIDE.z0, WIDE.x1, WIDE.z1, 6);
 wide.d.fill(1);
-{
-  const chains = chainRings(load('coast.json').elements.filter((e) => e.geometry).map((e) => e.geometry.map((g) => toWorld(g.lon, g.lat))))
-    .filter((c) => c.length > 200 && bbox(c).x1 > 5000).sort((p, q) => bbox(q).z1 - bbox(p).z1);
-  const shore = chains.flat();
-  wide.fillRing([...shore, [shore[shore.length - 1][0], WIDE.z0 - 100], [WIDE.x1 + 100, WIDE.z0 - 100], [WIDE.x1 + 100, WIDE.z1 + 100], [shore[0][0], WIDE.z1 + 100]], 0);
-}
+wide.fillRing(seaRing(), 0);
 for (const r of harbourOuter) wide.fillRing(r, 0);
 for (const r of harbourInner) wide.fillRing(r, 1);
 for (const r of DETAIL_RECTS) {
@@ -588,7 +652,8 @@ const GEO = {
   ferries,
   stations,
   postBoxes,
-  busShelters
+  busShelters,
+  suburbs
 };
 const json = JSON.stringify(GEO);
 // A string for JSON.parse, not an object literal: the browser gets through it about four times as fast, and the phone's load

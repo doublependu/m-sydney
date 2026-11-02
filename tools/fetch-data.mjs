@@ -6,12 +6,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
-const DATA = path.join(ROOT, 'tools/data');
+const DATA = path.join(ROOT, process.env.SYDNEY_DATA ?? 'tools/data');
 fs.mkdirSync(DATA, { recursive: true });
 const only = process.argv[2]?.split(',');
 const wanted = (name) => !only || only.includes(name);
 
-const BOX = '-33.905,151.175,-33.825,151.245'; // south, west, north, east
+const BOX = process.env.SYDNEY_BOX ?? '-33.905,151.175,-33.825,151.245'; // south, west, north, east
 const WIDE = '-34.02,151.02,-33.68,151.36'; // the skyline out to the horizon
 const OVERTURE_RELEASE = '2026-10-21.0';
 const ROADS = '^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|service|pedestrian)$';
@@ -82,6 +82,22 @@ if (wanted('overture_syd')) {
     WHERE bbox.xmin > ${west} AND bbox.xmax < ${east} AND bbox.ymin > ${south} AND bbox.ymax < ${north}`);
   await c.run(`COPY b TO '${path.join(DATA, 'overture_syd.json')}' (FORMAT JSON)`);
   console.log('overture_syd written');
+}
+
+// For the horizon, over the whole box to Katoomba: how many buildings to each square of about 400 m, and every tall one
+if (wanted('overture_density')) {
+  const { DuckDBInstance } = await import('@duckdb/node-api');
+  const db = await DuckDBInstance.create(':memory:');
+  const c = await db.connect();
+  await c.run("INSTALL httpfs; LOAD httpfs; SET s3_region='us-west-2';");
+  const within = 'bbox.xmin > 150.29 AND bbox.xmax < 151.34 AND bbox.ymin > -34.08 AND bbox.ymax < -33.56';
+  const source = `read_parquet('s3://overturemaps-us-west-2/release/${OVERTURE_RELEASE}/theme=buildings/type=building/*', hive_partitioning=1)`;
+  await c.run(`COPY (SELECT floor(bbox.xmin / 0.004)::INT AS lon, floor(bbox.ymin / 0.004)::INT AS lat, count(*)::INT AS n FROM ${source}
+    WHERE ${within} GROUP BY 1, 2) TO '${path.join(DATA, 'overture_density.json')}' (FORMAT JSON, ARRAY true)`);
+  await c.run(`COPY (SELECT round((bbox.xmin + bbox.xmax) / 2, 5) AS lon, round((bbox.ymin + bbox.ymax) / 2, 5) AS lat,
+      round((bbox.xmax - bbox.xmin) * 92000)::INT AS w, round((bbox.ymax - bbox.ymin) * 111000)::INT AS d, round(height)::INT AS h FROM ${source}
+    WHERE ${within} AND height >= 35) TO '${path.join(DATA, 'overture_tall.json')}' (FORMAT JSON, ARRAY true)`);
+  console.log('overture_density and overture_tall written');
 }
 
 // Overture building parts: where a tower's real height and shape are, while its building record often holds only its podium

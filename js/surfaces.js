@@ -1,5 +1,5 @@
 import { GEO, onMap } from './geodata.js';
-import { terrainHeight, terrainSlope } from './terrain.js';
+import { rawTerrainHeight, terrainHeight, terrainSlope } from './terrain.js';
 import { landAt } from './city-config.js';
 
 // Every surface something can stand on. The ground, which everything on it shares: roads, kerbs, footpaths, lawns,
@@ -15,6 +15,7 @@ import { landAt } from './city-config.js';
 const KIND = { GROUND: 0, BRIDGE: 1, TUNNEL: 2, CUTTING: 3 };
 const CUT_SLOPE = 4; // m beside a cutting's road over which the ground climbs back to its own height
 const STEP = 1.5; // m of height between surfaces that can be stepped across
+const SWITCH = 0.6; // m: the most a surface can differ by for something still on another to move onto it. More than a low deck's lift over the ground lowered under it
 const SAME_LEVEL = 3; // m: vehicles nearer than this in height are on one level and can meet
 const DECK_HALF = 12.5; // m either side of the Harbour Bridge's centre line that cars can use (js/bridge.js)
 const LOW_DECK = 3; // m: a structure lower than this over the ground lowers the ground under it, so it can't show through
@@ -22,6 +23,7 @@ const TUNNEL_COVER = 6.3; // m: a tunnel with less ground than this over its roa
 const TUNNEL_HEIGHT = 5.6; // m from a tunnel's road up to its ceiling
 const DECK_DEPTH = 1.4; // m from a deck's road down to its soffit
 const OVERHEAD = 4; // m: a deck less than this above a road isn't over it
+const DRAWN_PAST_EDGE = 1.1; // m past its edge that a road's surface is drawn, under the kerbs (js/ground-geometry.js)
 const CELL = 32;
 
 const RG = GEO.roadGraph;
@@ -36,7 +38,7 @@ const STRUCTURES = GEO.structures.map((s, id) => (s ? { id, links: [], kind: s[0
 const DECK_STRUCTURE = STRUCTURES.find((s) => s?.deck)?.id ?? 0; // the Harbour Bridge's
 
 function linkFromRecord(l) {
-  const [a, b, ni, width, lanes, dir, inner, major, deck, kind = 0, layer = 0, flags = 0, ys = null, sid = 0, openA = 0, openB = 0, length = 0] = l;
+  const [a, b, ni, width, lanes, dir, inner, major, deck, kind = 0, layer = 0, flags = 0, ys = null, sid = 0, openA = 0, openB = 0, length = 0, profile = null, lean = null] = l;
   const pts = [{ x: N[a * 2], z: N[a * 2 + 1] }];
   for (let k = 0; k < inner.length; k += 2) pts.push({ x: inner[k], z: inner[k + 1] });
   pts.push({ x: N[b * 2], z: N[b * 2 + 1] });
@@ -44,10 +46,21 @@ function linkFromRecord(l) {
   else for (const p of pts) p.y = NaN; // on the ground: groundHeight() there
   // A street sunk into a cutting is on the ground (the ground follows it down), with heights of its own
   const cut = kind === KIND.CUTTING && !!ys;
-  return {
+  const link = {
     id: l.id, a, b, name: RG.names[ni], width, lanes, dir, major: !!major, deck: !!deck, kind: cut ? KIND.GROUND : kind && ys ? kind : 0,
     cut, layer, motorway: !!(flags & 1), pts, sid, half: deck ? DECK_HALF : width / 2 + 0.6, openA, openB, length
   };
+  // A road on the ground has a shape of its own (tools/build-heights.mjs): heights and lean at even steps along it
+  if (profile) {
+    const heights = new Float32Array(profile.length);
+    let q = 0;
+    profile.forEach((d, i) => { q += d; heights[i] = q * 0.05; });
+    link.profile = heights;
+    link.lean = Float32Array.from(lean, (v) => v / 1000);
+    link.along = [0];
+    for (let i = 1; i < pts.length; i++) link.along.push(link.along[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z));
+  }
+  return link;
 }
 
 // --- Spatial index of every link segment ---------------------------------------------------------------------------
@@ -55,7 +68,12 @@ const segCells = new Map();
 const lowCells = new Map(); // segments of structures low over the ground
 const cutCells = new Map(); // segments of streets sunk into cuttings
 const SEGMENTS = [];
-let onCutRoad = false; // set by cutGround()
+let onCutRoad = false, cutRoad = null; // set by cutGround()
+
+// The floors of the buildings with a model that are here at the moment (js/interiors.js): the ground, inside their walls
+const floors = new Map();
+const setFloor = (id, floor) => floors.set(id, floor);
+const clearFloor = (id) => floors.delete(id);
 const addToCells = (cells, seg, pad, added) => {
   for (let ix = Math.floor((Math.min(seg.ax, seg.bx) - pad) / CELL); ix <= Math.floor((Math.max(seg.ax, seg.bx) + pad) / CELL); ix++) {
     for (let iz = Math.floor((Math.min(seg.az, seg.bz) - pad) / CELL); iz <= Math.floor((Math.max(seg.az, seg.bz) + pad) / CELL); iz++) {
@@ -70,7 +88,13 @@ const addToCells = (cells, seg, pad, added) => {
 
 // Each link's entries in the cells, to take them out again
 const placed = new Map();
+const linksAtNode = new Map(); // node id -> the links meeting there
+const plates = new Map(); // node id -> its junction's plate, once asked for (plateAt())
 function placeLink(l) {
+  for (const n of [l.a, l.b]) {
+    (linksAtNode.get(n) || linksAtNode.set(n, []).get(n)).push(l);
+    plates.delete(n);
+  }
   const added = [];
   const segs = [];
   let s0 = 0;
@@ -84,13 +108,19 @@ function placeLink(l) {
     addToCells(segCells, seg, l.half + 2, added);
     if (l.cut) addToCells(cutCells, seg, l.half + 1 + CUT_SLOPE, added);
     // Where the ground would show through a low deck, or close over a tunnel's cutting, it's lowered (groundHeight)
-    if (l.kind === KIND.BRIDGE && Math.min(p.y - terrainHeight(p.x, p.z), q.y - terrainHeight(q.x, q.z)) < LOW_DECK) addToCells(lowCells, seg, l.half + 1, added);
+    if (l.kind === KIND.BRIDGE && Math.min(p.y - rawTerrainHeight(p.x, p.z), q.y - rawTerrainHeight(q.x, q.z)) < LOW_DECK) addToCells(lowCells, seg, l.half + 1, added);
     if (l.kind === KIND.TUNNEL && (seg.s0 < l.openA || seg.s0 + seg.len > l.length - l.openB)) addToCells(lowCells, seg, l.half + 1, added);
     s0 += len;
   }
   placed.set(l.id, { added, segs });
 }
 function unplaceLink(l) {
+  for (const n of [l.a, l.b]) {
+    const list = linksAtNode.get(n);
+    list.splice(list.indexOf(l), 1);
+    if (!list.length) linksAtNode.delete(n);
+    plates.delete(n);
+  }
   const { added, segs } = placed.get(l.id);
   placed.delete(l.id);
   for (let i = 0; i < added.length; i += 3) {
@@ -199,7 +229,7 @@ function deriveTunnels() {
     }
   }
   // A roof a few metres long is no tunnel
-  for (const l of tunnels) if (l.openA && l.openB && l.length - l.openA - l.openB < 5) l.openA = l.length;
+  for (const l of tunnels) if ((l.openA || l.openB) && l.length - l.openA - l.openB < 5) l.openA = l.length;
   for (const seg of SEGMENTS) {
     const l = seg.link;
     if (l.kind === KIND.TUNNEL && (seg.s0 < l.openA || seg.s0 + seg.len > l.length - l.openB)) addToCells(lowCells, seg, l.half + 1);
@@ -277,6 +307,7 @@ function cutGround(x, z) {
       });
       if (over) return y;
       onCutRoad = true;
+      cutRoad = on.seg.link;
       return Math.min(y, on.seg.ay + (on.seg.by - on.seg.ay) * on.t);
     }
     const ground = y;
@@ -291,14 +322,34 @@ function cutGround(x, z) {
   return y;
 }
 
-/** The ground's height at (x, z): the terrain, lowered under a structure's end where it would otherwise show through */
+/**
+ * The ground's height at (x, z): on a road, the road's own surface; elsewhere the terrain, moved to meet the roads and lowered under a
+ * structure's end where it would otherwise show through
+ */
 function groundHeight(x, z) {
+  if (floors.size) {
+    for (const f of floors.values()) {
+      const dx = x - f.x, dz = z - f.z;
+      if (Math.abs(dx * f.cos - dz * f.sin) < f.halfW && Math.abs(dx * f.sin + dz * f.cos) < f.halfL) return f.y;
+    }
+  }
+  let nearest = null, nd = Infinity;
+  const list = segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL));
+  if (list) {
+    for (let k = 0; k < list.length; k++) {
+      const seg = list[k];
+      if (seg.link.kind) continue;
+      const d = segmentDistance(seg, x, z);
+      if (d <= seg.link.half && d < nd) { nd = d; nearest = seg.link; }
+    }
+  }
+  if (nearest?.profile) return sharedSurface(nearest, x, z);
   const y = cutGround(x, z);
-  if (onCutRoad) return y;
-  const list = lowCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL));
-  if (!list) return y;
+  if (onCutRoad) return sharedSurface(cutRoad, x, z);
+  const lows = lowCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL));
+  if (!lows) return y;
   let low = Infinity;
-  for (const seg of list) {
+  for (const seg of lows) {
     const p = project(seg, x, z);
     if (p.d > seg.link.half + 1) continue;
     const road = seg.ay + (seg.by - seg.ay) * p.t;
@@ -310,17 +361,228 @@ function groundHeight(x, z) {
   return y;
 }
 
+// A road's own shape at (x, z): its height along it, and a little lean across
+function shapedHeight(l, x, z) {
+  const P = l.pts;
+  let best = Infinity, s = 0, off = 0;
+  for (let i = 1; i < P.length; i++) {
+    const a = P[i - 1], b = P[i], dx = b.x - a.x, dz = b.z - a.z, L = l.along[i] - l.along[i - 1];
+    if (L < 1e-6) continue;
+    const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / (L * L)));
+    const px = a.x + dx * t, pz = a.z + dz * t, ex = x - px, ez = z - pz, d = ex * ex + ez * ez;
+    if (d < best) {
+      best = d;
+      s = l.along[i - 1] + L * t;
+      off = (ex * dz - ez * dx) / L; // to the left of its way from a to b
+    }
+  }
+  const H = l.profile, n = H.length;
+  const u = (s / (l.along[l.along.length - 1] || 1)) * (n - 1);
+  const i = Math.min(Math.floor(u), n - 2), t = u - i;
+  // Through the heights smoothly, so nothing kinks at a station
+  const p0 = H[Math.max(i - 1, 0)], p1 = H[i], p2 = H[i + 1], p3 = H[Math.min(i + 2, n - 1)];
+  const y = p1 + 0.5 * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+  // Straight across, as far as what's drawn under the kerbs, so that its few points across the road are enough to draw it
+  const half = l.width / 2 + DRAWN_PAST_EDGE;
+  return y + (l.lean[i] + (l.lean[i + 1] - l.lean[i]) * t) * Math.max(-half, Math.min(half, off));
+}
+
+function ownRoadHeight(l, x, z) {
+  if (l.profile) return shapedHeight(l, x, z);
+  if (l.cut) {
+    const seg = nearestSegment(l, x, z);
+    return seg.ay + (seg.by - seg.ay) * seg.t;
+  }
+  return terrainHeight(x, z);
+}
+
+// Roads overlap: where several meet, and where a divided road's two sides are mapped closer together than they're wide. There the
+// surface is all of them, the nearer counting more, so it's one surface with no step in it, whichever road you ask. A cutting only
+// joins in where it meets this road at a junction: a street along the edge of one stays up at its own level.
+const smoothstep01 = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+const joined = (a, b) => a.a === b.a || a.a === b.b || a.b === b.a || a.b === b.b;
+const CARRIAGEWAY_FADE = 1.5; // m inside its edge that a road's say fades out
+const CUT_SAME = 1.5; // m apart at most, for two cuttings overlapping to be one surface
+const JUNCTION_MORE = 4; // m past its corners that a junction reaches
+const PLATE_FADE = 0.35; // of its reach, where a junction's plate fades into the roads
+const PLATE_MISS = 0.25; // m a plate may miss a road meeting it by
+const PLATE_STEEPEST = 0.15;
+const STRUCTURE_LOCK = 12; // m from where a road joins a structure
+
+// A junction is a flat plate, tilted to suit the roads meeting there. Being flat, however it's cut into triangles and however many
+// roads overlap on it, they all draw the same surface, and a wheel on it is on what's drawn.
+function plateAt(n) {
+  let plate = plates.get(n);
+  if (plate !== undefined) return plate;
+  const arms = linksAtNode.get(n);
+  plate = null;
+  // Not where a structure joins: there the road has to meet it exactly
+  if (arms && arms.length >= 3 && arms.every((l) => !l.kind)) {
+    const ground = arms;
+    if (ground.length) {
+      const first = ground[0].a === n ? ground[0].pts[0] : ground[0].pts[ground[0].pts.length - 1];
+      let reach = 0;
+      for (const arm of arms) reach = Math.max(reach, arm.half);
+      reach += GEO.frame.corner + JUNCTION_MORE;
+      // Through the height here and what each road reaches at the plate's edge, by least squares
+      let y0 = 0;
+      for (const arm of ground) y0 += ownRoadHeight(arm, first.x, first.z);
+      y0 /= ground.length;
+      let xx = 1e-3, xz = 0, zz = 1e-3, xy = 0, zy = 0;
+      const rim = [];
+      for (const arm of ground) {
+        const pts = arm.a === n ? arm.pts : [...arm.pts].reverse();
+        // Along the road from here, as far as the plate's edge or half way along it
+        const length = pts.reduce((sum, p, i) => (i ? sum + Math.hypot(p.x - pts[i - 1].x, p.z - pts[i - 1].z) : 0), 0);
+        const want = Math.min(reach, length / 2);
+        let walked = 0, px = first.x, pz = first.z;
+        for (let i = 1; i < pts.length; i++) {
+          const L = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z);
+          if (walked + L >= want) {
+            const t = L ? (want - walked) / L : 0;
+            px = pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t;
+            pz = pts[i - 1].z + (pts[i].z - pts[i - 1].z) * t;
+            break;
+          }
+          walked += L;
+        }
+        const dx = px - first.x, dz = pz - first.z, dy = ownRoadHeight(arm, px, pz) - y0;
+        rim.push(dx, dz, dy);
+        xx += dx * dx; xz += dx * dz; zz += dz * dz; xy += dx * dy; zy += dz * dy;
+      }
+      const det = xx * zz - xz * xz;
+      const gx = (xy * zz - zy * xz) / det, gz = (zy * xx - xy * xz) / det;
+      // No flat plate fits roads going up and down at once: those keep to blending between them
+      let fits = Math.hypot(gx, gz) <= PLATE_STEEPEST;
+      for (let i = 0; i < rim.length; i += 3) if (Math.abs(gx * rim[i] + gz * rim[i + 1] - rim[i + 2]) > PLATE_MISS) fits = false;
+      if (fits) plate = { x: first.x, z: first.z, y: y0, gx, gz, reach };
+    }
+  }
+  plates.set(n, plate);
+  return plate;
+}
+
+// How far (x, z) is from a stretch of road, with nothing to allocate: this is asked a great deal
+function segmentDistance(seg, x, z) {
+  const ex = x - seg.ax, ez = z - seg.az;
+  const along = ex * seg.ux + ez * seg.uz;
+  const t = along <= 0 ? 0 : along >= seg.len ? seg.len : along;
+  return Math.hypot(ex - seg.ux * t, ez - seg.uz * t);
+}
+function linkDistance(l, x, z) {
+  const P = l.pts;
+  let best = Infinity;
+  for (let i = 1; i < P.length; i++) {
+    const a = P[i - 1], b = P[i], dx = b.x - a.x, dz = b.z - a.z;
+    const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / (dx * dx + dz * dz || 1)));
+    const ex = a.x + dx * t - x, ez = a.z + dz * t - z, d = ex * ex + ez * ez;
+    if (d < best) best = d;
+  }
+  return Math.sqrt(best);
+}
+
+// A street crossing over a cutting without meeting it stays where it is, and overlapping cuttings are one surface only if they're level
+function sameSurface(a, b, x, z) {
+  if (!a.cut && !b.cut) return true;
+  if ((!a.cut || !b.cut) && !joined(a, b)) return false;
+  return Math.abs(ownRoadHeight(a, x, z) - ownRoadHeight(b, x, z)) < CUT_SAME;
+}
+
+const JUNCTION_FAR = 40; // m: no junction reaches further than this
+const nearLinks = [];
+const nearNodes = [];
+function sharedSurface(link, x, z) {
+  nearLinks.length = 0;
+  nearLinks.push(link);
+  const cellSegments = segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL));
+  if (cellSegments) {
+    for (let k = 0; k < cellSegments.length; k++) {
+      const seg = cellSegments[k], l = seg.link;
+      if (l === link || l.kind || nearLinks.includes(l) || segmentDistance(seg, x, z) > l.half) continue;
+      if (sameSurface(l, link, x, z)) nearLinks.push(l);
+    }
+  }
+  // A junction with no plate: all its roads, while near enough
+  for (let e = 0; e < 2; e++) {
+    const end = e ? link.pts[link.pts.length - 1] : link.pts[0];
+    if (Math.abs(x - end.x) > JUNCTION_FAR || Math.abs(z - end.z) > JUNCTION_FAR) continue;
+    const n = e ? link.b : link.a;
+    const arms = linksAtNode.get(n);
+    if (arms && arms.length >= 3 && !plateAt(n)) {
+      for (let k = 0; k < arms.length; k++) {
+        const arm = arms[k];
+        if (!arm.kind && !nearLinks.includes(arm) && sameSurface(arm, link, x, z)) nearLinks.push(arm);
+      }
+    }
+  }
+  // The roads here, the nearer counting more
+  let base;
+  if (nearLinks.length === 1) base = ownRoadHeight(link, x, z);
+  else {
+    let sum = 0, weight = 0;
+    for (let k = 0; k < nearLinks.length; k++) {
+      const l = nearLinks[k];
+      const d = linkDistance(l, x, z);
+      let fade = d >= l.half ? 0 : Math.min(1, (l.half - d) / CARRIAGEWAY_FADE);
+      for (let e = 0; e < 2; e++) {
+        const end = e ? l.pts[l.pts.length - 1] : l.pts[0];
+        if (Math.abs(x - end.x) > JUNCTION_FAR || Math.abs(z - end.z) > JUNCTION_FAR) continue;
+        const n = e ? l.b : l.a;
+        const arms = linksAtNode.get(n);
+        if (!arms || arms.length < 3 || plateAt(n)) continue;
+        let reach = 0;
+        for (let a = 0; a < arms.length; a++) if (arms[a].half > reach) reach = arms[a].half;
+        reach += GEO.frame.corner + JUNCTION_MORE;
+        const dn = Math.hypot(x - end.x, z - end.z);
+        if (dn < reach) fade = Math.max(fade, smoothstep01((reach - dn) / (reach * PLATE_FADE)));
+      }
+      if (fade <= 0) continue;
+      const w = fade / (d + 0.5) ** 2;
+      sum += ownRoadHeight(l, x, z) * w;
+      weight += w;
+    }
+    base = weight ? sum / weight : ownRoadHeight(link, x, z);
+  }
+  // ...and any junction's plate taking over from them
+  nearNodes.length = 0;
+  let plateSum = 0, plateShare = 0;
+  for (let k = 0; k < nearLinks.length; k++) {
+    const l = nearLinks[k];
+    for (let e = 0; e < 2; e++) {
+      const end = e ? l.pts[l.pts.length - 1] : l.pts[0];
+      if (Math.abs(x - end.x) > JUNCTION_FAR || Math.abs(z - end.z) > JUNCTION_FAR) continue;
+      const n = e ? l.b : l.a;
+      if (nearNodes.includes(n)) continue;
+      nearNodes.push(n);
+      const plate = plateAt(n);
+      if (!plate) continue;
+      const dn = Math.hypot(x - plate.x, z - plate.z);
+      if (dn >= plate.reach) continue;
+      const share = smoothstep01((plate.reach - dn) / (plate.reach * PLATE_FADE));
+      plateSum += share * (plate.y + plate.gx * (x - plate.x) + plate.gz * (z - plate.z));
+      plateShare += share;
+    }
+  }
+  let y = plateShare ? base + (plateSum / plateShare - base) * Math.min(1, plateShare) : base;
+  // Where a road joins a structure it meets it exactly, whatever else is near
+  for (let e = 0; e < 2; e++) {
+    const end = e ? link.pts[link.pts.length - 1] : link.pts[0];
+    if (Math.abs(x - end.x) > STRUCTURE_LOCK || Math.abs(z - end.z) > STRUCTURE_LOCK) continue;
+    const arms = linksAtNode.get(e ? link.b : link.a);
+    if (!arms || !arms.some((l) => l.kind)) continue;
+    const near = 1 - Math.hypot(x - end.x, z - end.z) / STRUCTURE_LOCK;
+    if (near > 0) y += (ownRoadHeight(link, x, z) - y) * smoothstep01(near);
+  }
+  return y;
+}
+
 /**
- * The surface of one road on the ground at (x, z): a cutting's own profile, or the ground, following any cutting it meets
- * at a junction down. Roads side by side at different heights (a street along the edge of a freeway's cutting) each
- * keep their own, where groundHeight() has to pick one.
+ * The surface of one road on the ground at (x, z): its own shape, or a cutting's own profile. Roads side by side at different
+ * heights (a street along the edge of a freeway's cutting) each keep their own, where groundHeight() has to pick one.
  */
 function roadHeight(link, x, z) {
+  if (link.profile || link.cut) return sharedSurface(link, x, z);
   const ground = terrainHeight(x, z);
-  if (link.cut) {
-    const seg = nearestSegment(link, x, z);
-    return Math.min(ground, seg.ay + (seg.by - seg.ay) * seg.t);
-  }
   // Each cutting it meets at a junction, from the nearest point of that cutting's road
   let y = ground;
   const seen = new Set();
@@ -353,9 +615,11 @@ function nearestSegment(link, x, z) {
 function groundRoadAt(x, z, near = null) {
   let best = null, bd = Infinity;
   for (const seg of segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || []) {
-    if (seg.link.kind || (near !== null && Math.abs(roadHeight(seg.link, x, z) - near) >= STEP)) continue;
-    const d = project(seg, x, z).d;
-    if (d <= seg.link.half && d < bd) { bd = d; best = seg.link; }
+    if (seg.link.kind) continue;
+    const d = segmentDistance(seg, x, z);
+    if (d > seg.link.half || d >= bd || (near !== null && Math.abs(roadHeight(seg.link, x, z) - near) >= STEP)) continue;
+    bd = d;
+    best = seg.link;
   }
   return best;
 }
@@ -421,6 +685,7 @@ function ceilingOver(sid, y, x, z) {
 function edgeHeight(edge, x, z) {
   const link = edge && linkById.get(edge.link);
   if (!link) return edge?.sid ? surfaceHeight(edge.sid, x, z) : groundHeight(x, z);
+  if (link.profile) return shapedHeight(link, x, z); // every frame for every car: its own road alone, which roads overlapping it agree with
   if (!link.kind) return roadHeight(link, x, z);
   let best = null;
   for (const seg of segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || []) {
@@ -461,7 +726,7 @@ function groundRoadDistance(x, z, limit = 30) {
   let best = limit;
   for (const seg of segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || []) {
     if (seg.link.kind) continue;
-    best = Math.min(best, project(seg, x, z).d);
+    best = Math.min(best, segmentDistance(seg, x, z));
   }
   return best;
 }
@@ -472,17 +737,33 @@ function groundRoadDistance(x, z, limit = 30) {
  * { sid, y } or null when every surface there is out of reach: the edge of a deck, a tunnel's wall.
  */
 function chooseSurface(current, y, x, z, margin = 0) {
-  let best = null;
-  const g = groundHeight(x, z);
+  const candidates = [];
   const consider = (sid, height, d) => {
-    if (Math.abs(height - y) >= STEP) return;
-    // The nearest centre line, and the nearest to level. A near tie keeps you where you are.
-    const rank = d + Math.abs(height - y) - (sid === current ? 0.75 : 0);
-    if (!best || rank < best.rank) best = { sid, y: height, rank };
+    const gap = Math.abs(height - y);
+    if (gap < STEP) candidates.push({ sid, y: height, d, gap });
   };
   // On a structure the ground beside it is only a way off at its ends, where the two meet
   for (const s of structuresAt(x, z, margin)) consider(s.sid, s.y, s.d);
-  consider(0, g, groundRoadDistance(x, z));
+  const roadDistance = groundRoadDistance(x, z);
+  consider(0, groundHeight(x, z), roadDistance);
+  // ...and on the ground, the road at this height, where another passes over it with nothing but its own surface
+  const road = groundRoadAt(x, z, y);
+  if (road) consider(0, roadHeight(road, x, z), roadDistance);
+  // Something only moves to another surface at about the same height, where a ramp joins a road. Passing close to a road a metre below
+  // isn't a reason to drop onto it, while what it's on is still there.
+  let pool = candidates.filter((c) => c.gap < SWITCH);
+  // On a structure, it stays on as long as there's structure under it: it's the road ending that takes it off
+  if (current && pool.some((c) => c.sid === current)) pool = pool.filter((c) => c.sid === current);
+  if (!pool.length) {
+    pool = candidates.filter((c) => c.sid === current);
+    if (!pool.length) pool = candidates;
+  }
+  let best = null, bestRank = Infinity;
+  for (const c of pool) {
+    // The nearest to level first, then the nearest centre line. A near tie keeps you where you are.
+    const rank = c.d + 3 * c.gap - (c.sid === current ? 0.75 : 0);
+    if (rank < bestRank) { best = c; bestRank = rank; }
+  }
   return best && { sid: best.sid, y: best.y };
 }
 
@@ -564,7 +845,7 @@ function roadRoute(waypoints, step = 8) {
 }
 
 export {
-  DECK_DEPTH, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, deriveTunnels, linkById, SAME_LEVEL, SEGMENTS, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
+  setFloor, clearFloor, DECK_DEPTH, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, deriveTunnels, linkById, SAME_LEVEL, SEGMENTS, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
   edgeHeight, floorBelow, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, roadHeight, roadRoute, sameLevel,
   structureAt, structuresAt, surfaceHeight, surfaceSlope, tunnelCovered
 };

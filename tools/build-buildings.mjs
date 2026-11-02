@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
-import { DATA, Raster, DETAIL_BOUNDS as B, inDetail, load, rdpRing, ringArea, toWorld } from './geo-common.mjs';
+import { dataPath, Raster, DETAIL_BOUNDS as B, inDetail, load, rdpRing, ringArea, toWorld } from './geo-common.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const OUT = process.argv[2] || path.join(ROOT, 'tools/data/generated/building-geodata.js');
@@ -35,11 +35,11 @@ const SYDNEY_TOWER = { x: 143, z: -311, reach: 30 };
 // Storeys of a part that gives only a count: apartments, mostly. World Tower's 83 come to 230 m.
 const PART_STOREY = 2.8;
 
-const rows = fs.readFileSync(path.join(DATA, 'overture_syd.json'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-const partRows = fs.existsSync(path.join(DATA, 'overture_parts.json'))
-  ? fs.readFileSync(path.join(DATA, 'overture_parts.json'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+const rows = fs.readFileSync(dataPath('overture_syd.json'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+const partRows = fs.existsSync(dataPath('overture_parts.json'))
+  ? fs.readFileSync(dataPath('overture_parts.json'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
   : [];
-const digest = crypto.createHash('sha256').update(fs.readFileSync(path.join(DATA, 'overture_syd.json'))).digest('hex');
+const digest = crypto.createHash('sha256').update(fs.readFileSync(dataPath('overture_syd.json'))).digest('hex');
 const storeys = new Raster(B.x0, B.z0, B.x1, B.z1, 4);
 for (const f of load('cos_storeys.json')) {
   const n = parseInt(f.properties.Storeys, 10);
@@ -172,6 +172,82 @@ for (const r of buildings) {
   }
 }
 buildings.push(...pieces);
+
+// Roads win. Footprints and road centre lines come from different surveys and don't always agree, and a corner in a lane stops a car
+// dead for no reason a driver can see, so a footprint gives up whatever it has on a carriageway. One that would lose most of itself goes.
+{
+  const { GEO } = await import(path.join(path.dirname(OUT), 'geodata.js'));
+  const RG = GEO.roadGraph;
+  const CLEAR = 0.8; // m past a road's edge, as tracing a raster and simplifying what's traced can bring it back a little
+  const CELL = 40;
+  const segments = new Map();
+  for (const l of RG.links) {
+    const [a, b, , width, , , inner, , , kind = 0] = l;
+    if (kind && kind !== 3) continue; // off the ground: nothing to run into
+    const pts = [[RG.nodes[a * 2], RG.nodes[a * 2 + 1]]];
+    for (let k = 0; k < inner.length; k += 2) pts.push([inner[k], inner[k + 1]]);
+    pts.push([RG.nodes[b * 2], RG.nodes[b * 2 + 1]]);
+    const r = width / 2 + CLEAR;
+    for (let i = 1; i < pts.length; i++) {
+      const [ax, az] = pts[i - 1], [bx, bz] = pts[i];
+      const seg = [ax, az, bx, bz, r];
+      for (let ix = Math.floor((Math.min(ax, bx) - r) / CELL); ix <= Math.floor((Math.max(ax, bx) + r) / CELL); ix++) {
+        for (let iz = Math.floor((Math.min(az, bz) - r) / CELL); iz <= Math.floor((Math.max(az, bz) + r) / CELL); iz++) {
+          const k = ix * 100000 + iz;
+          if (!segments.has(k)) segments.set(k, []);
+          segments.get(k).push(seg);
+        }
+      }
+    }
+  }
+  const FOOT = 0.5;
+  let trimmed = 0, dropped = 0;
+  for (const r of buildings) {
+    if ((r.bottom || 0) > 2) continue; // up above the road, out of its way
+    const kept = [];
+    for (const polygon of r.polygons) {
+      // Rings are kept in whole steps of PRECISION
+      const [outer, ...holes] = polygon.map((ring) => ring.map(([qx, qz]) => [qx * PRECISION, qz * PRECISION]));
+      const xs = outer.map((p) => p[0]), zs = outer.map((p) => p[1]);
+      const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
+      const near = new Set();
+      for (let ix = Math.floor(x0 / CELL); ix <= Math.floor(x1 / CELL); ix++) {
+        for (let iz = Math.floor(z0 / CELL); iz <= Math.floor(z1 / CELL); iz++) {
+          for (const seg of segments.get(ix * 100000 + iz) || []) {
+            if (Math.max(seg[0], seg[2]) + seg[4] >= x0 && Math.min(seg[0], seg[2]) - seg[4] <= x1 && Math.max(seg[1], seg[3]) + seg[4] >= z0 && Math.min(seg[1], seg[3]) - seg[4] <= z1) near.add(seg);
+          }
+        }
+      }
+      if (!near.size) { kept.push(polygon); continue; }
+      const raster = new Raster(x0 - 1, z0 - 1, x1 + 1, z1 + 1, FOOT);
+      raster.fillRing(outer, 1);
+      for (const hole of holes) raster.fillRing(hole, 0);
+      const before = raster.d.reduce((sum, v) => sum + v, 0);
+      for (const [ax, az, bx, bz, rr] of near) raster.stampSegment(ax, az, bx, bz, rr, 0);
+      const after = raster.d.reduce((sum, v) => sum + v, 0);
+      if (after === before) { kept.push(polygon); continue; }
+      trimmed++;
+      if (after < before * 0.5 || after * FOOT * FOOT < 12) { dropped++; continue; }
+      const { labels, comps } = raster.label();
+      const largest = comps.reduce((best, c) => (!best || c.n > best.n ? c : best), null);
+      const rings = raster.traceRings(labels, largest).map((ring) => rdpRing(ring, 0.4)).filter((ring) => ring.length >= 3);
+      rings.sort((p, q) => Math.abs(ringArea(q)) - Math.abs(ringArea(p)));
+      const main = rings[0];
+      if (!main) { dropped++; continue; }
+      if (ringArea(main) < 0) main.reverse();
+      const inner = rings.slice(1).filter((ring) => Math.abs(ringArea(ring)) > 6).map((ring) => {
+        if (ringArea(ring) > 0) ring.reverse();
+        return quantized(ring);
+      });
+      const q = quantized(main);
+      if (q.length >= 3) kept.push([q, ...inner]);
+    }
+    r.polygons = kept;
+  }
+  const whole = buildings.length;
+  for (let i = buildings.length - 1; i >= 0; i--) if (!buildings[i].polygons.length) buildings.splice(i, 1);
+  console.log(`[buildings] ${trimmed} footprints trimmed clear of a road, ${dropped} of them dropped, ${whole - buildings.length} buildings gone`);
+}
 
 // Real awnings: the City of Sydney's plan of them. A building fronted by one gets it (js/street-details.js), not a made-up one
 const AWNING_REACH = 4;

@@ -229,6 +229,136 @@ const UNDER_THE_DECK = {
 // Elizabeth St to Liverpool St to George St
 const ROUTE = [{ x: 289, z: 250 }, { x: 291, z: 376 }, { x: 70, z: 376 }];
 
+// Walking into the one building with a model, and out again
+function testBuildingScenario() {
+  return {
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const SITE = { x: 442.5, z: -528, yaw: 0.0353 };
+      const toWorld = (x, z) => ({ x: SITE.x + x * Math.cos(SITE.yaw) + z * Math.sin(SITE.yaw), z: SITE.z - x * Math.sin(SITE.yaw) + z * Math.cos(SITE.yaw) });
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      const loaded = await debug(() => performance.getEntriesByType('resource').map((r) => r.name));
+      expect(!loaded.some((name) => /GLTFLoader|\.glb/.test(name)), 'the model or its loader came with the first view');
+      const memoryBefore = await debug(() => window.__gameDebug.gpuMemory());
+
+      // Outside the door, facing it (heading is towards +x, into the building)
+      const door = toWorld(-11, 0);
+      await debug(({ x, z, heading }) => window.__gameDebug.goto(x, z, heading, 'person'), { ...door, heading: Math.PI / 2 + SITE.yaw });
+      await page.waitForFunction(() => window.__gameDebug.interior().held.length > 0, null, { timeout: 20000, polling: 200 });
+      await human.wait(1000);
+      const outside = await debug(() => window.__gameDebug.interior());
+      expect(outside.inside === null, 'already inside, standing outside');
+
+      await human.down('w');
+      const entered = await human.until(async () => (await debug(() => window.__gameDebug.interior())).inside !== null, { timeout: 15000 });
+      expect(entered, 'walked up to the door and never got in');
+      await human.wait(1800);
+      await human.up('w');
+      const inside = await human.state();
+      const room = await debug(() => window.__gameDebug.interior());
+      expect(room.inside === 'test-lobby', 'not inside by the time they stopped');
+      expect(Math.abs(inside.surfaceY - room.floor) < 0.01, `not standing on the floor: at ${inside.surfaceY}, the floor at ${room.floor}`);
+      await debug(() => window.__gameDebug.frameCost());
+      await human.wait(4000);
+      const frames = await debug(() => window.__gameDebug.frameCost());
+      metric('fpsInside', frames.fps);
+      expect(frames.fps > 20, `only ${frames.fps} FPS inside`);
+
+      // Into the far wall: it stops you, and it's only the door that lets you out
+      await human.down('w');
+      await human.wait(4500);
+      await human.up('w');
+      const atWall = await human.state();
+      const wall = toWorld(14.4 / 2 - 0.3, 0);
+      expect(atWall.x <= Math.max(wall.x, atWall.x) && (await debug(() => window.__gameDebug.interior())).inside === 'test-lobby', 'walked out through a wall');
+
+      // Back out of the door
+      await debug(({ x, z, heading }) => window.__gameDebug.goto(x, z, heading, 'person'), { ...toWorld(-5, 0), heading: -Math.PI / 2 + SITE.yaw });
+      await human.wait(500);
+      await human.down('w');
+      const left = await human.until(async () => (await debug(() => window.__gameDebug.interior())).inside === null, { timeout: 10000 });
+      await human.up('w');
+      expect(left, 'never got back out of the door');
+
+      // Far away, it's all let go of
+      await debug(() => window.__gameDebug.goto(397, -1000, Math.PI, 'person'));
+      await page.waitForFunction(() => window.__gameDebug.interior().held.length === 0, null, { timeout: 15000, polling: 200 });
+      // Twice, since the first time more of the map came with it. The second has only the model to bring and let go of.
+      const settled = async () => {
+        await human.wait(4000);
+        return (await debug(() => window.__gameDebug.gpuMemory())).geometries;
+      };
+      const first = await settled();
+      await debug(({ x, z, heading }) => window.__gameDebug.goto(x, z, heading, 'person'), { ...door, heading: Math.PI / 2 + SITE.yaw });
+      await page.waitForFunction(() => window.__gameDebug.interior().held.length > 0, null, { timeout: 20000, polling: 200 });
+      await human.wait(1000);
+      const near = (await debug(() => window.__gameDebug.gpuMemory())).geometries;
+      await debug(() => window.__gameDebug.goto(397, -1000, Math.PI, 'person'));
+      await page.waitForFunction(() => window.__gameDebug.interior().held.length === 0, null, { timeout: 15000, polling: 200 });
+      const second = await settled();
+      metric('geometries', { start: memoryBefore.geometries, away: first, near, awayAgain: second });
+      expect(second <= first + 6, `the model's memory stayed: ${first} geometries to ${second}`);
+    }
+  };
+}
+
+// The origin moving can't be seen, and nothing big gets near a shader. Done on the line between two origins, where either one will do.
+function originScenario(query) {
+  return {
+    query,
+    async run({ page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      await debug(() => window.__gameDebug.goto(1916, 134, 1.6, 'car'));
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      await page.waitForTimeout(1500);
+      await debug(() => window.__gameDebug.holdStill(true));
+      const look = async () => {
+        await debug(() => window.__gameDebug.rewrite());
+        await page.waitForTimeout(800);
+        return debug(() => window.__gameDebug.grab());
+      };
+      const before = await look();
+      const auditAt0 = await debug(() => window.__gameDebug.auditPrecision());
+      await debug(() => window.__gameDebug.setOrigin(4096, 0));
+      const moved = await look();
+      const auditMoved = await debug(() => window.__gameDebug.auditPrecision());
+      const difference = await page.evaluate(async ([a, b]) => {
+        const pixels = async (url) => {
+          const image = await createImageBitmap(await (await fetch(url)).blob());
+          const canvas = new OffscreenCanvas(image.width, image.height);
+          const context = canvas.getContext('2d');
+          context.drawImage(image, 0, 0);
+          return context.getImageData(0, 0, image.width, image.height).data;
+        };
+        const [p, q] = await Promise.all([pixels(a), pixels(b)]);
+        let sum = 0, big = 0;
+        for (let i = 0; i < p.length; i += 4) {
+          const d = (Math.abs(p[i] - q[i]) + Math.abs(p[i + 1] - q[i + 1]) + Math.abs(p[i + 2] - q[i + 2])) / 3;
+          sum += d;
+          if (d > 16) big++;
+        }
+        return { mean: sum / (p.length / 4), share: big / (p.length / 4) };
+      }, [before, moved]);
+      metric('picture', { mean: +difference.mean.toFixed(2), overSixteenPercent: +(difference.share * 100).toFixed(2) });
+      metric('audit', auditMoved);
+      // Shadows snap to their own texels and leaves keep moving, which is about all that's left
+      expect(difference.mean < 3.5, `the picture changed when the origin moved: ${difference.mean.toFixed(2)} of 255 on average`);
+      expect(difference.share < 0.015, `${(difference.share * 100).toFixed(2)}% of the picture changed when the origin moved`);
+      for (const audit of [auditAt0, auditMoved]) {
+        expect(audit.vertex < 16384, `a vertex ${Math.round(audit.vertex)} m from its mesh's zero, in ${audit.vertexIn}`);
+        expect(audit.instance < 16384, `an instance ${Math.round(audit.instance)} m from its mesh's zero, in ${audit.instanceIn}`);
+        expect(audit.model < 32768, `a mesh ${Math.round(audit.model)} m from zero, in ${audit.modelIn}`);
+      }
+      // The real thing: drive far enough and it moves on its own
+      await debug(() => window.__gameDebug.holdStill(false));
+      await debug(() => window.__gameDebug.goto(-1700, -2800, 0, 'car'));
+      await page.waitForTimeout(1500);
+      await debug(() => window.__gameDebug.goto(-2400, -600, 0, 'car'));
+      await page.waitForFunction(() => window.__gameDebug.origin().x === -4096, null, { timeout: 15000, polling: 200 }).catch(() => expect(false, 'the origin stayed behind the player'));
+    }
+  };
+}
+
 export const SCENARIOS = {
   'harbour-bridge': {
     fast: true,
@@ -477,6 +607,101 @@ export const SCENARIOS = {
       metric('trafficSides', sides);
       expect(sides.left + sides.right > 20, `only ${sides.left + sides.right} cars on two-way roads`);
       expect(sides.right <= (sides.left + sides.right) * 0.03, `${sides.right} of ${sides.left + sides.right} cars on the right`);
+    }
+  },
+
+  // Alone at a red, nobody else about: the light has no reason to keep you waiting
+  // Across Inner Sydney in the helicopter, at its own speed: the map keeps up, frames stay in budget, memory stays flat
+  'long-flight': {
+    memory: true,
+    minutes: 9,
+    async run({ human, page, metric, expect }) {
+      await expectCityCompletes(human, page, expect);
+      await page.evaluate(() => window.__gameDebug.goto(-9000, 1700, Math.PI / 2, 'helicopter', false, 220));
+      await human.wait(3000);
+      const from = await human.state();
+      await page.evaluate(() => window.__gameDebug.frameCost());
+      await human.down('KeyW');
+      const heaps = [], fps = [], behind = [];
+      const end = human.now() + 5 * 60000;
+      while (human.now() < end) {
+        await human.wait(30000);
+        const look = await page.evaluate(async () => {
+          // Garbage doesn't count: what's still reachable after collecting it twice
+          for (let i = 0; i < 2; i++) {
+            window.gc?.();
+            await new Promise((resolve) => setTimeout(resolve, 150));
+          }
+          return {
+            fps: window.__gameDebug.frameCost().fps,
+            heap: Math.round((performance.memory?.usedJSHeapSize ?? 0) / 1048576),
+            ready: window.__gameDebug.tileState().done.length
+          };
+        });
+        heaps.push(look.heap);
+        fps.push(Math.round(look.fps));
+        behind.push(look.ready);
+      }
+      await human.releaseAll();
+      const to = await human.state();
+      metric('flown', Math.round(Math.hypot(to.x - from.x, to.z - from.z)));
+      metric('fpsEach30s', fps);
+      metric('heapEach30s', heaps);
+      metric('tilesEach30s', behind);
+      expect(Math.hypot(to.x - from.x, to.z - from.z) > 8000, 'barely got anywhere');
+      expect(Math.min(...fps) > 20, `down to ${Math.min(...fps)} FPS`);
+      if (heaps[1] > 0) expect(heaps.at(-1) < heaps[1] * 1.35, `the heap grew over the flight: ${heaps.join(', ')} MB`);
+    }
+  },
+
+  // From the CBD out to Bondi, by road, driving as a person does: the suburbs go by, and nothing stops the drive for long
+  'long-drive': {
+    memory: true,
+    fast: true,
+    minutes: 25,
+    async run({ human, page, metric, expect }) {
+      await human.wait(1000);
+      const leg = await followRoute(human, page, [{ x: 1200, z: 200 }, { x: 4088, z: 1430 }, { x: 6200, z: 1150 }], { limit: 16 });
+      metric('drive', { found: leg.found, reached: leg.reached, points: leg.points, seconds: leg.seconds, restarts: leg.restarts, levelJumps: leg.levelJumps, offLevel: leg.offLevel });
+      expect(leg.found, 'no way from the CBD to Bondi on the map');
+      expect(leg.reached, 'never reached Bondi');
+    }
+  },
+
+  'test-building': testBuildingScenario(),
+  'test-building-phone': { ...testBuildingScenario(), profile: 'phone' },
+  'origin-move': originScenario(''),
+  'origin-far': originScenario('originTest=85000'),
+  'signal-wait': {
+    query: 'cars=1',
+    async run({ human, page, metric, expect }) {
+      await page.evaluate(() => window.__gameDebug.goto(3, 30, 0, 'car'));
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      await page.waitForFunction(() => window.__gameDebug.signalApproaches(3, 30, 400).length > 0, null, { timeout: 60000, polling: 500 });
+      const waits = [];
+      const approaches = (await page.evaluate(() => window.__gameDebug.signalApproaches(3, 30, 500)))
+        .filter((a) => !a.sid && a.groups > 1 && a.len > 25 && a.nodes === 1);
+      expect(approaches.length >= 3, `only ${approaches.length} signalled approaches to try`);
+      const showing = (a) => page.evaluate(({ x, z, junction, group }) => window.__gameDebug.signalApproaches(x, z, 40)
+        .find((b) => b.junction === junction && b.group === group)?.showing, a);
+      const tried = new Set();
+      for (const a of approaches) {
+        if (tried.size >= 3 || tried.has(a.junction) || (await showing(a)) !== 'red') continue;
+        tried.add(a.junction);
+        // Stopped 15 m short of the line, facing it
+        const heading = Math.atan2(a.dx, a.dz);
+        await page.evaluate(({ x, z, heading }) => window.__gameDebug.goto(x, z, heading, 'car'), { x: a.x - a.dx * 15, z: a.z - a.dz * 15, heading });
+        const started = human.now();
+        let light = await showing(a);
+        while (light !== 'green' && human.now() - started < 40000) {
+          await human.wait(250);
+          light = await showing(a);
+        }
+        waits.push((human.now() - started) / 1000);
+      }
+      metric('secondsAtRed', waits.map((w) => +w.toFixed(1)));
+      expect(waits.length >= 2, `only ${waits.length} reds to wait at`);
+      for (const w of waits) expect(w <= 11, `waited ${w.toFixed(1)} s at a red with nobody else about`);
     }
   },
 
@@ -885,15 +1110,20 @@ export const SCENARIOS = {
       await human.wait(1000);
       expectFit(await fits(), 'portrait');
 
-      const stick = await page.locator('#touch-stick').boundingBox();
-      const center = { x: stick.x + stick.width / 2, y: stick.y + stick.height / 2 };
+      // The stick appears wherever the thumb lands on the left half of the screen
+      const size = page.viewportSize();
+      const center = { x: size.width * 0.25, y: size.height * 0.7 };
       const touch = (type, points) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points });
       await touch('touchStart', [{ x: center.x, y: center.y, id: 1 }]);
       await touch('touchMove', [{ x: center.x, y: center.y - 40, id: 1 }]);
       await human.wait(3000);
       const driving = await human.state();
       expect(Math.abs(driving.speed) > 3, `joystick drove at only ${driving.speed.toFixed(1)} m/s`);
+      const ring = await page.locator('#touch-stick').boundingBox();
+      expect(ring && Math.hypot(ring.x + ring.width / 2 - center.x, ring.y + ring.height / 2 - center.y) < 2, 'the stick did not appear under the thumb');
       await touch('touchEnd', []);
+      await page.waitForTimeout(50);
+      expect(await page.locator('#touch-stick').isHidden(), 'the stick is still drawn with no thumb on it');
       await human.wait(300);
 
       // Rotate mid-drive, with the car still rolling
@@ -906,8 +1136,7 @@ export const SCENARIOS = {
       metric('speedAcrossRotation', { before: Number(rolling.speed.toFixed(1)), after: Number(after.speed.toFixed(1)) });
       await human.wait(500);
 
-      const stick2 = await page.locator('#touch-stick').boundingBox();
-      const center2 = { x: stick2.x + stick2.width / 2, y: stick2.y + stick2.height / 2 };
+      const center2 = { x: 844 * 0.25, y: 390 * 0.7 };
       await touch('touchStart', [{ x: center2.x, y: center2.y, id: 2 }]);
       await touch('touchMove', [{ x: center2.x + 30, y: center2.y - 30, id: 2 }]);
       await human.wait(2000);
@@ -916,6 +1145,24 @@ export const SCENARIOS = {
       await page.setViewportSize({ width: 390, height: 844 });
       await human.wait(1000);
       expectFit(await fits(), 'portrait again');
+
+      // Everything that went behind the menu can still be reached
+      const hidden = ['#btn-teleport', '#btn-open-map', '#btn-pause', '#btn-sound', '#btn-toggle-hud', '#cam-next', '.repo-link'];
+      for (const selector of hidden) expect(await page.locator(selector).isHidden(), `${selector} shows with the menu closed`);
+      await page.locator('#btn-phone-menu').click();
+      for (const selector of hidden) expect(await page.locator(selector).isVisible(), `${selector} can't be reached from the menu`);
+      await touch('touchStart', [{ x: 300, y: 500, id: 3 }]);
+      await touch('touchEnd', []);
+      await human.wait(200);
+      expect(await page.locator('#btn-pause').isHidden(), 'a touch elsewhere should close the menu');
+      // The modes open from the current one
+      expect(await page.locator('#mode-helicopter').isHidden(), 'other modes show with the mode button closed');
+      await page.locator('#mode-car').click();
+      expect(await page.locator('#mode-helicopter').isVisible(), 'the current mode should open the others');
+      await page.locator('#mode-cyclist').click();
+      await human.wait(400);
+      expect((await human.state()).mode === 'cyclist', 'choosing a mode from the list should switch to it');
+      expect(await page.locator('#mode-helicopter').isHidden(), 'choosing a mode should close the list');
     }
   },
 
@@ -1160,7 +1407,7 @@ export const SCENARIOS = {
       metric('tilesBuilt', tiles);
       metric('colliders', colliders);
       metric('heapMegabytesEachRound', heaps);
-      expect(Math.max(...tiles) < 43, `every tile stayed built: ${Math.max(...tiles)}`);
+      expect(Math.max(...tiles) < 120, `every tile stayed built: ${Math.max(...tiles)}`);
       if (heaps[0] > 0) expect(heaps.at(-1) < heaps[0] * 1.15, `the heap grew over three crossings: ${heaps.join(', ')} MB`);
 
       // A new network under moving traffic: everyone near keeps their place

@@ -5,7 +5,30 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const DATA = process.env.GEO_DATA || fileURLToPath(new URL('data/', import.meta.url));
-export const load = (file) => JSON.parse(fs.readFileSync(path.join(DATA, file), 'utf8'));
+// Which map to make. `today` is the CBD map iterations 1 and 2 ended on, for checking a generator still makes what it made.
+const AREAS = {
+  today: {
+    folder: '',
+    rects: [{ x0: -2100, x1: 2700, z0: -2350, z1: 2100 }, { x0: -1500, x1: 1000, z0: -4500, z1: -2350 }],
+    bounds: { x0: -2100, x1: 2700, z0: -4500, z1: 2100 },
+    grid: { x0: -6000, x1: 7000, z0: -9000, z1: 6000, cell: 20 }
+  },
+  // Burwood to Bondi, Manly to the airport
+  inner: {
+    folder: 'inner',
+    rects: [{ x0: -11000, x1: 9000, z0: -11000, z1: 10000 }],
+    bounds: { x0: -11000, x1: 9000, z0: -11000, z1: 10000 },
+    grid: { x0: -14000, x1: 12000, z0: -15000, z1: 14000, cell: 20 }
+  }
+};
+export const AREA_NAME = process.env.SYDNEY_AREA ?? 'inner';
+const AREA = AREAS[AREA_NAME];
+/** A snapshot of the data: this area's own if it has one, or the one all areas share */
+export const dataPath = (file) => {
+  const own = path.join(DATA, AREA.folder, file);
+  return fs.existsSync(own) ? own : path.join(DATA, file);
+};
+export const load = (file) => JSON.parse(fs.readFileSync(dataPath(file), 'utf8'));
 export const log = (...args) => console.log('[geodata]', ...args);
 
 export const LAT0 = -33.8731;
@@ -28,14 +51,17 @@ export function toWorld(lon, lat) {
   return [e * COS - n * SIN, -(e * SIN + n * COS)];
 }
 
-// The detailed play area: the CBD side, and Milsons Point to North Sydney across the bridge
-export const DETAIL_RECTS = [
-  { x0: -2100, x1: 2700, z0: -2350, z1: 2100 },
-  { x0: -1500, x1: 1000, z0: -4500, z1: -2350 }
-];
-export const DETAIL_BOUNDS = { x0: -2100, x1: 2700, z0: -4500, z1: 2100 };
+export function fromWorld(x, z) {
+  const e = x * COS - z * SIN;
+  const n = -x * SIN - z * COS;
+  return [LON0 + e / KX, LAT0 + n / KY];
+}
+
+// The detailed play area
+export const DETAIL_RECTS = AREA.rects;
+export const DETAIL_BOUNDS = AREA.bounds;
 // The ground height grid (js/terrain.js): the play area and the skyline around it
-export const GRID = { x0: -6000, x1: 7000, z0: -9000, z1: 6000, cell: 20 };
+export const GRID = AREA.grid;
 export const inDetail = (x, z) => DETAIL_RECTS.some((r) => x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1);
 
 export const q1 = (v) => Math.round(v * 10) / 10;
@@ -82,6 +108,39 @@ export function rdp(pts, eps) {
   return pts.filter((_, i) => keep[i]);
 }
 // RDP on a closed ring, split at the two points farthest apart
+// Does a ring cross itself? Simplifying can do that to a thin one, and triangles over it would then cover too much.
+function crossesItself(ring) {
+  const n = ring.length;
+  const orient = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  for (let i = 0; i < n; i++) {
+    const a = ring[i], b = ring[(i + 1) % n];
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue;
+      const c = ring[j], d = ring[(j + 1) % n];
+      if (orient(a, b, c) * orient(a, b, d) < 0 && orient(c, d, a) * orient(c, d, b) < 0) return true;
+    }
+  }
+  return false;
+}
+
+// Do any two of these rings cross?
+function ringsCross(rings) {
+  const orient = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  for (let u = 0; u < rings.length; u++) {
+    for (let v = u + 1; v < rings.length; v++) {
+      const A = rings[u], B = rings[v];
+      for (let i = 0; i < A.length; i++) {
+        const a = A[i], b = A[(i + 1) % A.length];
+        for (let j = 0; j < B.length; j++) {
+          const c = B[j], d = B[(j + 1) % B.length];
+          if (orient(a, b, c) * orient(a, b, d) < 0 && orient(c, d, a) * orient(c, d, b) < 0) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 export function rdpRing(ring, eps) {
   let far = 0, i1 = 0;
   for (let i = 0; i < ring.length; i++) {
@@ -90,7 +149,9 @@ export function rdpRing(ring, eps) {
   }
   const a = rdp(ring.slice(0, i1 + 1), eps);
   const b = rdp([...ring.slice(i1), ring[0]], eps);
-  return [...a.slice(0, -1), ...b.slice(0, -1)];
+  const simple = [...a.slice(0, -1), ...b.slice(0, -1)];
+  if (eps > 0.1 && simple.length < 2000 && crossesItself(simple)) return rdpRing(ring, eps / 2);
+  return simple;
 }
 
 // Chain open ways (relation members) into closed rings
@@ -327,12 +388,15 @@ export class Raster {
 
 // The non-zero cells of a raster as polygons no wider than `size`: tiles overlap by a cell, so neighbours can't part.
 // Keeps every polygon cheap to triangulate, and lets the game build only those near the player. Returns [[outer, ...holes]].
+const TILE_OVERLAP = 3; // cells
 export function tiledPolygons(raster, size, eps, minCells = 6, minHole = 6) {
   const out = [];
   const step = Math.round(size / raster.res);
   for (let tj = 0; tj < raster.h; tj += step) {
     for (let ti = 0; ti < raster.w; ti += step) {
-      const w = Math.min(step + 1, raster.w - ti), h = Math.min(step + 1, raster.h - tj);
+      // A little past its own square: tracing a raster's edge takes half a cell off it, and simplifying can take more, which would leave
+      // a gap along the seam for the ground under it to show through
+      const w = Math.min(step + TILE_OVERLAP, raster.w - ti), h = Math.min(step + TILE_OVERLAP, raster.h - tj);
       const tile = new Raster(raster.x0 + ti * raster.res, raster.z0 + tj * raster.res, raster.x0 + (ti + w) * raster.res, raster.z0 + (tj + h) * raster.res, raster.res);
       let any = false;
       for (let j = 0; j < h && j < tile.h; j++) {
@@ -344,7 +408,10 @@ export function tiledPolygons(raster, size, eps, minCells = 6, minHole = 6) {
       const { labels, comps } = tile.label();
       for (const c of comps) {
         if (c.n < minCells) continue;
-        const rings = tile.traceRings(labels, c).map((r) => rdpRing(r, eps)).filter((r) => r.length >= 3);
+        const traced = tile.traceRings(labels, c);
+        let rings = traced.map((r) => rdpRing(r, eps)).filter((r) => r.length >= 3);
+        // Simplified apart, a hole can come to cross the outline around it
+        for (let tighter = eps / 2; tighter > 0.1 && ringsCross(rings); tighter /= 2) rings = traced.map((r) => rdpRing(r, tighter)).filter((r) => r.length >= 3);
         if (!rings.length) continue;
         rings.sort((p, q) => Math.abs(ringArea(q)) - Math.abs(ringArea(p)));
         out.push(rings.filter((r, i) => !i || Math.abs(ringArea(r)) > minHole));

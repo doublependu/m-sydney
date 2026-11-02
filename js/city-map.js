@@ -52,6 +52,10 @@ const AREA_LABELS = [
   ['BALMAIN', -3000, -1100, 2], ['BONDI', 5800, 1600, 2], ['MANLY', 7000, -10500, 2], ['MOSMAN', 2800, -5500, 2], ['GLEBE', -2700, 1000, 2],
   ['NEWTOWN', -2800, 3300, 2], ['VAUCLUSE', 6300, -3000, 2], ...SUBURBS.map(([name, x0, x1, z0, z1]) => [name.toUpperCase(), (x0 + x1) / 2, (z0 + z1) / 2, 2])
 ];
+// Every other named place on the map, unless one of those is near
+for (const [name, x, z] of GEO.suburbs ?? []) {
+  if (!AREA_LABELS.some(([other, ox, oz]) => other === name.toUpperCase() || Math.hypot(ox - x, oz - z) < 500)) AREA_LABELS.push([name.toUpperCase(), x, z, 2]);
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // World-space vector layers: built once into Path2D objects (world metres) and drawn through a canvas transform

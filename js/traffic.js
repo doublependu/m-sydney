@@ -2,10 +2,12 @@ import * as THREE from 'three/webgpu';
 import { buildRoadNetworkSteps } from './road-network.js';
 import { createPedestrianSystem } from './pedestrian-system.js';
 import { vehicleContact, resolveVehicleContact, sweptVehicleContact } from './vehicle-physics.js';
-import { DRIVE_SIDE, signalPhase, walkSignal } from './city-config.js';
+import { DRIVE_SIDE } from './city-config.js';
+import { assignLights, junctionKey } from './signals.js';
 import { edgeHeight, sameLevel, surfaceHeight } from './surfaces.js';
 import { cityUniforms, createContactShadowMaterial } from './tsl-materials.js';
 import { HEADLIGHTS, placeVehicleHeadlight } from './vehicle-lights.js';
+import { anchorToOrigin, origin } from './world-origin.js';
 import {
   BODY_SPECS,
   buildCarGeometry,
@@ -40,6 +42,7 @@ const NUM_BUSES = 12;
 const CAR_DRIVER = { a: 2.0, b: 3.0, T: 1.2, s0: 2.0, aLat: 3.5, bMax: 8, grip: 8, lock: 0.6, steerRate: 0.3 };
 const BUS_DRIVER = { a: 1.1, b: 2.5, T: 1.5, s0: 2.5, aLat: 2.0, bMax: 6, grip: 5, lock: 0.9, steerRate: 0.3 };
 const LOOKAHEAD = 70; // metres a driver looks ahead for vehicles, stop lines and signals
+const MOVING_ROOM = 2; // seconds ahead a driver reckons the road will be clear, of a car that's moving
 // Dodging the player (see react): seconds before the player would hit it that a driver notices, and the least it keeps
 // up its manoeuvre once it reacts
 const AVOID_NOTICE = 1.8;
@@ -64,7 +67,7 @@ const VEHICLE_RADIUS = 380;
 const DECK_SPAWN_GAP = 60;
 const DECK_PACE = 1.5; // of a street's speed: the bridge is signed 70 km/h
 const NEAR_RADIUS = 350;
-const LANE_METRES_PER_VEHICLE = 60; // of road near the player, for each vehicle on it
+const LANE_METRES_PER_VEHICLE = 80; // of road near the player, for each vehicle on it
 const STUCK_OUT_OF_VIEW = 45, STUCK_IN_VIEW = 180; // s without moving
 const VEHICLE_SPAWN_DISTANCE = 250;
 
@@ -155,6 +158,19 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     n.approach = new Array(n.sideCount).fill(null); // the edge arriving over each side's crosswalk
     n.road = new Array(n.sideCount).fill(null); // an edge arriving or leaving over each side's crosswalk: the road it spans
     n.sideGroup = new Array(n.sideCount).fill(1); // the right-of-way group of the road on each side
+  }
+  // A joint between two pieces of road is no junction: nobody crosses it, and no two lanes lead into one. A road parting in two is
+  // the same. Over a third of all nodes are this, and drivers treating each as a junction kept stopping for no reason you could see.
+  for (const n of nodes) {
+    const opposite = n.in.length === 2 && n.in[0].dx * n.in[1].dx + n.in[0].dz * n.in[1].dz < -0.5;
+    const targets = new Set();
+    n.joint = !n.signal && n.in.length > 0 && (n.in.length === 1 || opposite) && n.in.every((e) => e.moves.every((m) => {
+      if (m.turn === 'U' || m.to === e) return true;
+      const lanes = m.out.filter((j) => j >= 0);
+      if (targets.has(m.to) || new Set(lanes).size !== lanes.length) return false;
+      targets.add(m.to);
+      return true;
+    }));
   }
   for (const e of edges) {
     e.occ = e.lanes.map(() => []); // vehicles in each lane, sorted by position
@@ -471,17 +487,84 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     for (let i = 0; i < inst.count; i++) inst.setMatrixAt(i, zero);
   }
 
+  anchorToOrigin(group); // writes its own transforms every frame, from the origin
   scene.add(group);
 
   // =========================================================================
   // 4. WHO IS WHERE: LANE OCCUPANCY, INTERSECTIONS, VIEW, PLAYER
   // =========================================================================
   let clock = 0;
-  let avePhase = 'green';
-  let stPhase = 'red';
-  let aveWalk = true;
-  let stWalk = false;
-  const phaseOf = (e) => (e.axisIndex === 0 ? avePhase : stPhase);
+  // Each signalled junction runs its own lights (js/signals.js). They carry on when the road network is rebuilt.
+  const phaseOf = (e) => e.to.lights.phaseOf(e.lightGroup);
+  const lightsKnown = new Map();
+  const headLights = new Map();
+  let signalSets = [];
+  let signalTimer = 0;
+  const DETECT = 45, STILL_COMING = 30, SIGNAL_STEP = 0.2, WALK_SECONDS = 12;
+  let lightNodes = null;
+  // Who the lights at the junction in hand can see, on the road of group g
+  const lightAsk = {
+    demand(g) {
+      for (const n of lightNodes) {
+        for (const a of n.in) {
+          if (a.lightGroup !== g) continue;
+          if (clock - (a.playerAt ?? -9) < 1) return true;
+          for (const list of a.occ) {
+            const o = leadOf(list);
+            if (o && a.len - o.s - o.v.half < DETECT) return true;
+          }
+        }
+      }
+      return false;
+    },
+    flowing(g) {
+      for (const n of lightNodes) {
+        for (const a of n.in) {
+          if (a.lightGroup !== g) continue;
+          if (clock - (a.playerAt ?? -9) < 1 && Math.hypot(player.vx, player.vz) > 0.5) return true;
+          for (const list of a.occ) {
+            const o = leadOf(list);
+            if (o && o.v.speed > 0.5 && a.len - o.s - o.v.half < STILL_COMING) return true;
+          }
+        }
+      }
+      return false;
+    },
+    people(g) {
+      for (const n of lightNodes) {
+        for (let side = 0; side < n.sideLight.length; side++) {
+          if (n.sideLight[side] === g && clock - n.askedAt[side] < 1) return true;
+        }
+      }
+      return false;
+    }
+  };
+  // The player, driving towards a junction, counts as someone waiting: nothing else would turn a light green for them
+  function playerAtLights() {
+    if (!player.active) return;
+    const level = player.entity?.surface || 0;
+    for (const n of nearSignals) {
+      if (Math.abs(n.x - player.x) > DETECT + 20 || Math.abs(n.z - player.z) > DETECT + 20) continue;
+      for (const a of n.in) {
+        if ((a.sid || 0) !== level) continue;
+        const px = player.x - a.sx, pz = player.z - a.sz;
+        const along = px * a.dx + pz * a.dz, off = px * a.rx + pz * a.rz;
+        if (along < -5 || a.len - along > DETECT || Math.abs(off) > a.half + 2) continue;
+        if (player.fx * a.dx + player.fz * a.dz > 0.3) a.playerAt = clock;
+      }
+    }
+  }
+  signalSets = assignLights(nodes, lightsKnown, headLights);
+  function updateSignals(dt) {
+    signalTimer += dt;
+    if (signalTimer < SIGNAL_STEP) return;
+    playerAtLights();
+    for (const set of signalSets) {
+      lightNodes = set.nodes;
+      set.lights.update(signalTimer, lightAsk);
+    }
+    signalTimer = 0;
+  }
   let focusX = 0;
   let focusZ = 140;
 
@@ -610,7 +693,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     if (!hasView) return false;
     for (let k = 0; k < 4; k++) {
       const { normal, constant } = frustum.planes[k];
-      if (normal.x * x + normal.y + normal.z * z + constant < -r) return false;
+      if (normal.x * (x - origin.x) + normal.y + normal.z * (z - origin.z) + constant < -r) return false;
     }
     return true;
   }
@@ -831,7 +914,9 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
   // Do people on crosswalk `side` of n have the WALK? Across the main road with the side road's traffic, across a side
   // road with the main road's.
   function walkOn(n, side) {
-    return n.sideGroup[side] === 0 ? stWalk : aveWalk;
+    if (!n.lights) return true; // no signals here
+    n.askedAt[side] = clock; // asking is what brings the light round
+    return n.lights.mayWalk(n.sideLight[side], WALK_SECONDS);
   }
 
   // May p step off the curb onto its crosswalk? On the WALK (early in the parallel traffic's green, so red for the
@@ -840,11 +925,13 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     const n = p.node;
     if (!walkOn(n, p.side) || n.crossing[p.side] > 0) return false;
     const e = n.approach[p.side];
-    if (!e) return true;
-    for (const list of e.occ) {
-      const lead = leadOf(list);
-      if (lead && !canStop(lead, e, true)) return false;
+    if (e) {
+      for (const list of e.occ) {
+        const lead = leadOf(list);
+        if (lead && !canStop(lead, e, true)) return false;
+      }
     }
+    n.lights?.walking(WALK_SECONDS); // the light waits for them to get across
     return true;
   }
 
@@ -889,7 +976,8 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
 
   function room(f, j, v) {
     let free = f.len - 1;
-    for (const o of f.occ[j]) if (o.v !== v && o.s - o.v.half < f.len) free -= 2 * o.v.half + o.v.driver.s0;
+    // A car driving away takes up less of the road than one standing: by the time v gets there, it's further on
+    for (const o of f.occ[j]) if (o.v !== v && o.s - o.v.half < f.len) free -= Math.max(0, 2 * o.v.half + o.v.driver.s0 - o.v.speed * MOVING_ROOM);
     for (const a of f.from.in) {
       for (const list of a.occ) {
         const o = leadOf(list);
@@ -981,6 +1069,16 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
       return false;
     }
     if (!v.isPolice && (phase === 'red' || (phase === 'amber' && stoppable))) return false;
+    if (n.joint) {
+      // Nothing to wait for: only the car ahead, which it follows through
+      v.out = j;
+      v.yielding = false;
+      if (!stoppable) {
+        v.commit = n;
+        claim(v);
+      }
+      return true;
+    }
     if (boxBusy(n, e.axisIndex)) return false; // crossing traffic inside
     const lead = ahead(e.occ[v.lane], v.s, v);
     if (lead && lead.v.yielding) return false; // the vehicle ahead waits inside to turn: wait behind the line
@@ -1106,7 +1204,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
         const o = c && !v.claimed && mergingAhead(v, f, j);
         if (o) worst = Math.min(worst, Math.max(-v.driver.b, brake(v, o.s - o.v.half - vs - v.half, o.v.speed)));
         let vt = c ? bendSpeed(v, c) : Infinity;
-        const cautious = e.to.signal ? v.isPolice && phaseOf(e) !== 'green' : e.axisIndex !== 0;
+        const cautious = e.to.signal ? v.isPolice && phaseOf(e) !== 'green' : !e.to.joint && e.axisIndex !== 0;
         if (cautious) vt = Math.min(vt, 5);
         cap = Math.sqrt(vt * vt + 5 * Math.max(0, d));
       }
@@ -1631,9 +1729,10 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
   const slopeOn = (edge, x, z, sin, cos) => (edgeHeight(edge, x + sin * 2.5, z + cos * 2.5) - edgeHeight(edge, x - sin * 2.5, z - cos * 2.5)) / 5;
   function placeDummy() {
     const y = dummy.position.y;
-    dummy.position.y = y + edgeHeight(dummyEdge, dummy.position.x, dummy.position.z);
+    const { x, z } = dummy.position;
+    dummy.position.set(x - origin.x, y + edgeHeight(dummyEdge, x, z), z - origin.z);
     dummy.updateMatrix();
-    dummy.position.y = y;
+    dummy.position.set(x, y, z);
   }
 
   // 3D spinning alloy wheels & tires (left & right, front & rear), exact 1:1 ground rolling, steering front wheels.
@@ -1845,6 +1944,11 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
         for (let side = -1; side <= 1; side += 2) {
           const spot = headlightPool[spotUsed++];
           placeVehicleHeadlight(spot, spec, side, dummy.matrix);
+          // Worked out from the origin, as the cars are drawn. The pool of lights is in the game's frame.
+          spot.position.x += origin.x;
+          spot.position.z += origin.z;
+          spot.target.position.x += origin.x;
+          spot.target.position.z += origin.z;
           spot.distance = maxReach;
           spot.intensity = baseInt;
         }
@@ -1945,6 +2049,12 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     if (!(j >= 0 && j < f.lanes.length)) return `lane leads nowhere (out ${j} of ${f.lanes.length})`;
     const why = [];
     const phase = n.signal ? phaseOf(e) : 'green';
+    if (n.joint) {
+      // Nothing at a joint holds it but whoever is ahead, on this road or the next
+      if (Math.abs(v.dl) > 0.5) why.push(`changing lane ${v.dl.toFixed(2)}`);
+      why.push('following', `d ${d.toFixed(1)}`);
+      return why.join('; ');
+    }
     if (phase !== 'green') why.push(`light ${phase}`);
     if (boxBusy(n, e.axisIndex)) why.push(`box busy ${n.box.join()} (mine ${e.axisIndex})`);
     const lead = ahead(e.occ[v.lane], v.s, v);
@@ -1961,7 +2071,8 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     if (alongside(f, j, v, vs, m.turn !== 'S')) why.push('alongside');
     const merging = mergingAhead(v, f, j);
     if (merging) why.push(`merging ${merging.v.lane}, wait ${merging.v.wait.toFixed(0)}`);
-    if (v.laneChange || v.dl) why.push(`changing lane ${(v.dl || 0).toFixed(2)}`);
+    if (Math.abs(v.dl) > 0.5) why.push(`changing lane ${v.dl.toFixed(2)}`);
+    if (!why.length) why.push('following');
     why.push(`d ${d.toFixed(1)}`);
     return why.join('; ');
   }
@@ -1974,6 +2085,8 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     network = next;
     ({ nodes, edges, connector, curvePoint } = next);
     prepareNetwork();
+    headLights.clear();
+    signalSets = assignLights(nodes, lightsKnown, headLights);
     touchedNodes.length = 0;
     touchedEdges.length = 0;
     let kept = 0, lost = 0;
@@ -2012,10 +2125,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
 
   function update(dt, elapsed, focusPos = null, playerEntity = null, activeMode = 'car', camera = null) {
     clock = elapsed;
-    avePhase = signalPhase(elapsed, true);
-    stPhase = signalPhase(elapsed, false);
-    aveWalk = walkSignal(elapsed, true);
-    stWalk = walkSignal(elapsed, false);
+    updateSignals(dt);
     focusX = focusPos ? focusPos.x : 0;
     focusZ = focusPos ? focusPos.z : 140;
     // a jump of the camera (teleport, first frame): everything far away can be placed anywhere around it
@@ -2178,6 +2288,9 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     roadRoom: () => nearLaneMetres / LANE_METRES_PER_VEHICLE,
     recycled: () => recycled,
     get network() { return network; },
+    phaseOf,
+    /** What a junction's heads should show, by where its signal point is; undefined where traffic doesn't reach */
+    headsAt: (x, z) => headLights.get(junctionKey(x, z)),
     setCollisionListener,
     cars,
     buses,

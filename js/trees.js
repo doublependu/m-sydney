@@ -941,6 +941,9 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
 
   const dummy = new THREE.Object3D();
   const tint = new THREE.Color();
+  // All from a corner of the field, near enough that the numbers stay small wherever on the map it is
+  const baseX = sites.length ? Math.round(sites[0].x / 256) * 256 : 0;
+  const baseZ = sites.length ? Math.round(sites[0].z / 256) * 256 : 0;
   let placed = 0;
   for (const t of sites) {
     if ((++placed & 255) === 0) yield;
@@ -960,6 +963,8 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
     const i = N++;
     plantedSites.add(t);
     dummy.matrix.toArray(mats, i * 16);
+    mats[i * 16 + 12] -= baseX;
+    mats[i * 16 + 14] -= baseZ;
     tint.setHex(SPECIES[sp].tints[Math.floor(r3 * 2.999)]).multiplyScalar(0.82 + r1 * 0.36);
     data.set([tint.r, tint.g, tint.b, sp + r2 * 0.999], i * 4);
     px[i] = t.x;
@@ -1251,11 +1256,12 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
     for (const mesh of type.meshes) if (mesh !== representative) mesh.userData.sharesPipelineWith = representative;
   }
 
-  // Tree placements are world-space instance matrices; the field, cells and meshes keep identity transforms.
-  // Freezing both avoids recomputing thousands of dormant objects in every view and shadow pass.
+  // Tree placements are instance matrices from the field's corner; the cells and meshes keep identity transforms.
+  // Freezing them avoids recomputing thousands of dormant objects whenever something asks.
+  group.position.set(baseX, 0, baseZ);
   group.traverse((object) => {
+    object.updateMatrix();
     object.matrixAutoUpdate = false;
-    object.matrixWorldAutoUpdate = false;
   });
 
   const stats = {

@@ -4,6 +4,7 @@ import { GroundCells, offsetLine } from './ground-geometry.js';
 import { DECK_DEPTH, DECK_STRUCTURE, KIND, LINKS, STRUCTURES, TUNNEL_HEIGHT, groundHeight, onGroundRoad, tunnelCovered } from './surfaces.js';
 import { bridgeAt } from './bridge.js';
 import { cityUniforms } from './tsl-materials.js';
+import { patternXZ } from './world-origin.js';
 
 // Every road off the ground, drawn from its own heights (js/surfaces.js): bridges and viaducts as decks, tunnels as
 // cuttings that close over into lit tubes. The Harbour Bridge's own deck is js/harbour-bridge.js; the ramps that join
@@ -52,7 +53,7 @@ function structureMaterials() {
   if (concreteMat) return;
   concreteMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.9 });
   const courses = positionWorld.y.div(0.75);
-  const blocks = positionWorld.x.add(positionWorld.z).div(1.6).add(mod(floor(courses), 2).mul(0.5));
+  const blocks = patternXZ.x.add(patternXZ.y).div(1.6).add(mod(floor(courses), 2).mul(0.5));
   const joints = max(smoothstep(0.43, 0.5, abs(fract(courses).sub(0.5))), smoothstep(0.46, 0.5, abs(fract(blocks).sub(0.5))));
   const wall = float(1).sub(smoothstep(0.3, 0.6, abs(normalWorld.y)));
   concreteMat.colorNode = mix(color(0x8b8a84), mix(color(0xa8946f), color(0x7a6a4e), joints.mul(0.8)), wall);

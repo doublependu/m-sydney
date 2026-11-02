@@ -18,6 +18,7 @@ import {
   select
 } from 'three/tsl';
 import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
+import { anchorToOrigin } from './world-origin.js';
 import { SunLight } from 'three/addons/lights/SunLight.js';
 import { SunLightNode } from 'three/addons/lights/SunLightNode.js';
 import { cityUniforms } from './tsl-materials.js';
@@ -38,7 +39,7 @@ const TIME_PRESETS = {
     fogColor: 0xdcc5ae,
     fogDensity: 0.00024,
     interiorGlow: 0.48,
-    roadWetness: 0.28,
+    roadWetness: 0.06, // A dry day: wet roads are for after dark
     envIntensity: 0.54,
     canyonBounce: 0.52,
     turbidity: 8.0,
@@ -63,7 +64,7 @@ const TIME_PRESETS = {
     fogColor: 0xc6dcf2,
     fogDensity: 0.00018,
     interiorGlow: 0.24,
-    roadWetness: 0.08,
+    roadWetness: 0.06,
     envIntensity: 0.58,
     canyonBounce: 0.58,
     turbidity: 6.5,
@@ -149,6 +150,7 @@ class LightingSystem {
     // the camera wherever it flies over the 1:1 harbour (the harbour is 20 km long; it renders at the far plane
     // whatever its size)
     this.sky = new SkyMesh();
+    this.sky.userData.farAway = true;
     this.sky.scale.setScalar(200000);
     this.sky.turbidity.value = 8.0;
     this.sky.rayleigh.value = 2.8;
@@ -182,7 +184,9 @@ class LightingSystem {
       })();
     }
 
-    this.scene.add(this.sky);
+    this.skyHolder = anchorToOrigin(new THREE.Group());
+    this.scene.add(this.skyHolder);
+    this.skyHolder.add(this.sky);
 
     // Reuse the environment scene and PMREM generator when the lighting preset changes.
     this.pmremGenerator = renderer ? new THREE.PMREMGenerator(renderer) : null;
@@ -202,7 +206,10 @@ class LightingSystem {
     // Suppress shadow acne along the surface normal in world units
     // so short casters like cars, curbs, tree trunks, and pedestrians keep crisp contact shadows
     this.sunLight.shadow.normalBias = 0.05;
-    this.scene.add(this.sunLight);
+    // Shining from its position towards zero: it stays put while the world moves under it
+    const sunHolder = anchorToOrigin(new THREE.Group());
+    sunHolder.add(this.sunLight);
+    this.scene.add(sunHolder);
 
     // Subtle Hemisphere Sky + Warm Terracotta/Limestone Ground Bounce Fill
     // (Kept intentionally lower than sunLight so urban canyon shadows remain deep and crisp)
@@ -250,7 +257,7 @@ class LightingSystem {
     });
     this.scene.environment = this.envRenderTarget.texture;
     this.sky.showSunDisc.value = 1;
-    this.scene.add(this.sky);
+    this.skyHolder.add(this.sky);
   }
 
   applyPreset(presetId, force = false) {

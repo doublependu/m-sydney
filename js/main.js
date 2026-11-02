@@ -12,6 +12,7 @@ import { createCityBlocks } from './buildings.js';
 import { walkable } from './arrivals.js';
 import { ThirdPersonControllerManager } from './controllers.js';
 import { TouchControls } from './touch-controls.js';
+import { PhoneHud } from './phone-hud.js';
 import { GamepadControls } from './gamepad-controls.js';
 import { CameraSystem, CAMERA_PRESETS } from './cameras.js';
 import { LightingSystem } from './lighting.js';
@@ -21,11 +22,14 @@ import { Progress } from './progress.js';
 import { CityAudioSystem } from './audio-system.js';
 import { PauseMenu } from './pause-menu.js';
 import { CHOICES, FrameWatcher, detectQuality, saveChoice } from './quality.js';
+import { FrameStats } from './frame-stats.js';
 import { createLightPools } from './light-pools.js';
 import { IDLE, WorldBuilder, runToEnd } from './world-jobs.js';
-import { GEO, TILE, heldTiles, holdTile, holdTiles, isHeld, loadFar, releaseTile, tileKeyAt, tilesNear } from './geodata.js';
+import { GEO, TILE, heldTiles, holdTile, holdTiles, isHeld, loadFar, releaseTile, tileExists, tileKeyAt, tilesNear } from './geodata.js';
 import { planTiles } from './tiles/tile-manager.js';
 import { BLOCKS } from './city-config.js';
+import { auditPrecision, moveOriginNear, origin, rebaseMeshes, setOrigin } from './world-origin.js';
+import { createInteriors } from './interiors.js';
 import { ceilingOver, groundHeight, inTunnel, roadRoute, structuresAt, surfaceHeight, surfaceSlope } from './surfaces.js';
 import { updateTunnelMouths } from './tunnel-mouths.js';
 import { wheelContacts } from './ground-geometry.js';
@@ -156,6 +160,7 @@ async function initApp() {
     const stage = new THREE.Group();
     stage.name = 'TileStart';
     runToEnd(buildTileGround(tile, stage, { part: inStart, last: false }));
+    rebaseMeshes(stage);
     scene.add(stage);
     builtTiles.set(tile.key, { tile, stages: [stage], colliders: [], culling: [], done: false, startPart: true });
   }
@@ -190,10 +195,11 @@ async function initApp() {
   markInit('blocks');
 
   // These arrive with the rest of the city, see buildRestOfWorld()
-  let surroundings = null;
   let movingScenery = null;
   let streetDetails = null;
   let trafficSystem = null;
+  // ?debug=1&cars=0: the streets to yourself, for the scenarios that need to know nobody else is there
+  const debugCars = new URLSearchParams(location.search).get('debug') === '1' && new URLSearchParams(location.search).has('cars') ? Number(new URLSearchParams(location.search).get('cars')) : null;
 
   function savePlayerState() {
     try {
@@ -205,7 +211,10 @@ async function initApp() {
   }
 
   const cameraSystem = new CameraSystem(renderer.domElement, controllerManager);
+  scene.add(cameraSystem.camera); // so it moves with the world when the origin does (js/world-origin.js)
   const touchControls = new TouchControls(controllerManager);
+  const phoneHud = new PhoneHud();
+  touchControls.onStickPressed = () => phoneHud.hideHint();
   const soundButton = document.getElementById('btn-sound');
   const audioSystem = new CityAudioSystem({ controllerManager }, { onStateChange: updateSoundButton });
   function updateSoundButton() {
@@ -317,6 +326,7 @@ async function initApp() {
   const elMode = document.getElementById('hud-active-mode');
   const elCamera = document.getElementById('hud-active-camera');
   const elSpeed = document.getElementById('hud-speed');
+  const elMiniSpeed = document.getElementById('hud-mini-speed');
   const elSpeedMeter = document.getElementById('hud-speed-meter');
   const elAltitude = document.getElementById('hud-altitude');
   const elLocation = document.getElementById('hud-location');
@@ -940,9 +950,12 @@ async function initApp() {
     stage.updateMatrixWorld(true);
     useStorageInstancing(stage);
     liftStage(stage);
+    rebaseMeshes(stage);
+    stage.updateMatrixWorld(true);
     const { now, later } = collectCompileJobs(stage);
     await compileJobs([...now, ...later], task);
     scene.add(stage);
+    stage.updateMatrixWorld(true);
     task?.done();
   }
 
@@ -968,20 +981,16 @@ async function initApp() {
     el.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:50;padding:6px 8px;background:#000c;color:#fff;font:12px/1.4 monospace;pointer-events:none;white-space:pre;border-radius:4px';
     document.body.append(el);
     const backend = renderer.backend.isWebGPUBackend ? 'WebGPU' : 'WebGL2';
-    let frames = 0, slow = 0, worst = 0, last = performance.now(), mark = last;
+    const stats = new FrameStats(performance.now());
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) stats.pause(performance.now());
+    });
     const tick = (now) => {
-      const gap = now - last;
-      last = now;
-      frames++;
-      worst = Math.max(worst, gap);
-      if (gap > 34) slow++;
-      if (now - mark >= 1000) {
+      if (stats.frame(now)) {
         const heap = performance.memory ? `${Math.round(performance.memory.usedJSHeapSize / 1048576)} MB` : 'n/a';
         el.textContent = `loaded in ${(interactiveAt / 1000).toFixed(2)} s, ${backend}, ${quality.level}\n`
-          + `${Math.round((frames * 1000) / (now - mark))} fps, ${slow} slow, worst ${Math.round(worst)} ms\n`
+          + `${stats.lines(now)}\n`
           + `city ${worldCompleteAt === null ? 'building' : `done at ${(worldCompleteAt / 1000).toFixed(1)} s`}, tiles ${[...builtTiles.values()].filter((r) => r.done).length}, heap ${heap}`;
-        frames = slow = worst = 0;
-        mark = now;
       }
       requestAnimationFrame(tick);
     };
@@ -1007,8 +1016,24 @@ async function initApp() {
 
   // --- Tiles around the player -----------------------------------------------------------------------------------------
   const shadowOf = () => [lightingSystem.sunLight.shadow, renderer.backend.isWebGPUBackend === true];
+  const interiors = createInteriors({
+    reveal: (group) => revealStage(group),
+    standIn: (id) => cityBlocks.standIn(id),
+    lights: lightPools.interiorLights,
+    colliders: { add: (list) => controllerManager.addColliders(list), remove: (list) => controllerManager.removeColliders(list) }
+  });
+  let indoors = false;
+  // Inside, with nothing to see of it, traffic and what's far away stop being drawn
+  function setIndoors(on) {
+    if (on === indoors) return;
+    indoors = on;
+    if (trafficSystem) trafficSystem.group.visible = !on;
+    if (farStage) farStage.visible = !on;
+    if (paintStage) paintStage.visible = !on;
+  }
   let farLevel = null;
   let farStage = null;
+  const farStages = new Map(); // key -> the stage of that square
   const tileFailedAt = new Map();
 
   function* buildTile(key) {
@@ -1053,12 +1078,17 @@ async function initApp() {
   // Debug only: all of the map, all the time, for scenarios about the roads rather than about fetching them
   const wholeCity = new URLSearchParams(location.search).get('debug') === '1' && new URLSearchParams(location.search).get('wholeCity') === '1';
   const tileRange = wholeCity ? 1e6 : quality.buildingDetail;
+  // ?wholeCity=1, for scripted drives faster than the map could come: all of the CBD and around it, from the start
+  const inTheCbd = (key) => {
+    const [ix, iz] = key.split('_').map(Number);
+    return tileExists(key) && ix >= -4 && ix <= 3 && iz >= -6 && iz <= 3;
+  };
   function wantedTiles() {
     const entity = controllerManager.getActiveEntity();
     const { x, z } = entity.position;
     const speed = entity.speed || 0, heading = entity.heading || 0;
     const failed = (key) => performance.now() - (tileFailedAt.get(key) ?? -Infinity) < 5000;
-    const plan = planTiles({ x, z, vx: Math.sin(heading) * speed, vz: Math.cos(heading) * speed, range: tileRange, built: new Set([...builtTiles].filter(([, r]) => r.done).map(([k]) => k)) });
+    const plan = planTiles({ x, z, vx: Math.sin(heading) * speed, vz: Math.cos(heading) * speed, range: tileRange, ...(wholeCity && { exists: inTheCbd }), built: new Set([...builtTiles].filter(([, r]) => r.done).map(([k]) => k)) });
     plan.load = plan.load.filter((key) => !failed(key));
     return plan;
   }
@@ -1127,7 +1157,7 @@ async function initApp() {
     } else {
       const trafficStage = new THREE.Group();
       const made = yield* createTrafficSystem(trafficStage, obstacles, streetDetails.signalIntersections, {
-        numCars: quality.cars, numBuses: quality.buses, numPeds: quality.pedestrians, lightPools, firstNetwork: network
+        numCars: debugCars ?? quality.cars, numBuses: debugCars === null ? quality.buses : 1, numPeds: debugCars === null ? quality.pedestrians : 1, lightPools, firstNetwork: network
       });
       tasks?.traffic.set(0.8);
       yield* made.populate(cameraSystem.currentPos);
@@ -1180,11 +1210,11 @@ async function initApp() {
     download.begin();
     yield Promise.all([
       loadFar(),
-      Promise.all([import('./surroundings.js'), import('./street-details.js'), import('./traffic.js'), import('./road-network.js'), import('./road-paint.js'), import('./road-paint-tags.js'), import('./far-level.js')])
+      Promise.all([import('./horizon.js'), import('./street-details.js'), import('./traffic.js'), import('./road-network.js'), import('./road-paint.js'), import('./road-paint-tags.js'), import('./far-level.js')])
         .then((modules) => { city = Object.assign({}, ...modules); })
     ]).then(() => download.done());
     cityCode = city;
-    const { buildSurroundings, createFarLevel, farSquaresNear } = city;
+    const { buildHorizon, createFarLevel } = city;
 
     settled(cityBlocks.group); // streamed around the player, on each building's own base
     buildings.begin();
@@ -1197,11 +1227,8 @@ async function initApp() {
     farStage = new THREE.Group();
     farStage.name = 'FarLevel';
     buildWater(farStage);
-    for (const key of farSquaresNear(here().x, here().z, quality.farRange)) {
-      const meshes = yield* farLevel.addSquare(key);
-      if (meshes.length) farStage.add(...meshes);
-    }
     yield revealStage(farStage);
+    while (yield* nextFarSquare(here().x, here().z, { forMap: true }));
     yield* mapSystem.prepareBlocks(farLevel.footprints);
 
     // The landmarks wait for the map under them. It's let go of again if it's far from the player.
@@ -1234,8 +1261,7 @@ async function initApp() {
     moreBuildings.done();
 
     const surroundingsStage = new THREE.Group();
-    surroundings = yield* tracked(buildSurroundings(surroundingsStage), suburbs, 200);
-    controllerManager.addColliders(surroundings.colliders);
+    yield* tracked(buildHorizon(surroundingsStage), suburbs, 200);
     const scenery = buildMovingScenery(surroundingsStage);
     yield revealStage(surroundingsStage);
     movingScenery = scenery;
@@ -1285,7 +1311,7 @@ async function initApp() {
         yield* groundFirst(rebuildTraffic(x, z));
       } else if (next.load.length) {
         yield* buildTile(next.load[0]);
-      } else {
+      } else if (!(yield* nextFarSquare(x, z))) {
         yield IDLE;
         continue;
       }
@@ -1293,6 +1319,33 @@ async function initApp() {
       yield;
     }
   }
+  // The squares of the far level around (x, z), each its own stage: one more of them each time, or one gone. False when it's all as it should be.
+  const FAR_KEEP = 2000; // m past the range before one is let go
+  function* nextFarSquare(x, z, options = {}) {
+    const { farSquaresNear } = cityCode;
+    for (const [key, stage] of farStages) {
+      if (farSquaresNear(x, z, quality.farRange + FAR_KEEP).includes(key)) continue;
+      farLevel.dropSquare(key);
+      farStages.delete(key);
+      disposeStage(stage);
+      return true;
+    }
+    for (const key of farSquaresNear(x, z, quality.farRange)) {
+      if (farStages.has(key)) continue;
+      const stage = new THREE.Group();
+      stage.name = 'FarSquare';
+      const meshes = yield* farLevel.addSquare(key, options);
+      if (meshes.length) stage.add(...meshes);
+      yield revealStage(stage);
+      farStage.add(stage);
+      stage.updateMatrixWorld(true);
+      farStages.set(key, stage);
+      farLevel.setSquareHeld(key, true);
+      return true;
+    }
+    return false;
+  }
+
   // Where the landmarks stand, and the tall towers with their names
   const LANDMARK_TILES = () => [...new Set([
     ...Object.values(LANDMARK_SITES).map(({ x, z }) => tileKeyAt(x, z)),
@@ -1329,6 +1382,13 @@ async function initApp() {
       places: TELEPORT_LOCATIONS,
       load: () => ({ stages: Object.fromEntries(initTimings), interactiveAt: interactiveAt ?? null }),
       clock: () => elapsed,
+      interior: () => interiors.state(),
+      gpuMemory: () => ({ ...renderer.info.memory }),
+      origin: () => ({ ...origin }),
+      setOrigin: (x, z) => setOrigin(scene, x, z),
+      // Everything rewrites what it draws, with no time going by
+      rewrite: () => simulate(0, performance.now()),
+      auditPrecision: () => auditPrecision(scene),
       paused: () => pauseMenu.isOpen,
       worldCompleteAt: () => worldCompleteAt,
       progress: () => ({ ...progress.state(), shown: progress.shown, timings: progress.timings() }),
@@ -1432,6 +1492,13 @@ async function initApp() {
         .filter((v) => v.edge && Math.hypot(v.x - x, v.z - z) < radius)
         .map((v) => ({ x: Math.round(v.x), z: Math.round(v.z), speed: +v.speed.toFixed(1), link: v.edge.link, edge: v.edge.id, lane: v.lane, lanes: v.edge.lanes.length, s: Math.round(v.s), len: Math.round(v.edge.len),
           deck: !!v.edge.deck, wait: +(v.wait || 0).toFixed(1), conn: !!v.conn, turn: v.move?.turn, to: v.move?.to?.id, toLink: v.move?.to?.link, toLanes: v.move?.to?.lanes.length, out: v.move?.out?.[v.lane], yielding: !!v.yielding, signal: !!v.edge.to.signal, moves: v.edge.moves.length, axis: v.edge.axisIndex, why: v.speed < 0.5 ? trafficSystem.holdingBack(v) : '', acc: +(v.acc ?? 0).toFixed(2), impact: +(v.impactTime ?? 0).toFixed(2), panic: v.panicUntil > 0, nose: +(v.nose ?? 0).toFixed(2), bus: !!v.bus, evade: +(v.evade ?? 0).toFixed(1), commit: !!v.commit, out2: v.out })),
+      // The ways into each signalled junction near (x, z), and what its lights show them, for the scenarios on signals
+      signalApproaches: (x, z, radius) => (trafficSystem?.network.nodes ?? [])
+        .filter((n) => n.signal && Math.hypot(n.x - x, n.z - z) < radius)
+        .flatMap((n) => n.in.map((e) => ({
+          x: e.sx + e.dx * e.len + e.rx * e.lanes[0], z: e.sz + e.dz * e.len + e.rz * e.lanes[0], dx: e.dx, dz: e.dz, len: e.len, sid: e.sid || 0,
+          junction: `${Math.round(n.x)},${Math.round(n.z)}`, group: e.lightGroup, showing: n.lights.phaseOf(e.lightGroup), groups: n.lights.groups.length, nodes: n.cluster.length
+        }))),
       roadRoom: () => trafficSystem?.roadRoom(),
       recycled: () => trafficSystem?.recycled(),
       audioState: () => audioSystem.context?.state ?? 'none',
@@ -1566,6 +1633,7 @@ async function initApp() {
         markInit('gpu');
         console.log(`[init] ${initTimings.map(([label, ms]) => `${label} ${ms}ms`).join(', ')}`);
         interactiveAt = performance.now();
+        phoneHud.showHint();
         interactive = true;
         showStats();
         if (loadingOverlay) loadingOverlay.classList.add('hidden');
@@ -1595,6 +1663,7 @@ async function initApp() {
         elFps.className = currentFps >= 50 ? 'fps-ok' : currentFps >= 30 ? 'fps-warn' : 'fps-bad';
       }
       if (elSpeed) elSpeed.textContent = String(kmh);
+      if (elMiniSpeed) elMiniSpeed.textContent = String(kmh);
       if (elSpeedMeter) elSpeedMeter.style.transform = `scaleX(${Math.min(1, kmh / (topSpeedKmh[mode] || 130))})`;
       if (elAltitude) elAltitude.textContent = altitude.toLocaleString('en-US');
       // The street corner of the player on the follow cameras, of the camera itself on the scenic ones
@@ -1628,6 +1697,8 @@ async function initApp() {
   function simulate(dt, now) {
     simulatedFrames++;
     elapsed += dt;
+    // First, before anything writes what it'll draw this frame from where the origin is
+    if (cameraSystem.initialized) moveOriginNear(scene, cameraSystem.currentPos.x, cameraSystem.currentPos.z);
 
     if (awaitingGround && (groundReady(awaitingGround.x, awaitingGround.z) || now > awaitingGround.until)) {
       groundWaits.push(Math.round(now - awaitingGround.since));
@@ -1652,7 +1723,14 @@ async function initApp() {
       }
     }
     cameraSystem.update(dt, elapsed);
-    if (streetDetails) streetDetails.signalClock.value = elapsed;
+    {
+      const { x, z } = controllerManager.getActiveEntity().position;
+      setIndoors(interiors.update(x, z));
+    }
+    if (streetDetails) {
+      streetDetails.signalClock.value = elapsed;
+      streetDetails.updateSignals(elapsed, dt, trafficSystem);
+    }
     trafficSystem?.setParked(controllerManager.parkedCar());
     trafficSystem?.update(
       dt,
@@ -1689,7 +1767,11 @@ async function initApp() {
       const top = Math.min(ceilingOver(sid, bodyY, x, z), ceilingOver(sid, bodyY, eye.x, eye.z));
       if (eye.y > top - 0.6) eye.y = Math.max(bodyY + 0.8, top - 0.6);
       // Inside a tunnel the sky's light fades out, and back in at the far portal
-      const shelterGoal = inTunnel(sid, x, z) && inTunnel(sid, eye.x, eye.z) ? 1 : 0;
+      if (indoors && interiors.keepEyeInside(eye)) {
+        // Kept in the room, it has to look at you again
+        cameraSystem.camera.lookAt(x - origin.x, bodyY + 1.2, z - origin.z);
+      }
+      const shelterGoal = indoors || (inTunnel(sid, x, z) && inTunnel(sid, eye.x, eye.z)) ? 1 : 0;
       lightingSystem.setShelter(lightingSystem.shelter + (shelterGoal - lightingSystem.shelter) * Math.min(1, dt * 2.5));
     } else {
       lightingSystem.setShelter(0);

@@ -1,4 +1,5 @@
 import * as THREE from 'three/webgpu';
+import { origin } from './world-origin.js';
 
 // Chase, action, cockpit, fixed-location and aerial cameras, with mouse/touch orbit and zoom.
 
@@ -31,6 +32,7 @@ class CameraSystem {
     this.domElement = domElement;
     this.controllerManager = controllerManager;
 
+    this.lookTarget = new THREE.Vector3();
     this.camera = new THREE.PerspectiveCamera(
       56,
       window.innerWidth / window.innerHeight,
@@ -369,7 +371,8 @@ class CameraSystem {
     }
 
     this.camera.position.copy(this.currentPos);
-    this.camera.lookAt(this.currentLookAt);
+    // lookAt() goes by the drawn frame
+    this.camera.lookAt(this.lookTarget.set(this.currentLookAt.x - origin.x, this.currentLookAt.y, this.currentLookAt.z - origin.z));
   }
 }
 

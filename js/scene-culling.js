@@ -1,4 +1,5 @@
 import * as THREE from 'three/webgpu';
+import { origin } from './world-origin.js';
 
 // Spatial culling for the city-wide static geometry. Most of the city's street furniture and building massing is
 // built as a handful of instanced meshes spanning the whole island (bounding spheres ~7 km across), which three.js can
@@ -53,6 +54,15 @@ function instanceSize(mesh) {
 
 function isStaticMesh(o) {
   return o.isMesh && !o.isSkinnedMesh && o.visible && o.frustumCulled !== false && !o.morphTargetInfluences;
+}
+
+// What this module works out is in the game's frame, whatever the origin does later
+const _inGame = new THREE.Matrix4();
+function inGameFrame(o) {
+  _inGame.copy(o.matrixWorld);
+  _inGame.elements[12] += origin.x;
+  _inGame.elements[14] += origin.z;
+  return _inGame;
 }
 
 function copyObjectState(dst, src) {
@@ -182,7 +192,7 @@ function* setupSceneCullingSteps(scene, roots, shadow = null, storageInstancing 
       if (!o.isInstancedMesh) {
         if (o.userData.cullDistance > 0) {
           if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
-          const sphere = o.geometry.boundingSphere.clone().applyMatrix4(o.matrixWorld);
+          const sphere = o.geometry.boundingSphere.clone().applyMatrix4(inGameFrame(o));
           pushCulled(o, sphere, o.userData.cullDistance);
         }
         return;
@@ -205,7 +215,7 @@ function* setupSceneCullingSteps(scene, roots, shadow = null, storageInstancing 
     }
     const cell = Math.min(600, Math.max(250, cullDist * 0.5));
     for (const chunk of replaceWithChunks(mesh, cell)) {
-      const sphere = chunk.boundingSphere.clone().applyMatrix4(chunk.matrixWorld);
+      const sphere = chunk.boundingSphere.clone().applyMatrix4(inGameFrame(chunk));
       pushCulled(chunk, sphere, cullDist);
     }
     yield;
@@ -287,7 +297,7 @@ function* setupSceneCullingSteps(scene, roots, shadow = null, storageInstancing 
         }
         const e = o.instanceMatrix.array;
         for (let i = 0; i < o.count; i++) {
-          _wm.multiplyMatrices(o.matrixWorld, _m.fromArray(e, i * 16));
+          _wm.multiplyMatrices(inGameFrame(o), _m.fromArray(e, i * 16));
           const key = cellKey(_wm.elements[12], _wm.elements[14]);
           let list = entry.cells.get(key);
           if (!list) entry.cells.set(key, (list = []));
@@ -298,15 +308,16 @@ function* setupSceneCullingSteps(scene, roots, shadow = null, storageInstancing 
         if (!bySide) triCells.set(side, (bySide = new Map()));
         const pos = geo.attributes.position;
         const idx = geo.index;
+        const placed = inGameFrame(o);
         const start = geo.drawRange.start;
         const end = Math.min(idx ? idx.count : pos.count, start + geo.drawRange.count);
         for (let t = start; t + 2 < end; t += 3) {
           const i0 = idx ? idx.getX(t) : t;
           const i1 = idx ? idx.getX(t + 1) : t + 1;
           const i2 = idx ? idx.getX(t + 2) : t + 2;
-          _a.fromBufferAttribute(pos, i0).applyMatrix4(o.matrixWorld);
-          _b.fromBufferAttribute(pos, i1).applyMatrix4(o.matrixWorld);
-          _c.fromBufferAttribute(pos, i2).applyMatrix4(o.matrixWorld);
+          _a.fromBufferAttribute(pos, i0).applyMatrix4(placed);
+          _b.fromBufferAttribute(pos, i1).applyMatrix4(placed);
+          _c.fromBufferAttribute(pos, i2).applyMatrix4(placed);
           const key = cellKey((_a.x + _b.x + _c.x) / 3, (_a.z + _b.z + _c.z) / 3);
           let list = bySide.get(key);
           if (!list) bySide.set(key, (list = []));
@@ -328,6 +339,7 @@ function* setupSceneCullingSteps(scene, roots, shadow = null, storageInstancing 
       if (firstProxy.has(kind)) mesh.userData.sharesPipelineWith = firstProxy.get(kind);
       else firstProxy.set(kind, mesh);
       scene.add(mesh);
+      mesh.updateMatrixWorld(true);
       proxies.push(mesh);
     };
     for (const entry of instancedBySig.values()) {

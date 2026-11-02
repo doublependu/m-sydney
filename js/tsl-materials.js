@@ -56,8 +56,12 @@ import {
   sqrt,
   specularColor,
   specularColorBlended,
-  specularF90
+  specularF90,
+  diffuseColor,
+  metalness,
+  modelWorldMatrix,
 } from 'three/tsl';
+import { patternXZ } from './world-origin.js';
 import { CITY_BOUNDS } from './city-config.js';
 
 // Procedural city materials: facades and interiors, vegetation, roads, water and lighting effects.
@@ -189,16 +193,16 @@ const distantWindowLight = Fn(([grid, fw, probability, seed, lod]) => {
 
 /**
  * Occlusion-Aware Urban Canyon Sky Visibility (aoNode)
- * Models how street canyons occlude overhead sky irradiance near the street floor (y = 0..65m),
- * while opening up on upper tower shafts.
+ * Models how street canyons occlude overhead sky irradiance near the street floor, while opening up on upper tower shafts.
+ * `height`: metres above the ground it stands on. Not above the sea: the city is on hills, and a road would brighten as it climbs.
  */
-const canyonSkyAONode = Fn(() => {
-  const wp = positionWorld;
-  const heightOpenness = smoothstep(0.0, 68.0, wp.y);
-  const streetCrevice = smoothstep(0.0, 7.5, wp.y).mul(0.22).add(0.78);
-  const canyonAO = mix(float(0.44), float(1.0), heightOpenness).mul(streetCrevice);
-  return canyonAO;
-});
+const canyonSkyAONode = (height) => {
+  const heightOpenness = smoothstep(0.0, 68.0, height);
+  const streetCrevice = smoothstep(0.0, 7.5, height).mul(0.22).add(0.78);
+  return mix(float(0.5), float(1.0), heightOpenness).mul(streetCrevice);
+};
+// The same for what lies on the ground, with no height to ask: about what the CBD's streets had when this read sea level
+const STREET_SKY = 0.6;
 
 // Material caches to prevent duplicate WebGPU WGSL shader compilation across blocks & landmarks
 const _curtainWallCache = new Map();
@@ -397,7 +401,7 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
   const nW = abs(nWall);
   const isRoof = step(0.75, nW.y);
   const alongZ = boxLocal ? step(nW.z, nW.x) : facadeAlongZ;
-  let uCoord = mix(positionWorld.x, positionWorld.z, alongZ);
+  let uCoord = mix(patternXZ.x, patternXZ.y, alongZ);
   let bayWidth = float(windowWidth);
   let gridU = uCoord.div(bayWidth);
   let inPier = float(0.0);
@@ -717,12 +721,11 @@ function createCurtainWallMaterial(opts = {}) {
   const uSeed = uniform(seed);
   const cCanyonBounce = color(0xe89c68);
 
-  mat.aoNode = canyonSkyAONode();
-
   // The facade cell and the apartment behind each pane are built once and shared by every output below, so the
   // shader carries a single copy of them (and evaluates the interior mapping once per pixel)
   const facade = facadeCell(uWindowWidth, uFloorHeight, boxLocal || footprintLocal, 0, footprintLocal);
   const { isRoof, uCoord, vCoord, gridV, cellId, cellUV, fw, bayWidth, solid, coping } = facade;
+  mat.aoNode = canyonSkyAONode(vCoord);
   // Pane UV inside the mullions and spandrel.
   const winUV = clamp(
     vec2(
@@ -793,7 +796,7 @@ function createCurtainWallMaterial(opts = {}) {
     const canyonBand = smoothstep(0.0, 14.0, vCoord).mul(float(1.0).sub(smoothstep(22.0, 75.0, vCoord)));
     const canyonGlow = cCanyonBounce.mul(canyonBand.mul(cityUniforms.uCanyonBounce).mul(0.16));
 
-    const roofNoise = noise2D(positionWorld.xz.mul(0.35));
+    const roofNoise = noise2D(patternXZ.mul(0.35));
     const roofColor = mix(color(0x7d8184), color(0xb4b6b4), fract(hash2D(vec2(facade.boxSeed, 3.1)).add(roofNoise.mul(0.35))));
 
     const facadeCol = mix(frameBase, glassColor, isGlassPane.mul(float(1.0).sub(isMechFloor))).add(canyonGlow);
@@ -913,12 +916,11 @@ function createPreWarBuildingMaterial(opts = {}) {
   const halfWinX = (1.0 - windowRatioX) * 0.5;
   const halfWinY = (1.0 - windowRatioY) * 0.5;
 
-  mat.aoNode = canyonSkyAONode();
-
   // The facade cell, the window opening and the apartment behind it are built once and shared by every output below,
   // so the shader carries a single copy of them (and evaluates the interior mapping once per pixel)
   const facade = facadeCell(uWindowWidth, uFloorHeight, boxLocal || footprintLocal, cornerPier, footprintLocal);
   const { isRoof, uCoord, vCoord, gridV, cellId, cellUV, fw, bayWidth, isGroundFloor, solid, back, blank, tone, coping } = facade;
+  mat.aoNode = canyonSkyAONode(vCoord);
   const { wallS, wallW, wallH, exposedHeight, fromTop, boxSeed } = facade;
   const open = float(1.0).sub(solid);
   // Band courses are for the street's storeys, not any under the floor
@@ -1076,7 +1078,7 @@ function createPreWarBuildingMaterial(opts = {}) {
     const glassCol = mix(upperGlassBase, cityUniforms.uSkyHorizonColor, fresnel.mul(0.52).add(0.08)).mul(recessShade);
 
     const frameCol = masonryTint.mul(0.46).mul(recessShade);
-    const roofNoise = noise2D(positionWorld.xz.mul(0.35));
+    const roofNoise = noise2D(patternXZ.mul(0.35));
     // Sydney's flat roofs from the air: pale membrane and concrete, some greyer than others, whatever the walls are
     const roofCol = mix(color(0x8d8f8e), color(0xc6c5be), fract(hash2D(vec2(boxSeed, 3.1)).add(roofNoise.mul(0.35))));
 
@@ -1340,7 +1342,7 @@ function createTreeMaterial(leafAtlas) {
   mat.normalNode = normalViewGeometry;
 
   // Sky light: street-canyon occlusion, deep inside the crown far less
-  mat.aoNode = canyonSkyAONode().mul(crownAO.mul(0.75).add(0.25));
+  mat.aoNode = float(STREET_SKY + 0.1).mul(crownAO.mul(0.75).add(0.25));
 
   // Light through the leaves: yellow-green, strongest out on the thin shell
   mat.translucencyNode = aData.xyz.mul(vec3(1.0, 1.2, 0.45)).mul(leaf.r.mul(1.5)).mul(crownAO.mul(0.8).add(0.2)).mul(isLeaf);
@@ -1357,7 +1359,7 @@ function createTreeGrateMaterial() {
     roughness: 0.68
   });
 
-  mat.aoNode = canyonSkyAONode();
+  mat.aoNode = float(STREET_SKY);
 
   mat.colorNode = Fn(() => {
     const r = length(positionLocal.xz);
@@ -1374,8 +1376,7 @@ function roadPuddleField(wx, wz) {
   const nMacro = noise2D(vec2(wx.mul(0.095), wz.mul(0.075)));
   const nMid = noise2D(vec2(wx.mul(0.25).add(19.4), wz.mul(0.22).add(11.8)));
   const nDetail = noise2D(vec2(wx.mul(0.68).sub(7.3), wz.mul(0.68).add(29.1)));
-  const spawnPool = smoothstep(4.2, 1.4, length(vec2(wx.sub(1.6), wz.sub(122.8)))).mul(0.10);
-  return nMacro.mul(0.52).add(nMid.mul(0.34)).add(nDetail.mul(0.14)).add(spawnPool);
+  return nMacro.mul(0.52).add(nMid.mul(0.34)).add(nDetail.mul(0.14));
 }
 
 /**
@@ -1433,10 +1434,10 @@ const roadWear = Fn(([wxz, px]) => {
       .mul(smoothstep(0.04, 0.015, px)));
   });
 
-  // Rectangular utility-cut patches (ConEd, water & sewer trenches): one 11 m cell in two, kept inside its cell. Some
-  // are squarish cuts, others long narrow trenches running along the avenue or across it
+  // Rectangular utility-cut patches (water & sewer trenches): one 11 m cell in five, kept inside its cell. Some are squarish
+  // cuts, others long narrow trenches running along the road or across it
   const pCell = floor(wxz.div(11.0));
-  const hasPatch = step(0.5, hash2D(pCell.add(vec2(3.7, 8.1))));
+  const hasPatch = step(0.8, hash2D(pCell.add(vec2(3.7, 8.1))));
   const trench = step(0.6, hash2D(pCell.add(vec2(2.9, 6.3))));
   const alongX = step(0.5, hash2D(pCell.add(vec2(5.5, 9.9))));
   const pCentre = pCell.add(0.5).add(vec2(hash2D(pCell.add(vec2(1.3, 5.9))), hash2D(pCell.add(vec2(9.2, 2.4)))).sub(0.5)
@@ -1466,7 +1467,7 @@ const roadWear = Fn(([wxz, px]) => {
  * from the car, so they are traced further than the hairline cracks, thinning out before they shrink below a pixel.
  */
 const roadTarSnakes = Fn(([wxz, px]) => {
-  const zone = smoothstep(0.3, 0.48, noise2D(wxz.mul(0.03).add(17.0))).toVar();
+  const zone = smoothstep(0.44, 0.6, noise2D(wxz.mul(0.03).add(17.0))).toVar();
   const snake = float(0.0).toVar();
   If(zone.greaterThan(0.001).and(px.lessThan(0.12)), () => {
     const warp = vec2(noise2D(wxz.mul(0.9)), noise2D(wxz.mul(0.9).add(31.0))).sub(0.5).mul(0.6);
@@ -1474,7 +1475,7 @@ const roadTarSnakes = Fn(([wxz, px]) => {
     const border = voronoiBorder(wxz.div(cell).add(warp)).mul(cell);
     // Only some cracks were sealed: the network breaks up into runs a few metres long
     const keep = smoothstep(0.38, 0.5, noise2D(wxz.mul(0.6).add(5.0)));
-    const width = noise2D(wxz.mul(1.7).add(9.0)).mul(0.012).add(0.014);
+    const width = noise2D(wxz.mul(1.7).add(9.0)).mul(0.006).add(0.007);
     const effWidth = max(width, px.mul(0.6));
     snake.assign(float(1.0).sub(smoothstep(effWidth, effWidth.add(px), border)).mul(width.div(effWidth)).mul(zone).mul(keep)
       .mul(smoothstep(0.12, 0.06, px)));
@@ -1482,19 +1483,32 @@ const roadTarSnakes = Fn(([wxz, px]) => {
   return snake;
 });
 
+// Dry asphalt reflects far less of the sun than a standard surface does at a low angle. With the standard amount a road is light
+// brown looking towards a low sun and dark grey looking away, so it changes colour at every corner. What's wet (metalness, which
+// the puddles ride on) still reflects as water does.
+const DRY_ASPHALT_SPECULAR = 0.15;
+class RoadMaterial extends THREE.MeshStandardNodeMaterial {
+  setupSpecular() {
+    const dry = vec3(0.04 * DRY_ASPHALT_SPECULAR);
+    specularColor.assign(dry);
+    specularColorBlended.assign(mix(dry, diffuseColor.rgb, metalness));
+    specularF90.assign(mix(float(DRY_ASPHALT_SPECULAR), float(1.0), metalness));
+  }
+}
+
 /**
  * Road asphalt, Footprint-Filtered Aggregate `bumpNormal`, Scattered Manholes, Wear & Repairs
  * (block cracking, tar-sealed utility-cut patches & trenches, potholes, tar snakes, oil drips, exposed stone chips, a
  * gentle swell of the paving; see roadWear & roadTarSnakes) & Post-Rain Wetness (upgraded with techniques from
  * CityGenerator.js `createRoadMaterial`).
  * cityUniforms.uRoadWetness drives damp stains, a faint wet sheen & standing puddles (roadWetMasks): bone dry at
- * midday, a few small pools at golden hour, glossy stains & pools mirroring the lights at night. Water's Fresnel rides
+ * midday and at golden hour, glossy stains & pools mirroring the lights at night. Water's Fresnel rides
  * on metalness (as for the rivers), so puddles reflect the street through SSR at grazing angles yet only darken seen
  * from above.
  * Lane markings are separate geometry built from the road network (js/road-paint.js).
  */
 function createRoadSurfaceMaterial() {
-  const mat = new THREE.MeshStandardNodeMaterial({
+  const mat = new RoadMaterial({
     metalness: 0.24,
     roughness: 0.48
   });
@@ -1508,7 +1522,7 @@ function createRoadSurfaceMaterial() {
   // World size of a pixel: fine texture settles to its mean before it can alias at grazing angles or from the air
   const pixelSize = length(fwidth(positionWorld.xz));
   // Cracks, utility-cut patches & potholes, shared by every channel below (see roadWear)
-  const wear = roadWear(positionWorld.xz, pixelSize);
+  const wear = roadWear(patternXZ, pixelSize);
   const crack = wear.x;
   const patchDist = wear.y;
   const pothole = wear.z;
@@ -1517,28 +1531,28 @@ function createRoadSurfaceMaterial() {
   const sealWidth = max(float(0.022), pixelSize.mul(0.75));
   const patchSeal = float(1.0).sub(smoothstep(sealWidth, sealWidth.add(pixelSize), abs(patchDist))).mul(float(0.022).div(sealWidth)).mul(wear.w);
   // Fresh patches are darker & tighter than the roadway, old ones paler & greyer
-  const patchFresh = step(0.55, hash2D(floor(positionWorld.xz.div(11.0)).add(vec2(12.9, 6.6))));
+  const patchFresh = step(0.55, hash2D(floor(patternXZ.div(11.0)).add(vec2(12.9, 6.6))));
   // Exposed light stone chips in the worn surface, settling to their average where they shrink below a pixel
-  const chips = mix(float(0.035), smoothstep(0.72, 0.8, noise2D(positionWorld.xz.mul(30.0))), smoothstep(0.03, 0.012, pixelSize));
+  const chips = mix(float(0.035), smoothstep(0.72, 0.8, noise2D(patternXZ.mul(30.0))), smoothstep(0.03, 0.012, pixelSize));
   // Tar-snake crack sealant (none over the newer patches)
-  const tarSnake = roadTarSnakes(positionWorld.xz, pixelSize).mul(float(1.0).sub(patchCover));
+  const tarSnake = roadTarSnakes(patternXZ, pixelSize).mul(float(1.0).sub(patchCover));
   // Oil & coolant drips from parked & idling cars: ragged dark blots a hand or two across, one 2.5 m cell in three
-  const oilCell = floor(positionWorld.xz.div(2.5));
+  const oilCell = floor(patternXZ.div(2.5));
   const oilCentre = oilCell.add(vec2(hash2D(oilCell.add(vec2(4.1, 2.2))), hash2D(oilCell.add(vec2(8.3, 6.7)))).mul(0.6).add(0.2)).mul(2.5);
-  const oilDist = length(positionWorld.xz.sub(oilCentre)).mul(noise2D(positionWorld.xz.mul(5.0)).sub(0.5).mul(0.8).add(1.0));
+  const oilDist = length(patternXZ.sub(oilCentre)).mul(noise2D(patternXZ.mul(5.0)).sub(0.5).mul(0.8).add(1.0));
   const oilRadius = hash2D(oilCell.add(vec2(1.9, 9.4))).mul(0.25).add(0.1);
   const oilDrip = smoothstep(oilRadius.add(pixelSize), oilRadius.mul(0.3), oilDist).mul(step(0.66, hash2D(oilCell.add(vec2(7.7, 3.3)))))
     .mul(hash2D(oilCell.add(vec2(2.6, 5.1))).mul(0.6).add(0.4));
 
   // Circular cast-iron manhole covers scattered over the roadway (one 14 m cell in three)
-  const mhCell = floor(positionWorld.xz.div(14.0));
+  const mhCell = floor(patternXZ.div(14.0));
   const mhCentre = mhCell.add(vec2(hash2D(mhCell.add(13.7)), hash2D(mhCell.add(29.1))).mul(0.6).add(0.2)).mul(14.0);
-  const mhDist = length(positionWorld.xz.sub(mhCentre));
+  const mhDist = length(patternXZ.sub(mhCentre));
   const hasManhole = step(0.66, hash2D(mhCell));
 
   // Puddle field & wetness masks shared by every channel below (each node is generated once per fragment); potholes
   // hold water first
-  const puddleField = roadPuddleField(positionWorld.x, positionWorld.z).add(pothole.mul(0.45));
+  const puddleField = roadPuddleField(patternXZ.x, patternXZ.y).add(pothole.mul(0.45));
   const wet = roadWetMasks(puddleField);
   const damp = wet.x;
   const puddle = wet.y;
@@ -1546,11 +1560,11 @@ function createRoadSurfaceMaterial() {
   const viewDir = normalize(cameraPosition.sub(positionWorld));
   const waterFresnel = pow(float(1.0).sub(clamp(viewDir.y, 0.0, 1.0)), 5.0).mul(0.98).add(0.02);
 
-  mat.aoNode = canyonSkyAONode();
+  mat.aoNode = float(STREET_SKY);
 
   mat.colorNode = Fn(() => {
-    const wx = positionWorld.x;
-    const wz = positionWorld.z;
+    const wx = patternXZ.x;
+    const wz = patternXZ.y;
     const camDist = length(positionWorld.sub(cameraPosition));
     const detail = smoothstep(240.0, 22.0, camDist);
 
@@ -1559,24 +1573,24 @@ function createRoadSurfaceMaterial() {
     const fineGrain = mix(float(0.5), noise2D(vec2(wx.mul(3.2), wz.mul(3.2))), smoothstep(0.4, 0.12, pixelSize));
     const patchNoise = noise2D(vec2(wx.mul(0.18), wz.mul(0.18)));
     const oilyStain = smoothstep(0.52, 0.84, noise2D(vec2(wx.mul(0.42), wz.mul(0.42)))).mul(detail);
-    const tarSeam = float(1.0).sub(smoothstep(0.0, 0.04, abs(patchNoise.sub(0.52)))).mul(0.42).mul(detail);
+    const tarSeam = float(1.0).sub(smoothstep(0.0, 0.015, abs(patchNoise.sub(0.52)))).mul(0.14).mul(detail);
     // Binder-rich (dark) & ravelled, aggregate-exposed (pale) mottling a stride or so across
     const mottle = noise2D(vec2(wx.mul(0.9), wz.mul(0.9)).add(41.0)).mul(0.65).add(noise2D(vec2(wx.mul(2.3), wz.mul(2.3)).add(7.0)).mul(0.35));
 
     const baseAsphalt = mix(
       cAsphaltDark,
       cAsphaltLight,
-      fineGrain.mul(0.3).add(microAggregate.mul(0.22)).add(patchNoise.mul(0.22)).add(smoothstep(0.3, 0.7, mottle).mul(0.26)).sub(0.04)
+      fineGrain.mul(0.22).add(microAggregate.mul(0.22)).add(patchNoise.mul(0.07)).add(smoothstep(0.3, 0.7, mottle).mul(0.07)).add(0.19)
     )
-      .mul(float(1.0).sub(oilyStain.mul(0.32)))
+      .mul(float(1.0).sub(oilyStain.mul(0.12)))
       .mul(float(1.0).sub(tarSeam));
 
     // Utility-cut patches with their tar-sealed edges, stone chips, tar snakes, oil drips, cracks & potholes
-    const patchCol = mix(mix(baseAsphalt, cOldPatch, 0.45).mul(1.08), color(0x2b2e33).mul(0.85), patchFresh);
+    const patchCol = mix(mix(baseAsphalt, cOldPatch, 0.22).mul(1.03), mix(baseAsphalt, color(0x3a3c40), 0.55), patchFresh);
     const repaired = mix(baseAsphalt, patchCol, patchCover)
       .mul(float(1.0).sub(patchSeal.mul(0.5)))
       .add(chips.mul(0.08).mul(float(1.0).sub(patchCover.mul(patchFresh))))
-      .mul(float(1.0).sub(tarSnake.mul(0.62)))
+      .mul(float(1.0).sub(tarSnake.mul(0.4)))
       .mul(float(1.0).sub(oilDrip.mul(0.45)))
       .mul(float(1.0).sub(crack.mul(0.65)))
       .mul(float(1.0).sub(pothole.mul(0.4)));
@@ -1590,7 +1604,7 @@ function createRoadSurfaceMaterial() {
   })();
 
   mat.roughnessNode = Fn(() => {
-    const microRough = mix(float(0.04), noise2D(positionWorld.xz.mul(12.0)).mul(0.08), smoothstep(0.08, 0.03, pixelSize));
+    const microRough = mix(float(0.04), noise2D(patternXZ.mul(12.0)).mul(0.08), smoothstep(0.08, 0.03, pixelSize));
     // Tar sealant is glossier, oil satin, fresh patches a little tighter, potholes & cracks rougher
     const dry = float(0.90).add(microRough)
       .sub(patchSeal.mul(0.3))
@@ -1615,8 +1629,8 @@ function createRoadSurfaceMaterial() {
   // >= 2 px so no edge sparkles; the finest relief fades before it shrinks to a pixel. Flattens to mirror-smooth 0.0
   // inside standing rainwater puddles so SSR reflections stay crisp!
   mat.normalNode = Fn(() => {
-    const wx = positionWorld.x;
-    const wz = positionWorld.z;
+    const wx = patternXZ.x;
+    const wz = patternXZ.y;
     const coarseFade = smoothstep(0.12, 0.035, pixelSize);
     const midFade = smoothstep(0.035, 0.012, pixelSize);
     const fineFade = smoothstep(0.02, 0.006, pixelSize).mul(float(1.0).sub(film.mul(0.6)));
@@ -1644,8 +1658,8 @@ function createRoadSurfaceMaterial() {
   })();
 
   mat.emissiveNode = Fn(() => {
-    const wx = positionWorld.x;
-    const wz = positionWorld.z;
+    const wx = patternXZ.x;
+    const wz = patternXZ.y;
 
     const roadFresnel = pow(clamp(float(1.0).sub(abs(viewDir.y)), 0.0, 1.0), 2.3);
 
@@ -1686,7 +1700,7 @@ function createRoadPaintMaterial() {
 
   // How much to widen the strip so it is at least 1.5 px wide on screen (1 when it already is)
   const widen = Fn(() => {
-    const toClip = (p) => cameraProjectionMatrix.mul(cameraViewMatrix.mul(vec4(p, 1.0)));
+    const toClip = (p) => cameraProjectionMatrix.mul(cameraViewMatrix.mul(modelWorldMatrix.mul(vec4(p, 1.0))));
     const edge = toClip(positionGeometry).toVar();
     const centre = toClip(positionGeometry.sub(sideOffset)).toVar();
     const halfWidthPx = length(edge.xy.div(edge.w).sub(centre.xy.div(centre.w)).mul(screenSize).mul(0.5));
@@ -1702,7 +1716,7 @@ function createRoadPaintMaterial() {
   const onSoFar = (x) => floor(x).mul(duty).add(clamp(fract(x).sub(float(1.0).sub(duty).mul(0.5)), 0.0, duty));
   const dashes = onSoFar(t.add(footprint.mul(0.5))).sub(onSoFar(t.sub(footprint.mul(0.5)))).div(footprint);
 
-  const xz = positionWorld.xz;
+  const xz = patternXZ;
   const camDist = length(positionWorld.sub(cameraPosition));
   const detail = smoothstep(70.0, 15.0, camDist);
   const distFade = smoothstep(1650.0, 1300.0, camDist);
@@ -1719,14 +1733,14 @@ function createRoadPaintMaterial() {
   const puddle = Fn(() => {
     const p = float(0.0).toVar();
     If(cityUniforms.uRoadWetness.greaterThan(0.1), () => {
-      p.assign(roadWetMasks(roadPuddleField(positionWorld.x, positionWorld.z)).y);
+      p.assign(roadWetMasks(roadPuddleField(patternXZ.x, patternXZ.y)).y);
     });
     return p;
   })();
   const film = smoothstep(0.2, 0.8, cityUniforms.uRoadWetness);
   mat.colorNode = vec3(mix(float(1.0), float(0.72), puddle).mul(mix(float(1.0), float(0.86), film)));
   mat.roughnessNode = mix(mix(float(0.62), float(0.42), film), float(0.2), puddle);
-  mat.aoNode = canyonSkyAONode();
+  mat.aoNode = float(STREET_SKY);
 
   _roadPaintMaterial = mat;
   return mat;
@@ -1751,8 +1765,8 @@ function createSidewalkMaterial() {
   const cGumNew = color(0x34332f);
 
   // Damp patches & pools on the flags, shared by every channel below (own field; drains better than the roadway)
-  const swField = noise2D(vec2(positionWorld.x.mul(0.14).add(7.4), positionWorld.z.mul(0.14).sub(13.1))).mul(0.65)
-    .add(noise2D(vec2(positionWorld.x.mul(0.38), positionWorld.z.mul(0.38))).mul(0.35));
+  const swField = noise2D(vec2(patternXZ.x.mul(0.14).add(7.4), patternXZ.y.mul(0.14).sub(13.1))).mul(0.65)
+    .add(noise2D(vec2(patternXZ.x.mul(0.38), patternXZ.y.mul(0.38))).mul(0.35));
   const swWet = roadWetMasks(swField, 0.06);
   const swPuddle = swWet.y.mul(smoothstep(0.5, 0.9, normalWorldGeometry.y));
   const swFresnel = pow(float(1.0).sub(clamp(normalize(cameraPosition.sub(positionWorld)).y, 0.0, 1.0)), 5.0).mul(0.98).add(0.02);
@@ -1760,7 +1774,7 @@ function createSidewalkMaterial() {
 
   // 5 ft (1.524 m) flags poured in place: the flag, where in it (-0.5 .. 0.5) and how far to its tooled joints (m)
   const FLAG = 1.524;
-  const wxz = positionWorld.xz;
+  const wxz = patternXZ;
   const flagCoord = wxz.div(FLAG);
   const flagId = floor(flagCoord);
   const flagHash = hash2D(flagId);
@@ -1770,7 +1784,7 @@ function createSidewalkMaterial() {
   const replaced = step(0.86, flagHash);
   // 6 mm tooled joints filled with dirt, the grime that collects either side of them and the smooth trowelled margin the
   // jointing tool leaves beyond that (filter-width anti-aliased: each settles to its mean once below a pixel)
-  const gridBand = (halfWidth) => max(gridLine(positionWorld.x, FLAG, halfWidth), gridLine(positionWorld.z, FLAG, halfWidth));
+  const gridBand = (halfWidth) => max(gridLine(patternXZ.x, FLAG, halfWidth), gridLine(patternXZ.y, FLAG, halfWidth));
   const joints = gridBand(0.003);
   const jointGrime = gridBand(0.018);
   const tooledBand = gridBand(0.045).sub(jointGrime).max(0.0);
@@ -1798,11 +1812,11 @@ function createSidewalkMaterial() {
   const hasCrack = step(0.875, hash2D(flagId.add(vec2(41.7, 9.2)))).mul(float(1.0).sub(replaced));
   const crack = lineAA(crackDist, 0.0012).mul(hasCrack).mul(smoothstep(0.004, 0.02, edgeDist));
 
-  mat.aoNode = canyonSkyAONode();
+  mat.aoNode = float(STREET_SKY);
 
   mat.colorNode = Fn(() => {
-    const wx = positionWorld.x;
-    const wz = positionWorld.z;
+    const wx = patternXZ.x;
+    const wz = patternXZ.y;
     const camDist = length(positionWorld.sub(cameraPosition));
     const detail = smoothstep(190.0, 16.0, camDist);
 
@@ -1846,8 +1860,8 @@ function createSidewalkMaterial() {
   // 6 mm tooled joint grooves with rounded edges, flags heaved a little out of true by tree roots & frost, hairline
   // cracks, gum blobs and concrete grain via bumpNormal. Edges ramp over >= 2 px so nothing sparkles along the joints.
   mat.normalNode = Fn(() => {
-    const wx = positionWorld.x;
-    const wz = positionWorld.z;
+    const wx = patternXZ.x;
+    const wz = patternXZ.y;
     const camDist = length(positionWorld.sub(cameraPosition));
     const detail = smoothstep(140.0, 14.0, camDist);
     const rampPx = pixelSize.mul(2.0);
@@ -1878,11 +1892,11 @@ function createCurbMaterial() {
     roughness: 0.72
   });
 
-  mat.aoNode = canyonSkyAONode();
+  mat.aoNode = float(STREET_SKY);
 
   mat.colorNode = Fn(() => {
-    const wx = positionWorld.x;
-    const wz = positionWorld.z;
+    const wx = patternXZ.x;
+    const wz = patternXZ.y;
     const camDist = length(positionWorld.sub(cameraPosition));
     const detail = smoothstep(180.0, 16.0, camDist);
 
@@ -1899,8 +1913,8 @@ function createCurbMaterial() {
   mat.roughnessNode = mix(float(0.72), float(0.5), smoothstep(0.2, 0.8, cityUniforms.uRoadWetness));
 
   mat.normalNode = Fn(() => {
-    const wx = positionWorld.x;
-    const wz = positionWorld.z;
+    const wx = patternXZ.x;
+    const wz = patternXZ.y;
     const camDist = length(positionWorld.sub(cameraPosition));
     const detail = smoothstep(120.0, 12.0, camDist);
     const grain = noise2D(vec2(wx.mul(5.5), wz.mul(5.5))).sub(0.5).mul(0.0022);
@@ -2098,7 +2112,7 @@ function createWaterMaterial() {
 
   // vec4(mean slope x, mean slope z, unresolved slope variance, crest height)
   const waves = Fn(() => {
-    const p = positionWorld.xz;
+    const p = patternXZ;
     const t = time;
     const q = p.mul(mix(float(1.0), float(2.6), pond)); // sheltered ponds: finer ripples
 
@@ -2142,7 +2156,7 @@ function createWaterMaterial() {
 
   // Sediment-laden estuary: deep blue-green grey ↔ silty olive grey; thin sunlit crests transmit a greener tint
   mat.colorNode = Fn(() => {
-    const silt = steadyNoise2D(positionWorld.xz.mul(0.0031).add(7.3));
+    const silt = steadyNoise2D(patternXZ.mul(0.0031).add(7.3));
     const body = mix(color(0x162d2c), color(0x2e3f36), smoothstep(0.25, 0.85, silt));
     const lake = mix(color(0x24321f), color(0x33402a), silt);
     const crestTint = smoothstep(0.6, 2.4, waves.w).mul(0.35).add(1.0);
@@ -2169,7 +2183,7 @@ function createParkLawnMaterial(isMeadow = false) {
   const cGrassSun = color(0x6b9c3e);
 
   mat.colorNode = Fn(() => {
-    const wp = positionWorld.xz;
+    const wp = patternXZ;
     const macroPatch = noise2D(wp.mul(0.06));
     const midClover = noise2D(wp.mul(0.35));
     const microBlade = noise2D(wp.mul(3.8));
@@ -2184,7 +2198,7 @@ function createParkLawnMaterial(isMeadow = false) {
   })();
 
   mat.normalNode = Fn(() => {
-    const wp = positionWorld.xz;
+    const wp = patternXZ;
     const camDist = length(positionWorld.sub(cameraPosition));
     const detail = smoothstep(85.0, 10.0, camDist);
     const turf = noise2D(wp.mul(7.5)).sub(0.5).mul(0.008);

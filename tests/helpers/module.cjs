@@ -2,6 +2,19 @@ const vm = require('node:vm');
 
 // Keep the existing isolated unit harnesses synchronous. Only the app's static import/export declarations
 // are adapted; dependencies are explicit namespace stubs, and the production function bodies run unchanged.
+const WORLD_ORIGIN = {
+  ORIGIN_STEP: 4096,
+  origin: { x: 0, z: 0 },
+  originXZ: { x: 0, y: 0 },
+  patternXZ: { x: 0, y: 0 },
+  anchorToOrigin: (object) => object,
+  onOriginMove() {},
+  moveOriginNear: () => false,
+  rebaseMeshes() {},
+  setOrigin() {},
+  auditPrecision: () => ({})
+};
+
 function loadModule(source, { imports = {}, globals = {}, filename = 'module.js' } = {}) {
   const exported = [];
   const names = (list) => list.split(',').map((name) => name.trim()).filter(Boolean).map((name) => {
@@ -10,6 +23,8 @@ function loadModule(source, { imports = {}, globals = {}, filename = 'module.js'
     return [match[1], match[2] || match[1]];
   });
   let code = source.replace(/^import\s+(\*[\s\S]*?|\{[\s\S]*?\})\s+from\s+(['"])([^'"\n]+)\2\s*;/gm, (_declaration, bindings, _quote, specifier) => {
+    // Nearly everything writes from the origin: with no stub, it's at zero and never moves
+    if (specifier === './world-origin.js' && !Object.hasOwn(imports, specifier)) imports[specifier] = WORLD_ORIGIN;
     if (!Object.hasOwn(imports, specifier)) throw new Error(`Missing import stub: ${specifier}`);
     const namespace = /^\*\s+as\s+([\w$]+)$/.exec(bindings.trim());
     const target = `imports[${JSON.stringify(specifier)}]`;

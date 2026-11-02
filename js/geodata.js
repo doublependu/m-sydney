@@ -26,6 +26,11 @@ async function fileBytes(name) {
 const fileText = async (name) => new TextDecoder().decode(await fileBytes(name));
 
 const world = JSON.parse(await fileText('world.json'));
+// The offline file has only a part of the map in it
+if (INLINE) {
+  for (const key of Object.keys(world.tiles)) if (!INLINE[`${key}.${world.tiles[key]}.bin.gz`]) delete world.tiles[key];
+  for (const key of Object.keys(world.farFiles)) if (!INLINE[`far_${key}.${world.farFiles[key]}.bin.gz`]) delete world.farFiles[key];
+}
 
 // What the whole map shares, and the road graph of the tiles held
 const GEO = { ...world, roadGraph: { nodes: new Float32Array(world.nodeCount * 2), links: [], names: [] } };
@@ -102,7 +107,7 @@ function fetchTile(key) {
   if (!fetching.has(key)) {
     const file = `${key}.${world.tiles[key]}.bin.gz`;
     const [ix, iz] = key.split('_').map(Number);
-    fetching.set(key, fileBytes(file).then((data) => Object.assign(unpackTile(data, world.heights.size), { key, ix, iz })));
+    fetching.set(key, fileBytes(file).then((data) => Object.assign(unpackTile(data, world.heights.size, world.ground?.size), { key, ix, iz })));
   }
   return fetching.get(key);
 }
@@ -174,8 +179,15 @@ const loadMapData = () => (mapData ||= fileText('map.json.gz').then((text) => JS
 
 if (inNode) {
   await loadFar();
-  for (const tile of await Promise.all(Object.keys(world.tiles).map(fetchTile))) absorb(tile);
+  // Under Node the whole map, unless SYDNEY_TILES says which part: x0,z0,x1,z1 in tiles
+  const part = process.env.SYDNEY_TILES?.split(',').map(Number);
+  const keys = Object.keys(world.tiles).filter((key) => {
+    if (!part) return true;
+    const [ix, iz] = key.split('_').map(Number);
+    return ix >= part[0] && iz >= part[1] && ix <= part[2] && iz <= part[3];
+  });
+  for (const tile of await Promise.all(keys.map(fetchTile))) absorb(tile);
   fetching.clear();
 }
 
-export { GEO, TILE, farHeightBytes, fetchFarFile, loadMapData, heldList, heldTags, heldTiles, heldTrees, holdTile, holdTiles, isHeld, loadFar, onMap, releaseTile, tileExists, tileKey, tileKeyAt, tilesNear };
+export { GEO, TILE, farHeightBytes, fetchFarFile, fileBytes, loadMapData, heldList, heldTags, heldTiles, heldTrees, holdTile, holdTiles, isHeld, loadFar, onMap, releaseTile, tileExists, tileKey, tileKeyAt, tilesNear };

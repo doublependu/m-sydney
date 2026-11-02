@@ -2,6 +2,7 @@ import { ShapeUtils, Vector2 } from 'three/webgpu';
 import { GEO, heldTiles, onMap } from './geodata.js';
 import { landAt, blockAt } from './city-config.js';
 import { LINKS, STEP, groundHeight, groundRoadAt, roadHeight, surfaceHeight } from './surfaces.js';
+import { groundMoved } from './terrain.js';
 
 // The ground's geometry as plain arrays: the road deck, kerbs, footpaths, lawns and the base under them all.
 // js/city-grid.js turns it into meshes; tools/check-ground.mjs measures it without a browser, so what it reports is
@@ -15,6 +16,7 @@ const SIDEWALK_TOP = 0.22;
 // Surface to surface where one road crosses over another: 5.3 m of headroom and 1.5 m of deck
 const STACK_CLEARANCE = 6.8;
 const ROAD_STEP = 6; // m between stations down a road
+const UNDER_KERB = 1.1; // m past a road's edge that its surface runs on, under the kerbs: they stand 0.4 m past it, give or take (tools/build-geodata.mjs)
 const EDGE_STEP = 8; // m between points round a kerb or the edge of a footpath
 const BASE_DROP = 0.5; // m the base lies under the lowest ground around it
 const { x0: HX0, z0: HZ0, cell: HCELL } = GEO.frame.heights;
@@ -87,6 +89,7 @@ const distanceToRing = (ring, x, z) => {
 // not whichever far corner the ears ended on. `faces` stay counter-clockwise in (x, y).
 const FLAT = 1e-5; // twice the area of a triangle too thin to count: a point this close to an edge is on it
 const NEEDLESS = 0.12; // m: a point inside that the triangles already pass this close to isn't worth adding
+const BENT = 0.15; // m the ground has been moved to meet a road (tools/tiles/grade-ground.mjs), for it to be worth more points
 class SurfaceMesh {
   constructor(points, heights, faces) {
     this.points = points;
@@ -231,9 +234,13 @@ function addSurface(cells, rings, y, edge = EDGE_STEP) {
   for (const p of contour) {
     minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z);
   }
+  // Points inside, on the height grid's nodes: and half way between them where the ground has been moved to meet a road, as it bends there
   const inner = [];
-  for (let x = HX0 + Math.ceil((minX - HX0) / HCELL) * HCELL; x < maxX; x += HCELL) {
-    for (let z = HZ0 + Math.ceil((minZ - HZ0) / HCELL) * HCELL; z < maxZ; z += HCELL) {
+  const fine = HCELL / 2;
+  for (let x = HX0 + Math.ceil((minX - HX0) / fine) * fine; x < maxX; x += fine) {
+    for (let z = HZ0 + Math.ceil((minZ - HZ0) / fine) * fine; z < maxZ; z += fine) {
+      const onGrid = (x - HX0) % HCELL === 0 && (z - HZ0) % HCELL === 0;
+      if (!onGrid && Math.abs(groundMoved(x, z)) < BENT) continue;
       if (!pointInPolygonXZ(outer, x, z) || holes.some((h) => pointInPolygonXZ(h, x, z))) continue;
       // Not right against an edge, where it would only make slivers
       if (distanceToRing(outer, x, z) < 2 || holes.some((h) => distanceToRing(h, x, z) < 2)) continue;
@@ -331,7 +338,7 @@ function* addRoadDeck(cells, wanted, links = LINKS, fills = heldTiles().flatMap(
   const degree = new Map();
   for (const l of links) {
     if (l.kind) continue;
-    const r = l.width / 2 + 0.6; // under the curbs
+    const r = l.width / 2 + UNDER_KERB;
     for (const n of [l.a, l.b]) {
       reach.set(n, Math.max(reach.get(n) || 0, r));
       degree.set(n, (degree.get(n) || 0) + 1);
@@ -367,7 +374,7 @@ function* addRoadDeck(cells, wanted, links = LINKS, fills = heldTiles().flatMap(
   for (const l of links) {
     if (l.kind || !wanted(l.pts[0].x, l.pts[0].z)) continue;
     if (++work % 60 === 0) yield;
-    const r = l.width / 2 + 0.6;
+    const r = l.width / 2 + UNDER_KERB;
     const pts = [];
     for (let i = 0; i + 1 < l.pts.length; i++) {
       const p = l.pts[i], q = l.pts[i + 1];

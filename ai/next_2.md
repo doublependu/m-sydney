@@ -1,23 +1,41 @@
 # Next 2: what shipped from plan 2, and what to do next
 
-Answers `ai/plan_2.md`. **Phases 1-12 of 17 are done, with the misses listed below. Phases 13-17 aren't started.** The work stopped here on purpose: the plan makes Phase 12 the gate, with a real phone test before anything gets bigger, and that test needs you.
+Answers `ai/plan_2.md`. **Phases 1-12 of 17 are done, with the misses listed below. Phases 13-17 aren't started.** The work stopped here on purpose: the plan makes Phase 12 the gate, with a real phone test before anything gets bigger. That test has now passed on an iPhone, below.
 
 Today's map now comes in tiles and streams around the player, so the hard part of a bigger map is done. Nothing is bigger yet.
+
+## Real phone test
+
+The first real device this project has been on. Reported by you from an iPhone, deployed, with `?stats=1`:
+
+| | iPhone | Phone profile | Spec |
+|---|---|---|---|
+| Loaded in | **0.98 s** | 3.23 s | 2-3 s, 1 s great, 4 s at most |
+| Graphics | WebGPU, Low | WebGPU, Low | |
+| Frames | **60 FPS, 0 slow, worst 17 ms** | 42 FPS, p95 33 ms | |
+| City done | **11.2 s after opening the page** | 19.2 s after load | |
+| Tiles held | 8 | 8-11 | |
+| Heap | n/a: iOS doesn't report it | 217-598 MB | |
+| Driving and flying | **Both worked, no crash in 1 minute** | | |
+
+**The gate passes: Phases 13-17 can go ahead.** The phone profile turned out to be pessimistic for this phone. Its load time was over 3 times the real one.
+
+What this doesn't show yet:
+
+- **Which iPhone, and whether it's entry level.** The Spec asks for entry-level phones bought within 5 years, and the model wasn't noted. No Android phone has been tried.
+- **Long sessions.** One minute won't show a memory problem, and iOS gives no heap number to watch. A tab being killed after 10 or 20 minutes is the risk to look for.
+- **Frames over the whole minute.** The readout's FPS, slow count and worst frame cover only the last second, so this is one good second, not the minute's worst.
+- **A cold load, if the page had been opened before.** Browser caching would flatter 0.98 s. The first visit is the one that counts.
+- **Higher graphics.** Auto chose Low. This phone may have room for more: `?quality=medium` would show.
 
 ## What you need to do
 
 1. Commit when you're happy. Nothing is committed or staged. `public/tiles/` is new and needs committing (2 MB), and the old `js/*-geodata.*`, `js/height-grid.bin.gz` and `js/road-tags.js` are deleted. Their sources now live in `tools/data/generated/`, which git ignores, so `npm run data:build` remakes them.
-2. `npm run deploy`, which needs HTTPS for a phone to use WebGPU. A plain `http://` address on your network falls back to WebGL2. Deploying also tests the cache rules below, which can't be tested locally.
-3. Open `https://<your site>/?stats=1` on an entry-level phone and tell me:
-   - "loaded in" (Spec: 2-3 s, 4 s at most)
-   - FPS while driving and flying across the map (fly to cross tiles fastest)
-   - whether the tab ever crashes or reloads
-
-If those hold, Phases 13-16 go ahead. If they don't, that work comes first.
+2. Check the cache rules on the deployed site (see Cloudflare's free plan below).
 
 ## Results
 
-Measured on an i5-11400F with an RTX 3060, Chrome 156, cold profile, local server. **No real phone or integrated GPU has been tested.** The phone profile is a desktop with the CPU slowed 4 times and a 50 Mbit/s connection, and the GPU isn't slowed at all, so it flatters a real phone.
+Measured on an i5-11400F with an RTX 3060, Chrome 156, cold profile, local server. **Only the iPhone test above is on a real phone, and no integrated GPU has been tested.** The phone profile is a desktop with the CPU slowed 4 times and a 50 Mbit/s connection, and the GPU isn't slowed at all.
 
 The test harness now warms the browser up before opening the game (see Findings), which takes GPU process start-up out of the load times. Part of the load gains below may come from that. A real player's browser is already running, so the new numbers should be closer to theirs, but the two aren't strictly comparable.
 
@@ -107,7 +125,7 @@ The README's "How it works" has this in full.
 
 Most important first.
 
-1. **Never run on a real phone.** See the top. Every phone number here comes from a slowed desktop with a fast GPU.
+1. **Only one real phone, for one minute.** See the top. Still to try: an entry-level phone, an Android phone and a long session.
 2. **Firefox and Safari not tested on this work.** WebGL2 is tested by hiding WebGPU in Chrome, and that scenario passes. `npm run bench -- --browser=firefox` is still to do, as is `npm run viewports`.
 3. **Traffic can still hold itself up at merges.** I fixed one cause and capped traffic by how much road is nearby, but cars can still wait on each other through the lane-straddling logic. As a safety valve, a car stuck over 45 s out of sight, or 180 s in sight, gets recycled. Near North Sydney, 43-79 of 132 cars are still stopped at any moment, at a mean of 2.5-4.4 m/s. It's busy but moving, and it's slower than it should be. `__gameDebug.trafficDetail()` says what holds each car.
 4. **A car wedged against a wall,** once in about 70 minutes of soak, at (384, -1130) on Macquarie St. The random driver had steered it onto the footpath against a building. It could be a real trap or just the script, and I didn't determine which.
@@ -119,7 +137,7 @@ Most important first.
 
 ## What to do next
 
-1. **The real phone test.** Everything else waits on it, as the plan says.
+1. **The real phone test passed on an iPhone,** so the rest can go ahead. A longer session on an entry-level phone is still worth doing, at the latest once Phase 15 makes the map bigger.
 2. **Phase 13, moving origin and horizon.** Katoomba is 84 km out, where 32-bit positions shake. Vertices need to be stored relative to each stage, and the 64 `positionWorld` uses need to keep their patterns when the origin moves. Far levels replace `surroundings.js`.
 3. **Phase 14, detailed buildings.** It's independent of the rest, so it could come first if you have a model ready.
 4. **Phase 15, Inner Sydney.** The largest step left: generators per tile with a worker pool, the 1.2 GB OSM extract, the 5 m elevation model, per-tile land and water in place of `world.json`'s shores, trees beyond the City of Sydney's register, and the map's image pyramid.

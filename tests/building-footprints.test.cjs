@@ -39,7 +39,7 @@ const THREE = {
 };
 const collision = loadModule(readFileSync(join(__dirname, '../js/building-collision.js'), 'utf8'));
 const { createBuildingFootprints } = loadModule(readFileSync(join(__dirname, '../js/building-footprints.js'), 'utf8'), {
-  imports: { 'three/webgpu': THREE, './tsl-materials.js': { WALL_KINDS: { shop: 0, front: 1, rear: 2, lotLine: 3 } },
+  imports: { 'three/webgpu': THREE, './tsl-materials.js': { WALL_KINDS: { shop: 0, front: 1, rear: 2, lotLine: 3, below: 4 } },
     './building-collision.js': collision }
 });
 const p = (x, z) => ({ x, z });
@@ -185,4 +185,37 @@ test('party-wall sign clearance uses the tallest neighbor and leaves courtyard w
   }
   assert.equal(blankVertices, 4);
   for (let i = 16; i < 32; i++) assert.equal(attrs.facadeWall.array[i * 3 + 2], 2);
+});
+
+// On a slope: the walls stand on the ground, and the stone below the floor reaches it
+test('a wall on a slope runs from its roof down to the ground, with its floors counted from the floor', () => {
+  const slope = (x) => x * 0.2; // from 0 at x = 0 up to 8 at x = 40
+  const b = record([p(0, 0), p(40, 0), p(40, 10), p(0, 10)], { height: 12, base: 8 });
+  const group = createBuildingFootprints({}, [b], undefined, null, { groundAt: (x) => slope(x) });
+  const attrs = group.children[0].geometry.attributes;
+  const top = 8.22 + 12;
+  let foot = 0, shops = 0, fronts = 0;
+  for (let i = 0; i < attrs.position.array.length / 3; i++) {
+    const x = attrs.position.array[i * 3], y = attrs.position.array[i * 3 + 1];
+    const fromTop = attrs.facadeWall.array[i * 3 + 1], kind = attrs.facadeWall.array[i * 3 + 2];
+    if (attrs.normal.array[i * 3 + 1] > 0.5) continue; // the roof
+    close(y + fromTop, top); // height on the wall and distance below its top always agree
+    if (kind >= 4) {
+      if (y < 8.22 - 1e-6) { foot++; close(y, slope(x) - 0.3); }
+    } else {
+      assert.ok(y >= 8.22 - 1e-6, 'nothing but the stone goes below the floor');
+      if (kind === 0) shops++;
+      if (kind === 1) fronts++;
+    }
+  }
+  assert.ok(foot > 8, 'the foot of the wall follows the ground');
+  assert.ok(shops > 0 && fronts > 0, 'shopfronts only where the wall meets the pavement');
+});
+
+test('a storey of windows only fits where the wall stands that far clear of the ground', () => {
+  const b = record([p(0, 0), p(40, 0), p(40, 10), p(0, 10)], { height: 12, base: 8 });
+  const group = createBuildingFootprints({}, [b], undefined, null, { groundAt: (x) => x * 0.2, storey: { width: 2.5, height: 3.5 } });
+  const kinds = Array.from(group.children[0].geometry.attributes.facadeWall.array).filter((_, i) => i % 3 === 2).filter((k) => k >= 4);
+  const clear = kinds.map((k) => k - 4);
+  assert.ok(Math.max(...clear) > 7 && Math.min(...clear) < 1, `clearances ${Math.min(...clear)} to ${Math.max(...clear)}`);
 });

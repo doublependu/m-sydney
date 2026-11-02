@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
-import { color, smoothstep } from 'three/tsl';
+import { abs, color, float, floor, fract, max, mix, mod, normalWorld, positionWorld, smoothstep } from 'three/tsl';
 import { GroundCells, offsetLine } from './ground-geometry.js';
-import { DECK_DEPTH, KIND, LINKS, STRUCTURES, TUNNEL_HEIGHT, groundHeight, onGroundRoad, tunnelCovered } from './surfaces.js';
+import { DECK_DEPTH, DECK_STRUCTURE, KIND, LINKS, STRUCTURES, TUNNEL_HEIGHT, groundHeight, onGroundRoad, tunnelCovered } from './surfaces.js';
 import { bridgeAt } from './bridge.js';
 import { cityUniforms } from './tsl-materials.js';
 
@@ -45,15 +45,34 @@ function strip(cells, c, rowA, rowB, normalOf, flip = false) {
   }
 }
 
-function* buildStructures(group, roadMat) {
-  const deck = new GroundCells(); // road surfaces
-  const concrete = new GroundCells(); // barriers, walls, soffits, tunnel linings
+// Soffits and decks in concrete; the walls of viaducts, cuttings and tunnel approaches in sandstone blocks, as along the
+// Bradfield Highway and through the Warringah Freeway's cuttings. One for all the tiles.
+let concreteMat = null, lampMat = null;
+function structureMaterials() {
+  if (concreteMat) return;
+  concreteMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.9 });
+  const courses = positionWorld.y.div(0.75);
+  const blocks = positionWorld.x.add(positionWorld.z).div(1.6).add(mod(floor(courses), 2).mul(0.5));
+  const joints = max(smoothstep(0.43, 0.5, abs(fract(courses).sub(0.5))), smoothstep(0.46, 0.5, abs(fract(blocks).sub(0.5))));
+  const wall = float(1).sub(smoothstep(0.3, 0.6, abs(normalWorld.y)));
+  concreteMat.colorNode = mix(color(0x8b8a84), mix(color(0xa8946f), color(0x7a6a4e), joints.mul(0.8)), wall);
+  // Strip lights along the tunnel ceilings, brighter after dark like the street lights
+  lampMat = new THREE.MeshStandardNodeMaterial({ color: 0x222222, roughness: 0.6 });
+  lampMat.emissiveNode = color(0xfff1d0).mul(smoothstep(0.0, 1.0, cityUniforms.uInteriorGlow).mul(1.5).add(1.2));
+}
+
+// `links`: the structure links to build. `touching`: every link near them, for the joints between them; `wanted` says which
+// joints are this call's to build.
+function* buildStructures(group, roadMat, links = LINKS, touching = links, wanted = () => true) {
+  structureMaterials();
+  const deck = new GroundCells(1e6); // road surfaces
+  const concrete = new GroundCells(1e6); // barriers, walls, soffits, tunnel linings
   const piers = [];
   const lights = [];
   const colliders = [];
-  const deckSid = LINKS.find((l) => l.deck)?.sid ?? 0;
+  const deckSid = DECK_STRUCTURE;
 
-  for (const link of LINKS) {
+  for (const link of links) {
     if (!link.kind || link.deck) continue;
     yield;
     let st = stations(link);
@@ -155,7 +174,7 @@ function* buildStructures(group, roadMat) {
   // Joints between structure links: a disc at the node's height, so two decks meeting at an angle leave no gap
   {
     const ends = new Map();
-    for (const link of LINKS) {
+    for (const link of touching) {
       if (!link.kind || link.deck) continue;
       for (const [n, p] of [[link.a, link.pts[0]], [link.b, link.pts[link.pts.length - 1]]]) {
         const e = ends.get(n) || { x: p.x, z: p.z, y: p.y, r: 0, count: 0, kind: link.kind };
@@ -165,7 +184,7 @@ function* buildStructures(group, roadMat) {
       }
     }
     for (const e of ends.values()) {
-      if (e.count < 2 || e.kind !== KIND.BRIDGE) continue;
+      if (e.count < 2 || e.kind !== KIND.BRIDGE || !wanted(e.x, e.z)) continue;
       const c = deck.cell(e.x, e.z);
       const centre = deck.vertex(c, e.x, e.y, e.z, 0, 1, 0);
       const R = 16;
@@ -195,7 +214,6 @@ function* buildStructures(group, roadMat) {
     }
   };
   build(deck, roadMat, false);
-  const concreteMat = new THREE.MeshStandardNodeMaterial({ color: 0x8b8a84, roughness: 0.9 });
   build(concrete, concreteMat, true);
   if (piers.length) {
     const inst = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, 10).translate(0, 0.5, 0), concreteMat, piers.length);
@@ -208,10 +226,7 @@ function* buildStructures(group, roadMat) {
     group.add(inst);
   }
   if (lights.length) {
-    // Strip lights along the tunnel ceilings, brighter after dark like the street lights
-    const lamp = new THREE.MeshStandardNodeMaterial({ color: 0x222222, roughness: 0.6 });
-    lamp.emissiveNode = color(0xfff1d0).mul(smoothstep(0.0, 1.0, cityUniforms.uInteriorGlow).mul(1.5).add(1.2));
-    const inst = new THREE.InstancedMesh(new THREE.BoxGeometry(0.5, 0.12, 2.4), lamp, lights.length);
+    const inst = new THREE.InstancedMesh(new THREE.BoxGeometry(0.5, 0.12, 2.4), lampMat, lights.length);
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
     lights.forEach(([x, y, z, h], i) => inst.setMatrixAt(i, m.compose(new THREE.Vector3(x, y, z), q.setFromAxisAngle(up, h), new THREE.Vector3(1, 1, 1))));
     inst.instanceMatrix.needsUpdate = true;

@@ -8,7 +8,7 @@ import zlib from 'node:zlib';
 import { DATA, inDetail, load, toWorld } from './geo-common.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
-const OUT = process.argv[2] || path.join(ROOT, 'js/tree-geodata.js');
+const OUT = process.argv[2] || path.join(ROOT, 'tools/data/generated/tree-geodata.js');
 
 // Species classes, one silhouette each in js/trees.js
 const CLASS = { broadleaf: 0, small: 1, gum: 2, fig: 3, palm: 4, jacaranda: 5 };

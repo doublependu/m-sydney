@@ -1,5 +1,8 @@
 import { createSynthResources, createMotorVoice, setControlRate } from './audio-synthesis.js';
 import { createEventResources, playEvent, createWindVoice } from './audio-events.js';
+
+// Sounds are worked out before there's an audio context to ask: the browser resamples them if its rate is different
+const SOUND_RATE = 48000;
 import { CityAudioSources } from './audio-sources.js';
 import { CityAcoustics } from './audio-acoustics.js';
 
@@ -154,7 +157,6 @@ class CityAudioSystem {
       listener.forwardX, listener.forwardY, listener.forwardZ,
       listener.upX, listener.upY, listener.upZ
     );
-    this.resources = createEventResources(context, createSynthResources(context));
     this.mix = context.createGain();
     this.compressor = context.createDynamicsCompressor();
     this.compressor.threshold.value = -16;
@@ -169,15 +171,69 @@ class CityAudioSystem {
     this.reflections.gain.value = 0.02;
     this.reverb = context.createConvolver();
     this.reverb.normalize = false;
-    this.reverb.buffer = this.resources.impulse;
     this.reflectionFilter = context.createBiquadFilter();
     setControlRate(this.reflectionFilter.frequency, this.reflectionFilter.detune, this.reflectionFilter.Q, this.reflectionFilter.gain);
     this.reflectionFilter.type = 'lowpass';
     this.reflectionFilter.frequency.value = 2400;
     this.reflectionFilter.Q.value = 0.5;
     this.reflections.connect(this.reverb).connect(this.reflectionFilter).connect(this.mix);
-    this.wind = createWindVoice(context, this.resources, this.mix);
     context.onstatechange = () => this.onStateChange();
+    this.attachSounds();
+  }
+
+  /**
+   * Starts working out the sounds on another thread (js/audio-worker.js), so they're there by the time they're wanted. Until
+   * then the game is silent, and doesn't wait for them.
+   */
+  prepareSounds() {
+    if (this.sounds || this.preparing || !this.supported) return;
+    this.preparing = true;
+    const onThisThread = () => {
+      this.preparing = false;
+      this.bakeHere = true;
+      this.attachSounds();
+    };
+    import('./audio-worker.js?worker&inline').then(({ default: AudioWorker }) => {
+      const worker = new AudioWorker();
+      worker.onerror = () => {
+        worker.terminate();
+        onThisThread();
+      };
+      worker.onmessage = ({ data }) => {
+        worker.terminate();
+        this.sounds = data;
+        this.preparing = false;
+        this.attachSounds();
+      };
+      worker.postMessage({ sampleRate: SOUND_RATE });
+    }).catch(onThisThread);
+  }
+
+  // Once there are both sounds and somewhere to play them
+  attachSounds() {
+    const context = this.context;
+    if (!context || this.resources) return;
+    if (this.bakeHere) this.resources = createEventResources(context, createSynthResources(context));
+    else if (this.sounds) {
+      const unpack = (value) => {
+        if (value?.channels) {
+          const buffer = context.createBuffer(value.channels.length, value.channels[0].length, value.sampleRate);
+          value.channels.forEach((samples, i) => buffer.copyToChannel(samples, i));
+          return buffer;
+        }
+        if (value?.waveArgs) return context.createPeriodicWave(...value.waveArgs);
+        if (Array.isArray(value)) return value.map(unpack);
+        if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, unpack(v)]));
+        return value;
+      };
+      this.resources = unpack(this.sounds);
+      this.sounds = null;
+    } else {
+      this.prepareSounds();
+      return;
+    }
+    this.reverb.buffer = this.resources.impulse;
+    this.wind = createWindVoice(context, this.resources, this.mix);
   }
 
   setEnabled(enabled) {
@@ -355,7 +411,7 @@ class CityAudioSystem {
   }
 
   crash(impact) {
-    if (!this.ready || !this.enabled || !this.haveListener || this.context?.state !== 'running' || document.hidden) return false;
+    if (!this.ready || !this.resources || !this.enabled || !this.haveListener || this.context?.state !== 'running' || document.hidden) return false;
     const { a, b, x, y, z, speed } = impact;
     if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || a === b
       || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) || !Number.isFinite(speed) || speed <= 0.5) return false;
@@ -397,14 +453,14 @@ class CityAudioSystem {
   }
 
   honk(entity) {
-    if (!this.ready || !this.enabled || this.context?.state !== 'running' || entity?.type !== 'car') return;
+    if (!this.ready || !this.resources || !this.enabled || this.context?.state !== 'running' || entity?.type !== 'car') return;
     const now = this.context.currentTime;
     if (now - this.lastHorn < 0.8) return;
     if (this.emit('horn', { id: entity, ...entity.position, heading: entity.heading, seed: 4 }, { intensity: 0.7 })) this.lastHorn = now;
   }
 
   update(dt, elapsed, camera, night = false) {
-    if (!this.ready || !this.enabled || this.context?.state !== 'running' || document.hidden) return;
+    if (!this.ready || !this.resources || !this.enabled || this.context?.state !== 'running' || document.hidden) return;
     this.accumulator += dt;
     if (this.accumulator < 0.1) return;
     dt = Math.min(this.accumulator, 0.25);

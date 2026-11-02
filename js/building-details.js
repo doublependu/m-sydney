@@ -28,7 +28,7 @@ function containsBox(polygon, x, z, w, d, cs, sn) {
   return true;
 }
 
-function addBuildingDetails(b, detail, { masonry, rand, neighbours }) {
+function addBuildingDetails(b, detail, { masonry, rand, neighbours, groundAt = null }) {
   const roofY = b.height + 0.22;
   const streetReserves = [];
   const edges = b.polygons.flatMap((polygon) => polygon.outer.map((a, i, ring) => {
@@ -84,6 +84,8 @@ function addBuildingDetails(b, detail, { masonry, rand, neighbours }) {
     }
   }
 
+  // Up on a podium there's no street, and a building fronted by a real awning has that instead (js/street-details.js)
+  if (b.bottom) return streetReserves;
   let count = 0;
   for (const e of edges) {
     const segments = Math.floor(e.length / 10);
@@ -91,6 +93,8 @@ function addBuildingDetails(b, detail, { masonry, rand, neighbours }) {
       if (rand() > 0.22) continue;
       const u = ((i + 0.5) / segments - 0.5) * e.length, d = Math.min(8.5, e.length / segments - 1.6);
       const x = e.x - e.nz * u, z = e.z + e.nx * u, cs = e.nx, sn = -e.nz;
+      // Street-front details belong where the wall meets the pavement, not up on the stone base of a sloping street
+      if (groundAt && b.base - groundAt(x + e.nx * 1.5, z + e.nz * 1.5) > 1) continue;
       // Keep storefronts out of courtyards and away from neighbouring walls or fire escapes.
       if (blocked(x + e.nx * 2.65, z + e.nz * 2.65, 5.2, d + 0.4, cs, sn)) continue;
       const ry = Math.atan2(sn, cs);
@@ -99,7 +103,7 @@ function addBuildingDetails(b, detail, { masonry, rand, neighbours }) {
         item = { x: x + e.nx * 2, y: 0.22, z: z + e.nz * 2, w: 3.8, d, ry };
         detail.scaffoldSheds.push(item);
       } else {
-        if (!b.storefronts) continue;
+        if (!b.storefronts || b.realAwning) continue;
         item = { x: x + e.nx, y: 3.8, z: z + e.nz, w: 1.8, d, colorIdx: Math.floor(rand() * 5), ry };
         detail.awnings.push(item);
       }

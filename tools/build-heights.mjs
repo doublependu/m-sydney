@@ -41,7 +41,7 @@ addLines(load('nsw_contours.json'), (p) => p.elevation, false, 14);
 console.log('[heights] contour buckets', buckets.size);
 
 // Water pulls the height to sea level at the shore
-const { GEO } = await import('../js/geodata.js');
+const { GEO } = await import('./data/generated/geodata.js');
 const land = new Raster(x0, z0, x1, z1, cell);
 for (const rings of GEO.surroundings) rings.forEach((flat, i) => { const ring = []; for (let k = 0; k < flat.length; k += 2) ring.push([flat[k], flat[k + 1]]); land.fillRing(ring, i ? 0 : 1); });
 for (const rings of GEO.shores) rings.forEach((flat, i) => { const ring = []; for (let k = 0; k < flat.length; k += 2) ring.push([flat[k], flat[k + 1]]); land.fillRing(ring, i ? 0 : 1); });
@@ -135,7 +135,7 @@ for (let j = 0; j < h; j++) {
   }
 }
 const packed = zlib.gzipSync(Buffer.from(out), { level: 9 });
-fs.writeFileSync(path.join(ROOT, 'js/height-grid.bin.gz'), packed);
+fs.writeFileSync(path.join(ROOT, 'tools/data/generated/height-grid.bin.gz'), packed);
 const probe = (x, z) => smooth[Math.round((z - z0) / cell) * w + Math.round((x - x0) / cell)].toFixed(1);
 console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.entries({ quay: [174, -1357], townHall: [0, 0], hyde: [520, 100], central: [92, 1118], kingsCross: [1504, 1], taylor: [1200, 700], northSydney: [-502, -3636], milsons: [-60, -2780], obs: [-360, -1600], darling: [-430, 100] }).map(([k, [x, z]]) => `${k} ${probe(x, z)}`).join(', '));
 
@@ -563,10 +563,10 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
   }
   console.log(`[heights] roads: ${structures.length} structure links, ${cuttings} streets sunk into cuttings, ${samples.length} samples, ${short} short of their clearance`);
 
-  const src = fs.readFileSync(path.join(ROOT, 'js/geodata.js'), 'utf8');
+  const src = fs.readFileSync(path.join(ROOT, 'tools/data/generated/geodata.js'), 'utf8');
   const head = src.slice(0, src.indexOf('export const GEO = '));
   // A string for JSON.parse, as tools/build-geodata.mjs writes it
   const text = JSON.stringify(GEO).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-  fs.writeFileSync(path.join(ROOT, 'js/geodata.js'), `${head}export const GEO = JSON.parse('${text}');\n`);
-  console.log('[heights] road profiles written into js/geodata.js');
+  fs.writeFileSync(path.join(ROOT, 'tools/data/generated/geodata.js'), `${head}export const GEO = JSON.parse('${text}');\n`);
+  console.log('[heights] road profiles written into the generated geodata');
 }

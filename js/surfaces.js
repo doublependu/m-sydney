@@ -1,4 +1,4 @@
-import { GEO } from './geodata.js';
+import { GEO, onMap } from './geodata.js';
 import { terrainHeight, terrainSlope } from './terrain.js';
 import { landAt } from './city-config.js';
 
@@ -28,8 +28,15 @@ const RG = GEO.roadGraph;
 const N = RG.nodes;
 
 // --- Links with their heights --------------------------------------------------------------------------------------
-const LINKS = RG.links.map((l, id) => {
-  const [a, b, ni, width, lanes, dir, inner, major, deck, kind = 0, layer = 0, flags = 0, ys = null] = l;
+// The links of the tiles held. A link's structure and where a tunnel opens are worked out with the whole map, when the
+// tiles are made (tools/build-tiles.mjs).
+const LINKS = [];
+const linkById = new Map();
+const STRUCTURES = GEO.structures.map((s, id) => (s ? { id, links: [], kind: s[0], deck: !!s[1], motorway: !!s[2] } : null));
+const DECK_STRUCTURE = STRUCTURES.find((s) => s?.deck)?.id ?? 0; // the Harbour Bridge's
+
+function linkFromRecord(l) {
+  const [a, b, ni, width, lanes, dir, inner, major, deck, kind = 0, layer = 0, flags = 0, ys = null, sid = 0, openA = 0, openB = 0, length = 0] = l;
   const pts = [{ x: N[a * 2], z: N[a * 2 + 1] }];
   for (let k = 0; k < inner.length; k += 2) pts.push({ x: inner[k], z: inner[k + 1] });
   pts.push({ x: N[b * 2], z: N[b * 2 + 1] });
@@ -38,40 +45,10 @@ const LINKS = RG.links.map((l, id) => {
   // A street sunk into a cutting is on the ground (the ground follows it down), with heights of its own
   const cut = kind === KIND.CUTTING && !!ys;
   return {
-    id, a, b, name: RG.names[ni], width, lanes, dir, major: !!major, deck: !!deck, kind: cut ? KIND.GROUND : kind && ys ? kind : 0,
-    cut, layer, motorway: !!(flags & 1), pts, sid: 0, half: deck ? DECK_HALF : width / 2 + 0.6
+    id: l.id, a, b, name: RG.names[ni], width, lanes, dir, major: !!major, deck: !!deck, kind: cut ? KIND.GROUND : kind && ys ? kind : 0,
+    cut, layer, motorway: !!(flags & 1), pts, sid, half: deck ? DECK_HALF : width / 2 + 0.6, openA, openB, length
   };
-});
-
-// Structures: links off the ground, joined where they share a node
-const STRUCTURES = [null];
-{
-  const parent = new Map();
-  const find = (n) => {
-    let r = n;
-    while (parent.get(r) !== r) r = parent.get(r);
-    return r;
-  };
-  for (const l of LINKS) if (l.kind) { if (!parent.has(l.a)) parent.set(l.a, l.a); if (!parent.has(l.b)) parent.set(l.b, l.b); }
-  for (const l of LINKS) if (l.kind) parent.set(find(l.a), find(l.b));
-  const ids = new Map();
-  for (const l of LINKS) {
-    if (!l.kind) continue;
-    const root = find(l.a);
-    if (!ids.has(root)) {
-      ids.set(root, STRUCTURES.length);
-      STRUCTURES.push({ id: STRUCTURES.length, links: [], kind: l.kind, deck: false, motorway: false });
-    }
-    const s = STRUCTURES[ids.get(root)];
-    l.sid = s.id;
-    s.links.push(l);
-    s.deck ||= l.deck;
-    s.motorway ||= l.motorway;
-    if (l.kind === KIND.TUNNEL) s.kind = KIND.TUNNEL;
-  }
 }
-
-const DECK_STRUCTURE = LINKS.find((l) => l.deck)?.sid ?? 0; // the Harbour Bridge's
 
 // --- Spatial index of every link segment ---------------------------------------------------------------------------
 const segCells = new Map();
@@ -79,37 +56,105 @@ const lowCells = new Map(); // segments of structures low over the ground
 const cutCells = new Map(); // segments of streets sunk into cuttings
 const SEGMENTS = [];
 let onCutRoad = false; // set by cutGround()
-const addToCells = (cells, seg, pad) => {
+const addToCells = (cells, seg, pad, added) => {
   for (let ix = Math.floor((Math.min(seg.ax, seg.bx) - pad) / CELL); ix <= Math.floor((Math.max(seg.ax, seg.bx) + pad) / CELL); ix++) {
     for (let iz = Math.floor((Math.min(seg.az, seg.bz) - pad) / CELL); iz <= Math.floor((Math.max(seg.az, seg.bz) + pad) / CELL); iz++) {
       const k = ix * 100000 + iz;
       let list = cells.get(k);
       if (!list) cells.set(k, (list = []));
       list.push(seg);
+      added?.push(cells, k, seg);
     }
   }
 };
-for (const l of LINKS) {
+
+// Each link's entries in the cells, to take them out again
+const placed = new Map();
+function placeLink(l) {
+  const added = [];
+  const segs = [];
   let s0 = 0;
   for (let i = 1; i < l.pts.length; i++) {
     const p = l.pts[i - 1], q = l.pts[i];
     const len = Math.hypot(q.x - p.x, q.z - p.z);
     if (len < 1e-6) continue;
     const seg = { link: l, ax: p.x, az: p.z, ay: p.y, bx: q.x, bz: q.z, by: q.y, len, ux: (q.x - p.x) / len, uz: (q.z - p.z) / len, s0 };
+    segs.push(seg);
     SEGMENTS.push(seg);
-    addToCells(segCells, seg, l.half + 2);
-    if (l.cut) addToCells(cutCells, seg, l.half + 1 + CUT_SLOPE);
+    addToCells(segCells, seg, l.half + 2, added);
+    if (l.cut) addToCells(cutCells, seg, l.half + 1 + CUT_SLOPE, added);
     // Where the ground would show through a low deck, or close over a tunnel's cutting, it's lowered (groundHeight)
-    if (l.kind === KIND.BRIDGE && Math.min(p.y - terrainHeight(p.x, p.z), q.y - terrainHeight(q.x, q.z)) < LOW_DECK) addToCells(lowCells, seg, l.half + 1);
+    if (l.kind === KIND.BRIDGE && Math.min(p.y - terrainHeight(p.x, p.z), q.y - terrainHeight(q.x, q.z)) < LOW_DECK) addToCells(lowCells, seg, l.half + 1, added);
+    if (l.kind === KIND.TUNNEL && (seg.s0 < l.openA || seg.s0 + seg.len > l.length - l.openB)) addToCells(lowCells, seg, l.half + 1, added);
     s0 += len;
+  }
+  placed.set(l.id, { added, segs });
+}
+function unplaceLink(l) {
+  const { added, segs } = placed.get(l.id);
+  placed.delete(l.id);
+  for (let i = 0; i < added.length; i += 3) {
+    const cells = added[i], list = cells.get(added[i + 1]);
+    const at = list.lastIndexOf(added[i + 2]);
+    if (at >= 0) {
+      list[at] = list[list.length - 1];
+      list.pop();
+    }
+    if (!list.length) cells.delete(added[i + 1]);
+  }
+  const gone = new Set(segs);
+  for (let i = SEGMENTS.length - 1; i >= 0 && gone.size; i--) {
+    if (!gone.has(SEGMENTS[i])) continue;
+    gone.delete(SEGMENTS[i]);
+    SEGMENTS[i] = SEGMENTS[SEGMENTS.length - 1];
+    SEGMENTS.pop();
   }
 }
 
+onMap({
+  addLink(record) {
+    const link = linkFromRecord(record);
+    link.slot = LINKS.length;
+    LINKS.push(link);
+    linkById.set(link.id, link);
+    placeLink(link);
+    if (link.sid) STRUCTURES[link.sid].links.push(link);
+  },
+  removeLink(record) {
+    const link = linkById.get(record.id);
+    unplaceLink(link);
+    linkById.delete(link.id);
+    const last = LINKS.pop();
+    if (last !== link) {
+      LINKS[link.slot] = last;
+      last.slot = link.slot;
+    }
+    if (link.sid) {
+      const list = STRUCTURES[link.sid].links;
+      list.splice(list.indexOf(link), 1);
+    }
+  }
+});
+
 // --- Tunnels ---------------------------------------------------------------------------------------------------------
-// Open at an end where it reaches the surface, for as long as the ground hasn't closed over it, and a tube everywhere
-// else. Never open in the middle: a street's cutting that passes over a deeper tunnel leaves that tunnel less cover, not
-// a hole in the street. A link wholly open passes the opening on to the links after it.
-{
+/** Whether a tunnel link is under cover `s` metres along it */
+function tunnelCovered(link, s) {
+  return s >= link.openA && s <= link.length - link.openB;
+}
+
+// Tunnel mouths: where each tunnel's cutting closes over, facing into the tunnel, with the length of open cutting outside
+// it and how the road climbs along that. The ground is a lattice, which can't step from the cutting's floor up to the
+// ground over the tube in no distance: its slope would close the mouth, so the ground's materials leave out what falls
+// inside one (js/tunnel-mouths.js)
+const PORTALS = GEO.portals;
+
+/**
+ * Open at an end where it reaches the surface, for as long as the ground hasn't closed over it, and a tube everywhere else.
+ * Never open in the middle: a street's cutting that passes over a deeper tunnel leaves that tunnel less cover, not a hole in
+ * the street. A link wholly open passes the opening on to the links after it. Run once with the whole map, when the tiles
+ * are made (tools/tiles/derive.mjs): the game reads the results off each link.
+ */
+function deriveTunnels() {
   const linksAt = new Map();
   for (const l of LINKS) for (const n of [l.a, l.b]) (linksAt.get(n) || linksAt.set(n, []).get(n)).push(l);
   const lengthOf = (l) => l.pts.reduce((sum, p, i) => (i ? sum + Math.hypot(p.x - l.pts[i - 1].x, p.z - l.pts[i - 1].z) : 0), 0);
@@ -159,37 +204,28 @@ for (const l of LINKS) {
     const l = seg.link;
     if (l.kind === KIND.TUNNEL && (seg.s0 < l.openA || seg.s0 + seg.len > l.length - l.openB)) addToCells(lowCells, seg, l.half + 1);
   }
-}
-
-/** Whether a tunnel link is under cover `s` metres along it */
-function tunnelCovered(link, s) {
-  return s >= link.openA && s <= link.length - link.openB;
-}
-
-// Tunnel mouths: where each tunnel's cutting closes over, facing into the tunnel, with the length of open cutting outside
-// it and how the road climbs along that. The ground is a lattice, which can't step from the cutting's floor up to the
-// ground over the tube in no distance: its slope would close the mouth, so the ground's materials leave out what falls
-// inside one (js/tunnel-mouths.js)
-const PORTALS = [];
-for (const l of LINKS) {
-  if (l.kind !== KIND.TUNNEL || l.openA + l.openB >= l.length) continue;
-  for (const [open, pts] of [[l.openA, l.pts], [l.openB, [...l.pts].reverse()]]) {
-    if (!open) continue;
-    let s = 0;
-    for (let i = 1; i < pts.length; i++) {
-      const p = pts[i - 1], q = pts[i], L = Math.hypot(q.x - p.x, q.z - p.z);
-      if (L < 1e-6) continue;
-      if (s + L >= open) {
-        const t = (open - s) / L, y = p.y + (q.y - p.y) * t;
-        PORTALS.push({
-          x: p.x + (q.x - p.x) * t, z: p.z + (q.z - p.z) * t, y, ux: (q.x - p.x) / L, uz: (q.z - p.z) / L,
-          half: l.half + 0.3, open, rise: (y - pts[0].y) / open
-        });
-        break;
+  const portals = [];
+  for (const l of LINKS) {
+    if (l.kind !== KIND.TUNNEL || l.openA + l.openB >= l.length) continue;
+    for (const [open, pts] of [[l.openA, l.pts], [l.openB, [...l.pts].reverse()]]) {
+      if (!open) continue;
+      let s = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const p = pts[i - 1], q = pts[i], L = Math.hypot(q.x - p.x, q.z - p.z);
+        if (L < 1e-6) continue;
+        if (s + L >= open) {
+          const t = (open - s) / L, y = p.y + (q.y - p.y) * t;
+          portals.push({
+            x: p.x + (q.x - p.x) * t, z: p.z + (q.z - p.z) * t, y, ux: (q.x - p.x) / L, uz: (q.z - p.z) / L,
+            half: l.half + 0.3, open, rise: (y - pts[0].y) / open
+          });
+          break;
+        }
+        s += L;
       }
-      s += L;
     }
   }
+  return { tunnels: Object.fromEntries(tunnels.map((l) => [l.id, [l.openA, l.openB, l.length]])), portals };
 }
 
 // Where (x, z) falls on a segment: the distance along it (t, 0-1), across it (off, to the right of travel) and from it
@@ -383,7 +419,7 @@ function ceilingOver(sid, y, x, z) {
 
 /** Height at (x, z) on a road-network edge's own road: its own link of a structure, or its road on the ground */
 function edgeHeight(edge, x, z) {
-  const link = edge && LINKS[edge.link];
+  const link = edge && linkById.get(edge.link);
   if (!link) return edge?.sid ? surfaceHeight(edge.sid, x, z) : groundHeight(x, z);
   if (!link.kind) return roadHeight(link, x, z);
   let best = null;
@@ -409,7 +445,9 @@ function surfaceHeight(sid, x, z, near = null) {
     if (best !== null) return best;
   }
   const here = structureAt(sid, x, z, 40);
-  return here ? here.y : groundHeight(x, z);
+  if (here) return here.y;
+  // Its road isn't held yet, or is gone: the level it was on, not the ground far below
+  return near ?? groundHeight(x, z);
 }
 
 /** Rise per metre of surface `sid` at (x, z), heading along (sin, cos) */
@@ -526,7 +564,7 @@ function roadRoute(waypoints, step = 8) {
 }
 
 export {
-  DECK_DEPTH, DECK_HALF, KIND, LINKS, PORTALS, SAME_LEVEL, SEGMENTS, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
+  DECK_DEPTH, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, deriveTunnels, linkById, SAME_LEVEL, SEGMENTS, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
   edgeHeight, floorBelow, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, roadHeight, roadRoute, sameLevel,
   structureAt, structuresAt, surfaceHeight, surfaceSlope, tunnelCovered
 };

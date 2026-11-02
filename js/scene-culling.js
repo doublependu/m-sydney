@@ -137,6 +137,9 @@ function replaceWithChunks(mesh, cell) {
   const parent = mesh.parent;
   const chunks = chunkInstancedMesh(mesh, cell);
   parent.remove(mesh);
+  mesh.dispose(); // or three.js holds on to it, having compiled it once
+  // Its geometry goes when they do: they share its buffers (disposeStage() in js/main.js)
+  if (chunks.length && !mesh.geometry.userData.shared) chunks[0].userData.replacedGeometry = mesh.geometry;
   chunks.forEach((chunk, k) => {
     parent.add(chunk);
     // Shader precompile: every chunk shares the first chunk's pipeline (main.js).
@@ -153,6 +156,10 @@ function replaceWithChunks(mesh, cell) {
 function* setupSceneCullingSteps(scene, roots, shadow = null, storageInstancing = false) {
   scene.updateMatrixWorld(true);
   const culled = [];
+  const proxies = [];
+  // Added to the frame's list now: the far bits of a big stage stop drawing as soon as they're chunked
+  const handle = { culled, proxies };
+  state.handles.add(handle);
 
   // 1. Small props & pre-chunked decals: chunked & distance culled
   const chunkable = [];
@@ -216,7 +223,6 @@ function* setupSceneCullingSteps(scene, roots, shadow = null, storageInstancing 
   if (cams.length) {
     const instancedBySig = new Map(); // geometry signature + face side -> { geometry, material, cells: Map(key -> [matrices]) }
     const triCells = new Map(); // face side -> Map(key -> number[] world positions)
-    const proxyMaterials = new Map();
     const proxyMaterial = (side) => {
       let m = proxyMaterials.get(side);
       if (!m) {
@@ -322,6 +328,7 @@ function* setupSceneCullingSteps(scene, roots, shadow = null, storageInstancing 
       if (firstProxy.has(kind)) mesh.userData.sharesPipelineWith = firstProxy.get(kind);
       else firstProxy.set(kind, mesh);
       scene.add(mesh);
+      proxies.push(mesh);
     };
     for (const entry of instancedBySig.values()) {
       for (const list of entry.cells.values()) {
@@ -353,7 +360,20 @@ function* setupSceneCullingSteps(scene, roots, shadow = null, storageInstancing 
     yield;
   }
 
-  state.culled = culled;
+  return handle;
+}
+
+/** Takes what setupSceneCullingSteps() made back out: its stand-ins go, and its meshes are no longer looked at */
+function removeSceneCulling(handle) {
+  if (!handle) return;
+  state.handles.delete(handle);
+  for (const mesh of handle.proxies) {
+    mesh.removeFromParent();
+    // Lets three.js forget how it drew this one: it holds on to it otherwise, through the material they all share
+    if (mesh.isInstancedMesh) mesh.dispose();
+    else mesh.dispatchEvent({ type: 'dispose' });
+    mesh.geometry.dispose();
+  }
 }
 
 function setupSceneCulling(scene, roots, shadow = null) {
@@ -362,7 +382,9 @@ function setupSceneCulling(scene, roots, shadow = null) {
   while (!step.done) step = job.next();
 }
 
-const state = { culled: [], distanceScale: 1 };
+const state = { handles: new Set(), distanceScale: 1 };
+// One per face side, for every stage: stand-ins share their shader
+const proxyMaterials = new Map();
 
 function setDrawDistance(scale) {
   state.distanceScale = scale;
@@ -372,12 +394,14 @@ function setDrawDistance(scale) {
 function updateSceneCulling(cameraPosition) {
   const { x, y, z } = cameraPosition;
   const scaleSq = state.distanceScale * state.distanceScale;
-  for (const c of state.culled) {
-    const dx = c.x - x;
-    const dy = c.y - y;
-    const dz = c.z - z;
-    c.mesh.visible = dx * dx + dy * dy + dz * dz < c.maxDistSq * scaleSq;
+  for (const handle of state.handles) {
+    for (const c of handle.culled) {
+      const dx = c.x - x;
+      const dy = c.y - y;
+      const dz = c.z - z;
+      c.mesh.visible = dx * dx + dy * dy + dz * dz < c.maxDistSq * scaleSq;
+    }
   }
 }
 
-export { setDrawDistance, setupSceneCulling, setupSceneCullingSteps, updateSceneCulling, SHADOW_PROXY_LAYER };
+export { removeSceneCulling, setDrawDistance, setupSceneCulling, setupSceneCullingSteps, updateSceneCulling, SHADOW_PROXY_LAYER };

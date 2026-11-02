@@ -20,7 +20,8 @@ import { PersonCrowd, PersonRig } from './pedestrians.js';
 import { HEADLIGHTS, createVehicleHeadlight, placeVehicleHeadlight } from './vehicle-lights.js';
 import { polygonContact, polygonContains } from './building-collision.js';
 import { DECK_SID } from './bridge.js';
-import { chooseSurface, structureAt, surfaceHeight } from './surfaces.js';
+import { FLY, arrivalFor, holdOnFootway } from './arrivals.js';
+import { chooseSurface, floorBelow, groundHeight, structureAt, surfaceHeight } from './surfaces.js';
 
 // Player models, animation and movement for walking, driving, cycling and flying.
 
@@ -59,6 +60,11 @@ function driveSpeed(speed, throttle, dt, drive) {
   return Math.sign(throttle) * Math.min(Math.max(limit, coasting), coasting + Math.abs(throttle) * acceleration * dt);
 }
 
+// A car or bicycle you left: how close you have to be to get back in it where it is, and to still see it
+const RESUME_PARKED = 30, SHOW_PARKED = 200;
+const FLY_AREA = FLY.AREA;
+const FOOTWAY_RISE = 0.18; // the Harbour Bridge's footway stands this far above its road (js/harbour-bridge.js)
+
 // Walking surface for the player's pedestrian (its rig samples it around its feet)
 const personGround = (controllers, x, z) => controllers.getGroundHeight(x, z, 'person');
 
@@ -77,8 +83,12 @@ function collisionBody(mode, radius, heading, margin = 0) {
 
 // Movement and teleports share exact footprint checks after rejecting distant bounds.
 // Walking/cycling/flying use circles; cars use oriented rectangles.
+// Colliders are flat, in metres above the ground at (x, z). A building's roof is level and the ground under it isn't, so
+// where the flat height of its roof is depends on where you are over it.
+const colliderTop = (c, x, z) => (c.baseY === undefined ? c.maxY : c.maxY + c.baseY - groundHeight(x, z));
+
 function buildingContact(c, x, y, z, body, contact) {
-  if (y + body.bottom >= c.maxY || y + body.top <= (c.minY ?? 0)) return false;
+  if (y + body.top <= (c.minY ?? 0) || y + body.bottom >= colliderTop(c, x, z)) return false;
   if (x + body.extX <= c.minX || x - body.extX >= c.maxX || z + body.extZ <= c.minZ || z - body.extZ >= c.maxZ) return false;
   if (c.polygon) return polygonContact(c.polygon, x, z, body, contact);
   const o = c.obb;
@@ -347,21 +357,123 @@ class ThirdPersonControllerManager {
     return this.entities[this.activeMode];
   }
 
+  // Whether (x, z) has room for this mode's body among the buildings: its surface says whether anything of the ground matters
+  spotClear(mode, x, z, heading) {
+    const body = collisionBody(mode, mode === 'helicopter' ? 4.5 : mode === 'person' ? 0.48 : 0.65, heading, 0.1);
+    const baseY = mode === 'helicopter' ? 0 : this.getGroundHeight(x, z, mode);
+    for (const c of this.nearColliders(x, z, Math.max(body.extX, body.extZ))) {
+      if (buildingContact(c, x, baseY, z, body)) return false;
+    }
+    return true;
+  }
+
+  // The roofs around (x, z), as high above sea level as they're drawn, and how far away each is
+  roofsNear(x, z, radius = FLY_AREA) {
+    const out = [];
+    for (const c of this.nearColliders(x, z, radius)) {
+      const dx = x < c.minX ? c.minX - x : x > c.maxX ? x - c.maxX : 0;
+      const dz = z < c.minZ ? c.minZ - z : z > c.maxZ ? z - c.maxZ : 0;
+      const away = Math.hypot(dx, dz);
+      if (away > radius || !(c.maxY > 2.5)) continue;
+      const base = c.baseY ?? groundHeight((c.minX + c.maxX) / 2, (c.minZ + c.maxZ) / 2);
+      out.push({ top: base + c.maxY, away });
+    }
+    return out;
+  }
+
+  // Changing travel mode: the new one starts from where this one is (js/arrivals.js). `blocked(x, z, y)`, if set, says when
+  // a vehicle is there. Returns how far the player moved.
+  switchMode(mode) {
+    if (!this.entities[mode]) return 0;
+    if (mode === this.activeMode) {
+      this.setMode(mode);
+      return 0;
+    }
+    const was = this.getActiveEntity();
+    const flying = this.activeMode === 'helicopter';
+    const y = flying ? was.position.y + groundHeight(was.position.x, was.position.z)
+      : was.surfaceY ?? surfaceHeight(was.surface || 0, was.position.x, was.position.z);
+    const from = { x: was.position.x, z: was.position.z, heading: was.heading, y, surface: was.surface || 0, flying };
+    const next = this.entities[mode];
+
+    // A vehicle left nearby is still there: get back in it where it is
+    let arrival = null;
+    if (next._parked && Math.hypot(next.position.x - from.x, next.position.z - from.z) <= RESUME_PARKED
+      && Math.abs((next.surfaceY ?? 0) - (flying ? floorBelow(from.x, from.z, y) : y)) < 3) {
+      arrival = { x: next.position.x, z: next.position.z, heading: next.heading, surface: next.surface || 0 };
+    } else {
+      arrival = arrivalFor(mode, from, {
+        isClear: (x, z) => this.spotClear(mode, x, z, from.heading) && !this.vehicleAt?.(x, z, y),
+        roofs: (x, z) => this.roofsNear(x, z)
+      });
+    }
+
+    // Stays where it was left, if it's the kind of thing you can leave somewhere
+    if (was.type === 'car' || was.type === 'cyclist') {
+      was._parked = true;
+      was.speed = 0;
+      was.vx = was.vz = 0;
+    }
+    next._parked = false;
+    this.setMode(mode);
+    if (arrival) {
+      this.teleportActiveTo(arrival.x, arrival.z, arrival.heading, arrival.altitude ?? null, arrival.surface || 0, true);
+      next.onFootway = !!arrival.footway;
+      if (arrival.footway) next.position.y = this.getGroundHeight(arrival.x, arrival.z, mode);
+    } else {
+      // Nowhere suitable in reach: straight down or across, as a teleport would
+      this.teleportActiveTo(from.x, from.z, from.heading);
+    }
+    return Math.hypot(next.position.x - from.x, next.position.z - from.z);
+  }
+
+  // The car, if it's parked and showing: traffic goes round it
+  parkedCar() {
+    const car = this.entities.car;
+    return car._parked && car._shown ? car : null;
+  }
+
+  // Only the mode in use is drawn, and a car or bicycle left nearby. Only their meshes hide: a hidden light drops out of the
+  // scene's lights, and that recompiles every material in it.
+  updateVisibility() {
+    const active = this.getActiveEntity();
+    const show = (e, shown) => {
+      if (e._shown === shown) return;
+      e._shown = shown;
+      if (!e._body) {
+        e._body = [];
+        const holdsLight = (o) => {
+          let found = false;
+          o.traverse((child) => { if (child.isLight) found = true; });
+          return found;
+        };
+        e.mesh.traverse?.((o) => { if (o.isMesh && !holdsLight(o)) e._body.push(o); });
+      }
+      for (const mesh of e._body) mesh.visible = shown;
+    };
+    for (const e of Object.values(this.entities)) {
+      if (e.type === 'person') continue; // poseCharacters() has it, with the crowd it's drawn by
+      const near = Math.hypot(e.position.x - active.position.x, e.position.z - active.position.z) <= SHOW_PARKED;
+      show(e, e === active || ((e.type === 'car' || e.type === 'cyclist') && !!e._parked && near));
+    }
+  }
+
   // `surface`: the structure to arrive on (js/surfaces.js), or 0 for the ground under (x, z)
-  teleportActiveTo(x, z, heading = Math.PI, savedAltitude = null, surface = 0) {
+  teleportActiveTo(x, z, heading = Math.PI, savedAltitude = null, surface = 0, exact = false) {
     const ent = this.getActiveEntity();
     this.resetInput();
     if (!Number.isFinite(heading)) heading = ent.heading;
     const heli = this.activeMode === 'helicopter';
     const altitude = heli ? Math.max(0.25, Math.min(380, savedAltitude ?? Math.max(92, ent.position.y))) : 0;
-    const onStructure = !heli && surface && structureAt(surface, x, z)?.inside;
+    const onStructure = !heli && surface && (exact || structureAt(surface, x, z)?.inside);
     // Nothing of the ground is in the way up on a structure; on the ground, a clear spot near (x, z)
-    const destination = onStructure ? { x, z } : this.findTeleportPosition(x, z, heading, altitude);
+    const destination = onStructure || exact ? { x, z } : this.findTeleportPosition(x, z, heading, altitude);
     if (destination) {
       ent.position.x = destination.x;
       ent.position.z = destination.z;
       ent.heading = heading;
       ent.surface = onStructure ? surface : 0;
+      ent.onFootway = false;
       ent.surfaceY = surfaceHeight(ent.surface, destination.x, destination.z);
       ent.deck = !!onStructure && surface === DECK_SID;
       ent.position.landed = { x: destination.x, z: destination.z };
@@ -414,7 +526,7 @@ class ThirdPersonControllerManager {
     const entity = this.getActiveEntity();
     // Conservative body cylinders, including the taxi's corners, bicycle wheels and helicopter tail/rotor.
     const body = { person: [0.48, 1.9], car: [2.4, 1.9], cyclist: [1.0, 1.9], helicopter: [6.2, 3.2] };
-    const others = Object.values(this.entities).filter(e => e !== entity).map(e => ({
+    const others = Object.values(this.entities).filter(e => e !== entity && e._shown !== false).map(e => ({
       x: e.position.x, z: e.position.z, radius: body[e.type][0],
       bottom: e.position.y - (e.type === 'helicopter' ? 0.7 : 0), top: e.position.y + body[e.type][1]
     }));
@@ -507,7 +619,7 @@ class ThirdPersonControllerManager {
     root.add(chassisPivot);
 
     const spec = BODY_SPECS.taxi;
-    const taxiLoftMat = createLoftedCarMaterial(spec, 0xffbe14);
+    const taxiLoftMat = createLoftedCarMaterial(spec, 0xe6e6e0); // Sydney's cabs are white, silver or black, with a small roof light
 
     // 1. 3D Lofted Taxi Body + Curved Windscreens + Crowned Roof + Side Mirrors + Roof Sign
     const carBodyGeo = buildCarGeometry(spec, false);
@@ -866,7 +978,9 @@ class ThirdPersonControllerManager {
   }
 
   getGroundHeight(x, z, mode = 'person') {
-    if (mode === 'person' && !this.getActiveEntity()?.surface) return this.isPointOnSidewalk(x, z) ? CITY_BOUNDS.sidewalkHeight : 0.0;
+    const active = this.getActiveEntity();
+    if (mode === 'person' && active?.onFootway) return FOOTWAY_RISE;
+    if (mode === 'person' && !active?.surface) return this.isPointOnSidewalk(x, z) ? CITY_BOUNDS.sidewalkHeight : 0.0;
     return 0.0;
   }
 
@@ -874,7 +988,29 @@ class ThirdPersonControllerManager {
   addColliders(colliders) {
     for (const c of colliders) {
       this.colliders.push(c);
-      if (this._colliderCells) this._indexCollider(c, this.colliders.length - 1);
+      if (this._colliderCells) this._indexCollider(c, this._nextOrder++);
+    }
+  }
+
+  // ...and goes with it. `colliders` keeps its order, so a building's place among them doesn't change what it hits first.
+  removeColliders(colliders) {
+    if (!colliders.length) return;
+    const gone = new Set(colliders);
+    let n = 0;
+    for (const c of this.colliders) if (!gone.has(c)) this.colliders[n++] = c;
+    this.colliders.length = n;
+    if (!this._colliderCells) return;
+    for (const c of colliders) {
+      for (let ix = Math.floor(c.minX / COLLIDER_CELL); ix <= Math.floor(c.maxX / COLLIDER_CELL); ix++) {
+        for (let iz = Math.floor(c.minZ / COLLIDER_CELL); iz <= Math.floor(c.maxZ / COLLIDER_CELL); iz++) {
+          const k = colliderKey(ix, iz);
+          const list = this._colliderCells.get(k);
+          if (!list) continue;
+          const kept = list.filter((o) => !gone.has(o));
+          if (kept.length) this._colliderCells.set(k, kept);
+          else this._colliderCells.delete(k);
+        }
+      }
     }
   }
 
@@ -897,6 +1033,7 @@ class ThirdPersonControllerManager {
     if (!this._colliderCells) {
       this._colliderCells = new Map();
       this.colliders.forEach((c, i) => this._indexCollider(c, i));
+      this._nextOrder = this.colliders.length;
       this._nearList = [];
       this._nearStamp = 0;
     }
@@ -924,14 +1061,15 @@ class ThirdPersonControllerManager {
     let top = 0;
     if (!this.colliders?.length) return top;
     for (const c of this.nearColliders(x, z, 1)) {
-      if (!(c.maxY <= y + 0.5) || c.maxY <= top) continue;
       if (x < c.minX || x > c.maxX || z < c.minZ || z > c.maxZ) continue;
+      const roof = colliderTop(c, x, z);
+      if (!(roof <= y + 0.5) || roof <= top) continue;
       if (c.polygon && !polygonContains(c.polygon, x, z)) continue;
       if (c.obb) {
         const dx = x - c.obb.cx, dz = z - c.obb.cz;
         if (Math.abs(dx * c.obb.cs - dz * c.obb.sn) > c.obb.hx || Math.abs(dx * c.obb.sn + dz * c.obb.cs) > c.obb.hz) continue;
       }
-      top = c.maxY;
+      top = roof;
     }
     return top;
   }
@@ -948,6 +1086,25 @@ class ThirdPersonControllerManager {
       // slides along it as it would along a wall: a car driven into it loses speed as squarely as it hit.
       const active = this.getActiveEntity();
       const last = (pos.landed ??= { x: pos.x, z: pos.z });
+      // Walking the Harbour Bridge's footway, between its railing and the barrier. It stops short of the ends, where
+      // the corridor narrows and you come out on the road.
+      if (active.onFootway) {
+        const held = holdOnFootway(pos.x, pos.z);
+        if (held) {
+          pos.x = last.x = held.x;
+          pos.z = last.z = held.z;
+          active.surface = DECK_SID;
+          active.surfaceY = held.y;
+          active.deck = true;
+          return;
+        }
+        active.onFootway = false;
+        const edge = structureAt(DECK_SID, last.x, last.z, 8);
+        if (edge) {
+          pos.x = last.x = edge.px;
+          pos.z = last.z = edge.pz;
+        }
+      }
       const sid = active.surface || 0;
       const y = active.surfaceY ?? surfaceHeight(sid, last.x, last.z);
       const margin = carEntity ? 1.0 : radius * 0.6;
@@ -1068,9 +1225,7 @@ class ThirdPersonControllerManager {
 
     const p = this.entities.person;
     if (p) {
-      const dx = focus ? p.position.x - focus.x : 0;
-      const dz = focus ? p.position.z - focus.z : 0;
-      if (this.activeMode === 'person' || dx * dx + dz * dz <= maxDistSq) {
+      if (this.activeMode === 'person') {
         p._charHidden = false;
         if (p.mesh) p.mesh.visible = true;
         const air = p.position.y - this.getGroundHeight(p.position.x, p.position.z, 'person');
@@ -1093,7 +1248,7 @@ class ThirdPersonControllerManager {
     if (b) {
       const dx = focus ? b.position.x - focus.x : 0;
       const dz = focus ? b.position.z - focus.z : 0;
-      if (this.activeMode === 'cyclist' || dx * dx + dz * dz <= maxDistSq) {
+      if (this.activeMode === 'cyclist' || (b._parked && dx * dx + dz * dz <= maxDistSq)) {
         if (b.helmet) b.helmet.visible = true;
         const moved =
           this.activeMode === 'cyclist' ||
@@ -1136,18 +1291,7 @@ class ThirdPersonControllerManager {
     heli.mainRotorPivot.rotation.y += dt * 24.0;
     heli.tailRotorPivot.rotation.x += dt * 32.0;
 
-    if (this.activeMode === 'person') {
-      this.updatePerson(dt, elapsed);
-    } else {
-      // Keep the sidewalk pedestrian walking naturally when not actively controlled
-      const p = this.entities.person;
-      const walkSpeed = 1.48;
-      p.speed = walkSpeed;
-      p.position.x += Math.sin(p.heading) * walkSpeed * dt;
-      p.position.z += Math.cos(p.heading) * walkSpeed * dt;
-      if (p.position.z < -340) p.heading = 0;
-      else if (p.position.z > 340) p.heading = Math.PI;
-    }
+    if (this.activeMode === 'person') this.updatePerson(dt, elapsed);
 
     if (this.activeMode === 'car') {
       this.updateCar(dt, elapsed);
@@ -1170,7 +1314,7 @@ class ThirdPersonControllerManager {
     if (car.headLights) {
       for (const spot of car.headLights) {
         // Accelerating does not change the headlamp output or range.
-        spot.intensity = HEADLIGHTS.intensity * beamScale;
+        spot.intensity = this.activeMode === 'car' ? HEADLIGHTS.intensity * beamScale : 0;
       }
     }
     const bike = this.entities.cyclist;
@@ -1179,6 +1323,7 @@ class ThirdPersonControllerManager {
       bike.headLight.intensity = bikeActive ? 115 * beamScale : 0;
     }
 
+    this.updateVisibility();
     this.poseCharacters(dt, focusPos);
   }
 

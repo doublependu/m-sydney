@@ -1,11 +1,12 @@
 import * as THREE from 'three/webgpu';
-import { color, fract, mix, smoothstep, uv } from 'three/tsl';
+import { color, float, fract, fwidth, mix, smoothstep, texture, uv } from 'three/tsl';
 import { cityUniforms } from './tsl-materials.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { LANDMARK_SITES } from './city-config.js';
 import { groundHeight } from './surfaces.js';
 import { buildHarbourBridge, harbourBridgeColliders } from './harbour-bridge.js';
 import { createRoadSurfaceMaterial } from './tsl-materials.js';
+import { TOWER_SIGNS, placeTowerSign } from './tower-signs.js';
 
 // Sydney's icons at their real sites. The Opera House's shells are patches of spheres, the geometry Utzon settled on to
 // make them buildable; the bridge has a module of its own.
@@ -20,8 +21,9 @@ function settle(mesh, cast = true) {
   return mesh;
 }
 
-// A curved triangle a, b, c on the sphere through them, its centre `depth` metres back along the triangle's normal
-function shellPatch(a, b, c, depth, steps = 9) {
+// A curved triangle a, b, c on a sphere of `radius` through them, bulging towards `outward`. Its edges are great circles,
+// as the real shells' are. uv: 0 at a, (1, 0) at b, (0, 1) at c.
+function shellPatch(a, b, c, radius, outward, steps = 20) {
   const ab = new THREE.Vector3().subVectors(b, a), ac = new THREE.Vector3().subVectors(c, a);
   const n = new THREE.Vector3().crossVectors(ab, ac);
   // Circumcentre of the triangle
@@ -30,27 +32,32 @@ function shellPatch(a, b, c, depth, steps = 9) {
       .add(new THREE.Vector3().crossVectors(ac, n).multiplyScalar(ab.lengthSq()))
       .divideScalar(2 * n.lengthSq())
   );
-  const centre = o.clone().addScaledVector(n.clone().normalize(), -depth);
-  const radius = a.distanceTo(centre);
+  const circle = o.distanceTo(a);
+  const depth = Math.sqrt(Math.max(radius * radius - circle * circle, 1));
+  const flip = n.dot(outward) < 0;
+  const centre = o.clone().addScaledVector(n.clone().normalize(), flip ? depth : -depth);
+  const R = a.distanceTo(centre);
   const positions = [], normals = [], uvs = [], index = [];
-  const p = new THREE.Vector3();
+  const pointAt = (u, v) => {
+    const q = new THREE.Vector3().addScaledVector(a, 1 - u - v).addScaledVector(b, u).addScaledVector(c, v).sub(centre).normalize();
+    return { normal: q.clone(), position: q.multiplyScalar(R).add(centre) };
+  };
   const row = [];
   for (let i = 0; i <= steps; i++) {
     row.push(positions.length / 3);
     for (let j = 0; j <= steps - i; j++) {
-      const u = i / steps, v = j / steps, w = 1 - u - v;
-      p.set(0, 0, 0).addScaledVector(a, w).addScaledVector(b, u).addScaledVector(c, v).sub(centre).normalize();
-      normals.push(p.x, p.y, p.z);
-      p.multiplyScalar(radius).add(centre);
-      positions.push(p.x, p.y, p.z);
-      uvs.push(u, v);
+      const { normal, position } = pointAt(i / steps, j / steps);
+      normals.push(normal.x, normal.y, normal.z);
+      positions.push(position.x, position.y, position.z);
+      uvs.push(i / steps, j / steps);
     }
   }
   for (let i = 0; i < steps; i++) {
     for (let j = 0; j < steps - i; j++) {
       const q = row[i] + j, r = row[i + 1] + j;
-      index.push(q, r, q + 1);
-      if (j < steps - i - 1) index.push(q + 1, r, r + 1);
+      // Outward faces wind counter-clockwise, whichever way round a, b, c came
+      if (flip) { index.push(q, q + 1, r); if (j < steps - i - 1) index.push(q + 1, r + 1, r); }
+      else { index.push(q, r, q + 1); if (j < steps - i - 1) index.push(q + 1, r, r + 1); }
     }
   }
   const g = new THREE.BufferGeometry();
@@ -58,68 +65,172 @@ function shellPatch(a, b, c, depth, steps = 9) {
   g.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   g.setIndex(index);
-  return g;
+  return { geometry: g, pointAt };
 }
 
+// The Sydney Opera House, laid out from the footprint in the map and the side view in the reference photos. Every shell
+// is cut from a sphere of about 75 m radius, Utzon's solution: a pair of mirrored curved triangles meeting along a ridge.
+const OPERA = {
+  radius: 75,
+  podium: 14, // m above the harbour
+  outline: [[457, -1829], [457, -1821], [455, -1808], [453, -1789], [453, -1783], [457, -1782], [486, -1780], [486, -1815], [548, -1815],
+    [552, -1808], [553, -1820], [559, -1881], [567, -1895], [569, -1925], [566, -1928], [562, -1930], [557, -1932], [552, -1933], [547, -1935],
+    [541, -1935], [533, -1935], [521, -1913], [516, -1914], [514, -1920], [512, -1927], [516, -1928], [514, -1937], [512, -1943], [510, -1947],
+    [502, -1948], [492, -1949], [485, -1949], [479, -1948], [472, -1947], [467, -1945], [460, -1943], [456, -1941], [455, -1932], [454, -1922],
+    [460, -1922], [459, -1915], [458, -1903], [461, -1894], [463, -1888], [462, -1878], [460, -1857], [458, -1834]],
+  steps: { x0: 486, x1: 548, z0: -1815, z1: -1775, count: 26 },
+  // Each hall runs north from its origin. s: metres along it. Each shell: its tip, the feet of its arch and of its ridge
+  halls: [
+    { x: 497, z: -1822, yaw: -0.1, scale: 1, shells: [
+      // The Concert Hall, from the side photo. The first faces the steps, the rest the harbour, each nested in the next.
+      // A shell's tip overhangs far ahead of its feet.
+      { tip: 8, height: 38.5, foot: 18, span: 22, ridge: 46, faces: -1 },
+      { tip: 75, height: 67, foot: 52, span: 28, ridge: 25, faces: 1 },
+      { tip: 91, height: 54, foot: 72, span: 25, ridge: 46, faces: 1 },
+      { tip: 113, height: 45, foot: 90, span: 21, ridge: 66, faces: 1 },
+      { tip: 118, height: 35, foot: 108, span: 13, ridge: 88, faces: 1 }
+    ] },
+    { x: 525, z: -1825, yaw: 0.3, scale: 0.9, shells: [
+      // The Joan Sutherland Theatre, a little smaller
+      { tip: 6, height: 34, foot: 15, span: 20, ridge: 40, faces: -1 },
+      { tip: 68, height: 58, foot: 47, span: 25, ridge: 23, faces: 1 },
+      { tip: 83, height: 48, foot: 65, span: 22, ridge: 42, faces: 1 },
+      { tip: 103, height: 41, foot: 82, span: 19, ridge: 60, faces: 1 },
+      { tip: 107, height: 31, foot: 98, span: 12, ridge: 80, faces: 1 }
+    ] },
+    { x: 474, z: -1810, yaw: -0.1, scale: 1, shells: [
+      // The Bennelong restaurant, its two pairs back to back
+      { tip: 18, height: 30, foot: 8, span: 12, ridge: -4, faces: 1 },
+      { tip: -18, height: 30, foot: -8, span: 12, ridge: 4, faces: -1 }
+    ] }
+  ]
+};
+
 function buildOperaHouse(group, colliders) {
-  const { x, z } = LANDMARK_SITES.operaHouse;
-  const base = groundHeight(x, z);
-  // The building's axis, pointing out along Bennelong Point
-  const yaw = 0.4;
-  const ux = Math.sin(yaw), uz = -Math.cos(yaw); // along the point, towards the harbour
-  const vx = -uz, vz = ux; // across it, towards Farm Cove
-  const at = (u, v, y) => new THREE.Vector3(x + ux * u + vx * v, base + y, z + uz * u + vz * v);
+  const { outline, podium, steps } = OPERA;
+  const ground = groundHeight(steps.x0, steps.z1);
 
-  // The podium in pink granite, the steps up to it from the forecourt
-  const site = new THREE.Group();
-  site.position.set(x, base, z);
-  site.rotation.y = Math.atan2(ux, uz);
-  site.userData.lifted = true;
-  const granite = stone(0xa78f7f);
-  const podium = settle(new THREE.Mesh(new THREE.BoxGeometry(120, 7.4, 186), granite));
-  podium.position.set(0, 3.5, 0);
-  site.add(podium);
-  for (let i = 0; i < 6; i++) {
-    const step = settle(new THREE.Mesh(new THREE.BoxGeometry(92, 1.25, 7), granite));
-    step.position.set(0, 0.62 + i * 1.2, -96 - (5 - i) * 3.4);
-    site.add(step);
-  }
-  group.add(site);
+  // The shells. Outside: white and cream tiles in chevrons, with a band of bare concrete rib along the arch. Under them:
+  // concrete ribs fanning from the foot of the arch.
+  const tile = new THREE.MeshStandardNodeMaterial({ roughness: 0.34, metalness: 0.02 });
+  const tileUv = uv().mul(46);
+  const zig = fract(tileUv.x).sub(0.5).abs().mul(2);
+  const lines = fract(tileUv.y.add(zig));
+  const across = fwidth(tileUv.y).add(fwidth(tileUv.x));
+  const chevrons = smoothstep(0.08, 0.14, lines).mul(float(1).sub(smoothstep(0.86, 0.92, lines)));
+  const faded = mix(chevrons, float(0.8), smoothstep(0.25, 0.7, across));
+  const lids = mix(color(0xcfc5ac), color(0xf5f2e8), faded);
+  const rib = float(1).sub(smoothstep(0.012, 0.022, uv().x)); // the arch's edge: uv's x is 0 from the tip to the arch's foot
+  tile.colorNode = mix(lids, color(0xd8cbb0), rib);
+  tile.emissiveNode = color(0xfff4e0).mul(smoothstep(0.55, 1.2, cityUniforms.uInteriorGlow).mul(0.75));
+  const underside = new THREE.MeshStandardNodeMaterial({ roughness: 0.82, side: THREE.BackSide });
+  // Rays from the arch's foot, where uv is (0, 1)
+  const fan = uv().x.div(float(1).sub(uv().y).max(0.001)).mul(20);
+  underside.colorNode = mix(color(0x9c8f7a), color(0xc9bea6), smoothstep(0.1, 0.25, fract(fan).sub(0.5).abs()));
+  underside.emissiveNode = color(0xffcf96).mul(smoothstep(0.55, 1.2, cityUniforms.uInteriorGlow).mul(0.35));
+  const glass = new THREE.MeshStandardNodeMaterial({ color: 0x75674f, roughness: 0.2, metalness: 0.25, side: THREE.DoubleSide });
+  glass.emissiveNode = color(0xffbc70).mul(smoothstep(0.55, 1.2, cityUniforms.uInteriorGlow).mul(0.6));
 
-  // Each shell: a pointed arch of two patches meeting at a ridge, its tip leaning out towards the harbour
-  const white = new THREE.MeshStandardNodeMaterial({ roughness: 0.34, metalness: 0.02, side: THREE.DoubleSide });
-  const tiles = fract(uv().x.mul(26)).sub(0.5).abs().add(fract(uv().y.mul(26)).sub(0.5).abs());
-  white.colorNode = mix(color(0xf3efe3), color(0xd9d0ba), smoothstep(0.82, 0.96, tiles));
-  // Floodlit at night
-  white.emissiveNode = color(0xfff4e0).mul(smoothstep(0.55, 1.2, cityUniforms.uInteriorGlow).mul(0.75));
-  const shells = [];
-  const shell = (v, u, length, height, span, depth = 70) => {
-    const tip = at(u + length, v, height);
-    const foot = at(u - length * 0.12, v, 7);
-    for (const side of [-1, 1]) {
-      const leg = at(u + length * 0.42, v + side * span, 7);
-      shells.push(shellPatch(tip, side > 0 ? foot : leg, side > 0 ? leg : foot, depth));
+  const parts = [], glazing = [];
+  const footY = podium - 8; // well under the podium's top, since a shell's lower edge bows up between its feet
+  for (const hall of OPERA.halls) {
+    const ux = Math.sin(hall.yaw), uz = -Math.cos(hall.yaw); // north along the hall
+    const vx = -uz, vz = ux; // east across it
+    const at = (s, v, y) => new THREE.Vector3(hall.x + ux * s + vx * v, y, hall.z + uz * s + vz * v);
+    for (const { tip, height, foot, span, ridge, faces } of hall.shells) {
+      const T = at(tip, 0, height), R = at(ridge, 0, footY);
+      const rim = [];
+      for (const side of [-1, 1]) {
+        const F = at(foot, side * span, footY);
+        // Outward: to its own side, up, and away from the way it opens
+        const out = new THREE.Vector3(vx * side - ux * faces * 0.6, 0.7, vz * side - uz * faces * 0.6);
+        const patch = shellPatch(T, R, F, OPERA.radius, out);
+        parts.push(patch.geometry);
+        // The arch's edge, for the glass under it
+        const edge = [];
+        for (let k = 0; k <= 12; k++) edge.push(patch.pointAt(0, k / 12).position);
+        rim.push(side < 0 ? edge.reverse() : edge);
+      }
+      // A wall of bronze glass set well back under the arch, up to about half its height: the ribs fill the rest
+      const back = new THREE.Vector3(-ux * faces * 7, 0, -uz * faces * 7);
+      const ceiling = podium + (height - podium) * 0.42;
+      const points = [...rim[0], ...rim[1].slice(1)].map((p) => {
+        const q = p.clone().add(back);
+        q.y = Math.min(q.y, ceiling);
+        return q;
+      });
+      const base = at(foot - faces * 7, 0, footY);
+      const position = [base.x, base.y, base.z, ...points.flatMap((p) => [p.x, p.y, p.z])];
+      const index = [];
+      for (let k = 1; k < points.length; k++) index.push(0, k, k + 1);
+      const wall = new THREE.BufferGeometry();
+      wall.setAttribute('position', new THREE.Float32BufferAttribute(position, 3));
+      wall.setIndex(index);
+      wall.computeVertexNormals();
+      glazing.push(wall);
     }
-  };
-  // The Concert Hall on the Sydney Cove side, the Joan Sutherland Theatre on the Farm Cove side
-  for (const [v, heights] of [[-27, [65, 56, 44, 30]], [27, [58, 50, 40, 26]]]) {
-    let u = -30;
-    heights.forEach((h, i) => {
-      shell(v, u, 34 - i * 3, h, 21 - i * 2.2);
-      u += 27 - i * 2;
-    });
-    // The shell behind them, facing the forecourt
-    shells.push(...[-1, 1].map((side) => shellPatch(at(-58, v, 34), side > 0 ? at(-24, v, 7) : at(-30, v + side * 16, 7), side > 0 ? at(-30, v + side * 16, 7) : at(-24, v, 7), 62)));
   }
-  // The Bennelong restaurant's small shells at the foot of the steps
-  shell(4, -92, 16, 20, 9, 42);
-  shell(4, -78, 12, 15, 7, 42);
-  group.add(settle(new THREE.Mesh(mergeGeometries(shells, false), white)));
+  const shells = mergeGeometries(parts, false);
+  group.add(settle(new THREE.Mesh(shells, tile)));
+  group.add(settle(new THREE.Mesh(shells, underside), false));
+  const glazed = settle(new THREE.Mesh(mergeGeometries(glazing, false), glass), false);
+  glazed.receiveShadow = false;
+  group.add(glazed);
 
-  const hw = 62, hd = 118; // half width, half depth of the site
-  const reach = Math.abs(ux) * hd + Math.abs(vx) * hw, reachZ = Math.abs(uz) * hd + Math.abs(vz) * hw;
-  colliders.push({ minX: x - reach, maxX: x + reach, minZ: z - reachZ, maxZ: z + reachZ, minY: 0, maxY: 7.4,
-    obb: { cx: x, cz: z, hx: hw, hz: hd, cs: Math.cos(Math.atan2(ux, uz)), sn: Math.sin(Math.atan2(ux, uz)) } });
+  // The podium in pink-brown granite, on the footprint in the map, with its strip of dark windows
+  const ring = outline.map(([x, z]) => new THREE.Vector2(x, z));
+  if (THREE.ShapeUtils.isClockWise(ring)) ring.reverse();
+  const wall = (y0, y1, push = 0) => {
+    const position = [], normal = [], index = [];
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i], b = ring[(i + 1) % ring.length];
+      const L = a.distanceTo(b);
+      if (L < 0.01) continue;
+      // Not across the head of the steps: that's the stair
+      if (Math.abs(a.y - steps.z0) < 1 && Math.abs(b.y - steps.z0) < 1) continue;
+      const nx = (b.y - a.y) / L, nz = -(b.x - a.x) / L;
+      const k = position.length / 3;
+      position.push(a.x + nx * push, y0, a.y + nz * push, b.x + nx * push, y0, b.y + nz * push, a.x + nx * push, y1, a.y + nz * push, b.x + nx * push, y1, b.y + nz * push);
+      for (let m = 0; m < 4; m++) normal.push(nx, 0, nz);
+      index.push(k, k + 2, k + 1, k + 1, k + 2, k + 3);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(position, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(normal, 3));
+    g.setIndex(index);
+    return g;
+  };
+  const granite = stone(0x7a5e50, 0.8);
+  group.add(settle(new THREE.Mesh(wall(-2.5, podium), granite)));
+  group.add(settle(new THREE.Mesh(wall(podium * 0.42, podium * 0.56, 0.12), glass), false));
+  group.add(settle(new THREE.Mesh(wall(podium * 0.78, podium * 0.84, 0.3), stone(0x70564a, 0.8)), false));
+  const faces = THREE.ShapeUtils.triangulateShape(ring, []);
+  const top = new THREE.BufferGeometry();
+  top.setAttribute('position', new THREE.Float32BufferAttribute(ring.flatMap((p) => [p.x, podium, p.y]), 3));
+  top.setAttribute('normal', new THREE.Float32BufferAttribute(ring.flatMap(() => [0, 1, 0]), 3));
+  top.setIndex(faces.flatMap(([a, b, c]) => [a, c, b]));
+  const paving = stone(0x9a8472, 0.9);
+  group.add(settle(new THREE.Mesh(top, paving)));
+
+  // The Monumental Steps, from the forecourt up to the podium
+  const treads = [];
+  for (let i = 0; i < steps.count; i++) {
+    const t0 = i / steps.count, t1 = (i + 1) / steps.count;
+    const y1 = ground + (podium - ground) * (1 - t0);
+    const z0 = steps.z0 + (steps.z1 - steps.z0) * t0, z1 = steps.z0 + (steps.z1 - steps.z0) * t1;
+    const tread = new THREE.BoxGeometry(steps.x1 - steps.x0, y1 - ground + 1.5, z1 - z0);
+    tread.translate((steps.x0 + steps.x1) / 2, (y1 + ground - 1.5) / 2, (z0 + z1) / 2);
+    treads.push(tread);
+  }
+  group.add(settle(new THREE.Mesh(mergeGeometries(treads, false), paving)));
+
+  // Solid to anyone below its top: the podium, and the stair as a block, since nothing here climbs it yet
+  const polygon = { outer: outline.map(([x, z]) => ({ x, z })), holes: [] };
+  const xs = outline.map((p) => p[0]), zs = outline.map((p) => p[1]);
+  colliders.push({ minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs), minY: 0, maxY: podium - ground, polygon });
+  const hx = (steps.x1 - steps.x0) / 2, hz = (steps.z1 - steps.z0) / 2;
+  colliders.push({ minX: steps.x0, maxX: steps.x1, minZ: steps.z0, maxZ: steps.z1, minY: 0, maxY: (podium - ground) * 0.5,
+    obb: { cx: steps.x0 + hx, cz: steps.z0 + hz, hx, hz, cs: 1, sn: 0 } });
 }
 
 // Sydney Tower: a slim golden turret on its shaft and the stays around it, standing out of Westfield
@@ -154,7 +265,7 @@ function buildSydneyTower(group) {
   add(mergeGeometries(stays, false), metal, 0);
 }
 
-function clockTower(group, x, z, w, height, material, roofHeight = 0, roof = null) {
+function clockTower(group, x, z, w, height, material, roofHeight = 0, roof = null, dials = true) {
   const base = groundHeight(x, z);
   const shaft = settle(new THREE.Mesh(new THREE.BoxGeometry(w, height, w), material));
   shaft.position.set(x, base + height / 2, z);
@@ -165,6 +276,7 @@ function clockTower(group, x, z, w, height, material, roofHeight = 0, roof = nul
     cap.position.set(x, base + height + roofHeight / 2, z);
     group.add(cap);
   }
+  if (!dials) return;
   const dial = new THREE.MeshStandardNodeMaterial({ color: 0xf2ead7, roughness: 0.6 });
   for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
     const face = new THREE.Mesh(new THREE.CircleGeometry(w * 0.3, 20), dial);
@@ -182,6 +294,21 @@ function dome(group, x, z, y, radius, material) {
   group.add(mesh);
 }
 
+// A row of square stone piers from a to b, with the beam along their tops
+function colonnade(group, ax, az, bx, bz, count, height, width, material) {
+  const y = groundHeight((ax + bx) / 2, (az + bz) / 2);
+  const parts = [];
+  for (let i = 0; i < count; i++) {
+    const t = count > 1 ? i / (count - 1) : 0.5;
+    parts.push(new THREE.BoxGeometry(width, height + 2, width).translate(ax + (bx - ax) * t, y + height / 2 - 1, az + (bz - az) * t));
+  }
+  const L = Math.hypot(bx - ax, bz - az);
+  const beam = new THREE.BoxGeometry(L + width, 1, width * 1.3);
+  beam.rotateY(-Math.atan2(bz - az, bx - ax)).translate((ax + bx) / 2, y + height + 0.5, (az + bz) / 2);
+  parts.push(beam);
+  group.add(settle(new THREE.Mesh(mergeGeometries(parts, false), material)));
+}
+
 function buildHeritage(group) {
   const sandstone = SANDSTONE();
   const copper = stone(0x5f8f7c, 0.6);
@@ -192,8 +319,17 @@ function buildHeritage(group) {
   // The Queen Victoria Building's copper domes down its roof
   dome(group, -40, -143, 36, 11, copper);
   for (const dz of [-70, -46, 46, 70]) dome(group, -40, -143 + dz, 34, 4.2, copper);
-  // St Mary's twin spires, facing Hyde Park
-  for (const dx of [-11, 11]) clockTower(group, 567 + dx, -228, 8.5, 54, sandstone, 22, slate);
+  // St Mary's twin spires, in pale yellow stone, facing Hyde Park
+  const paleStone = stone(0xcdb582);
+  for (const dx of [-11, 11]) clockTower(group, 567 + dx, -228, 8.5, 54, paleStone, 22, slate, false);
+  // The General Post Office on Martin Place: its clock tower, and the colonnade along the street
+  clockTower(group, -12, -590, 10, 73, sandstone, 4, slate);
+  colonnade(group, -55, -571.5, 35, -571.5, 22, 7.5, 1.1, sandstone);
+  // The State Library's portico, up its steps on Shakespeare Place
+  colonnade(group, 434, -782, 464, -782, 8, 12, 1.5, sandstone);
+  const library = settle(new THREE.Mesh(new THREE.BoxGeometry(32, 3.2, 5), sandstone));
+  library.position.set(449, groundHeight(449, -781) + 13.6, -781);
+  group.add(library);
 }
 
 // Luna Park: the big face at the gate and the wheel behind it
@@ -257,6 +393,50 @@ function buildLandmarks(scene) {
   return { group, colliders };
 }
 
+/** Just where the landmarks stand, for making the tiles: the buildings they replace (tools/tiles/derive.mjs) */
+function landmarkColliders() {
+  const colliders = [];
+  buildOperaHouse(new THREE.Group(), colliders);
+  harbourBridgeColliders(colliders);
+  return colliders;
+}
+
+// The company names on the two towers (js/tower-signs.js), from one texture and one unlit material
+function addTowerSigns(group) {
+  const ROW = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = ROW * 2;
+  const ctx = canvas.getContext('2d');
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const parts = TOWER_SIGNS.map((sign, i) => {
+    const height = Math.round(canvas.width * (sign.h / sign.w));
+    ctx.fillStyle = '#10151c';
+    ctx.fillRect(0, i * ROW, canvas.width, height);
+    ctx.fillStyle = sign.ink;
+    ctx.font = `700 ${Math.round(height * 0.84)}px Overpass, Inter, Arial, sans-serif`;
+    ctx.fillText(sign.text, canvas.width / 2, i * ROW + height * 0.54, canvas.width * 0.95);
+    const place = placeTowerSign(sign);
+    const plane = new THREE.PlaneGeometry(sign.w, sign.h);
+    // This sign's strip of the texture; canvas rows run top down, texture rows bottom up
+    const coords = plane.attributes.uv;
+    const v1 = 1 - (i * ROW) / canvas.height, v0 = 1 - (i * ROW + height) / canvas.height;
+    for (let k = 0; k < coords.count; k++) coords.setY(k, coords.getY(k) > 0.5 ? v1 : v0);
+    plane.rotateY(place.yaw).translate(place.x, place.y, place.z);
+    return plane;
+  });
+  const map = new THREE.CanvasTexture(canvas);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.anisotropy = 8;
+  const material = new THREE.MeshBasicNodeMaterial();
+  material.colorNode = texture(map, uv()).mul(mix(float(0.9), float(1.7), smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow)));
+  const mesh = new THREE.Mesh(mergeGeometries(parts), material);
+  mesh.name = 'TowerSigns';
+  mesh.userData.lifted = true; // placed at the towers' own height
+  group.add(mesh);
+}
+
 // The bridge itself is most of the time the landmarks take to build, and nothing shows them before the first frame
 function addHarbourBridge(group) {
   const deck = new THREE.Mesh(buildHarbourBridge(group), createRoadSurfaceMaterial());
@@ -265,4 +445,4 @@ function addHarbourBridge(group) {
   group.add(deck);
 }
 
-export { addHarbourBridge, buildLandmarks };
+export { addHarbourBridge, addTowerSigns, buildLandmarks, landmarkColliders };

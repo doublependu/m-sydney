@@ -1663,3 +1663,18 @@ body.touch-enabled .pop-item { min-height: 44px; }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* A short fade when changing travel mode moves the player a long way */
+#mode-fade {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+}
+/* Waiting for the map where a teleport landed */
+#mode-fade.fading {
+  opacity: 1;
+  transition: opacity 0.2s;
+}

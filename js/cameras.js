@@ -153,6 +153,12 @@ class CameraSystem {
     this.userOrbitTimer = 0;
   }
 
+  // A cut to wherever the followed thing now is, keeping the camera you've chosen
+  snap() {
+    this.initialized = false;
+    this.followEntity = null;
+  }
+
   resetForTeleport() {
     // Arrive with a fresh chase view, without carrying a previous drive or gesture into the destination.
     this._clearPointers();

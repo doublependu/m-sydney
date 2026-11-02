@@ -1,5 +1,6 @@
 // Boots the build and saves what the game shows from a list of places, for checking the city by eye.
-// usage: node tools/play/look.mjs out-dir [--query=...] [--browser=firefox] [--spots[=a,b]] [name:x,z,heading[,mode[,climbSeconds]] ...]
+// usage: node tools/play/look.mjs out-dir [--query=...] [--browser=firefox] [--time=midday|golden|twilight|midnight] [--spots[=a,b]]
+//        [name:x,z,heading[,mode[,climbSeconds]] ...]
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { serveDist, launchBrowser, openGame } from './lib.mjs';
 import { SPOTS } from './spots.mjs';
@@ -36,6 +37,8 @@ const grab = async (name) => {
   const url = await page.evaluate(() => window.__gameDebug.grab());
   writeFileSync(`${out}/${name}.jpg`, Buffer.from(url.split(',')[1], 'base64'));
 };
+const time = args.find((a) => a.startsWith('--time='))?.slice(7);
+if (time) await page.locator(`[data-time="${time}"]`).click();
 await grab('start');
 for (const p of places) {
   await page.evaluate(({ x, z, heading, mode, deck }) => window.__gameDebug.goto?.(x, z, heading, mode, deck), p);

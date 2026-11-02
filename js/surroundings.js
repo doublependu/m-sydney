@@ -1,11 +1,12 @@
 import * as THREE from 'three/webgpu';
 import { color, float, mix, positionWorld, smoothstep, texture, vec2 } from 'three/tsl';
-import { GEO } from './geodata.js';
+import { GEO, loadFar } from './geodata.js';
 import { CITY_BOUNDS } from './city-config.js';
 import { terrainHeight } from './terrain.js';
 
 // Everything beyond the play area: the land around the harbour on its real hills, suburbs and bush, out to the fog.
 
+await loadFar();
 const LU = GEO.landuse;
 const useGrid = (() => {
   const d = new Uint8Array(LU.w * LU.h);

@@ -7,7 +7,7 @@ import {
   rdpRing, ringArea, tiledPolygons, toWorld
 } from './geo-common.mjs';
 
-const OUT = process.argv[2] || fileURLToPath(new URL('../js/geodata.js', import.meta.url));
+const OUT = process.argv[2] || fileURLToPath(new URL('./data/generated/geodata.js', import.meta.url));
 const B = DETAIL_BOUNDS;
 const RES = 1;
 

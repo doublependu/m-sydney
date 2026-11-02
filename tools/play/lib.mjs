@@ -56,7 +56,7 @@ export function launchChrome({ headed = false } = {}) {
   return chromium.launch({
     channel: 'chrome',
     headless: !headed,
-    args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU', '--use-angle=vulkan', '--ignore-gpu-blocklist', '--enable-precise-memory-info']
+    args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU', '--use-angle=vulkan', '--ignore-gpu-blocklist', '--enable-precise-memory-info', '--js-flags=--expose-gc']
   });
 }
 
@@ -66,10 +66,20 @@ export function launchBrowser({ browser = 'chrome', headed = false } = {}) {
   return launchChrome({ headed });
 }
 
+const warmedUp = new WeakSet();
 // Fresh profile each time, so nothing is cached and no saved player position carries over.
 export async function openGame(browser, url, { profile = 'laptop', query = '', storage = null, initScript = null, offline = false, timeout = 120000, stayThrottled = false } = {}) {
   const { viewport, deviceScaleFactor = 1, touch = false, cpuThrottle, mbps } = PROFILES[profile];
   const context = await browser.newContext({ viewport, deviceScaleFactor, hasTouch: touch, isMobile: touch });
+  // A browser that has only just started loses any WebGL context made in the GPU process's first few hundred milliseconds
+  // (0-100 ms: 3 of 3 lost; 400 ms and over: none). A player's browser is already running when they open the page.
+  if (!warmedUp.has(browser)) {
+    warmedUp.add(browser);
+    const warm = await context.newPage();
+    await warm.goto('data:text/html,<!doctype html><body style="background:%23000"><canvas></canvas>');
+    await warm.waitForTimeout(600);
+    await warm.close();
+  }
   const page = await context.newPage();
   const errors = [];
   const warnings = [];

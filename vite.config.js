@@ -1,4 +1,5 @@
 import { execSync } from 'node:child_process';
+import { readFileSync, readdirSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import { viteSingleFile } from 'vite-plugin-singlefile';
 
@@ -28,15 +29,34 @@ const offlineFile = {
   }
 };
 
+// The offline file holds today's whole map inside itself, as there's nowhere to fetch tiles from (js/geodata.js)
+function offlineTiles(offline) {
+  const id = 'virtual:offline-tiles';
+  return {
+    name: 'offline-tiles',
+    resolveId: (source) => (source === id ? `\0${id}` : null),
+    load(source) {
+      if (source !== `\0${id}`) return null;
+      if (!offline) return 'export default null;';
+      const dir = new URL('./public/tiles/', import.meta.url);
+      const files = Object.fromEntries(readdirSync(dir).map((name) => {
+        const bytes = readFileSync(new URL(name, dir));
+        return [name, `data:application/octet-stream;base64,${bytes.toString('base64')}`];
+      }));
+      return `export default ${JSON.stringify(files)};`;
+    }
+  };
+}
+
 export default defineConfig(({ mode }) => {
   const offline = mode === 'offline';
   return {
     base: './',
-    plugins: offline ? [viteSingleFile(), offlineFile] : [],
+    plugins: offline ? [viteSingleFile(), offlineFile, offlineTiles(true)] : [offlineTiles(false)],
     build: {
       target: 'esnext', // the geodata modules use top-level await
       chunkSizeWarningLimit: 6000,
-      ...(offline && { emptyOutDir: false, assetsInlineLimit: 100_000_000 })
+      ...(offline && { emptyOutDir: false, assetsInlineLimit: 100_000_000, copyPublicDir: false })
     }
   };
 });

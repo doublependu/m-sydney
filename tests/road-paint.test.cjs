@@ -172,7 +172,8 @@ const { buildRoadPaint, createRoadPaintChunkBuilder } = loadModule(roadPaintSrc,
   imports: {
     'three/webgpu': THREE,
     './road-network.js': { CROSSWALK: 3.8 },
-    './surfaces.js': { edgeHeight: () => 0, groundHeight: () => 0, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), structureAt: () => null, structuresAt: () => [], LINKS: [] },
+    './road-tags.js': { ROAD_TAGS: { buses: [], cycles: [], cycleways: [], speeds: [], zebras: [] } },
+      './surfaces.js': { groundRoadAt: () => null, edgeHeight: () => 0, groundHeight: () => 0, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), structureAt: () => null, structuresAt: () => [], LINKS: [] },
     './tsl-materials.js': { createRoadPaintMaterial: () => sharedMat }
   }
 });

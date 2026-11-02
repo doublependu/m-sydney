@@ -64,6 +64,8 @@ const VEHICLE_RADIUS = 380;
 const DECK_SPAWN_GAP = 60;
 const DECK_PACE = 1.5; // of a street's speed: the bridge is signed 70 km/h
 const NEAR_RADIUS = 350;
+const LANE_METRES_PER_VEHICLE = 60; // of road near the player, for each vehicle on it
+const STUCK_OUT_OF_VIEW = 45, STUCK_IN_VIEW = 180; // s without moving
 const VEHICLE_SPAWN_DISTANCE = 250;
 
 // 8-row LED destination sign atlas (route badge + destination) aligned with the 4-slot bus livery cycle
@@ -109,7 +111,7 @@ function createBusDestinationTexture() {
 
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 
-function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars = NUM_CARS, numBuses = NUM_BUSES, numPeds, lightPools } = {}) {
+function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars = NUM_CARS, numBuses = NUM_BUSES, numPeds, lightPools, firstNetwork = null } = {}) {
   const group = new THREE.Group();
   group.name = 'CityTrafficAndPedestrians';
   let collisionListener = null;
@@ -137,15 +139,16 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
   // =========================================================================
   // 0. ROAD NETWORK
   // =========================================================================
-  const network = yield* buildRoadNetworkSteps(obstacles, signalIntersections);
+  let network = firstNetwork || (yield* buildRoadNetworkSteps(obstacles, signalIntersections));
   yield;
-  const { nodes, edges, connector, curvePoint } = network;
+  let { nodes, edges, connector, curvePoint } = network;
 
   // Sides of an intersection (road-network.js step 9): a grid intersection's are 0 east, 1 west, 2 south, 3 north;
   // centreline junctions number their arms from 4. Where lane i of edge e meets a crosswalk, measured along the
   // crosswalk: along its road's lateral axis (x across north-south roads, z across east-west ones)
   const laneCoord = (e, i) => (e.sx + e.rx * e.lanes[i]) * e.clx + (e.sz + e.rz * e.lanes[i]) * e.clz;
 
+  function prepareNetwork() {
   for (const n of nodes) {
     n.box = new Array(n.groupCount).fill(0); // vehicles crossing it from each road (group: on the grid avenue 0, street 1)
     n.crossing = new Array(n.sideCount).fill(0); // vehicles crossing (or about to cross) the crosswalk on each side
@@ -164,6 +167,8 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     e.through = 0; // vehicles from e crossing e.to straight on or to the right
     e.lefts = 0; // and to the left
   }
+  }
+  prepareNetwork();
   // Is the intersection box held by vehicles of any road but group g's?
   const boxBusy = (n, g) => {
     for (let k = 0; k < n.box.length; k++) if (k !== g && n.box[k] > 0) return true;
@@ -195,7 +200,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
   carWheelRightGeo.setAttribute('wheelStyle', carWheelStyles);
   const carWheelMat = createCarWheelMaterial({ instanced: true });
 
-  const taxiYellow = new THREE.Color(0xffbe14);
+  const taxiYellow = new THREE.Color(0xe8e8e2); // Sydney's cabs are white, silver or black: no yellow fleet here
   const boroGreen = new THREE.Color(0x5cae3e);
   const policeWhite = new THREE.Color(0xf6f9fc);
   // Street fleet palettes: white/black/grey/silver dominate with black hire cars, blue/red/green accents,
@@ -441,6 +446,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     halfW: 0.86, halfL: 2.18 };
   const nearEdges = [];
   const nearSignals = [];
+  let nearLaneMetres = Infinity;
   yield;
   const pedestrianSystem = createPedestrianSystem(network, {
     player, nearEdges, nearSignals, mayCross, walkOn, visible, nearView, numPeds
@@ -622,10 +628,14 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     nearZ = focusZ;
     nearEdges.length = 0;
     nearSignals.length = 0;
+    nearLaneMetres = 0;
     for (const e of edges) {
       const s = clamp((focusX - e.sx) * e.dx + (focusZ - e.sz) * e.dz, 0, e.len);
       const dx = e.sx + e.dx * s - focusX, dz = e.sz + e.dz * s - focusZ;
-      if (dx * dx + dz * dz < NEAR_RADIUS * NEAR_RADIUS) nearEdges.push(e);
+      if (dx * dx + dz * dz < NEAR_RADIUS * NEAR_RADIUS) {
+        nearEdges.push(e);
+        nearLaneMetres += Math.min(e.len, NEAR_RADIUS * 2) * e.lanes.length;
+      }
     }
     for (const n of nodes) {
       const dx = n.x - focusX, dz = n.z - focusZ;
@@ -649,9 +659,24 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
 
   // Gap to the player if it is ahead in the lane whose centre is `off` metres to the right of v
   function playerGap(v, off) {
-    if (v.pAhead < 0 || v.pAhead > LOOKAHEAD) return Infinity;
-    if (Math.abs(v.pRight - off) > v.halfWidth + player.halfW + 0.4) return Infinity;
-    return v.pAhead - v.half - player.halfL;
+    let gap = Infinity;
+    if (v.pAhead >= 0 && v.pAhead <= LOOKAHEAD && Math.abs(v.pRight - off) <= v.halfWidth + player.halfW + 0.4) {
+      gap = v.pAhead - v.half - player.halfL;
+    }
+    return Math.min(gap, parkedGap(v, off));
+  }
+
+  // The player's car, left at the side of the road or in the middle of it: treated like anything stopped in a lane
+  let parkedCar = null;
+  function parkedGap(v, off) {
+    if (!parkedCar) return Infinity;
+    const dx = parkedCar.position.x - v.x, dz = parkedCar.position.z - v.z;
+    if (Math.abs(dx) > LOOKAHEAD + 10 || Math.abs(dz) > LOOKAHEAD + 10) return Infinity;
+    if (!sameLevel(heightOf(v), parkedCar.surfaceY ?? 0)) return Infinity;
+    const fx = Math.sin(v.yaw), fz = Math.cos(v.yaw);
+    const ahead = dx * fx + dz * fz, right = dz * fx - dx * fz;
+    if (ahead < 0 || ahead > LOOKAHEAD || Math.abs(right - off) > v.halfWidth + 1.3) return Infinity;
+    return ahead - v.half - 2.18;
   }
 
   // =========================================================================
@@ -854,6 +879,14 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
   // Would there be room for v in lane j of edge f if everyone headed there queued bumper to bumper behind its far
   // stop line? (An empty lane always has room, however short.) Vehicles take turns for it: whoever has waited longer
   // to go there from another side, or goes first from v's own road, counts as already in.
+  // Whose turn it is, of vehicles after the same place: whoever has waited longest, then whoever's nearest. One order for all of
+  // them. With position deciding within a road and waiting across roads, three cars could each yield to the next for ever
+  // (the off-ramp at the north end of the Harbour Bridge did, and held up North Sydney and the deck behind it).
+  function goesFirst(o, os, v, vs) {
+    if (o.wait !== v.wait) return o.wait > v.wait;
+    return precedence(o, os) > precedence(v, vs);
+  }
+
   function room(f, j, v) {
     let free = f.len - 1;
     for (const o of f.occ[j]) if (o.v !== v && o.s - o.v.half < f.len) free -= 2 * o.v.half + o.v.driver.s0;
@@ -861,7 +894,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
       for (const list of a.occ) {
         const o = leadOf(list);
         if (!o || o.v.claimed || !o.v.move || o.v.move.to !== f || o.v.move.out[o.v.lane] !== j) continue;
-        if (a === v.edge ? precedence(o.v, o.s) > precedence(v, v.s) : o.v.wait > v.wait) free -= 2 * o.v.half + o.v.driver.s0;
+        if (goesFirst(o.v, o.s, v, v.s)) free -= 2 * o.v.half + o.v.driver.s0;
       }
     }
     return free >= Math.min(2 * v.half + 0.5, f.len - 1);
@@ -909,7 +942,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     merger.v = null;
     for (let i = 0; i < e.lanes.length; i++) {
       const o = i === v.lane ? null : leadOf(e.occ[i]);
-      if (!o || o.v === v || o.v.claimed || o.v.move.to !== f || precedence(o.v, o.s) <= precedence(v, v.s)) continue;
+      if (!o || o.v === v || o.v.claimed || o.v.move.to !== f || !goesFirst(o.v, o.s, v, v.s)) continue;
       if (o.v.bus && besideTail(o.v)) continue; // it waits for the bus beside its tail
       const oj = o.v.move.out[o.v.lane];
       if (oj < 0 || (oj !== j && !(Math.abs(oj - j) === 1 && v.move.turn !== 'S' && (v.bus || o.v.bus)))) continue;
@@ -1900,6 +1933,83 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     yield* pedestrianSystem.populate(focusX, focusZ);
   }
 
+  /**
+   * The network around the player is rebuilt as they travel. Everyone on a road both networks have stays where they are; the
+   * near part of the map is the same in both, so what's lost is far from the player, and comes back with the usual recycling.
+   */
+  // Debug only: which of mayEnter()'s rules is holding a vehicle at its line
+  function holdingBack(v) {
+    const e = v.edge, n = e.to, m = v.move;
+    if (!m || v.conn) return v.conn ? 'crossing' : 'no move';
+    const f = m.to, j = m.out[v.lane], d = e.len - v.s - v.half;
+    if (!(j >= 0 && j < f.lanes.length)) return `lane leads nowhere (out ${j} of ${f.lanes.length})`;
+    const why = [];
+    const phase = n.signal ? phaseOf(e) : 'green';
+    if (phase !== 'green') why.push(`light ${phase}`);
+    if (boxBusy(n, e.axisIndex)) why.push(`box busy ${n.box.join()} (mine ${e.axisIndex})`);
+    const lead = ahead(e.occ[v.lane], v.s, v);
+    if (lead) why.push(`lead ${(lead.s - v.s).toFixed(1)} m ahead${lead.v.yielding ? ', yielding' : ''}`);
+    if (v.bus && besideTail(v)) why.push('bus tail');
+    if (e.opposite && m.turn === 'L' && yieldOncoming(e.opposite, v.wait > 8, v)) why.push('oncoming');
+    if (e.opposite && m.turn !== 'L' && e.opposite.lefts > 0) why.push('oncoming lefts');
+    if (e.axisIndex !== 0 && !n.signal && yieldToCrossTraffic(v, n)) why.push('cross traffic');
+    if (pedestrianOn(n, e.inSide, laneCoord(e, v.lane), 0, timeTo(v, d + 2.5 + 2 * v.half))) why.push('people on the way in');
+    const c = connector(e, v.lane, f, j);
+    if (pedestrianOn(n, f.outSide, laneCoord(f, j), timeTo(v, d + c.len - 3), timeTo(v, d + c.len + 2 * v.half))) why.push('people on the way out');
+    const vs = v.s - e.len - c.len;
+    if (!room(f, j, v)) why.push(`no room on ${f.id}:${j} (len ${f.len.toFixed(0)}, ${f.occ[j].length} in it)`);
+    if (alongside(f, j, v, vs, m.turn !== 'S')) why.push('alongside');
+    const merging = mergingAhead(v, f, j);
+    if (merging) why.push(`merging ${merging.v.lane}, wait ${merging.v.wait.toFixed(0)}`);
+    if (v.laneChange || v.dl) why.push(`changing lane ${(v.dl || 0).toFixed(2)}`);
+    why.push(`d ${d.toFixed(1)}`);
+    return why.join('; ');
+  }
+
+  let recycled = 0;
+  const handover = { count: 0, kept: 0, lost: 0 };
+  function setNetwork(next) {
+    const keyOf = (e) => `${e.link}:${Math.round(e.from.x * 2)},${Math.round(e.from.z * 2)}>${Math.round(e.to.x * 2)},${Math.round(e.to.z * 2)}`;
+    const byKey = new Map(next.edges.map((e) => [keyOf(e), e]));
+    network = next;
+    ({ nodes, edges, connector, curvePoint } = next);
+    prepareNetwork();
+    touchedNodes.length = 0;
+    touchedEdges.length = 0;
+    let kept = 0, lost = 0;
+    for (const v of vehicles) {
+      if (!v.edge) continue;
+      const e = byKey.get(keyOf(v.edge));
+      const toKey = v.move ? keyOf(v.move.to) : null;
+      const lane = v.edge.lanes[v.lane];
+      if (!e || e.lanes[v.lane] !== lane) {
+        v.edge = null;
+        lost++;
+        continue;
+      }
+      v.edge = e;
+      v.commit = null;
+      v.claimed = false;
+      const move = toKey ? e.moves.find((m) => keyOf(m.to) === toKey) : null;
+      if (move) v.move = move;
+      else {
+        v.conn = null;
+        v.move = chooseMove(v, false);
+      }
+      if (v.conn) {
+        if (v.out < 0 || !v.move.to.lanes[v.out]) { v.conn = null; v.edge = null; lost++; continue; }
+        v.conn = connector(e, v.lane, v.move.to, v.out);
+      }
+      kept++;
+    }
+    pedestrianSystem.setNetwork(next, keyOf);
+    nearX = nearZ = Infinity;
+    refreshNear();
+    handover.count++;
+    handover.kept = kept;
+    handover.lost = lost;
+  }
+
   function update(dt, elapsed, focusPos = null, playerEntity = null, activeMode = 'car', camera = null) {
     clock = elapsed;
     avePhase = signalPhase(elapsed, true);
@@ -1936,13 +2046,34 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     // Limit attempted placements, not just successes, and rotate through the pool so an awkward location
     // cannot monopolize a frame. Previous-frame lane lists protect spawn spacing; rebuild before driving.
     let budget = jump ? vehicles.length : 4;
+    // As many as the roads around can carry: the same number of cars on the few roads of a bridge or a freeway as on all the
+    // streets of the CBD is a traffic jam that never clears
+    const room = nearLaneMetres / LANE_METRES_PER_VEHICLE;
+    let active = 0;
+    for (const v of vehicles) if (v.edge) active++;
     for (let scanned = 0; scanned < vehicles.length && budget > 0; scanned++) {
       const v = vehicles[vehicleCursor];
       vehicleCursor = (vehicleCursor + 1) % vehicles.length;
       const d = v.edge ? Math.hypot(v.x - focusX, v.z - focusZ) : Infinity;
-      if (d <= (jump ? NEAR_RADIUS : VEHICLE_RADIUS)) continue;
+      // Traffic can still hold itself up at a merge. Someone stuck that long goes, out of sight if at all possible, which lets
+      // the queue behind them move. (A cause is still open: see ai/next_2.md.)
+      const stuck = v.edge && v.wait > (nearView(v.x, v.z, v.half + 4, VEHICLE_SPAWN_DISTANCE) ? STUCK_IN_VIEW : STUCK_OUT_OF_VIEW);
+      if (stuck) {
+        v.edge = null;
+        active--;
+        recycled++;
+      } else if (d <= (jump ? NEAR_RADIUS : VEHICLE_RADIUS)) continue;
+      if (active >= room) {
+        // Out of sight and not needed here
+        if (v.edge) {
+          v.edge = null;
+          active--;
+        }
+        continue;
+      }
       budget--;
-      spawnVehicle(v, jump ? 0 : 100, NEAR_RADIUS, !jump);
+      const had = !!v.edge;
+      if (spawnVehicle(v, jump ? 0 : 100, NEAR_RADIUS, !jump) && !had) active++;
     }
     buildOccupancy();
     for (const m of bodyMeshes) m.count = 0;
@@ -2037,14 +2168,20 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
   }
 
   return {
+    setParked(entity) { parkedCar = entity; },
     group,
     update,
     populate,
+    setNetwork,
+    handover,
+    holdingBack,
+    roadRoom: () => nearLaneMetres / LANE_METRES_PER_VEHICLE,
+    recycled: () => recycled,
+    get network() { return network; },
     setCollisionListener,
     cars,
     buses,
-    peds: pedestrianSystem.peds,
-    network
+    peds: pedestrianSystem.peds
   };
 }
 

@@ -878,14 +878,24 @@ function createTreeClearance(colliders) {
  * `update(cameraPosition)` from the frame loop to keep each tree's level of detail up to date. Returns
  * { group, material, atlas, sites (accepted placements), update(cameraPosition) }.
  */
+// Kept when the trees are rebuilt for a new stretch of the map
+let treeParts = null;
+function sharedTreeParts() {
+  if (!treeParts) {
+    const atlas = createLeafAtlas();
+    const material = createTreeMaterial(atlas.texture);
+    // Geometries: [species][variant][lod]
+    const geos = SPECIES.map((_, s) => [0, 1].map((v) => buildTreeGeometries(s, v, atlas.tileMeters)));
+    for (const variants of geos) for (const levels of variants) for (const g of levels) if (g) g.userData.shared = true;
+    treeParts = { atlas, material, geos };
+  }
+  return treeParts;
+}
+
 function* createTreeFieldSteps(_scene, sites, colliders = []) {
   const group = new THREE.Group();
   group.name = 'Trees';
-  const atlas = createLeafAtlas();
-  const material = createTreeMaterial(atlas.texture);
-
-  // Geometries: [species][variant][lod]
-  const geos = SPECIES.map((_, s) => [0, 1].map((v) => buildTreeGeometries(s, v, atlas.tileMeters)));
+  const { atlas, material, geos } = sharedTreeParts();
   const clearOfBuildings = createTreeClearance(colliders);
   const treeBounds = geos.map((variants) => variants.map((levels) => {
     const bounds = new THREE.Box3();

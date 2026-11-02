@@ -7,11 +7,11 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <title>Sydney</title>
+    <link rel="preload" href="./tiles/world.json" as="fetch" crossorigin>
+    <link rel="preload" href="./tiles/far-heights.bin.gz" as="fetch" crossorigin>
   <link rel="icon" href="data:," />
   <meta name="description" content="Explore Sydney in the browser: drive over the Harbour Bridge, walk the CBD, cycle the foreshore or fly around the Opera House, on the real map of the city." />
   <!-- Fetch the map data and UI font alongside the bundle, not after it has been parsed. -->
-  <link rel="preload" href="./js/building-geodata.bin.gz" as="fetch" crossorigin />
-  <link rel="preload" href="./js/height-grid.bin.gz" as="fetch" crossorigin />
   <link rel="preload" href="./node_modules/@fontsource-variable/inter/files/inter-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin />
   <script type="module" src="./js/main.js"></script>
   <!-- Inter (UI) & Overpass (street-name signs) -->
@@ -52,6 +52,7 @@
   </svg>
 
   <!-- Loading Screen -->
+  <div id="mode-fade" aria-hidden="true"></div>
   <div id="loading-overlay" role="status" aria-live="polite">
     <div class="loader">
       <span class="brand-bullet loader-bullet" aria-hidden="true">SY</span>

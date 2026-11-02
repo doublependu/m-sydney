@@ -15,7 +15,7 @@ test('surveyed building courtyards remain holes in the map footprint layer', () 
   }
   const { footprintLayers } = loadModule(source + '\nexport { footprintLayers };', {
     globals: { Path2D },
-    imports: { './geodata.js': { GEO: { frame: {} } }, './city-config.js': { ROADS: [], SUBURBS: [] } }
+    imports: { './geodata.js': { GEO: { frame: {} }, loadMapData: () => new Promise(() => {}) }, './city-config.js': { ROADS: [], SUBURBS: [] } }
   });
   const ring = (x0, z0, x1, z1) => [{ x: x0, z: z0 }, { x: x1, z: z0 }, { x: x1, z: z1 }, { x: x0, z: z1 }];
   const layers = footprintLayers([{ footprints: [{ h: 120, pts: ring(0, 0, 20, 20), holes: [ring(5, 5, 15, 15)] }] }]);
@@ -32,7 +32,7 @@ for (const [width, height, dpr] of [[500, 300, 1], [320, 180, 1.5], [1920, 1080,
     const window = { innerWidth: width, innerHeight: height, devicePixelRatio: dpr };
     const { CityMapSystem } = loadModule(source, {
       globals: { window, performance: { now: () => 0 } },
-      imports: { './geodata.js': { GEO: { frame: {} } }, './city-config.js': { ROADS: [], SUBURBS: [] } }
+      imports: { './geodata.js': { GEO: { frame: {} }, loadMapData: () => new Promise(() => {}) }, './city-config.js': { ROADS: [], SUBURBS: [] } }
     });
     const map = Object.create(CityMapSystem.prototype);
     // Capture the production render viewport; drawing primitives are irrelevant to coordinate conversion.
@@ -124,7 +124,7 @@ function mapHarness() {
   };
   const { CityMapSystem } = loadModule(source, {
     globals: { window, document },
-    imports: { './geodata.js': { GEO: { frame: {}, surroundings: [] } }, './city-config.js': config }
+    imports: { './geodata.js': { GEO: { frame: {}, surroundings: [] }, loadMapData: () => new Promise(() => {}) }, './city-config.js': config }
   });
   const teleports = [], toggles = [];
   const map = new CityMapSystem({

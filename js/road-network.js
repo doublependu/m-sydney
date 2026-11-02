@@ -1,7 +1,7 @@
 import { CITY_BOUNDS, DRIVE_SIDE, BLOCKS, blockAt, landAt } from './city-config.js';
 import { GEO } from './geodata.js';
 import { polygonBoxOverlaps } from './building-collision.js';
-import { LINKS } from './surfaces.js';
+import { linkById } from './surfaces.js';
 
 // How far either side of the Harbour Bridge's line a lane counts as on the bridge (its own height, nothing in its way)
 const DECK_REACH = 15;
@@ -21,8 +21,10 @@ const LANE_CLEAR = 1.2; // half width each lane keeps free of obstacles
 // One sample on anything else in the way closes it. 17% of all roads fell to a single sample before this.
 const MAX_ON_KERB = 0.7;
 const CROSSWALK = 2.5; // depth between an intersection box and its stop lines
+const RIM = 0.85; // of an area's radius
 
-function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
+// `area`: { x, z, radius }, the roads to take in. All those held if there's none.
+function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null) {
   yield;
   // 1. Spatial hash of ground footprints that block lanes and pedestrians
   const hash = new Map();
@@ -102,7 +104,7 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
     }
     return false;
   };
-  const blockedOnStreet = (x, z, clear) => !onDeckLine(x, z) && !landAt(x, z) || curbAt(x, z) || nearMedian(x, z, clear) ||
+  const blockedOnStreet = (x, z, clear) => !landAt(x, z) && !onDeckLine(x, z) || curbAt(x, z) || nearMedian(x, z, clear) ||
     query(x - clear, x + clear, z - clear, z + clear, (r) => !r.pedestrianOnly && (r.maxX - r.minX < 50 || r.maxZ - r.minZ < 50) && !medianBox(r));
 
   const laneOffsets = (half) => (half >= 10.0 ? [-7.2, -3.6, 0, 3.6, 7.2]
@@ -110,6 +112,10 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
       : half >= 6.8 ? [-3.6, 0, 3.6]
         : half >= 3.9 ? [-1.8, 1.8] : null);
   let nodes = [];
+  // Near the edge of the area taken in, a road carries on beyond it. Without this the Harbour Bridge and the motorways would
+  // count as dead ends, unless the area took in the whole of their way round.
+  const onRim = (n) => !!area && (n.x - area.x) ** 2 + (n.z - area.z) ** 2 > (area.radius * RIM) ** 2;
+  const offTheRim = area ? { leaves: (e) => onRim(e.to), enters: (e) => onRim(e.from) } : null;
 
   yield;
   // 2. Streets from the centreline graph. Bends get shape nodes, so every edge stays straight.
@@ -117,8 +123,15 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
   function centrelineStreets() {
     const RG = GEO.roadGraph;
     const runs = [];
-    const pos = [];
-    for (let i = 0; i < RG.nodes.length; i += 2) pos.push({ x: RG.nodes[i], z: RG.nodes[i + 1] });
+    const pos = new Proxy({}, { get: (_, i) => ({ x: RG.nodes[i * 2], z: RG.nodes[i * 2 + 1] }) });
+    const inArea = (record) => {
+      if (!area) return true;
+      const near = (x, z) => (x - area.x) ** 2 + (z - area.z) ** 2 < area.radius ** 2;
+      const inner = record[6];
+      if (near(RG.nodes[record[0] * 2], RG.nodes[record[0] * 2 + 1]) || near(RG.nodes[record[1] * 2], RG.nodes[record[1] * 2 + 1])) return true;
+      for (let k = 0; k < inner.length; k += 2) if (near(inner[k], inner[k + 1])) return true;
+      return false;
+    };
     // Points every 4 m along a polyline, 7 m clear of its ends, with the direction there
     function samples(pts, fn) {
       let total = 0;
@@ -138,19 +151,30 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
       }
       return total;
     }
-    const links = RG.links.map(([a, b, ni, w, lanes, dir, inner, major, deck], id) => {
+    // In a set order, whichever order the tiles arrived in: the same roads make the same network
+    const links = RG.links.filter(inArea).sort((p, q) => p.id - q.id).map((record) => {
+      const [a, b, ni, w, lanes, dir, inner, major, deck] = record, id = record.id;
       const pts = [pos[a]];
       for (let k = 0; k < inner.length; k += 2) pts.push({ x: inner[k], z: inner[k + 1] });
       pts.push(pos[b]);
       let len = 0;
       for (let k = 0; k + 1 < pts.length; k++) len += Math.hypot(pts[k + 1].x - pts[k].x, pts[k + 1].z - pts[k].z);
       // sid: the structure it's on (js/surfaces.js), 0 on the ground
-      return { id, a, b, name: RG.names[ni], w, lanes, dir, major: !!major, deck: !!deck, sid: LINKS[id].sid, pts, len };
+      return { id, a, b, name: RG.names[ni], w, lanes, dir, major: !!major, deck: !!deck, sid: linkById.get(id).sid, pts, len };
     });
     // Junctions a few metres apart (divided roads, offset corners) are one: collapse links under 14 m
-    const parent = pos.map((_, i) => i);
-    const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
-    for (const l of links) if (l.len < 14) parent[find(l.a)] = find(l.b);
+    const parent = new Map();
+    const find = (i) => {
+      if (!parent.has(i)) return i;
+      const r = find(parent.get(i));
+      parent.set(i, r);
+      return r;
+    };
+    for (const l of links) {
+      if (l.len >= 14) continue;
+      const a = find(l.a), b = find(l.b);
+      if (a !== b) parent.set(a, b);
+    }
     const sum = new Map();
     const counted = new Set();
     for (const l of links) {
@@ -159,8 +183,9 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
         counted.add(i);
         const r = find(i);
         const s = sum.get(r) || { x: 0, z: 0, n: 0 };
-        s.x += pos[i].x;
-        s.z += pos[i].z;
+        const at = pos[i];
+        s.x += at.x;
+        s.z += at.z;
         s.n++;
         sum.set(r, s);
       }
@@ -368,7 +393,7 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
       if (!outsOf.has(e.from)) outsOf.set(e.from, []);
       outsOf.get(e.from).push(e);
     }
-    const live = largestComponent(edges, (e) => (outsOf.get(e.to) || []).filter((f) => canFollow(e, f)));
+    const live = largestComponent(edges, (e) => (outsOf.get(e.to) || []).filter((f) => canFollow(e, f)), offTheRim);
     for (const e of edges) e.live = live.has(e);
   }
   const liveArm = (a) => !!((a.in && a.in.live) || (a.out && a.out.live));
@@ -789,7 +814,7 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
 
   yield;
   // 7. Keep the largest strongly connected set of edges so no vehicle can ever reach a dead end
-  const kept = largestComponent(edges, (e) => e.moves.map((m) => m.to));
+  const kept = largestComponent(edges, (e) => e.moves.map((m) => m.to), offTheRim);
   const genShortKept = edges.filter((e) => e.general).length;
   const genLost = edges.filter((e) => e.general && !kept.has(e));
   edges = edges.filter((e) => kept.has(e));
@@ -817,6 +842,9 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
       const m = e.moves.find((q) => q.turn === 'S') || e.moves[0];
       m.out[i] = nearestLane(e, i, m.to);
     }
+    // Off the rim: nowhere to go here. Vehicles are recycled by distance well before this (js/traffic.js), and a road always
+    // has a way on as far as the rest of the code knows, so this one is its own.
+    if (!e.moves.length && onRim(e.to)) e.moves.push({ to: e, turn: 'S', cross: 0, out: e.lanes.map((_, i) => i) });
   }
   edges.forEach((e, i) => (e.id = i));
 
@@ -825,7 +853,11 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = []) {
     (e.from.out || (e.from.out = [])).push(e);
     (e.to.in || (e.to.in = [])).push(e);
   }
-  nodes = nodes.filter((n) => n.in && n.out);
+  nodes = nodes.filter((n) => n.in || n.out);
+  for (const n of nodes) {
+    n.in ||= [];
+    n.out ||= [];
+  }
   nodes.forEach((n, i) => (n.id = i));
 
   yield;
@@ -881,17 +913,25 @@ function buildRoadNetwork(obstacles, signalIntersections = []) {
 }
 
 // The largest strongly connected set of `list` (a Set), going on from item e to the items next(e)
-function largestComponent(list, next) {
+// `open`: { leaves(item), enters(item) }, what runs off the area taken in or comes into it: all the road beyond it counts as
+// one more item that they connect through, so a road through the area isn't a dead end for leaving it.
+function largestComponent(list, next, open = null) {
   const index = new Map(list.map((e, i) => [e, i]));
-  const succ = list.map((e) => next(e).map((f) => index.get(f)).filter((j) => j !== undefined));
-  const pred = list.map(() => []);
+  const count = list.length + (open ? 1 : 0);
+  const succ = list.map((e, i) => {
+    const out = next(e).map((f) => index.get(f)).filter((j) => j !== undefined);
+    if (open?.leaves(e)) out.push(list.length);
+    return out;
+  });
+  if (open) succ.push(list.flatMap((e, i) => (open.enters(e) ? [i] : [])));
+  const pred = Array.from({ length: count }, () => []);
   succ.forEach((s, i) => {
     for (const j of s) pred[j].push(i);
   });
   // Kosaraju: finishing order going forwards, then components going backwards from the last finished
-  const visited = new Uint8Array(list.length);
+  const visited = new Uint8Array(count);
   const order = [];
-  for (let root = 0; root < list.length; root++) {
+  for (let root = 0; root < count; root++) {
     if (visited[root]) continue;
     visited[root] = 1;
     const stack = [[root, 0]];
@@ -909,7 +949,7 @@ function largestComponent(list, next) {
       }
     }
   }
-  const comp = new Int32Array(list.length).fill(-1);
+  const comp = new Int32Array(count).fill(-1);
   let best = -1;
   let bestSize = 0;
   for (let k = order.length - 1, c = 0; k >= 0; k--) {

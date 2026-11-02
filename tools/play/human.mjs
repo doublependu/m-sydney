@@ -15,11 +15,19 @@ function seededRandom(seed) {
 }
 
 export class Human {
-  constructor(game, seed = 1) {
+  // `fast`: the game's simulation runs on the script's clock (see advance() in js/main.js), much quicker than real time.
+  // Time a scenario measures comes from now(), which keeps to that clock either way.
+  constructor(game, seed = 1, { fast = false } = {}) {
     this.game = game;
     this.page = game.page;
     this.random = seededRandom(seed);
     this.held = new Set();
+    this.fast = fast;
+    this.virtualMs = 0;
+  }
+
+  now() {
+    return this.fast ? this.virtualMs : Date.now();
   }
 
   between(min, max) {
@@ -27,7 +35,9 @@ export class Human {
   }
 
   wait(ms) {
-    return this.page.waitForTimeout(ms);
+    if (!this.fast) return this.page.waitForTimeout(ms);
+    this.virtualMs += ms;
+    return this.page.evaluate((step) => window.__gameDebug.advance(step), ms);
   }
 
   react() {
@@ -74,8 +84,8 @@ export class Human {
   }
 
   async until(check, { timeout = 15000, every = 100 } = {}) {
-    const deadline = Date.now() + timeout;
-    while (Date.now() < deadline) {
+    const deadline = this.now() + timeout;
+    while (this.now() < deadline) {
       const state = await this.state();
       if (check(state)) return state;
       await this.wait(every);
@@ -109,12 +119,12 @@ export class Human {
   }
 
   async driveTo(target, { arrive = 14, timeout = 90000, limit = 18 } = {}) {
-    const started = Date.now();
+    const started = this.now();
     const stats = { reached: false, seconds: 0, backups: 0, blockedSeconds: 0 };
     let last = await this.state();
-    let lastMoved = Date.now();
-    let lastSample = Date.now();
-    while (Date.now() - started < timeout) {
+    let lastMoved = this.now();
+    let lastSample = this.now();
+    while (this.now() - started < timeout) {
       const state = await this.state();
       const distance = Math.hypot(target.x - state.x, target.z - state.z);
       if (distance < arrive) {
@@ -125,7 +135,7 @@ export class Human {
       const speed = Math.abs(state.speed);
       await this.setKey('KeyW', speed < limit && (Math.abs(error) < 1.1 || speed < 5));
       await this.setKey('KeyS', speed > limit + 4 || (Math.abs(error) > 1.1 && speed > 7));
-      const now = Date.now();
+      const now = this.now();
       if (speed < 1) stats.blockedSeconds += (now - lastSample) / 1000;
       lastSample = now;
       if (Math.hypot(state.x - last.x, state.z - last.z) > 1.5) {
@@ -135,20 +145,21 @@ export class Human {
         stats.backups++;
         await this.backUp(error > 0 ? 'KeyD' : 'KeyA');
         last = await this.state();
-        lastMoved = Date.now();
+        lastMoved = this.now();
       }
       await this.wait(this.between(90, 170));
     }
     await this.releaseAll();
-    stats.seconds = (Date.now() - started) / 1000;
+    stats.seconds = (this.now() - started) / 1000;
     return stats;
   }
 }
 
 // Fails the scenario for what no player should ever see, whatever the script was doing at the time.
 export class Watchdog {
-  constructor(game, { memory = false, expectedErrors = null } = {}) {
+  constructor(game, { memory = false, expectedErrors = null, fast = false } = {}) {
     this.expectedErrors = expectedErrors; // a scenario that breaks something on purpose hears about it in the console
+    this.every = fast ? 40 : 250;
     this.game = game;
     this.failures = [];
     this.memory = memory ? [] : null;
@@ -167,34 +178,36 @@ export class Watchdog {
     while (this.running) {
       const sample = await this.game.page.evaluate(() => {
         const debug = window.__gameDebug;
-        return { player: debug.player(), input: debug.input(), paused: debug.paused(), heap: performance.memory?.usedJSHeapSize };
+        return { player: debug.player(), input: debug.input(), paused: debug.paused() || debug.waitingForGround(), clock: debug.clock(), heap: performance.memory?.usedJSHeapSize };
       }).catch(() => null);
       if (sample) this.inspect(sample);
       if (sample && this.memory && Date.now() - lastMemory > 30000) {
         lastMemory = Date.now();
         this.memory.push(Math.round(sample.heap / 1048576));
       }
-      await new Promise((done) => setTimeout(done, 250));
+      await new Promise((done) => setTimeout(done, this.every));
     }
   }
 
-  inspect({ player, input, paused }) {
+  inspect({ player, input, paused, clock }) {
     const { x, y, z, heading, speed, mode } = player;
     if (![x, y, z, heading, speed].every(Number.isFinite)) this.fail(`non-finite player state in ${mode}: ${JSON.stringify(player)}`);
     if (y < player.ground - 1.5) this.fail(`fell through the world in ${mode} at ${x.toFixed(0)}, ${z.toFixed(0)}: y ${y.toFixed(2)}`);
     // As drawn: never under the road it's on, or up in the air over it (a helicopter flies, a crash can throw a car)
-    // Twice running: a teleport moves the car a frame before it's drawn at its new height
+    // In two frames running: a teleport moves the car a frame before it's drawn at its new height, and a busy GPU can hold back
+    // the next frame for longer than these looks are apart. No frame, nothing drawn wrong.
     const under = mode === 'car' && player.drawnY !== null && player.drawnY < player.surfaceY - 0.6;
-    if (under && this.wasUnder) {
+    if (under && this.wasUnder && player.frame !== this.underFrame) {
       this.fail(`the car is drawn under its road at ${x.toFixed(0)}, ${z.toFixed(0)}: ${player.drawnY.toFixed(2)} on a road at ${player.surfaceY.toFixed(2)}`);
     }
+    if (under && !this.wasUnder) this.underFrame = player.frame;
     this.wasUnder = under;
     const pushing = !paused && (input.forward || input.backward);
     const moved = this.stuckAt && Math.hypot(x - this.stuckAt.x, z - this.stuckAt.z) > 0.5;
     if (!pushing || moved || !this.stuckAt) {
       this.stuckAt = player;
-      this.stuckSince = Date.now();
-    } else if (Date.now() - this.stuckSince > 5000) {
+      this.stuckSince = clock;
+    } else if (clock - this.stuckSince > 5) {
       this.fail(`stuck over 5 s with input held in ${mode} at ${x.toFixed(0)}, ${z.toFixed(0)}`);
     }
   }

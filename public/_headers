@@ -1,2 +1,17 @@
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
+
+# Each tile's name has a hash of its contents
+/tiles/*.bin.gz
+  Cache-Control: public, max-age=31536000, immutable
+
+# Except this one: its name stays put, so it can be preloaded
+/tiles/far-heights.bin.gz
+  ! Cache-Control
+  Cache-Control: public, max-age=3600
+
+/tiles/*.json.gz
+  Cache-Control: public, max-age=3600
+
+/tiles/world.json
+  Cache-Control: public, max-age=0, must-revalidate

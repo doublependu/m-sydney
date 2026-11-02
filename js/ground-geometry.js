@@ -1,5 +1,5 @@
 import { ShapeUtils, Vector2 } from 'three/webgpu';
-import { GEO } from './geodata.js';
+import { GEO, heldTiles, onMap } from './geodata.js';
 import { landAt, blockAt } from './city-config.js';
 import { LINKS, STEP, groundHeight, groundRoadAt, roadHeight, surfaceHeight } from './surfaces.js';
 
@@ -22,12 +22,14 @@ const { x0: HX0, z0: HZ0, cell: HCELL } = GEO.frame.heights;
 // Ground geometry is built in square cells of the city that can be culled on their own
 const GROUND_CELL = 700;
 class GroundCells {
-  constructor() {
+  // `size`: of its cells. A tile's ground is one cell: the tile is what gets culled
+  constructor(size = GROUND_CELL) {
+    this.size = size;
     this.cells = new Map();
   }
 
   cell(x, z) {
-    const key = Math.floor(x / GROUND_CELL) * 100000 + Math.floor(z / GROUND_CELL);
+    const key = Math.floor(x / this.size) * 100000 + Math.floor(z / this.size);
     let c = this.cells.get(key);
     if (!c) this.cells.set(key, (c = { position: [], normal: [], uv: [], index: [] }));
     return c;
@@ -292,6 +294,7 @@ function addCurb(cells, ring, ledge = 0.3) {
 
 // Every link of the road graph with a height at each point: { id, a, b, name, width, kind, sid, deck, pts: [{x, z, y}] }
 let linksCache = null;
+onMap({ addLink() { linksCache = null; }, removeLink() { linksCache = null; } });
 function allLinks() {
   if (!linksCache) {
     linksCache = LINKS.map((l) => ({ ...l, pts: l.pts.map((p) => ({ x: p.x, z: p.z, y: Number.isFinite(p.y) ? p.y : groundHeight(p.x, p.z) })) }));
@@ -321,25 +324,26 @@ function norm(p, q) {
 
 // The road surface: a ribbon down every street on the ground, capped at each junction by the circle the curbs were cut
 // with. Roads off the ground (bridges, tunnels) are built by js/structures.js.
-function* addRoadDeck(cells, wanted) {
+// `links`: the roads to look at, which must take in every road at any junction wanted. A tile's file has them.
+function* addRoadDeck(cells, wanted, links = LINKS, fills = heldTiles().flatMap((t) => t.fills)) {
   const RG = GEO.roadGraph;
-  const reach = new Float32Array(RG.nodes.length / 2);
-  const degree = new Uint16Array(reach.length);
-  for (const l of LINKS) {
+  const reach = new Map();
+  const degree = new Map();
+  for (const l of links) {
     if (l.kind) continue;
     const r = l.width / 2 + 0.6; // under the curbs
-    reach[l.a] = Math.max(reach[l.a], r);
-    reach[l.b] = Math.max(reach[l.b], r);
-    degree[l.a]++;
-    degree[l.b]++;
+    for (const n of [l.a, l.b]) {
+      reach.set(n, Math.max(reach.get(n) || 0, r));
+      degree.set(n, (degree.get(n) || 0) + 1);
+    }
   }
-  for (let i = 0; i < reach.length; i++) if (degree[i] >= 3) reach[i] += GEO.frame.corner;
+  for (const [n, count] of degree) if (count >= 3) reach.set(n, reach.get(n) + GEO.frame.corner);
   // Junctions down a cutting: their discs keep to the cutting's floor, never climbing faster than a road can. Each point
   // of a disc stands on the nearest of the roads that meet there.
-  const inCut = new Uint8Array(reach.length);
-  for (const l of LINKS) if (l.cut) inCut[l.a] = inCut[l.b] = 1;
+  const inCut = new Set();
+  for (const l of links) if (l.cut) inCut.add(l.a).add(l.b);
   const meeting = new Map();
-  for (const l of LINKS) {
+  for (const l of links) {
     if (l.kind) continue;
     for (const n of [l.a, l.b]) {
       if (!meeting.has(n)) meeting.set(n, []);
@@ -360,7 +364,7 @@ function* addRoadDeck(cells, wanted) {
     return best ? roadHeight(best, x, z) : groundHeight(x, z);
   };
   let work = 0;
-  for (const l of LINKS) {
+  for (const l of links) {
     if (l.kind || !wanted(l.pts[0].x, l.pts[0].z)) continue;
     if (++work % 60 === 0) yield;
     const r = l.width / 2 + 0.6;
@@ -386,9 +390,9 @@ function* addRoadDeck(cells, wanted) {
       previous = vl;
     }
   }
-  for (let i = 0; i < reach.length; i++) {
+  for (const [i, nodeReach] of reach) {
     const x = RG.nodes[i * 2], z = RG.nodes[i * 2 + 1];
-    if (!reach[i] || !wanted(x, z)) continue;
+    if (!nodeReach || !wanted(x, z)) continue;
     if (++work % 60 === 0) yield;
     // From the junction's middle out through two rings, so all of it stands on the ground
     const c = cells.cell(x, z);
@@ -398,9 +402,9 @@ function* addRoadDeck(cells, wanted) {
     for (const f of [0.5, 1]) {
       for (let k = 0; k < R; k++) {
         const a = (k / R) * Math.PI * 2;
-        const px = x + Math.cos(a) * reach[i] * f, pz = z + Math.sin(a) * reach[i] * f;
+        const px = x + Math.cos(a) * nodeReach * f, pz = z + Math.sin(a) * nodeReach * f;
         const y = junctionHeight(i, px, pz);
-        cells.vertex(c, px, inCut[i] ? Math.min(y, y0 + 0.08 * reach[i] * f) : y, pz, 0, 1, 0);
+        cells.vertex(c, px, inCut.has(i) ? Math.min(y, y0 + 0.08 * nodeReach * f) : y, pz, 0, 1, 0);
       }
     }
     const inner = centre + 1, outer = centre + 1 + R;
@@ -410,7 +414,7 @@ function* addRoadDeck(cells, wanted) {
       c.index.push(inner + k, inner + k1, outer + k, outer + k, inner + k1, outer + k1);
     }
   }
-  for (const flat of GEO.fills) {
+  for (const flat of fills) {
     if (!wanted(flat[0], flat[1])) continue;
     if (++work % 60 === 0) yield;
     const ring = [];
@@ -421,7 +425,8 @@ function* addRoadDeck(cells, wanted) {
 
 // A plain dark ground under everything on land, so a seam anywhere above it shows ground and never the harbour. Each
 // point lies BASE_DROP under the lowest ground around it, so it can't come up through the road.
-function* addBase(cells, wanted, step = HCELL) {
+// `box`: stay within it, to save looking at the whole map
+function* addBase(cells, wanted, step = HCELL, box = null) {
   const { detail } = GEO.frame;
   let work = 0;
   // Each corner once: four cells share it, and these nine samples are most of what the base costs to build
@@ -437,7 +442,8 @@ function* addBase(cells, wanted, step = HCELL) {
     }
     return y;
   };
-  for (const r of detail) {
+  for (const whole of detail) {
+    const r = box ? { x0: Math.max(whole.x0, box.x0), x1: Math.min(whole.x1, box.x1), z0: Math.max(whole.z0, box.z0), z1: Math.min(whole.z1, box.z1) } : whole;
     for (let x = Math.floor(r.x0 / step) * step; x < r.x1; x += step) {
       if (++work % 4 === 0) yield;
       for (let z = Math.floor(r.z0 / step) * step; z < r.z1; z += step) {

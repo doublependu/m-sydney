@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { BLOCKS, ROADS, blockAt, getLocationLabel, landAt, nearestRoads, SPAWN, TELEPORT_LOCATIONS } from '../js/city-config.js';
-import { GEO } from '../js/geodata.js';
+import { GEO, heldList } from '../js/geodata.js';
 
 // World positions of known places, from their real coordinates (tools/geo-common.mjs toWorld)
 const LAND = { 'Town Hall': [0, 0], 'Martin Place': [240, -800], 'Observatory Hill': [-360, -1600], 'Hyde Park': [520, 100], 'North Sydney': [-500, -3640], 'Kings Cross': [1504, 1] };
@@ -16,7 +16,7 @@ test('the road graph covers both sides of the harbour with real names', () => {
   const names = new Set(GEO.roadGraph.names);
   for (const name of ['George Street', 'Pitt Street', 'Macquarie Street', 'Oxford Street', 'William Street', 'Miller Street']) assert.ok(names.has(name), name);
   assert.ok(GEO.roadGraph.links.length > 4000);
-  assert.ok(GEO.signals.length / 2 > 300);
+  assert.ok(heldList('signals').length / 2 > 300);
 });
 
 test('curb islands sit on the land and roads run between them', () => {
@@ -76,9 +76,9 @@ test('the elevated motorways are roads off the ground, and none runs along the H
 });
 
 test('street furniture comes as x, z pairs inside the map', () => {
-  assert.ok(GEO.postBoxes.length / 2 > 80);
-  assert.ok(GEO.busShelters.length / 2 > 150);
-  for (const list of [GEO.postBoxes, GEO.busShelters]) {
+  assert.ok(heldList('postBoxes').length / 2 > 80);
+  assert.ok(heldList('busShelters').length / 2 > 150);
+  for (const list of [heldList('postBoxes'), heldList('busShelters')]) {
     assert.equal(list.length % 2, 0);
     for (const value of list) assert.ok(Number.isFinite(value) && Math.abs(value) < 10000);
   }

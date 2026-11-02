@@ -18,10 +18,13 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
   let pedRange = 0;
   let pedCursor = 0;
 
-  for (const n of network.nodes) {
-    n.walkers = []; // pedestrians on its crosswalks
-    n.curb = []; // pedestrians at or approaching its curbs
-  }
+  const prepareNodes = () => {
+    for (const n of network.nodes) {
+      n.walkers = []; // pedestrians on its crosswalks
+      n.curb = []; // pedestrians at or approaching its curbs
+    }
+  };
+  prepareNodes();
 
   // One instanced draw per level of detail; every pedestrian has a PersonRig that plants its footsteps on the
   // sidewalk (no sliding), with their own build, height, sex, hair, clothes and gait
@@ -88,7 +91,7 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
   }
 
   const KERB = 1.6; // how far along a crosswalk track pedestrians wait to cross (the curb is 2 m along)
-  const pedRoutes = createPedestrianRoutes(network, blockAt);
+  let pedRoutes = createPedestrianRoutes(network, blockAt);
   const track = { ax: 0, az: 0, ux: 0, uz: 1, len: 1, node: null, side: 0, line: 0, route: null };
 
   function sidewalkTrack(e) {
@@ -669,7 +672,45 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
     }
   }
 
-  return { peds, meshes: pedCrowd.meshes, update, populate };
+  /**
+   * The road network around the player is rebuilt as they travel (js/traffic.js). Each person keeps walking where they are, on
+   * the same stretch of the new one; whoever isn't on it any more is placed again later, somewhere out of sight.
+   */
+  function setNetwork(next, keyOf) {
+    network = next;
+    pedRoutes = createPedestrianRoutes(next, blockAt);
+    prepareNodes();
+    curbNodes.length = 0;
+    walkedNodes.length = 0;
+    const edgeByKey = new Map(next.edges.map((e) => [keyOf(e), e]));
+    const nodeKey = (n) => `${Math.round(n.x * 2)},${Math.round(n.z * 2)}`;
+    const nodeByKey = new Map(next.nodes.map((n) => [nodeKey(n), n]));
+    const same = (a, b) => Math.abs(a.ax - b.ax) < 0.01 && Math.abs(a.az - b.az) < 0.01 && Math.abs(a.ux - b.ux) < 0.001 && Math.abs(a.uz - b.uz) < 0.001;
+    for (const p of peds) {
+      p._curbNode = null;
+      if (!p.placed) continue;
+      const old = p.route;
+      let found = null;
+      if (old?.edge) {
+        const e = edgeByKey.get(keyOf(old.edge));
+        found = e ? pedRoutes.along(e).find((t) => same(t, old)) : null;
+      } else if (old?.node) {
+        const n = nodeByKey.get(nodeKey(old.node));
+        found = n ? pedRoutes.across(n).find((t) => same(t, old)) : null;
+      }
+      p.nextRoute = null;
+      p.nextLeg = 0;
+      if (found) {
+        p.route = found;
+        p.node = found.node;
+      } else {
+        if (p.conversation) endConversation(p.conversation);
+        p.placed = false;
+      }
+    }
+  }
+
+  return { peds, meshes: pedCrowd.meshes, update, populate, setNetwork };
 }
 
 export { createPedestrianSystem };

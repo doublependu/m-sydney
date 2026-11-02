@@ -661,6 +661,7 @@ test('poseCharacters skips stationary inactive cyclist IK/uploads and culls park
       'three/webgpu': {},
       './city-config.js': { SPAWN: { x: 0, z: 0, heading: 0 }, landAt: () => true, isTypingInField: () => false },
       './bridge.js': { DECK_SID: 0 },
+      './arrivals.js': { FLY: { AREA: 200 }, arrivalFor: () => null, holdOnFootway: () => null },
       './surfaces.js': { edgeHeight: () => 0, groundHeight: () => 0, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), structureAt: () => null, structuresAt: () => [], LINKS: [] },
       './terrain.js': { terrainHeight: () => 0, terrainSlope: () => 0 },
       './tsl-materials.js': {},
@@ -715,9 +716,10 @@ test('poseCharacters skips stationary inactive cyclist IK/uploads and culls park
   const car = { type: 'car', position: { x: 3.6, y: 0, z: 0 }, carState: { value: { x: 0, w: 0 } } };
   controller.entities = { person, cyclist, car };
 
-  // Within 320m: person updates every frame, stationary inactive cyclist poses once then skips IK & uploads
+  // Within 320m: a parked bicycle's rider poses once then skips IK & uploads. Nobody walks about unless it's the player
+  cyclist._parked = true;
   for (let i = 0; i < 5; i++) controller.poseCharacters(1 / 60, { x: 0, y: 2, z: 0 });
-  assert.equal(personUpdates, 5);
+  assert.equal(personUpdates, 0);
   assert.equal(bikeRides, 1, 'stationary parked cyclist solves ride IK only once');
   assert.equal(cyclist.riderCrowd.adds, 1);
 
@@ -731,7 +733,7 @@ test('poseCharacters skips stationary inactive cyclist IK/uploads and culls park
   const endsBeforeIdle = person.crowd.ends + cyclist.riderCrowd.ends;
   for (let i = 0; i < 10; i++) controller.poseCharacters(1 / 60, { x: 0, y: 2, z: 4000 });
   assert.equal(person.crowd.ends + cyclist.riderCrowd.ends, endsBeforeIdle, 'zero crowd calls while parked >320m away');
-  assert.equal(personUpdates, 5);
+  assert.equal(personUpdates, 0);
   assert.equal(bikeRides, 1);
 
   // Switching mode to cyclist immediately restores visibility & poses even when camera has not caught up yet
@@ -740,9 +742,9 @@ test('poseCharacters skips stationary inactive cyclist IK/uploads and culls park
   assert.equal(cyclist.helmet.visible, true);
   assert.equal(bikeRides, 2);
 
-  // Returning within 320m restores the sidewalk pedestrian immediately
-  controller.setMode('car');
-  controller.poseCharacters(1 / 60, { x: 0, y: 2, z: 10 });
+  // Switching to walking brings the walker back at once, however far away the camera still is
+  controller.setMode('person');
+  controller.poseCharacters(1 / 60, { x: 0, y: 2, z: 4000 });
   assert.equal(person.mesh.visible, true);
-  assert.equal(personUpdates, 6);
+  assert.equal(personUpdates, 1);
 });

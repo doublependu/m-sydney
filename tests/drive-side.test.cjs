@@ -19,12 +19,13 @@ for (let i = 0; i < 3; i++) {
 const graph = { nodes, links, names: ['A Street', 'B Street'] };
 
 function network(side) {
+  graph.links.forEach((l, i) => { l.id = i; });
   const { buildRoadNetwork } = loadModule(readFileSync(join(__dirname, '../js/road-network.js'), 'utf8'), {
     imports: {
       './city-config.js': { BLOCKS: [], CITY_BOUNDS: { minZ: -500, maxZ: 500 }, DRIVE_SIDE: side, blockAt: () => null, landAt: () => true },
       './geodata.js': { GEO: { roadGraph: graph } },
       './building-collision.js': { polygonBoxOverlaps: () => false },
-      './surfaces.js': { LINKS: graph.links.map(() => ({ sid: 0 })) }
+      './surfaces.js': { linkById: new Map(graph.links.map((_, i) => [i, { sid: 0 }])) }
     },
     globals: { console: { info() {} }, Math, Map, Set, Array, Object, Number, Infinity, Uint8Array, Float32Array }
   });

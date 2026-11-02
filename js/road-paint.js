@@ -17,6 +17,8 @@ const WIDEN_SPHERE_PAD = 16; // createRoadPaintMaterial widens thin distant stri
 
 // Spatial chunk builder for the street markings, so
 // off-screen and distant (> 1.65 km) road paint is culled instead of transforming all 12.5 km of vertices every frame.
+// One for every set of paint: a new set compiles nothing
+let paintMaterial = null;
 function createRoadPaintChunkBuilder(name, { cellSize = PAINT_CELL_SIZE, cullDistance = PAINT_CULL_DISTANCE } = {}) {
   const cells = new Map();
   let edge = null; // the road-network edge the paint is on: its own road's height (js/surfaces.js)
@@ -68,7 +70,7 @@ function createRoadPaintChunkBuilder(name, { cellSize = PAINT_CELL_SIZE, cullDis
   function build() {
     const group = new THREE.Group();
     group.name = name;
-    const material = createRoadPaintMaterial();
+    const material = (paintMaterial ||= createRoadPaintMaterial());
     let first = null;
 
     for (const cell of cells.values()) {
@@ -107,7 +109,8 @@ function createRoadPaintChunkBuilder(name, { cellSize = PAINT_CELL_SIZE, cullDis
   return { strip3D, build, setEdge: (e) => { edge = e || null; } };
 }
 
-function buildRoadPaint(scene, network, sharedBuilder = null) {
+// tags: js/road-paint-tags.js, what OpenStreetMap says is painted, which arrives with the rest of the city
+function* buildRoadPaintSteps(scene, network, sharedBuilder = null, tags = null) {
   const builder = sharedBuilder || createRoadPaintChunkBuilder('RoadMarkings');
   const lines = [];
   const bends = new Map();
@@ -171,17 +174,6 @@ function buildRoadPaint(scene, network, sharedBuilder = null) {
         } else {
           along(e, mid, 0.11, WHITE, 8, 0.3);
         }
-      }
-    }
-
-    // Wide one-way avenues: edge line, then a buffer and a green bike lane along the curb on the side left free
-    if (!back && e.axis === 'ave' && lanes.length >= 4) {
-      for (const [edge, sign] of [[lanes[lanes.length - 1].o + 1.8, 1], [lanes[0].o - 1.8, -1]]) {
-        const curb = sign * e.half;
-        if ((curb - edge) * sign < 3.5) continue;
-        along(e, edge + sign * 0.2, 0.13, WHITE);
-        along(e, curb - sign * 2.4, 0.13, WHITE);
-        along(e, curb - sign * 1.3, 2.0, GREEN);
       }
     }
 
@@ -276,9 +268,20 @@ function buildRoadPaint(scene, network, sharedBuilder = null) {
     }
   }
 
+  tags?.paintFromTags(strip, onEdge, WHITE, GREEN);
+
+  yield;
   const group = builder.build();
   scene.add(group);
+  tags?.addRoadWords(group);
   return group;
 }
 
-export { buildRoadPaint, createRoadPaintChunkBuilder };
+function buildRoadPaint(scene, network, sharedBuilder = null, tags = null) {
+  const job = buildRoadPaintSteps(scene, network, sharedBuilder, tags);
+  let step = job.next();
+  while (!step.done) step = job.next();
+  return step.value;
+}
+
+export { buildRoadPaint, buildRoadPaintSteps, createRoadPaintChunkBuilder };

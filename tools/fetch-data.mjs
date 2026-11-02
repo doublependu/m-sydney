@@ -22,6 +22,7 @@ const OVERPASS = {
   land: `[out:json][timeout:170][bbox:${BOX}];(way[man_made=pier];relation[man_made=pier];way[leisure=park];relation[leisure=park];way[landuse~"^(grass|recreation_ground|village_green)$"];way[leisure~"^(garden|pitch|playground|common)$"];relation[leisure=garden];way[natural=water];relation[natural=water];way[natural=wood];);out body geom;`,
   harbour: '[out:json][timeout:170];relation(id:15522136,1252425);out body geom;',
   coast: `[out:json][timeout:170];(way[natural=coastline](${WIDE}););out body geom;`,
+  cycleways: `[out:json][timeout:170][bbox:${BOX}];(way[highway=cycleway];);out body geom;`,
   rail: `[out:json][timeout:170][bbox:${BOX}];(way[railway~"^(light_rail|rail|subway|tram)$"];node[railway=station];node[railway=stop];way[route=ferry];);out body geom;`,
   wide_land: `[out:json][timeout:170];(way[landuse~"^(residential|commercial|industrial)$"](${WIDE});way[leisure~"^(park|nature_reserve)$"](${WIDE});relation[leisure~"^(park|nature_reserve)$"](${WIDE});relation[boundary=national_park](${WIDE});way[natural~"^(wood|scrub)$"](${WIDE}););out geom tags;`
 };
@@ -81,4 +82,18 @@ if (wanted('overture_syd')) {
     WHERE bbox.xmin > ${west} AND bbox.xmax < ${east} AND bbox.ymin > ${south} AND bbox.ymax < ${north}`);
   await c.run(`COPY b TO '${path.join(DATA, 'overture_syd.json')}' (FORMAT JSON)`);
   console.log('overture_syd written');
+}
+
+// Overture building parts: where a tower's real height and shape are, while its building record often holds only its podium
+if (wanted('overture_parts')) {
+  const { DuckDBInstance } = await import('@duckdb/node-api');
+  const db = await DuckDBInstance.create(':memory:');
+  const c = await db.connect();
+  await c.run("INSTALL httpfs; LOAD httpfs; INSTALL spatial; LOAD spatial; SET s3_region='us-west-2';");
+  const [south, west, north, east] = BOX.split(',').map(Number);
+  await c.run(`CREATE TABLE p AS SELECT id, building_id, height, min_height, num_floors, min_floor, roof_shape, ST_AsGeoJSON(geometry) AS g
+    FROM read_parquet('s3://overturemaps-us-west-2/release/${OVERTURE_RELEASE}/theme=buildings/type=building_part/*', hive_partitioning=1)
+    WHERE bbox.xmin > ${west} AND bbox.xmax < ${east} AND bbox.ymin > ${south} AND bbox.ymax < ${north}`);
+  await c.run(`COPY p TO '${path.join(DATA, 'overture_parts.json')}' (FORMAT JSON)`);
+  console.log('overture_parts written');
 }

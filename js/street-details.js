@@ -1,34 +1,114 @@
 import * as THREE from 'three/webgpu';
-import { Fn, float, color, positionWorld, uniform, mod, fract, step, smoothstep, mix } from 'three/tsl';
+import { Fn, attribute, float, color, positionGeometry, texture, uniform, uv, vec2, mod, fract, step, smoothstep, mix } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { SIGNAL_TIMING, blockAt, BLOCKS, nearestRoads } from './city-config.js';
-import { GEO } from './geodata.js';
+import { heldList, heldTrees } from './geodata.js';
 import { cityUniforms, createTreeGrateMaterial } from './tsl-materials.js';
 import { createTreeFieldSteps } from './trees.js';
-import { REAL_TREES, TREE_KINDS, TREE_HEIGHTS } from './tree-geodata.js';
 import { placeStreetTreesSteps } from './tree-placements.js';
-import { groundHeight } from './surfaces.js';
+import { groundHeight, groundRoadAt, groundRoadDistance } from './surfaces.js';
+import { polygonContains } from './building-collision.js';
+import { SignAtlas, bladesOnPole, junctionRoads, namedJunctions } from './street-signs.js';
+import { buildRoadSigns } from './road-signs.js';
 
 // Instanced street furniture, traffic signals, trees and nearby light pools.
 
-function createStreetSignBladeTexture(label) {
-  const c = document.createElement('canvas');
-  c.width = 256;
-  c.height = 64;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#17366b';
-  ctx.fillRect(0, 0, 256, 64);
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 5;
-  ctx.strokeRect(4, 4, 248, 56);
-  ctx.fillStyle = '#ffffff';
-  ctx.font = '800 30px Inter, Arial, sans-serif';
+// The names on the blades nearest the player, drawn over the plain plates all of them have. Only what can be read gets a
+// name, from one small texture, so this costs the same on any size of map.
+const SIGN_COLUMNS = 4, SIGN_ROWS = 8, SIGN_CELL_W = 256, SIGN_CELL_H = 64;
+const NEAR_BLADES = 48, NEAR_RANGE = 110;
+// What's kept each time the street furniture is rebuilt for a new stretch of the map
+const kept = new Map();
+const once = (key, make) => {
+  if (!kept.has(key)) kept.set(key, make());
+  return kept.get(key);
+};
+const signClock = uniform(0);
+
+function signPainter() {
+  const canvas = document.createElement('canvas');
+  canvas.width = SIGN_COLUMNS * SIGN_CELL_W;
+  canvas.height = SIGN_ROWS * SIGN_CELL_H;
+  const ctx = canvas.getContext('2d');
+  ctx.font = '700 36px Overpass, Inter, Arial, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(label, 128, 34);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+  const map = new THREE.CanvasTexture(canvas);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.anisotropy = 4;
+  const atlas = new SignAtlas(SIGN_COLUMNS * SIGN_ROWS, (cell, text) => {
+    const x = (cell % SIGN_COLUMNS) * SIGN_CELL_W, y = Math.floor(cell / SIGN_COLUMNS) * SIGN_CELL_H;
+    ctx.fillStyle = '#14202b';
+    ctx.fillRect(x, y, SIGN_CELL_W, SIGN_CELL_H);
+    ctx.fillStyle = '#f4f6f2';
+    ctx.fillText(text, x + SIGN_CELL_W / 2, y + SIGN_CELL_H * 0.53, SIGN_CELL_W - 18);
+  });
+  const material = new THREE.MeshBasicNodeMaterial();
+  material.colorNode = texture(map, uv().div(vec2(SIGN_COLUMNS, SIGN_ROWS)).add(attribute('signCell', 'vec2')));
+  return { map, atlas, material };
+}
+
+function createSignTexts(group, sites) {
+  const { map, atlas, material } = once('signs', signPainter);
+  // Text on both faces of a blade, just proud of it
+  const plane = () => new THREE.PlaneGeometry(1.34, 0.31);
+  const geometry = mergeGeometries([plane().translate(0, 0, 0.045), plane().rotateY(Math.PI).translate(0, 0, -0.045)]);
+  const cells = new THREE.InstancedBufferAttribute(new Float32Array(NEAR_BLADES * 2), 2);
+  cells.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute('signCell', cells);
+  const mesh = new THREE.InstancedMesh(geometry, material, NEAR_BLADES);
+  mesh.name = 'StreetSignText';
+  mesh.frustumCulled = false;
+  mesh.userData.lifted = true; // placed on the ground below
+  mesh.count = 0;
+  group.add(mesh);
+
+  const SITE_CELL = 128;
+  const siteCells = new Map();
+  for (const site of sites) {
+    site.ground = groundHeight(site.x, site.z);
+    const key = Math.floor(site.x / SITE_CELL) * 100000 + Math.floor(site.z / SITE_CELL);
+    if (!siteCells.has(key)) siteCells.set(key, []);
+    siteCells.get(key).push(site);
+  }
+  const dummy = new THREE.Object3D();
+  const near = [];
+  let lastX = Infinity, lastZ = Infinity;
+  return {
+    update(x, z) {
+      if ((x - lastX) ** 2 + (z - lastZ) ** 2 < 400) return;
+      lastX = x;
+      lastZ = z;
+      near.length = 0;
+      for (let ix = Math.floor((x - NEAR_RANGE) / SITE_CELL); ix <= Math.floor((x + NEAR_RANGE) / SITE_CELL); ix++) {
+        for (let iz = Math.floor((z - NEAR_RANGE) / SITE_CELL); iz <= Math.floor((z + NEAR_RANGE) / SITE_CELL); iz++) {
+          for (const site of siteCells.get(ix * 100000 + iz) || []) {
+            site.away = (site.x - x) ** 2 + (site.z - z) ** 2;
+            if (site.away < NEAR_RANGE * NEAR_RANGE) near.push(site);
+          }
+        }
+      }
+      near.sort((a, b) => a.away - b.away);
+      atlas.begin();
+      let count = 0;
+      for (const site of near) {
+        if (count === NEAR_BLADES) break;
+        const cell = atlas.cellFor(site.text);
+        if (cell < 0) continue;
+        dummy.position.set(site.x, site.y + site.ground, site.z);
+        dummy.rotation.set(0, site.yaw, 0);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(count, dummy.matrix);
+        // Texture rows run bottom up, the canvas's top down
+        cells.setXY(count, (cell % SIGN_COLUMNS) / SIGN_COLUMNS, 1 - (Math.floor(cell / SIGN_COLUMNS) + 1) / SIGN_ROWS);
+        count++;
+      }
+      mesh.count = count;
+      mesh.instanceMatrix.needsUpdate = true;
+      cells.needsUpdate = true;
+      if (atlas.drawn) map.needsUpdate = true;
+    }
+  };
 }
 
 /**
@@ -40,9 +120,10 @@ function createTrafficSignalLensMaterial(isAvenueHead, clock) {
   const mat = new THREE.MeshBasicNodeMaterial();
   mat.colorNode = Fn(() => {
     const t = mod(clock, cycle);
-    const wy = positionWorld.y;
-    const isTopRed = step(5.60, wy);
-    const isBottomGreen = float(1.0).sub(step(5.24, wy));
+    // Which lens this is, by where it is in the head (LENS_Y): the same on any hill
+    const inHead = positionGeometry.y;
+    const isTopRed = step(0.18, inHead);
+    const isBottomGreen = float(1.0).sub(step(-0.18, inHead));
     const isMidAmber = float(1.0).sub(isTopRed).mul(float(1.0).sub(isBottomGreen));
 
     // Avenue phase: Green, then Amber from avenueAmber, Red from avenueRed
@@ -100,33 +181,34 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
   const addFootprint = (x, z, w, d, pedestrianOnly = false) => footprints.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, pedestrianOnly });
 
   // Signal clock (seconds), set every frame by main.js
-  const signalClock = uniform(0);
+  const signalClock = signClock;
 
   // Shared materials
-  const poleMetalMat = new THREE.MeshStandardNodeMaterial({
+  const poleMetalMat = once('poleMetal', () => new THREE.MeshStandardNodeMaterial({
     color: 0x3b4046,
     roughness: 0.45,
     metalness: 0.78
-  });
-  const signalHousingMat = new THREE.MeshStandardNodeMaterial({
+  }));
+  const signalHousingMat = once('signalHousing', () => new THREE.MeshStandardNodeMaterial({
     color: 0x24282c, // Dark housings, as on Sydney's signals
     roughness: 0.38,
     metalness: 0.35,
     side: THREE.DoubleSide // the tunnel visors are open half-tubes
-  });
-  const aveSignalLensMat = createTrafficSignalLensMaterial(true, signalClock);
-  const streetSignalLensMat = createTrafficSignalLensMaterial(false, signalClock);
-  const walkSignalGlow = createWalkSignalMaterial(signalClock);
+  }));
+  const aveSignalLensMat = once('aveLens', () => createTrafficSignalLensMaterial(true, signalClock));
+  const streetSignalLensMat = once('streetLens', () => createTrafficSignalLensMaterial(false, signalClock));
+  const walkSignalGlow = once('walkGlow', () => createWalkSignalMaterial(signalClock));
   // Cobra-head LED streetlight lens & pedestrian post-top globe: pale diffuser by day, warm white after dusk
-  const lampBulbGlow = new THREE.MeshBasicNodeMaterial();
-  lampBulbGlow.colorNode = mix(color(0x8f918c), color(0xfff1d6).mul(2.1), smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow));
-  const pedGlobeGlow = new THREE.MeshBasicNodeMaterial();
-  pedGlobeGlow.colorNode = mix(color(0xd4d2c8), color(0xffe4b0).mul(1.95), smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow));
-  const streetBladeMat = new THREE.MeshStandardNodeMaterial({
-    map: createStreetSignBladeTexture('GEORGE ST'),
-    roughness: 0.32
+  const lampBulbGlow = once('lampBulb', () => {
+    const m = new THREE.MeshBasicNodeMaterial();
+    m.colorNode = mix(color(0x8f918c), color(0xfff1d6).mul(2.1), smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow));
+    return m;
   });
-
+  const pedGlobeGlow = once('pedGlobe', () => {
+    const m = new THREE.MeshBasicNodeMaterial();
+    m.colorNode = mix(color(0xd4d2c8), color(0xffe4b0).mul(1.95), smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow));
+    return m;
+  });
   // 12-inch three-section signal head (origin at its centre, y = 5.42): yellow housing, a tunnel visor over each lens
   // and a hanger to the mast arm, lenses on both faces (+-z) so it reads from both approaches; the lens material
   // picks red / amber / green from each lens's world height (5.78 / 5.42 / 5.06)
@@ -171,6 +253,10 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
   const aveLensMatrices = [];
   const streetLensMatrices = [];
   const streetBladeMatrices = [];
+  const signSites = [];
+  const silverPostMatrices = [];
+  const yellowPostMatrices = [];
+  const WIDE_ROAD = 15; // m wide: a road with an arm reaching over it
   const walkBoxMatrices = [];
   const audioSignals = [];
   const signalIntersections = [];
@@ -221,11 +307,24 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
     return true;
   };
 
+  // A plain plate each, which the near ones get their name on (createSignTexts)
+  function addBlades(blades) {
+    for (const blade of blades) {
+      dummy.rotation.set(0, blade.yaw, 0);
+      dummy.position.set(blade.x, blade.y, blade.z);
+      dummy.scale.set(1.38, 0.34, 0.08);
+      dummy.updateMatrix();
+      streetBladeMatrices.push(dummy.matrix.clone());
+      signSites.push(blade);
+    }
+  }
+
   // Every signalised junction: a signal mast on the two curbs nearest the junction, on opposite sides of it, its arm
   // reaching out over the road. Heads and walk lights share the junction's clock.
-  for (let i = 0; i < GEO.signals.length; i += 2) {
+  const signalPoints = heldList('signals');
+  for (let i = 0; i < signalPoints.length; i += 2) {
     if ((i & 30) === 0) yield;
-    const jx = GEO.signals[i], jz = GEO.signals[i + 1];
+    const jx = signalPoints[i], jz = signalPoints[i + 1];
     let placedSignal = false;
     const used = [];
     // Corners: curb points around the junction, found by walking out along eight directions
@@ -250,52 +349,93 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
       }
       const armYaw = Math.atan2(c.uz, -c.ux); // the arm points from the curb to the junction
       const out = (d) => [px - c.ux * d, pz - c.uz * d];
+      // Sydney's signals stand on posts at the kerb, fluted silver in the CBD and yellow beyond it. Only a wide road gets an
+      // arm reaching out over its lanes.
+      const wide = (groundRoadAt(jx, jz)?.width ?? 0) >= WIDE_ROAD;
+      const cbd = px > -450 && px < 1000 && pz > -1500 && pz < 1100;
+      const postHeight = wide ? 6.4 : 4.3;
 
-      dummy.position.set(px, 3.3, pz);
+      dummy.position.set(px, postHeight / 2 + 0.1, pz);
       dummy.rotation.set(0, 0, 0);
-      dummy.scale.set(0.14, 6.4, 0.14);
+      dummy.scale.set(0.15, postHeight, 0.15);
       dummy.updateMatrix();
-      poleMatrices.push(dummy.matrix.clone());
+      (cbd ? silverPostMatrices : yellowPostMatrices).push(dummy.matrix.clone());
 
-      // Street name blade and pedestrian signal on the pole
+      // Street name blades, one along each road through the junction, and the pedestrian signal and its button on the pole
+      addBlades(bladesOnPole(junctionRoads(jx, jz), px, pz, jx, jz, wide ? 4.65 : 3.05));
       dummy.rotation.set(0, armYaw, 0);
-      dummy.position.set(...[out(0.68)[0]], 4.65, out(0.68)[1]);
-      dummy.scale.set(1.38, 0.34, 0.08);
-      dummy.updateMatrix();
-      streetBladeMatrices.push(dummy.matrix.clone());
-      dummy.position.set(out(0.24)[0], 3.15, out(0.24)[1]);
+      dummy.position.set(out(0.24)[0], 2.45, out(0.24)[1]);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
       walkBoxMatrices.push(dummy.matrix.clone());
       audioSignals.push({ x: dummy.position.x, y: dummy.position.y, z: dummy.position.z, isAvenue: used.length === 1 });
-
-      // Mast arm over the roadway
-      const [ax, az] = out(3.25);
-      dummy.position.set(ax, 6.1, az);
-      dummy.scale.set(6.5, 0.11, 0.11);
+      dummy.position.set(px, 1.12, pz);
+      dummy.scale.set(0.19, 0.19, 0.19);
       dummy.updateMatrix();
       armMatrices.push(dummy.matrix.clone());
 
+      // Night light for the junction
       const [lx, lz] = out(1.85);
-      dummy.position.set(lx, 6.22, lz);
-      dummy.scale.set(1, 1, 1);
-      dummy.updateMatrix();
-      lampHeadMatrices.push(dummy.matrix.clone());
-      cobraLampSites.push({ x: lx, y: 6.18, z: lz, tx: out(2.8)[0], tz: out(2.8)[1] });
+      cobraLampSites.push({ x: lx, y: postHeight - 0.2, z: lz, tx: out(2.8)[0], tz: out(2.8)[1] });
 
-      // Two heads on the arm, one for each road through the junction
-      for (const armDist of [3.1, 5.5]) {
-        const [hx, hz] = out(armDist);
-        dummy.position.set(hx, 5.42, hz);
-        dummy.rotation.set(0, armYaw + (armDist < 4.0 ? Math.PI / 2 : 0), 0);
+      if (wide) {
+        // Mast arm over the roadway, with a lamp and a head for each road through the junction
+        const [ax, az] = out(3.25);
+        dummy.position.set(ax, 6.1, az);
+        dummy.scale.set(6.5, 0.11, 0.11);
+        dummy.updateMatrix();
+        armMatrices.push(dummy.matrix.clone());
+        dummy.position.set(lx, 6.22, lz);
         dummy.scale.set(1, 1, 1);
         dummy.updateMatrix();
-        yellowBoxMatrices.push(dummy.matrix.clone());
-        (armDist < 4.0 ? aveLensMatrices : streetLensMatrices).push(dummy.matrix.clone());
+        lampHeadMatrices.push(dummy.matrix.clone());
+        for (const armDist of [3.1, 5.5]) {
+          const [hx, hz] = out(armDist);
+          dummy.position.set(hx, 5.42, hz);
+          dummy.rotation.set(0, armYaw + (armDist < 4.0 ? Math.PI / 2 : 0), 0);
+          dummy.scale.set(1, 1, 1);
+          dummy.updateMatrix();
+          yellowBoxMatrices.push(dummy.matrix.clone());
+          (armDist < 4.0 ? aveLensMatrices : streetLensMatrices).push(dummy.matrix.clone());
+        }
+      } else {
+        // A head either side of the post, one for each road through the junction
+        for (const [offset, avenue] of [[0.32, true], [-0.32, false]]) {
+          const [hx, hz] = out(offset);
+          dummy.position.set(hx, 3.72, hz);
+          dummy.rotation.set(0, armYaw + (avenue ? Math.PI / 2 : 0), 0);
+          dummy.scale.set(1, 1, 1);
+          dummy.updateMatrix();
+          yellowBoxMatrices.push(dummy.matrix.clone());
+          (avenue ? aveLensMatrices : streetLensMatrices).push(dummy.matrix.clone());
+        }
       }
       dummy.rotation.set(0, 0, 0);
     }
   }
+
+  // The other corners where named streets meet: a slim post with a blade for each, as most of Sydney's street corners have
+  for (const [n, { x: jx, z: jz, roads }] of namedJunctions().entries()) {
+    if (n % 16 === 0) yield;
+    if (!isClearOfPoles(jx, jz, 18)) continue;
+    let corner = null;
+    for (let k = 0; k < 8 && !corner; k++) {
+      const a = (k / 8) * Math.PI * 2 + 0.4, ux = Math.cos(a), uz = Math.sin(a);
+      for (let r = 3; r <= 16; r += 1) {
+        if (isOnCurbIsland(jx + ux * r, jz + uz * r, 0.4)) { corner = { x: jx + ux * r, z: jz + uz * r }; break; }
+      }
+    }
+    if (!corner || !isClearOfPoles(corner.x, corner.z, 2)) continue;
+    addPole(corner.x, corner.z, 0.2);
+    dummy.position.set(corner.x, 1.65, corner.z);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(0.05, 3.3, 0.05);
+    dummy.updateMatrix();
+    poleMatrices.push(dummy.matrix.clone());
+    addBlades(bladesOnPole(roads, corner.x, corner.z, jx, jz, 3.2));
+  }
+  dummy.rotation.set(0, 0, 0);
+  dummy.scale.set(1, 1, 1);
 
   yield;
   // =========================================================================
@@ -305,7 +445,8 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
   //    and verified with blockAt(x, z) so no pole ever stands in any roadway.
   yield;
   // =========================================================================
-  const allBlocks = BLOCKS || [];
+  // In a set order, whichever order the tiles arrived in
+  const allBlocks = [...BLOCKS].sort((a, b) => a.id - b.id);
 
   for (const b of allBlocks) {
     yield;
@@ -474,13 +615,18 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
   yield;
   addMatrixArrayInstanced(unitBox, poleMetalMat, armMatrices);
   yield;
+  addMatrixArrayInstanced(unitCyl, once('new THREE.MeshStandardNodeMaterial({ color: 0xb6babc, roughness: 0.42, metalness: 0.7 })', () => new THREE.MeshStandardNodeMaterial({ color: 0xb6babc, roughness: 0.42, metalness: 0.7 })), silverPostMatrices);
+  addMatrixArrayInstanced(unitCyl, once('new THREE.MeshStandardNodeMaterial({ color: 0xd9ae16, roughness: 0.5, metalness: 0.2 })', () => new THREE.MeshStandardNodeMaterial({ color: 0xd9ae16, roughness: 0.5, metalness: 0.2 })), yellowPostMatrices);
+  yield;
   addMatrixArrayInstanced(signalHousingGeo, signalHousingMat, yellowBoxMatrices);
   yield;
   addMatrixArrayInstanced(signalLensGeo, aveSignalLensMat, aveLensMatrices, false);
   yield;
   addMatrixArrayInstanced(signalLensGeo, streetSignalLensMat, streetLensMatrices, false);
   yield;
-  addMatrixArrayInstanced(unitBox, streetBladeMat, streetBladeMatrices);
+  addMatrixArrayInstanced(unitBox, signalHousingMat, streetBladeMatrices);
+  yield;
+  const signTexts = createSignTexts(group, signSites);
   yield;
   addMatrixArrayInstanced(walkHousingGeo, signalHousingMat, walkBoxMatrices);
   yield;
@@ -501,20 +647,80 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
   addMatrixArrayInstanced(pedGlobeGeo, pedGlobeGlow, pedPostMatrices, false);
   yield;
 
+  yield* buildRoadSigns(group, { dummy, isOnCurbIsland, addPole, isClearOfPoles, poleMatrices, addMatrixArrayInstanced, unitCyl, poleMetalMat });
+
+  yield;
+  // Sydney's steel awnings: cantilevered over the footpath along the frontages the City's plan shows them on. Each piece
+  // takes its height from the ground under it, so a run steps up a hill the way the real ones do.
+  {
+    const CELL = 32;
+    const walls = new Map();
+    for (const c of colliders) {
+      if (!c.polygon) continue;
+      for (let ix = Math.floor(c.minX / CELL); ix <= Math.floor(c.maxX / CELL); ix++) {
+        for (let iz = Math.floor(c.minZ / CELL); iz <= Math.floor(c.maxZ / CELL); iz++) {
+          const k = ix * 100000 + iz;
+          if (!walls.has(k)) walls.set(k, []);
+          walls.get(k).push(c.polygon);
+        }
+      }
+    }
+    const inBuilding = (x, z) => (walls.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || []).some((p) => polygonContains(p, x, z));
+    const roofs = [], fascias = [];
+    const PIECE = 7, HEIGHT = 3.5;
+    for (const [n, line] of heldList('awnings').entries()) {
+      if (n % 12 === 0) yield;
+      if (line[0] === 2) continue; // colonnades belong to the building
+      for (let i = 1; i + 3 < line.length; i += 2) {
+        const ax = line[i], az = line[i + 1], bx = line[i + 2], bz = line[i + 3];
+        const L = Math.hypot(bx - ax, bz - az);
+        if (L < 1.5) continue;
+        const ux = (bx - ax) / L, uz = (bz - az) / L;
+        const pieces = Math.max(1, Math.round(L / PIECE));
+        for (let k = 0; k < pieces; k++) {
+          const t = ((k + 0.5) / pieces) * L, x = ax + ux * t, z = az + uz * t;
+          // Out over the footpath, towards the road, from a real wall
+          const away = groundRoadDistance(x - uz * 6, z + ux * 6) < groundRoadDistance(x + uz * 6, z - ux * 6) ? 1 : -1;
+          const nx = -uz * away, nz = ux * away;
+          if (!inBuilding(x - nx * 1.2, z - nz * 1.2) && !inBuilding(x - nx * 3, z - nz * 3)) continue;
+          let depth = 0;
+          for (const d of [3.2, 2.6, 2, 1.4]) if (isOnCurbIsland(x + nx * d, z + nz * d, 0.2)) { depth = d; break; }
+          if (!depth) continue;
+          const length = L / pieces + 0.06;
+          dummy.rotation.set(0, Math.atan2(-uz, ux), 0);
+          dummy.position.set(x + nx * depth * 0.5, HEIGHT, z + nz * depth * 0.5);
+          dummy.scale.set(length, 0.16, depth);
+          dummy.updateMatrix();
+          roofs.push(dummy.matrix.clone());
+          dummy.position.set(x + nx * depth, HEIGHT + 0.08, z + nz * depth);
+          dummy.scale.set(length, 0.46, 0.09);
+          dummy.updateMatrix();
+          fascias.push(dummy.matrix.clone());
+        }
+      }
+    }
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(1, 1, 1);
+    const steelMat = once('new THREE.MeshStandardNodeMaterial({ color: 0x2e3338, roughness: 0.62, metalness: 0.3 })', () => new THREE.MeshStandardNodeMaterial({ color: 0x2e3338, roughness: 0.62, metalness: 0.3 }));
+    addMatrixArrayInstanced(unitBox, steelMat, roofs);
+    addMatrixArrayInstanced(unitBox, steelMat, fascias);
+  }
+
   yield;
   // Australia Post's red boxes, and bus shelters along the kerb, where they really stand
-  const postMat = new THREE.MeshStandardNodeMaterial({ color: 0xc8202c, roughness: 0.42, metalness: 0.2 });
+  const postMat = once('new THREE.MeshStandardNodeMaterial({ color: 0xc8202c, roughness: 0.42, metalness: 0.2 })', () => new THREE.MeshStandardNodeMaterial({ color: 0xc8202c, roughness: 0.42, metalness: 0.2 }));
   const postGeo = mergeGeometries([new THREE.CylinderGeometry(0.27, 0.27, 1.3, 12).translate(0, 0.65, 0), new THREE.SphereGeometry(0.27, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2).translate(0, 1.3, 0)]);
   const postMatrices = [];
-  for (let i = 0; i < GEO.postBoxes.length; i += 2) {
-    const x = GEO.postBoxes[i], z = GEO.postBoxes[i + 1];
+  const postBoxes = heldList('postBoxes');
+  for (let i = 0; i < postBoxes.length; i += 2) {
+    const x = postBoxes[i], z = postBoxes[i + 1];
     if (!isOnSidewalk(x, z, 0.4)) continue;
     postMatrices.push(new THREE.Matrix4().makeTranslation(x, 0.22, z));
     addFootprint(x, z, 0.6, 0.6, true);
   }
   addMatrixArrayInstanced(postGeo, postMat, postMatrices);
-  const shelterRoofMat = new THREE.MeshStandardNodeMaterial({ color: 0x2b3036, roughness: 0.5, metalness: 0.4 });
-  const shelterGlassMat = new THREE.MeshStandardNodeMaterial({ color: 0x9fb6c2, roughness: 0.12, metalness: 0.5, transparent: true, opacity: 0.35, depthWrite: false });
+  const shelterRoofMat = once('new THREE.MeshStandardNodeMaterial({ color: 0x2b3036, roughness: 0.5, metalness: 0.4 })', () => new THREE.MeshStandardNodeMaterial({ color: 0x2b3036, roughness: 0.5, metalness: 0.4 }));
+  const shelterGlassMat = once('new THREE.MeshStandardNodeMaterial({ color: 0x9fb6c2, roughness: 0.12, metalness: 0.5, transparent: true, opacity: 0.35, depthWrite: false })', () => new THREE.MeshStandardNodeMaterial({ color: 0x9fb6c2, roughness: 0.12, metalness: 0.5, transparent: true, opacity: 0.35, depthWrite: false }));
   const shelterFrame = mergeGeometries([
     new THREE.BoxGeometry(4.6, 0.1, 1.5).translate(0, 2.5, 0),
     ...[-2.1, 2.1].map((x) => new THREE.BoxGeometry(0.09, 2.5, 0.09).translate(x, 1.25, -0.6)),
@@ -522,9 +728,10 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
   ]);
   const shelterBack = new THREE.BoxGeometry(4.2, 1.9, 0.04).translate(0, 1.25, -0.62);
   const shelterMatrices = [];
-  for (let i = 0; i < GEO.busShelters.length; i += 2) {
+  const busShelters = heldList('busShelters');
+  for (let i = 0; i < busShelters.length; i += 2) {
     if (i % 40 === 0) yield;
-    const nodeX = GEO.busShelters[i], nodeZ = GEO.busShelters[i + 1];
+    const nodeX = busShelters[i], nodeZ = busShelters[i + 1];
     const road = nearestRoads(nodeX, nodeZ, 18)[0];
     if (!road || !road.road.w) continue;
     // The stop's node sits anywhere from the kerb to the centreline: stand it on the footpath, facing the road
@@ -566,7 +773,8 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
   const subwayColliders = [];
 
   // Surveyed street trees; parks keep their authored terrain, clearings and tree layouts.
-  let sidewalkTreePositions = yield* placeStreetTreesSteps(REAL_TREES, TREE_KINDS, TREE_HEIGHTS, treePositions,
+  const realTrees = heldTrees();
+  let sidewalkTreePositions = yield* placeStreetTreesSteps(realTrees.points, realTrees.kinds, realTrees.heights, treePositions,
     (x, z) => isClearOfPoles(x, z, 2.2));
   for (const tree of sidewalkTreePositions) treePositions.push(tree);
   sidewalkTreePositions = sidewalkTreePositions.filter((t) => t.tier > 0);
@@ -577,9 +785,9 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
   sidewalkTreePositions = sidewalkTreePositions.filter((t) => treeField.sites.has(t));
   console.info(`[streetDetails] ${treeField.stats.trees} trees (${sidewalkTreePositions.length} street trees)`);
 
-  const grateMat = createTreeGrateMaterial();
-  const pitCurbMat = new THREE.MeshStandardNodeMaterial({ color: 0x484642, roughness: 0.88 });
-  const pitSoilMat = new THREE.MeshStandardNodeMaterial({ color: 0x241c14, roughness: 0.96 });
+  const grateMat = once('grate', createTreeGrateMaterial);
+  const pitCurbMat = once('new THREE.MeshStandardNodeMaterial({ color: 0x484642, roughness: 0.88 })', () => new THREE.MeshStandardNodeMaterial({ color: 0x484642, roughness: 0.88 }));
+  const pitSoilMat = once('new THREE.MeshStandardNodeMaterial({ color: 0x241c14, roughness: 0.96 })', () => new THREE.MeshStandardNodeMaterial({ color: 0x241c14, roughness: 0.96 }));
 
   // Curbside tree pit surrounds & dark soil beds, with concentric cast-iron grates on the main own avenues
   // (pits run along the curb: t.pitRot = PI/2 on cross streets)
@@ -685,6 +893,7 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
   function update(camera) {
     if (!camera) return;
     treeField.update(camera.position);
+    signTexts.update(camera.position.x, camera.position.z);
     const glow = cityUniforms.uInteriorGlow.value;
     // Increase streetlight intensity toward dusk.
     const lampScale = Math.min(1.25, Math.max(0.0, (glow - 0.36) * 1.15));

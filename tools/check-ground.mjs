@@ -4,8 +4,9 @@
 //   kerbs      just outside each kerb: no surface at all (the harbour shows), the road below the kerb's foot (a slit),
 //              or the road lying over the footpath
 //   crossings  roads that cross with no junction, and how far apart their surfaces are there
+//   buildings  whether the ground beside any wall rises over its foot, and how much stone shows under floors
 //   grid       steps between neighbouring cells of the height grid on land
-// usage: node tools/check-ground.mjs [--json]
+// usage: node tools/check-ground.mjs [--json] [--strict] [--tiles=0_-2,1_-2]
 import fs from 'node:fs';
 
 // The modules fetch their binary data at import: serve it from disk
@@ -14,9 +15,18 @@ const { GEO } = await import('../js/geodata.js');
 const { BLOCKS, landAt } = await import('../js/city-config.js');
 const ground = await import('../js/ground-geometry.js');
 const { groundHeight } = await import('../js/surfaces.js');
+const { heldTiles } = await import('../js/geodata.js');
+const REAL_BUILDINGS = heldTiles().flatMap((t) => t.buildings);
+const { buildingFloor, eachWall } = await import('../js/building-floor.js');
 
 const RG = GEO.roadGraph;
 const json = process.argv.includes('--json');
+// --strict: fails if the ground has got worse than the last accepted numbers
+const strict = process.argv.includes('--strict');
+// --tiles: only samples within these 1 km squares, for a change to one part of the map
+const tilesArg = process.argv.find((a) => a.startsWith('--tiles='))?.slice(8).split(',');
+const tiles = tilesArg && new Set(tilesArg);
+const wanted = (x, z) => !tiles || tiles.has(`${Math.floor(x / 1000)}_${Math.floor(z / 1000)}`);
 const report = {};
 
 // --- The drawn road surface, as triangles, indexed by 25 m cell ---------------------------------------------------------
@@ -74,6 +84,7 @@ function drawnRoad(x, z, near = Infinity, below = 1) {
       for (let t = 3; t < L - 3; t += 6) {
         for (const off of width > 7 ? [-(width / 2 - 1.8), 0, width / 2 - 1.8] : [0]) {
           const x = a.x + ux * t + uz * off, z = a.z + uz * t - ux * off;
+          if (!wanted(x, z)) continue;
           // The car rests on the plane through its four contacts; each wheel's bottom is that plane where it touches
           const car = ground.wheelContacts(x, z, heading);
           let sink = -Infinity;
@@ -136,6 +147,7 @@ function drawnRoad(x, z, near = Infinity, below = 1) {
         for (let t = 0.5; t < L; t += 4) {
           const x = a.x + ((c.x - a.x) * t) / L, z = a.z + ((c.z - a.z) * t) / L;
           const ox = x + nx * 0.4, oz = z + nz * 0.4;
+          if (!wanted(ox, oz)) continue;
           // Not along the play area's own edge, where the land runs on beyond the city
           const edge = GEO.frame.detail.some((r) => ox > r.x0 - 3 && ox < r.x1 + 3 && oz > r.z0 - 3 && oz < r.z1 + 3
             && Math.min(ox - r.x0, r.x1 - ox, oz - r.z0, r.z1 - oz) < 3) && !GEO.frame.detail.some((r) => ox > r.x0 + 3 && ox < r.x1 - 3 && oz > r.z0 + 3 && oz < r.z1 - 3);
@@ -211,6 +223,36 @@ function drawnRoad(x, z, near = Infinity, below = 1) {
   report.crossings = { total: found.length, byKinds, tooClose: tight.length, examples: tight.slice(0, 10) };
 }
 
+// --- Buildings ----------------------------------------------------------------------------------------------------------
+// The ground beside each wall against the wall's lowest row of windows, and how much stone shows under the floor
+{
+  const FLOOR_SILL = 0.22; // the wall starts this far above the floor's ground (js/building-footprints.js)
+  let walls = 0, buried = 0, worst = 0, at = null, buildings = 0;
+  const stone = [];
+  for (const b of REAL_BUILDINGS) {
+    if (tiles && !wanted(b.cx, b.cz)) continue;
+    buildings++;
+    const { floor, low } = buildingFloor(b.polygons, groundHeight);
+    stone.push(floor - low);
+    eachWall(b.polygons, (p, q) => {
+      const L = Math.hypot(q.x - p.x, q.z - p.z);
+      for (let t = 0; t <= L; t += 2) {
+        const x = p.x + ((q.x - p.x) * t) / (L || 1), z = p.z + ((q.z - p.z) * t) / (L || 1);
+        const over = groundHeight(x, z) - (floor + FLOOR_SILL);
+        walls++;
+        if (over > 0.03) buried++;
+        if (over > worst) { worst = over; at = [Math.round(x), Math.round(z)]; }
+      }
+    });
+  }
+  stone.sort((p, q) => p - q);
+  const q = (f) => +(stone[Math.floor(stone.length * f)] ?? 0).toFixed(1);
+  report.buildings = {
+    buildings, wallSamples: walls, groundOverWall: buried, worst: +worst.toFixed(2), at,
+    stone: { median: q(0.5), p90: q(0.9), p99: q(0.99), max: +(stone.at(-1) ?? 0).toFixed(1), over4m: stone.filter((d) => d > 4).length }
+  };
+}
+
 // --- The height grid ----------------------------------------------------------------------------------------------------
 {
   const { x0, z0, cell, w, h } = GEO.frame.heights;
@@ -241,5 +283,25 @@ else {
   if (r.kerbs.where.open.length) console.log(`          open at ${r.kerbs.where.open.map((p) => p.join(',')).join('  ')}`);
   console.log(`crossings ${r.crossings.total} without a junction (${JSON.stringify(r.crossings.byKinds)} by level: 0 ground, 1 bridge, 2 tunnel), ${r.crossings.tooClose} closer than ${ground.STACK_CLEARANCE} m`);
   for (const c of r.crossings.examples.slice(0, 6)) console.log(`          ${c.a} x ${c.b} at (${c.x}, ${c.z}): ${c.apart} m apart`);
+  const bs = r.buildings;
+  console.log(`buildings ${bs.buildings}: ground over the wall's foot at ${bs.groundOverWall} of ${bs.wallSamples} samples, worst ${bs.worst} m${bs.at ? ` at ${bs.at.join(',')}` : ''}; stone under floors median ${bs.stone.median} m, 99th percentile ${bs.stone.p99} m, ${bs.stone.over4m} over 4 m`);
   console.log(`grid      ${r.grid.landCells} land cells: ${r.grid.stepsOver4m} steps over 4 m, ${r.grid.stepsOver10m} over 10 m, worst ${r.grid.worst} m at ${r.grid.at}`);
+}
+
+// What iteration 1 ended on, and a little room. Tighten these as the ground improves.
+if (strict) {
+  const r = report;
+  const limits = [
+    [r.wheels.over3cmShare, 3.5, 'wheels over 3 cm under the road, %'],
+    [r.wheels.over15cmShare, 0.1, 'wheels over 15 cm under the road, %'],
+    [r.kerbs.openShare, 0.6, 'kerbs onto nothing or a slit, %'],
+    [r.crossings.tooClose, 20, 'crossings too close'],
+    [r.grid.stepsOver10m, 0, 'height grid steps over 10 m'],
+    [r.buildings.groundOverWall, 0, 'wall samples with the ground over the wall']
+  ];
+  let failed = false;
+  for (const [value, limit, label] of limits) {
+    if (value > limit) { console.error(`${label}: ${value}, limit ${limit}`); failed = true; }
+  }
+  if (failed) process.exit(1);
 }

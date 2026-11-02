@@ -1,7 +1,8 @@
 import { Ready } from './world-jobs.js';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { BLOCKS, CITY_BOUNDS, LAWNS, PAVEMENTS, SHORE_RINGS } from './city-config.js';
+import { CITY_BOUNDS, SHORE_RINGS } from './city-config.js';
+import { TILE, tileKeyAt } from './geodata.js';
 import {
   createRoadSurfaceMaterial,
   createSidewalkMaterial,
@@ -9,8 +10,7 @@ import {
   createWaterMaterial,
   createParkLawnMaterial
 } from './tsl-materials.js';
-import { createRoadPaintChunkBuilder } from './road-paint.js';
-import { groundHeight } from './surfaces.js';
+import { groundHeight, linkById } from './surfaces.js';
 import { GroundCells, SIDEWALK_TOP, addBase, addCurb, addRoadDeck, addSurface, denseRing, pointInPolygonXZ } from './ground-geometry.js';
 import { buildStructures } from './structures.js';
 import { outsideTunnelMouths } from './tunnel-mouths.js';
@@ -111,7 +111,7 @@ function offsetPolygonInward(pts, d) {
 }
 
 // Meshes from a GroundCells (js/ground-geometry.js), one per cell
-function buildCells(cells, group, material, { cast = false } = {}) {
+function buildCells(cells, group, material, { cast = false, cullDistance = 0 } = {}) {
   for (const c of cells.cells.values()) {
     if (!c.index.length) continue;
     const g = new THREE.BufferGeometry();
@@ -124,142 +124,140 @@ function buildCells(cells, group, material, { cast = false } = {}) {
     mesh.receiveShadow = true;
     mesh.castShadow = cast;
     mesh.userData.lifted = true;
+    if (cullDistance) mesh.userData.cullDistance = cullDistance;
     group.add(mesh);
   }
 }
 
+// Distances past which the ground's small parts aren't worth drawing: a kerb is under a pixel by then
+const GROUND_CULL = { curbs: 1100, hedges: 900, base: 1600 };
 
-// `startRadius`: how far around `focus` the ground is built before the first frame; the rest follows behind the game
-function* buildCityGrid(scene, lateStage, focus, startRadius = 450) {
-  streetGroundSurfaces = [];
-  let group = new THREE.Group();
-  group.name = 'CityGrid';
-  // Nothing in here is needed to start driving, so it joins the scene after the first frame
-  const details = new THREE.Group();
-  details.name = 'CityGridDetails';
-
-  // Ground footprints that traffic and pedestrians must keep clear of
-  const footprints = [];
-  for (const b of BLOCKS) if (b.median) footprints.push({ minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ });
-
-  // 1. The harbour
-  const waterMat = createWaterMaterial();
-  const waterGeo = new THREE.PlaneGeometry(120000, 120000, 1, 1);
-  waterGeo.rotateX(-Math.PI / 2);
-  const water = new THREE.Mesh(waterGeo, waterMat);
-  water.position.set(0, CITY_BOUNDS.waterLevel, 0);
-  water.userData.lifted = true;
-  details.add(water);
-
-  // 2. The road surface, and the curb islands: curbs around every one, paving and lawn on them, a low hedge on the wider
-  //    traffic islands. Near the player first.
-  const roadMat = createRoadSurfaceMaterial();
-  const sidewalkMat = createSidewalkMaterial();
-  const curbMat = createCurbMaterial();
-  const lawnMat = createParkLawnMaterial(false);
-  const hedgeMat = new THREE.MeshStandardNodeMaterial({ color: 0x3f7a3f, roughness: 0.84 });
-  const near = (rings) => {
-    const p = rings[0][rings[0].length >> 1];
-    const dx = p.x - focus.x, dz = p.z - focus.z;
-    return dx * dx + dz * dz < startRadius * startRadius;
+// One set of materials for all the tiles, so a new tile compiles nothing
+let shared = null;
+function groundMaterials() {
+  if (shared) return shared;
+  shared = {
+    road: createRoadSurfaceMaterial(),
+    sidewalk: createSidewalkMaterial(),
+    curb: createCurbMaterial(),
+    lawn: createParkLawnMaterial(false),
+    hedge: new THREE.MeshStandardNodeMaterial({ color: 0x3f7a3f, roughness: 0.84 }),
+    // Under all of it, a plain dark ground: a seam anywhere shows that, never the harbour
+    base: new THREE.MeshStandardNodeMaterial({ color: 0x2c2b29, roughness: 1 }),
+    seawall: new THREE.MeshStandardNodeMaterial({ color: 0x8d7a5e, roughness: 0.85, metalness: 0.02 })
   };
-  const addBlock = (b, cells) => {
-    addCurb(cells.curbs, b.poly);
-    for (const hole of b.holes) addCurb(cells.curbs, hole);
-    if (!b.median) return;
-    const hedge = Math.min(b.maxX - b.minX, b.maxZ - b.minZ) > 3 && b.area > 60 && offsetPolygonInward(b.poly, 1.1);
-    if (hedge) addSurface(cells.hedges, [hedge], SIDEWALK_TOP + 0.4);
-  };
-  // Under all of it, a plain dark ground: a seam anywhere shows that, never the harbour
-  const baseMat = new THREE.MeshStandardNodeMaterial({ color: 0x2c2b29, roughness: 1 });
   // ...and none of it closing a tunnel's mouth (js/tunnel-mouths.js)
-  for (const mat of [curbMat, sidewalkMat, lawnMat, hedgeMat, baseMat]) mat.maskNode = outsideTunnelMouths();
-  const newCells = () => ({ road: new GroundCells(), curbs: new GroundCells(), paving: new GroundCells(), lawns: new GroundCells(), hedges: new GroundCells(), base: new GroundCells() });
-  const finish = (cells, target) => {
-    buildCells(cells.road, target, roadMat);
-    buildCells(cells.curbs, target, curbMat, { cast: true });
-    buildCells(cells.paving, target, sidewalkMat);
-    buildCells(cells.lawns, target, lawnMat);
-    buildCells(cells.hedges, target, hedgeMat);
-    buildCells(cells.base, target, baseMat);
-  };
-
-  const first = newCells();
-  const nearFocus = (x, z) => (x - focus.x) ** 2 + (z - focus.z) ** 2 < startRadius * startRadius;
-  yield* addRoadDeck(first.road, nearFocus);
-  for (const b of BLOCKS) if (near([b.poly])) addBlock(b, first);
-  for (const rings of PAVEMENTS) if (near(rings)) addSurface(first.paving, rings, SIDEWALK_TOP);
-  for (const rings of LAWNS) if (near(rings)) addSurface(first.lawns, rings, SIDEWALK_TOP + 0.02);
-  finish(first, group);
-
-  // Enough to start driving. Everything below arrives behind the game.
-  scene.add(group);
-  yield new Ready();
-  group = details;
-  yield;
-
-  const rest = newCells();
-  yield* addRoadDeck(rest.road, (x, z) => !nearFocus(x, z));
-  // The base only backs up the surfaces' seams, so all of it comes after the first frame: on the phone it costs too much
-  // of the 4 s to load, and its own shader with it
-  yield* addBase(rest.base, () => true);
-  yield;
-  for (const [i, b] of BLOCKS.entries()) {
-    if (!near([b.poly])) addBlock(b, rest);
-    if (i % 8 === 0) yield;
-  }
-  for (const [i, rings] of PAVEMENTS.entries()) {
-    if (!near(rings)) addSurface(rest.paving, rings, SIDEWALK_TOP);
-    if (i % 2 === 0) yield;
-  }
-  for (const [i, rings] of LAWNS.entries()) {
-    if (!near(rings)) addSurface(rest.lawns, rings, SIDEWALK_TOP + 0.02);
-    if (i % 8 === 0) yield;
-  }
-  yield;
-  buildCells(rest.road, group, roadMat);
-  yield;
-  buildCells(rest.curbs, group, curbMat, { cast: true });
-  yield;
-  buildCells(rest.paving, group, sidewalkMat);
-  yield;
-  buildCells(rest.lawns, group, lawnMat);
-  buildCells(rest.hedges, group, hedgeMat);
-  buildCells(rest.base, group, baseMat);
-  yield;
-
-  // 3. Sandstone seawalls down to the water, where the land ends
-  const seawallMat = new THREE.MeshStandardNodeMaterial({ color: 0x8d7a5e, roughness: 0.85, metalness: 0.02 });
-  const seawalls = new GroundCells();
-  for (const rings of SHORE_RINGS) {
-    for (const ring of rings) {
-      const pts = denseRing(ring, 30);
-      let area = 0;
-      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) area += pts[j].x * pts[i].z - pts[i].x * pts[j].z;
-      const side = area > 0 ? 1 : -1;
-      for (let i = 0; i < pts.length; i++) {
-        const a = pts[i], b = pts[(i + 1) % pts.length];
-        const L = Math.hypot(b.x - a.x, b.z - a.z) || 1;
-        const nx = ((b.z - a.z) / L) * side, nz = (-(b.x - a.x) / L) * side;
-        const c = seawalls.cell(a.x, a.z);
-        const v0 = seawalls.vertex(c, a.x, CITY_BOUNDS.waterLevel - 0.6, a.z, nx, 0, nz);
-        const v1 = seawalls.vertex(c, b.x, CITY_BOUNDS.waterLevel - 0.6, b.z, nx, 0, nz);
-        const v2 = seawalls.vertex(c, a.x, groundHeight(a.x, a.z) + 0.1, a.z, nx, 0, nz);
-        const v3 = seawalls.vertex(c, b.x, groundHeight(b.x, b.z) + 0.1, b.z, nx, 0, nz);
-        if (side > 0) c.index.push(v0, v1, v2, v1, v3, v2);
-        else c.index.push(v0, v2, v1, v1, v2, v3);
-      }
-    }
-    yield;
-  }
-  buildCells(seawalls, group, seawallMat);
-
-  // 4. Every road off the ground: bridges, viaducts and tunnels (js/structures.js)
-  const { colliders } = yield* buildStructures(group, roadMat);
-
-  const roadPaint = createRoadPaintChunkBuilder('RoadMarkings');
-  lateStage.add(group);
-  return { group, footprints, colliders, roadPaint };
+  for (const mat of [shared.curb, shared.sidewalk, shared.lawn, shared.hedge, shared.base]) mat.maskNode = outsideTunnelMouths();
+  return shared;
 }
 
-export { buildCityGrid, getStreetGroundHeight, batchStaticGroupMeshes };
+/** The harbour: one plane under everything */
+function buildWater(target) {
+  const geometry = new THREE.PlaneGeometry(120000, 120000, 1, 1);
+  geometry.rotateX(-Math.PI / 2);
+  const water = new THREE.Mesh(geometry, createWaterMaterial());
+  water.position.set(0, CITY_BOUNDS.waterLevel, 0);
+  water.userData.lifted = true;
+  target.add(water);
+  return water;
+}
+
+// The shore, a segment at a time, by tile
+let shoreByTile = null;
+function shoreOfTile(tile) {
+  if (!shoreByTile) {
+    shoreByTile = new Map();
+    for (const rings of SHORE_RINGS) {
+      for (const ring of rings) {
+        const pts = denseRing(ring, 30);
+        let area = 0;
+        for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) area += pts[j].x * pts[i].z - pts[i].x * pts[j].z;
+        const side = area > 0 ? 1 : -1;
+        for (let i = 0; i < pts.length; i++) {
+          const a = pts[i], b = pts[(i + 1) % pts.length];
+          const key = tileKeyAt(a.x, a.z);
+          if (!shoreByTile.has(key)) shoreByTile.set(key, []);
+          shoreByTile.get(key).push({ a, b, side });
+        }
+      }
+    }
+  }
+  return shoreByTile.get(tile.key) || [];
+}
+
+/**
+ * A tile's ground, into `target`: the road surface and the curb islands: curbs around every one, paving and lawn on them, a
+ * low hedge on the wider traffic islands. Part of it if `part` says so, for the first view: `part` picks the ground to build
+ * by where it is. The part with `last` set also has what only matters later: the base, the seawalls and the structures.
+ * Returns the colliders of any structures.
+ */
+function* buildTileGround(tile, target, { part = () => true, last = true } = {}) {
+  const mats = groundMaterials();
+  const box = { x0: tile.ix * TILE, x1: (tile.ix + 1) * TILE, z0: tile.iz * TILE, z1: (tile.iz + 1) * TILE };
+  const inTile = (x, z) => x >= box.x0 && x < box.x1 && z >= box.z0 && z < box.z1;
+  const wanted = (x, z) => inTile(x, z) && part(x, z);
+  const cells = () => new GroundCells(1e6);
+  const road = cells(), curbs = cells(), paving = cells(), lawns = cells(), hedges = cells(), base = cells();
+  const links = tile.links.map((r) => linkById.get(r[0])).filter(Boolean);
+
+  yield* addRoadDeck(road, wanted, links, tile.fills);
+  const midOf = (rings) => rings[0][rings[0].length >> 1];
+  for (const [i, b] of tile.placedBlocks.entries()) {
+    const mid = midOf([b.poly]);
+    if (!part(mid.x, mid.z)) continue;
+    addCurb(curbs, b.poly);
+    for (const hole of b.holes) addCurb(curbs, hole);
+    if (b.median) {
+      const hedge = Math.min(b.maxX - b.minX, b.maxZ - b.minZ) > 3 && b.area > 60 && offsetPolygonInward(b.poly, 1.1);
+      if (hedge) addSurface(hedges, [hedge], SIDEWALK_TOP + 0.4);
+    }
+    if (i % 8 === 0) yield;
+  }
+  for (const [i, rings] of tile.placedPavements.entries()) {
+    const mid = midOf(rings);
+    if (part(mid.x, mid.z)) addSurface(paving, rings, SIDEWALK_TOP);
+    if (i % 2 === 0) yield;
+  }
+  for (const [i, rings] of tile.placedLawns.entries()) {
+    const mid = midOf(rings);
+    if (part(mid.x, mid.z)) addSurface(lawns, rings, SIDEWALK_TOP + 0.02);
+    if (i % 8 === 0) yield;
+  }
+  yield;
+  buildCells(road, target, mats.road);
+  buildCells(curbs, target, mats.curb, { cast: true, cullDistance: GROUND_CULL.curbs });
+  yield;
+  buildCells(paving, target, mats.sidewalk);
+  buildCells(lawns, target, mats.lawn);
+  buildCells(hedges, target, mats.hedge, { cullDistance: GROUND_CULL.hedges });
+  yield;
+  if (!last) return [];
+
+  // The base only backs up the surfaces' seams, so it comes last: on the phone it costs too much of the 4 s to load
+  yield* addBase(base, inTile, undefined, box);
+  buildCells(base, target, mats.base, { cullDistance: GROUND_CULL.base });
+  yield;
+
+  // Sandstone seawalls down to the water, where the land ends
+  const seawalls = cells();
+  for (const { a, b, side } of shoreOfTile(tile)) {
+    const L = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+    const nx = ((b.z - a.z) / L) * side, nz = (-(b.x - a.x) / L) * side;
+    const c = seawalls.cell(a.x, a.z);
+    const v0 = seawalls.vertex(c, a.x, CITY_BOUNDS.waterLevel - 0.6, a.z, nx, 0, nz);
+    const v1 = seawalls.vertex(c, b.x, CITY_BOUNDS.waterLevel - 0.6, b.z, nx, 0, nz);
+    const v2 = seawalls.vertex(c, a.x, groundHeight(a.x, a.z) + 0.1, a.z, nx, 0, nz);
+    const v3 = seawalls.vertex(c, b.x, groundHeight(b.x, b.z) + 0.1, b.z, nx, 0, nz);
+    if (side > 0) c.index.push(v0, v1, v2, v1, v3, v2);
+    else c.index.push(v0, v2, v1, v1, v2, v3);
+  }
+  buildCells(seawalls, target, mats.seawall);
+  yield;
+
+  // Every road off the ground whose middle is here: bridges, viaducts and tunnels (js/structures.js)
+  const home = new Set(tile.home);
+  const { colliders } = yield* buildStructures(target, mats.road, links.filter((l) => home.has(l.id)), links, inTile);
+  return colliders;
+}
+
+export { buildTileGround, buildWater, groundMaterials, getStreetGroundHeight, batchStaticGroupMeshes };

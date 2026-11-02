@@ -61,19 +61,56 @@ function addPitchedRoof(roofs, ring, top, seed) {
   return true;
 }
 
-function* createBuildingFootprintsSteps(material, records, getNeighbours, plinthMaterial = null, roofMaterials = null) {
-  const roofs = { tile: [], slate: [] };
+const SEAL = 0.3; // how far a wall's foot goes into the ground, so nothing shows between them
+const STRIP = 5; // metres: how often a wall's foot follows the ground
+const NO_SHOP_ABOVE = 1; // a wall this far above the ground beside it has no shopfront
+
+// The stretch of a wall below its floor, from the floor down to the ground. Each piece is a strip of the wall with kind
+// WALL_KINDS.below + (metres of it clear of the ground), which is how the facade knows whether a storey of windows fits.
+function addWallFoot(cell, a, b, width, height, base, seed, reverse, groundAt, storey) {
+  const nx = -(b.y - a.y) / width, nz = (b.x - a.x) / width;
+  const depthAt = (t) => base - groundAt(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+  // A wall with room for a storey under its floor is split at whole window bays, so a bay either has its window or doesn't
+  let pieces = Math.max(1, Math.ceil(width / STRIP));
+  if (storey && depthAt(0.5) + 1 > storey.height || storey && Math.max(depthAt(0), depthAt(1)) > storey.height) {
+    const bays = Math.max(Math.floor(width / storey.width + 0.5), 1);
+    pieces = bays;
+  }
+  let t0 = 0, d0 = depthAt(0);
+  for (let i = 1; i <= pieces; i++) {
+    const t1 = i / pieces, d1 = depthAt(t1);
+    const clear = Math.max(0, Math.min(d0, d1, depthAt((t0 + t1) / 2)));
+    const offset = cell.positions.length / 3;
+    const ax = a.x + (b.x - a.x) * t0, az = a.y + (b.y - a.y) * t0, bx = a.x + (b.x - a.x) * t1, bz = a.y + (b.y - a.y) * t1;
+    const foot0 = base - d0 - SEAL, foot1 = base - d1 - SEAL;
+    cell.positions.push(ax, foot0, az, bx, foot1, bz, ax, base, az, bx, base, bz);
+    for (let k = 0; k < 4; k++) {
+      cell.normals.push(nx, 0, nz);
+      cell.boxes.push(width, height, height, seed);
+      const along = k % 2 ? t1 : t0;
+      const fromTop = k < 2 ? height + base - (k % 2 ? foot1 : foot0) : height;
+      cell.walls.push(reverse ? 1 - along : along, fromTop, WALL_KINDS.below + clear);
+    }
+    cell.indices.push(offset, offset + 1, offset + 2, offset + 2, offset + 1, offset + 3);
+    t0 = t1;
+    d0 = d1;
+  }
+}
+
+// groundAt: the ground's height under a wall, to stand it on. storey: { width, height } of the facade's window bays.
+function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMaterials = null, { groundAt = null, storey = null } = {}) {
   const cells = new Map();
-  const plinths = []; // walls running down to the street where the ground falls away: ax, az, bx, bz, top, bottom, nx, nz
   for (const [index, record] of records.entries()) {
     yield;
     if (!(record.height > 0)) continue;
     const key = Math.floor(record.cx / 1000) + ',' + Math.floor(record.cz / 1000);
     let cell = cells.get(key);
-    if (!cell) cells.set(key, (cell = { positions: [], normals: [], indices: [], boxes: [], walls: [] }));
+    if (!cell) cells.set(key, (cell = { key, positions: [], normals: [], indices: [], boxes: [], walls: [], roofs: { tile: [], slate: [] } }));
     const height = record.height, base = (record.base ?? 0) + 0.22, top = height + base;
+    // A piece standing on another starts this far up. Its floors count from the building's floor all the same.
+    const bottom = record.bottom || 0;
     const seed = Math.floor(record.seed ?? index * 29) % 1000 + 0.1 + 0.8 * (record.tone ?? 0.5);
-    const neighbours = getNeighbours && height <= 60 ? getNeighbours(record) : [];
+    const neighbours = getNeighbours && height <= 60 && !record.group ? getNeighbours(record) : [];
 
     for (const polygon of record.polygons) {
       const rings = [polygon.outer, ...(polygon.holes || [])].map((ring, i) => {
@@ -91,23 +128,25 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, plinth
           if (width === 0) continue;
           const offset = cell.positions.length / 3;
           const adjacentHeight = !i && neighbours.length ? partyWallHeight(record, a, b, neighbours) : 0;
+          // A shopfront only where the wall meets the pavement
+          const meetsGround = !bottom && (!groundAt || base - groundAt((a.x + b.x) / 2, (a.y + b.y) / 2) <= NO_SHOP_ABOVE);
           const kind = i ? WALL_KINDS.rear : adjacentHeight ? WALL_KINDS.lotLine
-            : record.storefronts ? WALL_KINDS.shop : WALL_KINDS.front;
+            : record.storefronts && meetsGround ? WALL_KINDS.shop : WALL_KINDS.front;
           const exposedHeight = adjacentHeight ? Math.max(0, height + 0.22 - adjacentHeight) : height;
           // Match the positive-world-axis tangent used by the shared interior-map view ray.
           const reverse = (Math.abs(dz) >= Math.abs(dx) ? dz : dx) < 0;
-          cell.positions.push(a.x, base, a.y, b.x, base, b.y, a.x, top, a.y, b.x, top, b.y);
-          if (record.plinth > 0.1 && !i) plinths.push(a.x, a.y, b.x, b.y, base, base - record.plinth, -dz / width, dx / width);
+          cell.positions.push(a.x, base + bottom, a.y, b.x, base + bottom, b.y, a.x, top, a.y, b.x, top, b.y);
           for (let k = 0; k < 4; k++) {
             cell.normals.push(-dz / width, 0, dx / width);
             // Footprint walls use the box's unused depth for the exposed height above adjoining roofs.
             cell.boxes.push(width, height, exposedHeight, seed);
-            cell.walls.push(reverse ? 1 - k % 2 : k % 2, k < 2 ? height : 0, kind);
+            cell.walls.push(reverse ? 1 - k % 2 : k % 2, k < 2 ? height - bottom : 0, kind);
           }
           cell.indices.push(offset, offset + 1, offset + 2, offset + 2, offset + 1, offset + 3);
+          if (groundAt && !bottom) addWallFoot(cell, a, b, width, height, base, seed, reverse, groundAt, storey);
         }
       });
-      if (record.pitched && roofMaterials && rings.length === 1 && addPitchedRoof(roofs, rings[0], top, Math.floor(seed))) continue;
+      if (record.pitched && roofMaterials && rings.length === 1 && addPitchedRoof(cell.roofs, rings[0], top, Math.floor(seed))) continue;
       const triangles = THREE.ShapeUtils.triangulateShape(rings[0], rings.slice(1));
       const points = rings.flat(), offset = cell.positions.length / 3;
       for (const p of points) {
@@ -136,6 +175,7 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, plinth
     const mesh = new THREE.Mesh(geometry, material);
     mesh.name = 'SurveyedBuildingChunk';
     mesh.userData.lifted = true;
+    mesh.userData.cell = cell.key;
     mesh.castShadow = mesh.receiveShadow = true;
     // Most cells are too small for scene-culling.js to pick them as big casters on its own: opt in to its stand-ins.
     mesh.userData.shadowStandIn = true;
@@ -143,44 +183,26 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, plinth
     else first = mesh;
     group.add(mesh);
   }
-  for (const [list, roofMaterial] of roofMaterials ? [[roofs.tile, roofMaterials[0]], [roofs.slate, roofMaterials[1]]] : []) {
-    if (!list.length) continue;
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(list, 3));
-    geometry.computeVertexNormals();
-    geometry.computeBoundingSphere();
-    const mesh = new THREE.Mesh(geometry, roofMaterial);
-    mesh.name = 'PitchedRoofs';
-    mesh.castShadow = mesh.receiveShadow = true;
-    mesh.userData.lifted = true;
-    group.add(mesh);
-  }
-  // On a slope each building sits level on a stone base
-  if (plinthMaterial && plinths.length) {
-    const positions = [], normals = [], indices = [];
-    for (let i = 0; i < plinths.length; i += 8) {
-      const [ax, az, bx, bz, topY, bottomY, nx, nz] = plinths.slice(i, i + 8);
-      const offset = positions.length / 3;
-      positions.push(ax, bottomY, az, bx, bottomY, bz, ax, topY, az, bx, topY, bz);
-      for (let k = 0; k < 4; k++) normals.push(nx, 0, nz);
-      indices.push(offset, offset + 1, offset + 2, offset + 2, offset + 1, offset + 3);
+  for (const cell of roofMaterials ? cells.values() : []) {
+    for (const [list, roofMaterial] of [[cell.roofs.tile, roofMaterials[0]], [cell.roofs.slate, roofMaterials[1]]]) {
+      if (!list.length) continue;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(list, 3));
+      geometry.computeVertexNormals();
+      geometry.computeBoundingSphere();
+      const mesh = new THREE.Mesh(geometry, roofMaterial);
+      mesh.name = 'PitchedRoofs';
+      mesh.castShadow = mesh.receiveShadow = true;
+      mesh.userData.lifted = true;
+      mesh.userData.cell = cell.key;
+      group.add(mesh);
     }
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-    geometry.setIndex(indices);
-    geometry.computeBoundingSphere();
-    const mesh = new THREE.Mesh(geometry, plinthMaterial);
-    mesh.name = 'BuildingPlinths';
-    mesh.userData.lifted = true;
-    mesh.receiveShadow = true;
-    group.add(mesh);
   }
   return group;
 }
 
-function createBuildingFootprints(material, records, getNeighbours) {
-  const job = createBuildingFootprintsSteps(material, records, getNeighbours);
+function createBuildingFootprints(material, records, getNeighbours, roofMaterials = null, options = {}) {
+  const job = createBuildingFootprintsSteps(material, records, getNeighbours, roofMaterials, options);
   let step = job.next();
   while (!step.done) step = job.next();
   return step.value;

@@ -1,5 +1,5 @@
-import { GEO } from './geodata.js';
-import { ROADS, BLOCKS, LANDMARKS, CITY_BOUNDS, SHORE_RINGS, SUBURBS, getLocationLabel, isTypingInField } from './city-config.js';
+import { GEO, loadMapData } from './geodata.js';
+import { ROADS, BLOCKS, LANDMARKS, CITY_BOUNDS, SHORE_RINGS, SUBURBS, blockFromRecord, getLocationLabel, getMapVersion, isTypingInField, sceneryRoad, shortName } from './city-config.js';
 
 // Minimap and full-screen map drawn from the same geography and building footprints as the 3D city.
 // World frame: 1 unit = 1 m, x = grid east, z = grid south. Both maps face grid north, about 8 degrees east of true north.
@@ -152,13 +152,39 @@ class TiledLayer {
   }
 }
 
-let LAYERS = null;
+// What's drawn follows the tiles held. Tiles arrive in bursts, so no more often than this
+const REDRAW_AFTER = 2000; // ms
+// The map screen shows all of the map, which comes in one file the first time it's opened. Till then, and for the radar, the
+// tiles held do.
+let wholeMap = null;
+function loadWholeMap() {
+  loadMapData().then((data) => {
+    if (wholeMap) return;
+    const roads = data.roads.map(([name, w, lanes, dir, major, kind, flat]) => {
+      const pts = [];
+      for (let i = 0; i + 1 < flat.length; i += 2) pts.push({ x: flat[i], z: flat[i + 1] });
+      return { name, short: shortName(name), w, lanes, dir, major: !!major, highway: false, kind, pts };
+    });
+    wholeMap = {
+      roads: [...roads, ...data.scenery.map(sceneryRoad)],
+      blocks: data.blocks.map(([flat, holes, park, parkName], id) => blockFromRecord([flat, holes, park, parkName, id]))
+    };
+    labelsAt = layersAt = -Infinity;
+  }).catch(() => {}); // Tries again the next time the map opens
+}
+const mapRoads = () => wholeMap?.roads ?? ROADS;
+const mapBlocks = () => wholeMap?.blocks ?? BLOCKS;
+const mapContents = () => (wholeMap ? -1 : getMapVersion() * 2 + (GEO.surroundings ? 1 : 0));
+let LAYERS = null, layersOf = -2, layersAt = -Infinity;
 function mapLayers() {
-  if (LAYERS) return LAYERS;
+  const contents = mapContents();
+  if (LAYERS && (layersOf === contents || performance.now() - layersAt < REDRAW_AFTER)) return LAYERS;
+  layersOf = contents;
+  layersAt = performance.now();
   const L = {};
   // The land around the harbour and its islands, then the play area
   L.land = new Path2D();
-  for (const [outer, ...holes] of GEO.surroundings) {
+  for (const [outer, ...holes] of GEO.surroundings || []) {
     addRing(L.land, outer);
     for (const hole of holes) addRing(L.land, hole, true);
   }
@@ -171,14 +197,14 @@ function mapLayers() {
   // The curb islands and the park blocks, exactly as city-grid.js treats them
   L.blocks = new TiledLayer();
   L.parkBlocks = new TiledLayer();
-  for (const b of BLOCKS) (b.park > 0.6 && !b.median ? L.parkBlocks : L.blocks).ring(b.poly, b.holes);
+  for (const b of mapBlocks()) (b.park > 0.6 && !b.median ? L.parkBlocks : L.blocks).ring(b.poly, b.holes);
 
   // Main roads at low zoom, once the gaps between blocks are under a pixel, and the motorways
   L.mainRoads = new TiledLayer(1000);
   L.highways = new Path2D();
   L.bridges = new TiledLayer(1000); // over what they cross
   L.tunnels = new TiledLayer(1000); // under it
-  for (const r of ROADS) {
+  for (const r of mapRoads()) {
     if (r.highway) {
       if (!r.tunnel) addLine(L.highways, r.pts);
     } else if (r.major) L.mainRoads.line(r.pts);
@@ -216,7 +242,14 @@ function footprintLayers(all) {
 // never slide while the map pans), with the direction of the street there (never upside down: vertical names read
 // upwards)
 const ROAD_LABELS = [];
-for (const r of ROADS) {
+let labelsOf = -2, labelsAt = -Infinity;
+function roadLabels() {
+  const contents = mapContents();
+  if (labelsOf === contents || performance.now() - labelsAt < REDRAW_AFTER) return ROAD_LABELS;
+  labelsOf = contents;
+  labelsAt = performance.now();
+  ROAD_LABELS.length = 0;
+  for (const r of mapRoads()) {
   const text = r.short;
   if (!text) continue;
   const anchors = [];
@@ -259,7 +292,10 @@ for (const r of ROADS) {
     ...boundsOf(r.pts)
   });
 }
-const ROAD_NAME_COUNT = new Set(ROAD_LABELS.map((l) => l.text)).size;
+  return ROAD_LABELS;
+}
+const roadNameCount = () => new Set(roadLabels().map((l) => l.text)).size;
+
 
 /** A map viewport: centre (cx, cz) in world metres, s pixels per metre, w x h CSS pixels on a canvas of pixel ratio dpr */
 class MapView {
@@ -367,7 +403,8 @@ class CityMapSystem {
     this.miniScale = RADAR_SCALE;
     this.miniCache = null; // { canvas, cx, cz, s, version }: the radar's ground layers, twice the radar's size
     const elCounts = document.getElementById('fullmap-counts');
-    if (elCounts) elCounts.textContent = `${ROAD_NAME_COUNT} streets · ${BLOCKS.length.toLocaleString('en-US')} blocks`;
+    this.elCounts = elCounts;
+    if (elCounts) elCounts.textContent = `${roadNameCount()} streets · ${BLOCKS.length.toLocaleString('en-US')} blocks`;
 
     // The map is drawn grid north up; the compass needle points to true north, 8° to its left
     const needle = document.getElementById('map-compass-needle');
@@ -383,7 +420,7 @@ class CityMapSystem {
     this.elHoverInfo = document.getElementById('fullmap-hover-info');
     this.elPlayerInfo = document.getElementById('fullmap-player-info');
     this.elSearchInput = document.getElementById('fullmap-search');
-    if (this.elSearchInput) this.elSearchInput.placeholder = `Search ${ROAD_NAME_COUNT} streets & landmarks…`;
+    if (this.elSearchInput) this.elSearchInput.placeholder = 'Search streets & landmarks…';
 
     this.isFullMapOpen = false;
     // Full map viewport state (world metres; zoom in CSS pixels per metre)
@@ -574,7 +611,7 @@ class CityMapSystem {
     this.searchPath = null;
     if (q.length > 0) {
       const lmMatch = LANDMARKS.find((l) => l.name.toLowerCase().includes(q) || l.short.toLowerCase().includes(q));
-      const roads = ROAD_LABELS.filter((l) => l.lower.includes(q) || l.raw.includes(q));
+      const roads = roadLabels().filter((l) => l.lower.includes(q) || l.raw.includes(q));
       if (roads.length) {
         this.searchPath = new Path2D();
         const b = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
@@ -614,6 +651,7 @@ class CityMapSystem {
   toggleFullMap(open) {
     this.isFullMapOpen = Boolean(open);
     if (!this.isFullMapOpen) this.cancelPan();
+    else loadWholeMap();
     if (this.onToggle) this.onToggle(this.isFullMapOpen);
     if (!this.modal) return;
     this.modal.classList.toggle('hidden', !this.isFullMapOpen);
@@ -767,7 +805,7 @@ class CityMapSystem {
     const minZ = v.minZ + inset;
     const maxZ = v.maxZ - inset;
     const cands = [];
-    for (const l of ROAD_LABELS) {
+    for (const l of roadLabels()) {
       if (l.maxX < minX || l.minX > maxX || l.maxZ < minZ || l.minZ > maxZ) continue;
       const hit = q.length > 0 && (l.lower.includes(q) || l.raw.includes(q));
       if (majorOnly && !l.major && !hit) continue;
@@ -871,7 +909,7 @@ class CityMapSystem {
     // Ground layers & street names come from a cached render twice the radar's size, redrawn when the player nears its
     // edge or the zoom drifts (or the buildings arrive)
     const fp = footprintLayers(this.allBlocks);
-    const version = fp ? fp.version : 0;
+    const version = `${fp ? fp.version : 0}|${layersOf}`;
     let c = this.miniCache;
     if (!c || c.version !== version || Math.abs(scale / c.s - 1) > 0.12 ||
       Math.abs(px - c.cx) > w / c.s - w / (2 * scale) - 8 / scale ||
@@ -992,7 +1030,7 @@ class CityMapSystem {
 
     // Ground layers, names & landmark pins: re-rendered only when the view, the search or the buildings change
     const fp = footprintLayers(this.allBlocks);
-    const key = `${v.cx}|${v.cz}|${v.s}|${this.fullCanvas.width}|${this.fullCanvas.height}|${this.searchHighlight}|${fp ? fp.version : 0}`;
+    const key = `${layersOf}|${v.cx}|${v.cz}|${v.s}|${this.fullCanvas.width}|${this.fullCanvas.height}|${this.searchHighlight}|${fp ? fp.version : 0}`;
     if (!this.fullStatic) this.fullStatic = document.createElement('canvas');
     if (key !== this.fullStaticKey) {
       this.fullStaticKey = key;

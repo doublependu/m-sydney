@@ -1,6 +1,6 @@
 import { GEO } from './geodata.js';
 import { terrainHeight } from './terrain.js';
-import { LINKS, structureAt } from './surfaces.js';
+import { DECK_STRUCTURE, structureAt } from './surfaces.js';
 
 // The Harbour Bridge's corridor: a road with its own height, one of the structures of js/surfaces.js. A car on the deck
 // and a car on the street under its approach share (x, z); what tells them apart is the surface each is on. Its height
@@ -13,7 +13,7 @@ for (let i = 0; i < GEO.bridge.length; i += 2) PATH.push({ x: GEO.bridge[i], z: 
 for (let i = 1; i < PATH.length; i++) PATH[i].s = PATH[i - 1].s + Math.hypot(PATH[i].x - PATH[i - 1].x, PATH[i].z - PATH[i - 1].z);
 const LENGTH = PATH[PATH.length - 1].s;
 const HALF_WIDTH = 12.5; // of the corridor anything can use
-const DECK_SID = LINKS.find((l) => l.deck)?.sid ?? 0;
+const DECK_SID = DECK_STRUCTURE;
 
 /** Point on the corridor s metres from its south end, with its direction */
 function bridgePoint(s) {
@@ -26,7 +26,9 @@ function bridgePoint(s) {
 }
 
 // Where the shore lies under the corridor, for the arch: the water runs between these
-const SPAN = (() => {
+// Worked out with the whole map when the tiles are made (tools/tiles/derive.mjs), since the game may never hold all of the
+// bridge at once
+const SPAN = GEO.bridgeSpan || (() => {
   let south = 0, north = LENGTH;
   for (let s = 0; s < LENGTH; s += 5) {
     const p = bridgePoint(s);
@@ -44,7 +46,7 @@ const DECK_STEP = 2;
 const DECK_Y = new Float32Array(Math.ceil(LENGTH / DECK_STEP) + 1);
 for (let i = 0; i < DECK_Y.length; i++) {
   const p = bridgePoint(Math.min(LENGTH, i * DECK_STEP));
-  DECK_Y[i] = structureAt(DECK_SID, p.x, p.z, 2)?.y ?? terrainHeight(p.x, p.z);
+  DECK_Y[i] = GEO.deckProfile?.[i] ?? structureAt(DECK_SID, p.x, p.z, 2)?.y ?? terrainHeight(p.x, p.z);
 }
 
 /** Deck height s metres along the corridor: ground at both ends, a long gentle climb to the arch, a slight crown over it */
@@ -76,4 +78,4 @@ function bridgeAt(x, z, reach = HALF_WIDTH) {
   return best;
 }
 
-export { DECK_SID, HALF_WIDTH, LENGTH as BRIDGE_LENGTH, SPAN as BRIDGE_SPAN, bridgeAt, bridgePoint, deckHeight };
+export { DECK_STEP, DECK_SID, HALF_WIDTH, LENGTH as BRIDGE_LENGTH, SPAN as BRIDGE_SPAN, bridgeAt, bridgePoint, deckHeight };

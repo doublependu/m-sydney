@@ -21,6 +21,9 @@ function runToEnd(job) {
   return step.value;
 }
 
+// A job yields this when it has nothing to do this frame
+const IDLE = Symbol('idle');
+
 class WorldBuilder {
   constructor(job) {
     this.job = job;
@@ -38,6 +41,7 @@ class WorldBuilder {
         this.done = true;
         return;
       }
+      if (value === IDLE) return;
       if (typeof value?.then === 'function') {
         this.waiting = true;
         value.then(() => { this.waiting = false; });
@@ -47,4 +51,4 @@ class WorldBuilder {
   }
 }
 
-export { Ready, WorldBuilder, runToEnd, runUntilReady };
+export { IDLE, Ready, WorldBuilder, runToEnd, runUntilReady };

@@ -2,9 +2,9 @@
 // afterwards. In Auto, real frame times then correct the first guess.
 
 const LEVELS = {
-  low: { ssr: false, msaa: false, bloom: false, shadowTile: 0, pedestrians: 120, cars: 60, buses: 4, drawDistance: 0.7 },
-  medium: { ssr: false, msaa: false, bloom: true, shadowTile: 1024, pedestrians: 220, cars: 120, buses: 8, drawDistance: 0.85 },
-  high: { ssr: true, msaa: true, bloom: true, shadowTile: 3072, pedestrians: 340, cars: 200, buses: 12, drawDistance: 1 }
+  low: { ssr: false, msaa: false, bloom: false, shadowTile: 0, pedestrians: 120, cars: 60, buses: 4, drawDistance: 0.7, buildingDetail: 1000, farRange: 5000 },
+  medium: { ssr: false, msaa: false, bloom: true, shadowTile: 1024, pedestrians: 220, cars: 120, buses: 8, drawDistance: 0.85, buildingDetail: 1500, farRange: 7000 },
+  high: { ssr: true, msaa: true, bloom: true, shadowTile: 3072, pedestrians: 340, cars: 200, buses: 12, drawDistance: 1, buildingDetail: 2000, farRange: 8000 }
 };
 const LEVEL_ORDER = ['low', 'medium', 'high'];
 const CHOICES = ['auto', ...LEVEL_ORDER];

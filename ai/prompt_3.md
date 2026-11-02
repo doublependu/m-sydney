@@ -28,6 +28,9 @@ I also notice a few issues:
 3. The roads seem to have 2 colors, one is dark and the other is light brown. 
     - I don't think this is intentional because the two colors switch in a random way
     - worth looking into what's going on here
+    - the most obvious location is at the on ramp to Sydney harbour bridge from the city going north
+        - there's the usual dark road
+        - and a light colored surface with large square bricks
 4. Traffic lights seem to take forever to turn green even when cars from other directions have stopped moving
 5. Repeated run of the full test is still slow, when possible, perhaps you can keep implementing while waiting for tests to finish
     - another option, instead of testing with manual play to see if a road can be driven well

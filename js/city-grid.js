@@ -2,7 +2,7 @@ import { anchorToOrigin } from './world-origin.js';
 import { Ready } from './world-jobs.js';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { CITY_BOUNDS, SHORE_RINGS } from './city-config.js';
+import { CITY_BOUNDS } from './city-config.js';
 import { TILE, tileKeyAt } from './geodata.js';
 import {
   createRoadSurfaceMaterial,
@@ -165,28 +165,8 @@ function buildWater(target) {
   return water;
 }
 
-// The shore, a segment at a time, by tile
-let shoreByTile = null;
-function shoreOfTile(tile) {
-  if (!shoreByTile) {
-    shoreByTile = new Map();
-    for (const rings of SHORE_RINGS) {
-      for (const ring of rings) {
-        const pts = denseRing(ring, 30);
-        let area = 0;
-        for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) area += pts[j].x * pts[i].z - pts[i].x * pts[j].z;
-        const side = area > 0 ? 1 : -1;
-        for (let i = 0; i < pts.length; i++) {
-          const a = pts[i], b = pts[(i + 1) % pts.length];
-          const key = tileKeyAt(a.x, a.z);
-          if (!shoreByTile.has(key)) shoreByTile.set(key, []);
-          shoreByTile.get(key).push({ a, b, side });
-        }
-      }
-    }
-  }
-  return shoreByTile.get(tile.key) || [];
-}
+// The shore, a segment at a time
+const shoreOfTile = (tile) => (tile.shore || []).map(([side, ax, az, bx, bz]) => ({ a: { x: ax, z: az }, b: { x: bx, z: bz }, side }));
 
 /**
  * A tile's ground, into `target`: the road surface and the curb islands: curbs around every one, paving and lawn on them, a

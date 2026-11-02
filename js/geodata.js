@@ -120,7 +120,18 @@ async function holdTile(key) {
   if (!held.has(key)) absorb(tile);
   return tile;
 }
-const holdTiles = (keys) => Promise.all(keys.map(holdTile));
+// A few at a time: a browser runs out of requests somewhere past a thousand at once
+async function holdTiles(keys) {
+  const tiles = new Array(keys.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(16, keys.length) }, async () => {
+    while (next < keys.length) {
+      const i = next++;
+      tiles[i] = await holdTile(keys[i]);
+    }
+  }));
+  return tiles;
+}
 
 /** Takes a tile out of every index. Roads it shares with another tile stay. */
 function releaseTile(key) {

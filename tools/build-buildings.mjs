@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
-import { dataPath, Raster, DETAIL_BOUNDS as B, inDetail, load, rdpRing, ringArea, toWorld } from './geo-common.mjs';
+import { dataPath, jsonLines, Raster, DETAIL_BOUNDS as B, inDetail, load, rdpRing, ringArea, toWorld } from './geo-common.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const OUT = process.argv[2] || path.join(ROOT, 'tools/data/generated/building-geodata.js');
@@ -35,11 +35,16 @@ const SYDNEY_TOWER = { x: 143, z: -311, reach: 30 };
 // Storeys of a part that gives only a count: apartments, mostly. World Tower's 83 come to 230 m.
 const PART_STOREY = 2.8;
 
-const rows = fs.readFileSync(dataPath('overture_syd.json'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-const partRows = fs.existsSync(dataPath('overture_parts.json'))
-  ? fs.readFileSync(dataPath('overture_parts.json'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
-  : [];
-const digest = crypto.createHash('sha256').update(fs.readFileSync(dataPath('overture_syd.json'))).digest('hex');
+const rows = [...jsonLines(dataPath('overture_syd.json'))];
+const partRows = fs.existsSync(dataPath('overture_parts.json')) ? [...jsonLines(dataPath('overture_parts.json'))] : [];
+const digest = (() => {
+  const hash = crypto.createHash('sha256');
+  const fd = fs.openSync(dataPath('overture_syd.json'), 'r');
+  const chunk = Buffer.alloc(16 * 1048576);
+  for (let n; (n = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0;) hash.update(chunk.subarray(0, n));
+  fs.closeSync(fd);
+  return hash.digest('hex');
+})();
 const storeys = new Raster(B.x0, B.z0, B.x1, B.z1, 4);
 for (const f of load('cos_storeys.json')) {
   const n = parseInt(f.properties.Storeys, 10);

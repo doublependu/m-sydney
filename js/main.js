@@ -25,7 +25,7 @@ import { CHOICES, FrameWatcher, detectQuality, saveChoice } from './quality.js';
 import { FrameStats } from './frame-stats.js';
 import { createLightPools } from './light-pools.js';
 import { IDLE, WorldBuilder, runToEnd } from './world-jobs.js';
-import { GEO, TILE, heldTiles, holdTile, holdTiles, isHeld, loadFar, releaseTile, tileExists, tileKeyAt, tilesNear } from './geodata.js';
+import { GEO, TILE, fetchFarFile, heldTiles, holdTile, holdTiles, isHeld, loadFar, releaseTile, tileExists, tileKeyAt, tilesNear } from './geodata.js';
 import { planTiles } from './tiles/tile-manager.js';
 import { BLOCKS } from './city-config.js';
 import { auditPrecision, moveOriginNear, origin, rebaseMeshes, setOrigin } from './world-origin.js';
@@ -905,24 +905,37 @@ async function initApp() {
 
   // Everything not laid on the ground as it was built: instanced props and small parts ride at their origin, merged
   // meshes vertex by vertex.
-  function liftStage(stage) {
+  // A stage can have tens of thousands of things to lift, and asking the ground's height isn't free: this mustn't hold up a frame. It's not in the
+  // scene yet, so nothing minds how long it takes.
+  async function liftStage(stage) {
     const matrix = new THREE.Matrix4();
     const at = new THREE.Vector3();
+    let since = performance.now();
+    const breathe = async () => {
+      if (performance.now() - since < 5) return;
+      await new Promise((resolve) => setTimeout(resolve));
+      since = performance.now();
+    };
+    const objects = [];
     stage.traverse((o) => {
-      if (!o.isMesh || o.userData.lifted) return;
+      if (o.isMesh && !o.userData.lifted) objects.push(o);
+    });
+    for (const o of objects) {
       o.userData.lifted = true;
       if (o.isInstancedMesh) {
         const array = o.instanceMatrix.array;
         for (let i = 0; i < o.count; i++) {
           at.set(array[i * 16 + 12], array[i * 16 + 13], array[i * 16 + 14]).applyMatrix4(o.matrixWorld);
           array[i * 16 + 13] += groundHeight(at.x, at.z);
+          if ((i & 31) === 31) await breathe();
         }
         o.instanceMatrix.needsUpdate = true;
         o.computeBoundingSphere?.();
-        return;
+        await breathe();
+        continue;
       }
       const position = o.geometry?.attributes?.position;
-      if (!position || position.isInterleavedBufferAttribute) return;
+      if (!position || position.isInterleavedBufferAttribute) continue;
       o.geometry.computeBoundingBox();
       const { min, max } = o.geometry.boundingBox;
       if (Math.max(max.x - min.x, max.z - min.z) < 12 || !position.array.length) {
@@ -930,7 +943,8 @@ async function initApp() {
         o.position.y += groundHeight(at.x, at.z);
         o.updateMatrix();
         o.updateMatrixWorld(true);
-        return;
+        await breathe();
+        continue;
       }
       matrix.copy(o.matrixWorld).invert();
       for (let i = 0; i < position.count; i++) {
@@ -938,18 +952,20 @@ async function initApp() {
         at.y += groundHeight(at.x, at.z);
         at.applyMatrix4(matrix);
         position.setXYZ(i, at.x, at.y, at.z);
+        if ((i & 31) === 31) await breathe();
       }
       position.needsUpdate = true;
       o.geometry.computeBoundingSphere();
       o.geometry.computeBoundingBox();
-    });
+      await breathe();
+    }
   }
 
   // A stage of the city is built off to the side and joins the scene with its shaders ready, so it appears at once
   async function revealStage(stage, task = null) {
     stage.updateMatrixWorld(true);
     useStorageInstancing(stage);
-    liftStage(stage);
+    await liftStage(stage);
     rebaseMeshes(stage);
     stage.updateMatrixWorld(true);
     const { now, later } = collectCompileJobs(stage);
@@ -1382,6 +1398,14 @@ async function initApp() {
       places: TELEPORT_LOCATIONS,
       load: () => ({ stages: Object.fromEntries(initTimings), interactiveAt: interactiveAt ?? null }),
       clock: () => elapsed,
+      // For tools/build-map-images.mjs
+      async prepareMapImages() {
+        mapSystem.toggleFullMap(true);
+        mapSystem.toggleFullMap(false);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      },
+      mapImage: (x0, z0, size, px, buildings) => mapSystem.renderImage(x0, z0, size, px, buildings),
+      farBuildings: async (key) => (await fetchFarFile(key)).buildings,
       interior: () => interiors.state(),
       gpuMemory: () => ({ ...renderer.info.memory }),
       origin: () => ({ ...origin }),
@@ -1473,9 +1497,16 @@ async function initApp() {
         return ready();
       },
       // Holds the whole map's roads while `fn` works out something that needs them all, like a route for a scenario
-      async withWholeMap(fn) {
+      // The tiles in a box around some points, for as long as it takes to work something out over them
+      async withMapAround(points, fn, margin = 2500) {
+        const x0 = Math.min(...points.map((p) => p.x)) - margin, x1 = Math.max(...points.map((p) => p.x)) + margin;
+        const z0 = Math.min(...points.map((p) => p.z)) - margin, z1 = Math.max(...points.map((p) => p.z)) + margin;
+        const keys = Object.keys(GEO.tiles).filter((key) => {
+          const [ix, iz] = key.split('_').map(Number);
+          return (ix + 1) * TILE > x0 && ix * TILE < x1 && (iz + 1) * TILE > z0 && iz * TILE < z1;
+        });
         const before = new Set(heldTiles().map((t) => t.key));
-        await holdTiles(Object.keys(GEO.tiles));
+        await holdTiles(keys);
         const result = fn();
         for (const t of heldTiles()) if (!before.has(t.key) && !builtTiles.has(t.key)) releaseTile(t.key);
         return result;
@@ -1526,7 +1557,7 @@ async function initApp() {
         };
       },
       // A route can run past the tiles held
-      route: (waypoints) => window.__gameDebug.withWholeMap(() => roadRoute(waypoints)),
+      route: (waypoints) => window.__gameDebug.withMapAround(waypoints, () => roadRoute(waypoints)),
       handover: () => trafficSystem?.handover ?? { count: 0, kept: 0, lost: 0 },
       // Averages since the previous read, so a script can measure one stretch of play
       frameCost() {

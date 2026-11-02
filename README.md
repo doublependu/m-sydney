@@ -29,7 +29,7 @@ Which test when:
 | Command | Time | When |
 |---|---|---|
 | `npm run check` | About 40 s | Every change: unit tests, build, ground, how the roads drive, how traffic moves, deploy size, on the 80 km² around the CBD |
-| `npm run check -- --full` | About 5 min | When the map changes: the same over the whole map, and how many tiles pass |
+| `npm run check -- --full` | About 10 min | When the map changes: the same over the whole map, and how many tiles pass |
 | `npm run play` | About 5 min | Before saying something works: the key scenarios, no video |
 | `npm run play -- --changed` | Varies | After a larger change: the scenarios `git diff` says it can affect |
 | `npm run play -- --full` | About 12 min | At the end of a phase: everything but the soak, a few browsers at a time, long drives on the fast clock |
@@ -78,32 +78,37 @@ a Worker script's requests count against 100,000 a day. Per-version preview URLs
 ## Map data
 
 The map ships as 1 km tiles in `public/tiles/`, each file named for a hash of its contents, so a tile that hasn't changed stays
-in players' caches. It covers Inner Sydney: Burwood to Bondi, Manly to the airport. To rebuild it, download the raw snapshots to
-`tools/data/` (they are too large to keep in the repository) and run the generators. Allow about 3 GB of disk for the downloads:
+in players' caches. It covers Parramatta to the sea and Palm Beach to Cronulla. To rebuild it, download the raw snapshots to `tools/data/`
+(they are too large to keep in the repository) and run the generators. Allow about 6 GB of disk for the downloads:
 
 ```bash
 npm run data:fetch                                     # the original snapshots, from Overpass and open data sites
-curl -L -o tools/data/osm/sydney-bbbike.osm.pbf https://download.bbbike.org/osm/bbbike/Sydney/Sydney.osm.pbf
-node tools/extract-osm.mjs 151.0238,-34.0233,151.3701,-33.7114 tools/data/inner   # cuts the roads, land and rail out of it
-SYDNEY_DATA=tools/data/inner SYDNEY_BOX='-34.0233,151.0238,-33.7114,151.3701' node tools/fetch-data.mjs overture_syd,overture_parts
+curl -L -o tools/data/osm/australia-latest.osm.pbf https://download.geofabrik.de/australia-oceania/australia-latest.osm.pbf   # 972 MB
+BOX=150.8743,-34.1571,151.4826,-33.4732                # the map and a margin: west, south, east, north
+node tools/extract-osm.mjs $BOX tools/data/east        # cuts the roads, land, rail and coast out of it, in seconds
+SYDNEY_DATA=tools/data/east SYDNEY_BOX='-34.1571,150.8743,-33.4732,151.4826' node tools/fetch-data.mjs overture_syd,overture_parts   # 3 min
 node tools/fetch-data.mjs overture_density             # for the horizon: 90 s
 node tools/fetch-elevation.mjs --cell=100              # for the horizon: 4 min
-node tools/fetch-elevation.mjs --cell=5 --box=151.0238,-34.0233,151.3701,-33.7114   # 325 MB, 5 min
-npm run data:build                                     # 12 min, about 9 GB of memory at most
+node tools/fetch-elevation.mjs --cell=5 --box=$BOX     # about 1 GB, 15 min
+npm run data:build                                     # about 30 min. Leave 16 GB of memory free for it
+npm run data:map                                       # the map screen's images: 2 min
 ```
 
-The generators write the whole map to `tools/data/generated/`, and `tools/build-tiles.mjs` cuts it up. `tools/geo-common.mjs` sets the
-world frame and the play area; `SYDNEY_AREA=today` makes the old CBD map instead, for checking a generator still makes what it did.
+The generators write the whole map to `tools/data/generated/`, and `tools/build-tiles.mjs` cuts it up. What needs a 1 m raster is done a region at a
+time, each 7.2 km square with a margin, in worker threads (`tools/geodata/`), since one raster of it all wouldn't fit in memory. `tools/geo-common.mjs`
+sets the world frame and the play area; `SYDNEY_AREA=inner` makes Inner Sydney instead, or `today` the old CBD map, for checking a generator still makes
+what it did.
 
 | File | Holds | Fetched |
 |---|---|---|
-| `tiles/world.json` | What the whole map shares: tile list, shores, structures, the bridge's deck | At start |
-| `tiles/far-heights.bin.gz` | The ground on a coarse grid, for where no tile is held | At start |
-| `tiles/<x>_<z>.<hash>.bin.gz` | A tile: roads with their shapes, kerbs, buildings, trees, heights, and a 5 m grid of how far the ground moves to meet the roads | When the player's near |
-| `tiles/far_<x>_<z>.<hash>.bin.gz` | 4 km of the far level: every building as a few points, plain ground, main roads | After the first frame |
-| `tiles/far.json.gz` | Land beyond the map, and the streets around the Harbour Bridge | After the first frame |
+| `tiles/world.json` | What the whole map shares: tile list, structures, the bridge's deck | At start |
+| `tiles/far-heights.bin.gz` | The ground on a very coarse grid, for where nothing better is held | At start |
+| `tiles/<x>_<z>.<hash>.bin.gz` | A tile: roads with their shapes, kerbs, where the land and shore are, buildings, trees, heights, tunnel mouths, and a 5 m grid of how far the ground moves to meet the roads | When the player's near |
+| `tiles/far_<x>_<z>.<hash>.bin.gz` | 4 km of the far level: every building as a few points, plain ground with its own land and heights, main roads | Near the player, after the first frame |
+| `tiles/far.json.gz` | Land beyond the map, suburbs' names, and the streets around the Harbour Bridge | After the first frame |
 | `tiles/horizon.bin.gz` | The whole box out to Katoomba, coarsely | After the first frame |
-| `tiles/map.json.gz` | All the roads and blocks, for the map screen | When the map is first opened |
+| `tiles/map.json.gz` | Where every named street is, for the map screen's names and search | When the map is first opened |
+| `map/<m>/<x>_<z>.webp` | All of the map as images, at 32, 8 and 2 m a pixel | As they come into view on the map |
 
 ## How it works
 
@@ -178,8 +183,7 @@ Map data keeps its own licences:
   roads, parks, the harbour, piers, rail, ferries
 - [Overture Maps](https://docs.overturemaps.org/attribution/) (OpenStreetMap and Microsoft ML footprints): buildings
 - [City of Sydney](https://data.cityofsydney.nsw.gov.au), CC BY 4.0: trees, building height controls
-- [NSW Spatial Services](https://www.spatial.nsw.gov.au), © State of NSW: terrain, from the 5 m elevation model. data.gov.au's record for it says
-  CC BY 3.0 Australia, and the service's own page is less clear: to be confirmed with them before Inner Sydney is deployed publicly
+- [NSW Spatial Services](https://www.spatial.nsw.gov.au), © State of NSW, CC BY 3.0: terrain, from the 5 m elevation model
 
 ## Backed by
 

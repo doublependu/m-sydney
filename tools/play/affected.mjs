@@ -16,6 +16,8 @@ export const COVERS = {
   'tile-streaming': { files: /^js\/(geodata|terrain|surfaces|city-config|city-grid|buildings|far-level|main|scene-culling)\.js$|^js\/tiles\/|^public\/tiles\//, area: null },
   'keeps-left': { files: /^js\/(traffic|road-network)\.js$/, area: null },
   'long-flight': { files: /^js\/(main|far-level|horizon)\.js$/, area: null },
+  'long-drive-north': { files: /^js\/(main|surfaces)\.js$/, area: null },
+  'long-drive-south': { files: /^js\/(main|surfaces)\.js$/, area: null },
   'long-drive': { files: /^js\/(main|surfaces)\.js$/, area: null },
   'test-building': { files: /^js\/(interiors|model-sites|buildings|surfaces)\.js$/, area: null },
   'test-building-phone': { files: /^js\/(interiors|model-sites|buildings|surfaces)\.js$/, area: null },

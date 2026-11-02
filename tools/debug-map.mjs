@@ -12,7 +12,7 @@ const P = (x, z) => `${((x - x0) * S).toFixed(1)},${((z - z0) * S).toFixed(1)}`;
 const ring = (f) => { let s = ''; for (let i = 0; i < f.length; i += 2) s += `${i ? 'L' : 'M'}${P(f[i], f[i + 1])}`; return `${s}Z`; };
 let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="#2a4a6a"/>`;
 for (const rings of GEO.surroundings) svg += `<path d="${rings.map(ring).join('')}" fill="#3a4a3a" fill-rule="evenodd"/>`;
-for (const rings of GEO.shores) svg += `<path d="${rings.map(ring).join('')}" fill="#555" fill-rule="evenodd"/>`;
+
 for (const [flat, holes, park] of heldTiles().flatMap((t) => t.blocks)) svg += `<path d="${[flat, ...holes].map(ring).join('')}" fill="${park > 0.6 ? '#4c8a4c' : park > 0.2 ? '#7f9f6a' : '#c8bda8'}" fill-rule="evenodd" stroke="#000" stroke-width="0.3"/>`;
 // Roads by level: ground red, bridges and viaducts orange and thicker, tunnels blue and dashed
 const n = GEO.roadGraph.nodes;

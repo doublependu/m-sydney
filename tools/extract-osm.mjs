@@ -1,4 +1,4 @@
-// Cuts what the generators read out of an OSM extract (BBBike's Sydney by default, or Geofabrik's Australia by OSM_PBF; © OpenStreetMap contributors,
+// Cuts what the generators read out of Geofabrik's Australia extract (or another by OSM_PBF; © OpenStreetMap contributors,
 // ODbL), in the shape Overpass gives (tools/fetch-data.mjs), since Overpass isn't suited to downloads this size. A way or relation with any
 // node inside the box comes whole.
 //   node tools/extract-osm.mjs west,south,east,north out-folder [names]
@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { DuckDBInstance } from '@duckdb/node-api';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const PBF = path.join(ROOT, process.env.OSM_PBF ?? 'tools/data/osm/sydney-bbbike.osm.pbf');
+const PBF = path.join(ROOT, process.env.OSM_PBF ?? 'tools/data/osm/australia-latest.osm.pbf');
 const [west, south, east, north] = process.argv[2].split(',').map(Number);
 const OUT = process.argv[3];
 const only = process.argv[4]?.split(',');
@@ -28,6 +28,7 @@ const CATEGORIES = {
     ways: `${isIn('man_made', ['pier'])} OR ${isIn('leisure', ['park', 'garden', 'pitch', 'playground', 'common'])} OR ${isIn('landuse', ['grass', 'recreation_ground', 'village_green'])} OR ${isIn('natural', ['water', 'wood'])}`,
     relations: `${isIn('man_made', ['pier'])} OR ${isIn('leisure', ['park', 'garden'])} OR ${isIn('natural', ['water'])}`
   },
+  coast: { ways: isIn('natural', ['coastline']) },
   rail: {
     ways: `${isIn('railway', ['light_rail', 'rail', 'subway', 'tram'])} OR ${isIn('route', ['ferry'])}`,
     nodes: isIn('railway', ['station', 'stop'])

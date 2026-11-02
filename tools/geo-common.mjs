@@ -13,6 +13,13 @@ const AREAS = {
     bounds: { x0: -2100, x1: 2700, z0: -4500, z1: 2100 },
     grid: { x0: -6000, x1: 7000, z0: -9000, z1: 6000, cell: 20 }
   },
+  // Parramatta to the sea, Palm Beach to Cronulla
+  east: {
+    folder: 'east',
+    rects: [{ x0: -23000, x1: 10000, z0: -35000, z1: 25000 }],
+    bounds: { x0: -23000, x1: 10000, z0: -35000, z1: 25000 },
+    grid: { x0: -27000, x1: 14000, z0: -39000, z1: 29000, cell: 20 }
+  },
   // Burwood to Bondi, Manly to the airport
   inner: {
     folder: 'inner',
@@ -21,7 +28,7 @@ const AREAS = {
     grid: { x0: -14000, x1: 12000, z0: -15000, z1: 14000, cell: 20 }
   }
 };
-export const AREA_NAME = process.env.SYDNEY_AREA ?? 'inner';
+export const AREA_NAME = process.env.SYDNEY_AREA ?? 'east';
 const AREA = AREAS[AREA_NAME];
 /** A snapshot of the data: this area's own if it has one, or the one all areas share */
 export const dataPath = (file) => {
@@ -29,6 +36,20 @@ export const dataPath = (file) => {
   return fs.existsSync(own) ? own : path.join(DATA, file);
 };
 export const load = (file) => JSON.parse(fs.readFileSync(dataPath(file), 'utf8'));
+/** Each line of a file of JSON lines, parsed, however big the file: a string can't hold more than about 512 MB */
+export function* jsonLines(file) {
+  const fd = fs.openSync(file, 'r');
+  const chunk = Buffer.alloc(64 * 1048576);
+  let tail = '';
+  for (let n; (n = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0;) {
+    const text = tail + chunk.toString('utf8', 0, n);
+    const lines = text.split('\n');
+    tail = lines.pop();
+    for (const line of lines) if (line) yield JSON.parse(line);
+  }
+  if (tail.trim()) yield JSON.parse(tail);
+  fs.closeSync(fd);
+}
 export const log = (...args) => console.log('[geodata]', ...args);
 
 export const LAT0 = -33.8731;
@@ -197,20 +218,24 @@ export class Raster {
     this.h = Math.ceil((z1 - this.z0) / res) + 1;
     this.d = new Type(this.w * this.h);
   }
-  // Even-odd scanline fill of a ring
+  // Even-odd scanline fill of a ring. Goes through its edges once, however many rows it spans.
   fillRing(ring, val = 1) {
     const { res, x0, z0, w, h, d } = this;
-    const bb = bbox(ring);
-    const j0 = Math.max(0, Math.floor((bb.z0 - z0) / res));
-    const j1 = Math.min(h - 1, Math.ceil((bb.z1 - z0) / res));
-    const xs = [];
-    for (let j = j0; j <= j1; j++) {
-      const z = z0 + (j + 0.5) * res;
-      xs.length = 0;
-      for (let i = 0, k = ring.length - 1; i < ring.length; k = i++) {
-        const [xa, za] = ring[k], [xb, zb] = ring[i];
-        if ((za > z) !== (zb > z)) xs.push(xa + ((z - za) * (xb - xa)) / (zb - za));
+    const rows = new Map();
+    for (let i = 0, k = ring.length - 1; i < ring.length; k = i++) {
+      const [xa, za] = ring[k], [xb, zb] = ring[i];
+      if (za === zb) continue;
+      const j0 = Math.max(0, Math.ceil((Math.min(za, zb) - z0) / res - 0.5));
+      const j1 = Math.min(h - 1, Math.floor((Math.max(za, zb) - z0) / res - 0.5));
+      for (let j = j0; j <= j1; j++) {
+        const z = z0 + (j + 0.5) * res;
+        if ((za > z) === (zb > z)) continue;
+        let xs = rows.get(j);
+        if (!xs) rows.set(j, (xs = []));
+        xs.push(xa + ((z - za) * (xb - xa)) / (zb - za));
       }
+    }
+    for (const [j, xs] of rows) {
       xs.sort((p, q) => p - q);
       for (let n = 0; n + 1 < xs.length; n += 2) {
         const i0 = Math.max(0, Math.ceil((xs[n] - x0) / res - 0.5));
@@ -386,14 +411,108 @@ export class Raster {
   }
 }
 
+// One bit a cell, for what has to reach across the whole map: land and building walls. Over a shared buffer, regions can write to it side by
+// side, as long as they start and end on whole bytes.
+export class BitRaster {
+  constructor(x0, z0, x1, z1, res = 1, buffer = null) {
+    this.res = res;
+    this.x0 = x0;
+    this.z0 = z0;
+    this.x1 = x1;
+    this.z1 = z1;
+    this.w = Math.ceil((x1 - x0) / res);
+    this.h = Math.ceil((z1 - z0) / res);
+    this.rowBytes = Math.ceil(this.w / 8);
+    this.bits = new Uint8Array(buffer ?? new SharedArrayBuffer(this.rowBytes * this.h));
+  }
+  at(x, z) {
+    const i = Math.floor((x - this.x0) / this.res), j = Math.floor((z - this.z0) / this.res);
+    if (i < 0 || j < 0 || i >= this.w || j >= this.h) return 0;
+    return (this.bits[j * this.rowBytes + (i >> 3)] >> (i & 7)) & 1;
+  }
+  /** Sets each cell of a ring, for what's small: a building */
+  fillRing(ring) {
+    const { res, x0, z0, w, h, bits, rowBytes } = this;
+    let lo = Infinity, hi = -Infinity;
+    for (const p of ring) { if (p[1] < lo) lo = p[1]; if (p[1] > hi) hi = p[1]; }
+    const j0 = Math.max(0, Math.ceil((lo - z0) / res - 0.5)), j1 = Math.min(h - 1, Math.floor((hi - z0) / res - 0.5));
+    for (let j = j0; j <= j1; j++) {
+      const z = z0 + (j + 0.5) * res;
+      const xs = [];
+      for (let i = 0, k = ring.length - 1; i < ring.length; k = i++) {
+        const [xa, za] = ring[k], [xb, zb] = ring[i];
+        if ((za > z) !== (zb > z)) xs.push(xa + ((z - za) * (xb - xa)) / (zb - za));
+      }
+      xs.sort((p, q) => p - q);
+      for (let n = 0; n + 1 < xs.length; n += 2) {
+        const i0 = Math.max(0, Math.ceil((xs[n] - x0) / res - 0.5)), i1 = Math.min(w - 1, Math.floor((xs[n + 1] - x0) / res - 0.5));
+        for (let i = i0; i <= i1; i++) bits[j * rowBytes + (i >> 3)] |= 1 << (i & 7);
+      }
+    }
+  }
+  /** Copies the part of a byte-a-cell raster that's in `core` */
+  setFrom(raster, core) {
+    const { res, bits, rowBytes } = this;
+    const oi = Math.round((core.x0 - raster.x0) / res), oj = Math.round((core.z0 - raster.z0) / res);
+    const ti = Math.round((core.x0 - this.x0) / res), tj = Math.round((core.z0 - this.z0) / res);
+    const cw = Math.round((core.x1 - core.x0) / res), ch = Math.round((core.z1 - core.z0) / res);
+    for (let j = 0; j < ch; j++) {
+      if (tj + j < 0 || tj + j >= this.h) continue;
+      for (let i = 0; i < cw; i++) {
+        if (ti + i < 0 || ti + i >= this.w) continue;
+        const at = (tj + j) * rowBytes + ((ti + i) >> 3);
+        if (raster.d[(j + oj) * raster.w + i + oi]) bits[at] |= 1 << ((ti + i) & 7);
+      }
+    }
+  }
+  /** A byte-a-cell copy of a part of it */
+  window({ x0, z0, x1, z1 }) {
+    const { res, bits, rowBytes } = this;
+    const out = new Raster(x0, z0, x1, z1, res);
+    const ti = Math.round((out.x0 - this.x0) / res), tj = Math.round((out.z0 - this.z0) / res);
+    for (let j = 0; j < out.h; j++) {
+      if (tj + j < 0 || tj + j >= this.h) continue;
+      const row = (tj + j) * rowBytes;
+      for (let i = 0; i < out.w; i++) {
+        const c = ti + i;
+        if (c < 0 || c >= this.w) continue;
+        if ((bits[row + (c >> 3)] >> (c & 7)) & 1) out.d[j * out.w + i] = 1;
+      }
+    }
+    return out;
+  }
+  save(file) {
+    const head = Buffer.from(new Int32Array([this.x0, this.z0, this.x1, this.z1, this.res]).buffer);
+    const fd = fs.openSync(file, 'w');
+    fs.writeSync(fd, head);
+    fs.writeSync(fd, this.bits);
+    fs.closeSync(fd);
+  }
+  static load(file) {
+    const fd = fs.openSync(file, 'r');
+    const head = Buffer.alloc(20);
+    fs.readSync(fd, head, 0, 20, 0);
+    const [x0, z0, x1, z1, res] = new Int32Array(head.buffer, head.byteOffset, 5);
+    const out = new BitRaster(x0, z0, x1, z1, res);
+    fs.readSync(fd, out.bits, 0, out.bits.length, 20);
+    fs.closeSync(fd);
+    return out;
+  }
+}
+
 // The non-zero cells of a raster as polygons no wider than `size`: tiles overlap by a cell, so neighbours can't part.
 // Keeps every polygon cheap to triangulate, and lets the game build only those near the player. Returns [[outer, ...holes]].
 const TILE_OVERLAP = 3; // cells
-export function tiledPolygons(raster, size, eps, minCells = 6, minHole = 6) {
+export function tiledPolygons(raster, size, eps, minCells = 6, minHole = 6, within = null) {
   const out = [];
   const step = Math.round(size / raster.res);
   for (let tj = 0; tj < raster.h; tj += step) {
     for (let ti = 0; ti < raster.w; ti += step) {
+      // Only the squares starting in `within`: a neighbouring region has the rest
+      if (within) {
+        const sx = raster.x0 + ti * raster.res, sz = raster.z0 + tj * raster.res;
+        if (sx < within.x0 || sx >= within.x1 || sz < within.z0 || sz >= within.z1) continue;
+      }
       // A little past its own square: tracing a raster's edge takes half a cell off it, and simplifying can take more, which would leave
       // a gap along the seam for the ground under it to show through
       const w = Math.min(step + TILE_OVERLAP, raster.w - ti), h = Math.min(step + TILE_OVERLAP, raster.h - tj);

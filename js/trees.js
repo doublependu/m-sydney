@@ -178,7 +178,8 @@ function sprayBounds(prims) {
   return { minX, maxX, minY, maxY };
 }
 
-function createLeafAtlas() {
+// A step at a time: the first time, this is one of the longest things the game does while you're playing
+function* createLeafAtlasSteps() {
   const ctx2d = () => {
     const c = document.createElement('canvas');
     c.width = c.height = ATLAS_SIZE;
@@ -198,7 +199,7 @@ function createLeafAtlas() {
   const sprays = buildSprays(rng);
   const tileMeters = [];
 
-  sprays.forEach((prims, k) => {
+  for (const [k, prims] of sprays.entries()) {
     // Fit: attachment point at the bottom centre of the tile (the far clump: centred), widest extent to the gutter
     const b = sprayBounds(prims);
     const [ox, oy] = tileOrigin(k);
@@ -292,11 +293,14 @@ function createLeafAtlas() {
         fill((c) => c.arc(X(cP), Y(cP), L * 0.24 * s, 0, Math.PI * 2), rgb(Math.round(r * 0.96), g));
       }
     }
-  });
+    yield;
+  }
 
   // Colour data + coverage -> level 0, then a mip chain whose alpha keeps each tile's coverage
   const data = col.getImageData(0, 0, ATLAS_SIZE, ATLAS_SIZE).data;
+  yield;
   const mask = cov.getImageData(0, 0, ATLAS_SIZE, ATLAS_SIZE).data;
+  yield;
   const level0 = new Uint8Array(ATLAS_SIZE * ATLAS_SIZE * 4);
   for (let i = 0; i < level0.length; i += 4) {
     level0[i] = data[i];
@@ -305,7 +309,9 @@ function createLeafAtlas() {
     level0[i + 3] = mask[i + 3];
   }
   const tex = new THREE.DataTexture(level0, ATLAS_SIZE, ATLAS_SIZE, THREE.RGBAFormat, THREE.UnsignedByteType);
+  yield;
   tex.mipmaps = coverageMips(level0, ATLAS_SIZE, 2);
+  yield;
   tex.generateMipmaps = false;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.magFilter = THREE.LinearFilter;
@@ -315,6 +321,13 @@ function createLeafAtlas() {
   tex.needsUpdate = true;
   tex.name = 'TreeLeafAtlas';
   return { texture: tex, tileMeters };
+}
+
+function createLeafAtlas() {
+  const job = createLeafAtlasSteps();
+  let step = job.next();
+  while (!step.done) step = job.next();
+  return step.value;
 }
 
 // Box-filtered mip chain whose alpha is rescaled per tile so the share of texels above the alpha-test cutoff stays as
@@ -880,12 +893,21 @@ function createTreeClearance(colliders) {
  */
 // Kept when the trees are rebuilt for a new stretch of the map
 let treeParts = null;
-function sharedTreeParts() {
+function* sharedTreeParts() {
   if (!treeParts) {
-    const atlas = createLeafAtlas();
+    const atlas = yield* createLeafAtlasSteps();
     const material = createTreeMaterial(atlas.texture);
+    yield;
     // Geometries: [species][variant][lod]
-    const geos = SPECIES.map((_, s) => [0, 1].map((v) => buildTreeGeometries(s, v, atlas.tileMeters)));
+    const geos = [];
+    for (let s = 0; s < SPECIES.length; s++) {
+      const variants = [];
+      for (const v of [0, 1]) {
+        variants.push(buildTreeGeometries(s, v, atlas.tileMeters));
+        yield;
+      }
+      geos.push(variants);
+    }
     for (const variants of geos) for (const levels of variants) for (const g of levels) if (g) g.userData.shared = true;
     treeParts = { atlas, material, geos };
   }
@@ -895,7 +917,7 @@ function sharedTreeParts() {
 function* createTreeFieldSteps(_scene, sites, colliders = []) {
   const group = new THREE.Group();
   group.name = 'Trees';
-  const { atlas, material, geos } = sharedTreeParts();
+  const { atlas, material, geos } = yield* sharedTreeParts();
   const clearOfBuildings = createTreeClearance(colliders);
   const treeBounds = geos.map((variants) => variants.map((levels) => {
     const bounds = new THREE.Box3();

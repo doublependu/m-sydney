@@ -196,7 +196,8 @@ export class Watchdog {
     // As drawn: never under the road it's on, or up in the air over it (a helicopter flies, a crash can throw a car)
     // In two frames running: a teleport moves the car a frame before it's drawn at its new height, and a busy GPU can hold back
     // the next frame for longer than these looks are apart. No frame, nothing drawn wrong.
-    const under = mode === 'car' && player.drawnY !== null && player.drawnY < player.surfaceY - 0.6;
+    // (Not behind the fade while the ground comes, when what's under the car can change between one look and the next)
+    const under = !paused && mode === 'car' && player.drawnY !== null && player.drawnY < player.surfaceY - 0.6;
     if (under && this.wasUnder && player.frame !== this.underFrame) {
       this.fail(`the car is drawn under its road at ${x.toFixed(0)}, ${z.toFixed(0)}: ${player.drawnY.toFixed(2)} on a road at ${player.surfaceY.toFixed(2)}`);
     }

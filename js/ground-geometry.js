@@ -272,6 +272,12 @@ function kerbFootAt(x, z) {
   return { foot: y - 0.3, top: y + SIDEWALK_TOP + 0.01 };
 }
 
+// The generators cut an island too big for one of their regions along that region's edge, like a national park (tools/geodata/regions.mjs):
+// there's no road there, and no kerb
+const REGION = 7200;
+const nearRegionLine = (v) => Math.abs(v - Math.round(v / REGION) * REGION) < 1.5;
+const onSeam = (a, b) => (nearRegionLine(a.x) && nearRegionLine(b.x)) || (nearRegionLine(a.z) && nearRegionLine(b.z));
+
 // A curb along a ring: a wall from under the road up to the kerb's top, and a ledge along the footpath's edge
 function addCurb(cells, ring, ledge = 0.3) {
   const pts = denseRing(ring, EDGE_STEP);
@@ -282,6 +288,7 @@ function addCurb(cells, ring, ledge = 0.3) {
   const kerbs = pts.map((p) => kerbFootAt(p.x, p.z));
   for (let i = 0; i < n; i++) {
     const a = pts[i], b = pts[(i + 1) % n];
+    if (onSeam(a, b)) continue;
     const dx = b.x - a.x, dz = b.z - a.z, L = Math.hypot(dx, dz) || 1;
     const ix = (-dz / L) * side, iz = (dx / L) * side; // inward
     const ka = kerbs[i], kb = kerbs[(i + 1) % n];

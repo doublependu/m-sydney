@@ -1,11 +1,11 @@
-import { GEO, loadMapData } from './geodata.js';
-import { ROADS, BLOCKS, LANDMARKS, CITY_BOUNDS, SHORE_RINGS, SUBURBS, blockFromRecord, getLocationLabel, getMapVersion, isTypingInField, sceneryRoad, shortName } from './city-config.js';
+import { GEO, heldTiles, loadMapData } from './geodata.js';
+import { ROADS, BLOCKS, LANDMARKS, CITY_BOUNDS, SUBURBS, blockFromRecord, getLocationLabel, getMapVersion, isTypingInField, sceneryRoad, shortName } from './city-config.js';
 
 // Minimap and full-screen map drawn from the same geography and building footprints as the 3D city.
 // World frame: 1 unit = 1 m, x = grid east, z = grid south. Both maps face grid north, about 8 degrees east of true north.
 
 const FONT = 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-const MIN_ZOOM = 0.03; // full map, pixels per metre: the whole harbour, Parramatta to the Heads
+const MIN_ZOOM = 0.012; // full map, pixels per metre: the whole harbour, Parramatta to the Heads
 const MAX_ZOOM = 3.0; // single lots
 const RADAR_SCALE = 0.32; // radar pixels per metre on the ground (zooms out with altitude)
 const GRID_BEARING = GEO.frame.bearingDeg; // the CBD's grid north, degrees east of true north
@@ -52,10 +52,74 @@ const AREA_LABELS = [
   ['BALMAIN', -3000, -1100, 2], ['BONDI', 5800, 1600, 2], ['MANLY', 7000, -10500, 2], ['MOSMAN', 2800, -5500, 2], ['GLEBE', -2700, 1000, 2],
   ['NEWTOWN', -2800, 3300, 2], ['VAUCLUSE', 6300, -3000, 2], ...SUBURBS.map(([name, x0, x1, z0, z1]) => [name.toUpperCase(), (x0 + x1) / 2, (z0 + z1) / 2, 2])
 ];
-// Every other named place on the map, unless one of those is near
-for (const [name, x, z] of GEO.suburbs ?? []) {
-  if (!AREA_LABELS.some(([other, ox, oz]) => other === name.toUpperCase() || Math.hypot(ox - x, oz - z) < 500)) AREA_LABELS.push([name.toUpperCase(), x, z, 2]);
+// Every other named place on the map, unless one of those is near. They come a moment after the first view.
+let suburbLabelsAdded = false;
+function addSuburbLabels() {
+  if (suburbLabelsAdded || !GEO.suburbs) return;
+  suburbLabelsAdded = true;
+  for (const [name, x, z] of GEO.suburbs) {
+    if (!AREA_LABELS.some(([other, ox, oz]) => other === name.toUpperCase() || Math.hypot(ox - x, oz - z) < 500)) AREA_LABELS.push([name.toUpperCase(), x, z, 2]);
+  }
 }
+
+// All of the map as images, drawn beforehand by this same code (tools/build-map-images.mjs): a level for each range of zoom, in squares fetched as
+// they come into view. What's near the player is drawn over them from the tiles held.
+const mapImageUrl = (name) => new URL(`map/${name}`, document.baseURI);
+const KEEP_IMAGES = 80;
+class MapImages {
+  constructor() {
+    this.index = null;
+    this.images = new Map(); // `${m}/${x}_${z}` -> { image, ready, used }
+    this.version = 0;
+    this.clock = 0;
+    if (typeof fetch !== 'function') return;
+    fetch(mapImageUrl('index.json')).then((r) => (r.ok ? r.json() : null)).then((index) => {
+      if (!index) return;
+      this.index = index.levels.map((l) => ({ ...l, have: new Set(l.keys) }));
+      this.version++;
+    }).catch(() => {}); // The offline file has none: the map is what's held
+  }
+
+  get(level, ix, iz) {
+    const name = `${level.m}/${ix}_${iz}`;
+    let entry = this.images.get(name);
+    if (!entry) {
+      if (!level.have.has(`${ix}_${iz}`)) return null;
+      const image = new Image();
+      entry = { image, ready: false, used: 0 };
+      image.onload = () => { entry.ready = true; this.version++; };
+      image.src = mapImageUrl(`${name}.webp`).href;
+      this.images.set(name, entry);
+      if (this.images.size > KEEP_IMAGES) {
+        let oldest = null;
+        for (const [key, e] of this.images) if (e !== entry && (!oldest || e.used < this.images.get(oldest).used)) oldest = key;
+        this.images.delete(oldest);
+      }
+    }
+    entry.used = this.clock;
+    return entry;
+  }
+
+  /** Draws view `v`, in the world's transform: the coarsest level there is under the one this zoom wants, so nothing's ever blank */
+  draw(ctx, v) {
+    if (!this.index) return false;
+    this.clock++;
+    const pixels = v.s * v.dpr;
+    const wanted = this.index.findIndex((l) => 1 / l.m <= pixels * 1.3);
+    const top = wanted < 0 ? this.index.length - 1 : wanted;
+    for (let k = this.index.length - 1; k >= top; k--) {
+      const level = this.index[k];
+      for (let iz = Math.floor(v.minZ / level.size); iz * level.size < v.maxZ; iz++) {
+        for (let ix = Math.floor(v.minX / level.size); ix * level.size < v.maxX; ix++) {
+          const entry = this.get(level, ix, iz);
+          if (entry?.ready) ctx.drawImage(entry.image, ix * level.size, iz * level.size, level.size, level.size);
+        }
+      }
+    }
+    return true;
+  }
+}
+let mapImages = null;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // World-space vector layers: built once into Path2D objects (world metres) and drawn through a canvas transform
@@ -169,16 +233,20 @@ function loadWholeMap() {
       for (let i = 0; i + 1 < flat.length; i += 2) pts.push({ x: flat[i], z: flat[i + 1] });
       return { name, short: shortName(name), w, lanes, dir, major: !!major, highway: false, kind, pts };
     });
+    // Blocks and shores only when drawing the images
     wholeMap = {
       roads: [...roads, ...data.scenery.map(sceneryRoad)],
-      blocks: data.blocks.map(([flat, holes, park, parkName], id) => blockFromRecord([flat, holes, park, parkName, id]))
+      blocks: data.blocks?.map(([flat, holes, park, parkName], id) => blockFromRecord([flat, holes, park, parkName, id])) ?? null,
+      shores: data.shores ?? null
     };
     labelsAt = layersAt = -Infinity;
   }).catch(() => {}); // Tries again the next time the map opens
 }
 const mapRoads = () => wholeMap?.roads ?? ROADS;
 const mapBlocks = () => wholeMap?.blocks ?? BLOCKS;
-const mapContents = () => (wholeMap ? -1 : getMapVersion() * 2 + (GEO.surroundings ? 1 : 0));
+const ROWS = 2; // m: each tile's land comes in runs along rows this far apart
+// (the held tiles' land is what changes while the whole map's names are here)
+const mapContents = () => (wholeMap ? (wholeMap.shores ? -1 : -2 - getMapVersion()) : getMapVersion() * 2 + (GEO.surroundings ? 1 : 0));
 let LAYERS = null, layersOf = -2, layersAt = -Infinity;
 function mapLayers() {
   const contents = mapContents();
@@ -193,9 +261,22 @@ function mapLayers() {
     for (const hole of holes) addRing(L.land, hole, true);
   }
   L.shores = new Path2D();
-  for (const [outer, ...docks] of SHORE_RINGS) {
-    addRing(L.shores, outer);
-    for (const dock of docks) addRing(L.shores, dock, true);
+  if (wholeMap?.shores) {
+    for (const [outer, ...docks] of wholeMap.shores) {
+      addRing(L.shores, outer);
+      for (const dock of docks) addRing(L.shores, dock, true);
+    }
+  } else {
+    // What's held: each tile's land, whole or in runs
+    for (const tile of heldTiles()) {
+      const x0 = tile.ix * 1000, z0 = tile.iz * 1000;
+      if (tile.land === 1) L.shores.rect(x0, z0, 1000, 1000);
+      else if (Array.isArray(tile.land)) {
+        tile.land.forEach((row, k) => {
+          for (let n = 0; n + 1 < row.length; n += 2) L.shores.rect(x0 + row[n], z0 + k * ROWS, row[n + 1] - row[n], ROWS);
+        });
+      }
+    }
   }
 
   // The curb islands and the park blocks, exactly as city-grid.js treats them
@@ -652,10 +733,46 @@ class CityMapSystem {
     if (id !== null && this.fullCanvas && this.fullCanvas.hasPointerCapture(id)) this.fullCanvas.releasePointerCapture(id);
   }
 
+  /**
+   * One image of the map, for tools/build-map-images.mjs: the square from (x0, z0) of `size` metres, `px` pixels across, as a data URL.
+   * `buildings`: [{ height, rings: [[{ x, z }]] }], since this has the far level's buildings only near the start.
+   */
+  renderImage(x0, z0, size, px, buildings) {
+    const canvas = (this.imageCanvas ??= document.createElement('canvas'));
+    canvas.width = canvas.height = px;
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = MAP.water;
+    ctx.fillRect(0, 0, px, px);
+    const v = new MapView(x0 + size / 2, z0 + size / 2, px / size, px, px, 1);
+    this.drawingImages = true;
+    const held = this.allBlocks;
+    this.allBlocks = [];
+    this.drawWorld(ctx, v, false);
+    this.allBlocks = held;
+    this.drawingImages = false;
+    if (buildings?.length && v.s >= 0.18) {
+      v.world(ctx);
+      for (const b of buildings) {
+        ctx.fillStyle = MAP.buildings[b.height > 95 ? 2 : b.height > 45 ? 1 : 0];
+        ctx.beginPath();
+        for (const ring of b.rings) {
+          ring.forEach((p, i) => (i ? ctx.lineTo(p.x, p.z) : ctx.moveTo(p.x, p.z)));
+          ctx.closePath();
+        }
+        ctx.fill();
+      }
+    }
+    return canvas.toDataURL('image/webp', 0.82);
+  }
+
   toggleFullMap(open) {
     this.isFullMapOpen = Boolean(open);
     if (!this.isFullMapOpen) this.cancelPan();
-    else loadWholeMap();
+    else {
+      loadWholeMap();
+      mapImages ??= new MapImages();
+    }
     if (this.onToggle) this.onToggle(this.isFullMapOpen);
     if (!this.modal) return;
     this.modal.classList.toggle('hidden', !this.isFullMapOpen);
@@ -719,6 +836,10 @@ class CityMapSystem {
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
 
+    // All of the map, as images, on the full map. Over them, what's held, once you're close enough to see it.
+    const images = !isMinimap && !this.drawingImages && mapImages?.draw(ctx, v);
+    if (images && s < 0.16) return;
+
     // 1. The land around the harbour
     ctx.fillStyle = MAP.land;
     ctx.fill(L.land);
@@ -726,9 +847,11 @@ class CityMapSystem {
     // 2. The play area (roadway deck colour: the streets are the gaps between the blocks)
     ctx.fillStyle = MAP.streets;
     ctx.fill(L.shores);
-    ctx.strokeStyle = MAP.shore;
-    ctx.lineWidth = px(isMinimap ? 1.6 : 2.0);
-    ctx.stroke(L.shores);
+    if (wholeMap?.shores) {
+      ctx.strokeStyle = MAP.shore;
+      ctx.lineWidth = px(isMinimap ? 1.6 : 2.0);
+      ctx.stroke(L.shores);
+    }
 
     // 3. Blocks (curb islands) and park blocks
     ctx.fillStyle = MAP.block;
@@ -1034,7 +1157,8 @@ class CityMapSystem {
 
     // Ground layers, names & landmark pins: re-rendered only when the view, the search or the buildings change
     const fp = footprintLayers(this.allBlocks);
-    const key = `${layersOf}|${v.cx}|${v.cz}|${v.s}|${this.fullCanvas.width}|${this.fullCanvas.height}|${this.searchHighlight}|${fp ? fp.version : 0}`;
+    addSuburbLabels();
+    const key = `${mapImages?.version ?? 0}|${layersOf}|${v.cx}|${v.cz}|${v.s}|${this.fullCanvas.width}|${this.fullCanvas.height}|${this.searchHighlight}|${fp ? fp.version : 0}`;
     if (!this.fullStatic) this.fullStatic = document.createElement('canvas');
     if (key !== this.fullStaticKey) {
       this.fullStaticKey = key;

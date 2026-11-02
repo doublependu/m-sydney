@@ -68,7 +68,7 @@ export function launchBrowser({ browser = 'chrome', headed = false } = {}) {
 
 const warmedUp = new WeakSet();
 // Fresh profile each time, so nothing is cached and no saved player position carries over.
-export async function openGame(browser, url, { profile = 'laptop', query = '', storage = null, initScript = null, offline = false, timeout = 120000, stayThrottled = false } = {}) {
+export async function openGame(browser, url, { profile = 'laptop', query = '', storage = null, initScript = null, setup = null, offline = false, timeout = 120000, stayThrottled = false } = {}) {
   const { viewport, deviceScaleFactor = 1, touch = false, cpuThrottle, mbps } = PROFILES[profile];
   const context = await browser.newContext({ viewport, deviceScaleFactor, hasTouch: touch, isMobile: touch });
   // A browser that has only just started loses any WebGL context made in the GPU process's first few hundred milliseconds
@@ -81,6 +81,7 @@ export async function openGame(browser, url, { profile = 'laptop', query = '', s
     await warm.close();
   }
   const page = await context.newPage();
+  await setup?.(page);
   const errors = [];
   const warnings = [];
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));

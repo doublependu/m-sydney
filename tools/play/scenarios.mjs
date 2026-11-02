@@ -91,7 +91,7 @@ async function crossBridge(human, page, expect, direction) {
 // height. Near a change of level either is fine. Inside a tunnel the camera must stay under the roof, and the sky's
 // light turned down. Traffic on the way is waited for, or backed away from as driveTo() does.
 const TUNNEL_HEIGHT = 5.6; // js/surfaces.js
-async function followRoute(human, page, waypoints, { limit = 14 } = {}) {
+async function followRoute(human, page, waypoints, { limit = 14, resume = false } = {}) {
   const route = await page.evaluate((w) => window.__gameDebug.route(w), waypoints);
   // At walking pace at worst, for the queues at the lights
   const timeout = Math.max(120000, (route?.length ?? 0) * 8 / 3 * 1000);
@@ -108,8 +108,14 @@ async function followRoute(human, page, waypoints, { limit = 14 } = {}) {
   const settled = route.map((p, i) => route.slice(Math.max(0, i - 2), i + 3).every((q) => q.sid === p.sid));
   let at = 0, last = await human.state(), lastMoved = human.now(), lastY = last.surfaceY, lost = 0, thisTry = { samples: 0, offLevel: 0 };
   const started = human.now();
+  let readyAt = last;
   while (human.now() - started < timeout) {
     const state = await human.state();
+    // On the fast clock nothing's built between steps, so the map has to be given the time as the car goes, or it drives off the end of it
+    if (human.fast && Math.hypot(state.x - readyAt.x, state.z - readyAt.z) > 300) {
+      readyAt = state;
+      await page.evaluate(([x, z]) => window.__gameDebug.mapReady(x, z), [state.x, state.z]);
+    }
     // At driving pace nothing gains or loses 3 m of height between two looks, on any road, unless it has jumped a level
     if (Math.abs(state.surfaceY - lastY) > 3) out.levelJumps++;
     lastY = state.surfaceY;
@@ -124,7 +130,19 @@ async function followRoute(human, page, waypoints, { limit = 14 } = {}) {
     // Traffic can knock the car off the way where it's still at the ground's height, and it carries on along the streets
     // under it: no way back from there. That's no fault of the levels, so that try doesn't count.
     lost = Math.hypot(p.x - state.x, p.z - state.z) > 12 || (settled[at] && Math.abs(state.surfaceY - p.y) > 3) ? lost + 1 : 0;
-    if (lost > 25 && out.restarts < 3) {
+    // On a long way, it picks up from where it was knocked off, rather than going all the way back
+    if (resume && lost > 25 && out.restarts < 12) {
+      out.restarts++;
+      await human.releaseAll();
+      const from = route[Math.max(0, at - 1)], onward = route[Math.min(route.length - 1, at + 2)];
+      await page.evaluate(([x, z, h]) => window.__gameDebug.goto(x, z, h, 'car'), [from.x, from.z, Math.atan2(onward.x - from.x, onward.z - from.z)]);
+      await human.wait(700);
+      lost = 0;
+      last = await human.state();
+      lastMoved = human.now();
+      continue;
+    }
+    if (!resume && lost > 25 && out.restarts < 3) {
       out.restarts++;
       out.samples -= thisTry.samples;
       out.offLevel -= thisTry.offLevel;
@@ -651,6 +669,32 @@ export const SCENARIOS = {
       expect(Math.hypot(to.x - from.x, to.z - from.z) > 8000, 'barely got anywhere');
       expect(Math.min(...fps) > 20, `down to ${Math.min(...fps)} FPS`);
       if (heaps[1] > 0) expect(heaps.at(-1) < heaps[1] * 1.35, `the heap grew over the flight: ${heaps.join(', ')} MB`);
+    }
+  },
+
+  // The long way, both ways: down the Northern Beaches to Palm Beach, and through Sutherland to Cronulla
+  'long-drive-north': {
+    memory: true,
+    fast: true,
+    minutes: 75,
+    async run({ human, page, metric, expect }) {
+      await human.wait(1000);
+      const leg = await followRoute(human, page, [{ x: 1500, z: -8000 }, { x: 5300, z: -14400 }, { x: 6476, z: -31602 }], { limit: 18, resume: true });
+      metric('drive', { found: leg.found, reached: leg.reached, points: leg.points, seconds: leg.seconds, restarts: leg.restarts, levelJumps: leg.levelJumps });
+      expect(leg.found, 'no way to Palm Beach on the map');
+      expect(leg.reached, 'never reached Palm Beach');
+    }
+  },
+  'long-drive-south': {
+    memory: true,
+    fast: true,
+    minutes: 45,
+    async run({ human, page, metric, expect }) {
+      await human.wait(1000);
+      const leg = await followRoute(human, page, [{ x: -1741, z: 5498 }, { x: -11279, z: 19282 }, { x: -2105, z: 20668 }], { limit: 18, resume: true });
+      metric('drive', { found: leg.found, reached: leg.reached, points: leg.points, seconds: leg.seconds, restarts: leg.restarts, levelJumps: leg.levelJumps });
+      expect(leg.found, 'no way to Cronulla on the map');
+      expect(leg.reached, 'never reached Cronulla');
     }
   },
 

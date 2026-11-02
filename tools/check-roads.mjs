@@ -88,7 +88,7 @@ function tileReport(out) {
   count(out.buildings, 'buildings');
   count(out.kerbs, 'kerbs');
   const failing = [...tally].filter(([, t]) => Object.keys(TILE_LIMITS).some((k) => t[k] > TILE_LIMITS[k]));
-  const all = heldTiles().length;
+  const all = tiles ? tiles.size : heldTiles().length;
   return { tiles: all, passing: all - failing.length, share: +((1 - failing.length / all) * 100).toFixed(1), failing: failing.map(([key, t]) => ({ key, ...t })) };
 }
 

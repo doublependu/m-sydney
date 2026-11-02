@@ -176,7 +176,17 @@ function tunnelCovered(link, s) {
 // it and how the road climbs along that. The ground is a lattice, which can't step from the cutting's floor up to the
 // ground over the tube in no distance: its slope would close the mouth, so the ground's materials leave out what falls
 // inside one (js/tunnel-mouths.js)
-const PORTALS = GEO.portals;
+const PORTALS = [];
+onMap({
+  addTile(tile) { for (const p of tile.portals || []) PORTALS.push(p); },
+  removeTile(tile) {
+    if (!tile.portals?.length) return;
+    const gone = new Set(tile.portals);
+    let n = 0;
+    for (const p of PORTALS) if (!gone.has(p)) PORTALS[n++] = p;
+    PORTALS.length = n;
+  }
+});
 
 /**
  * Open at an end where it reaches the surface, for as long as the ground hasn't closed over it, and a tube everywhere else.

@@ -1,6 +1,133 @@
-# Next 3: Stop 1, Inner Sydney is ready for your phone
+# Next 3: Stop 2, Palm Beach and Cronulla are ready for your phone
+
+Answers `ai/plan_3.md`, up to its second stop. **Phase 16a is done, with the Palm Beach drive still to confirm (below).** The map is now Parramatta to the sea, Palm Beach to Cronulla, and the three parts moved at Stop 1 are done. Nothing has been committed or deployed: that's yours. I won't start Katoomba until you say so.
+
+## What you need to do
+
+1. **Commit and deploy.** `public/tiles/` is 66 MB and `public/map/` 17 MB. The whole deploy is 3,983 files and 85 MB, against Cloudflare's limits of 20,000 files and 25 MiB a file. The largest file is 10.6 MB. There are new untracked files to add.
+2. **10 minutes on your phone,** with `?stats=1`:
+   - Open it fresh, and note the load time.
+   - Teleport or drive to Palm Beach and to Cronulla. The menu now also has Dee Why, Hornsby, Parramatta, Bankstown and Sutherland. Drive a stretch of Pittwater Rd if you can, since that's the one drive I couldn't confirm.
+   - Open the map, zoom right out, and search for a street far from you. All of that is new.
+   - Send me the readout, and whether the tab was killed.
+   - **Please also tell me how the road surface, lights and buttons feel, and whether the drive is smooth.** That wasn't in your last report, and most of the road limits are still unmet, so your opinion of the drive is what decides whether road work comes before Katoomba.
+3. **Watch the worst frame.** It was 836 ms at 0:26 last time. See "The stall" below: I think that's fixed, but only your phone can say.
+
+## Results
+
+| | Stop 1 | Now | Budget |
+|---|---|---|---|
+| Phone profile: interactive | 3.38 s | 3.25 s | 2-3 s, 4 s at most |
+| First view's download | 955 KB | 688 KB | Under 1 MB |
+| `world.json` | 275 KB, 106 KB zipped | 61 KB, 24 KB zipped | Under 30 KB zipped |
+| Frames | 48 FPS, p95 33 ms | 40 FPS, p95 33 ms | |
+| City complete after that | 23.8 s | 23.9 s | |
+| Worst frame while the city builds | 323 ms | About 170 ms | |
+| Scene | 1.1 M triangles | 1.2 M triangles | |
+
+The phone profile's frames vary from run to run: it read 40-48 FPS on similar builds, so I wouldn't read much into 48 to 40. The bench is from before the stall fix, and the stall timing from after it.
+
+### The whole map
+
+| | |
+|---|---|
+| Buildings | 664,872, against the plan's 616,435: the box runs a little further |
+| Roads | 115,151 links, 8,559 km |
+| Trees | 601,631, of which 49,121 are from the City's register, and the rest from OSM or seeded |
+| Tiles | 1,811, 51.8 MB, median 26 KB, largest 113 KB |
+| Far files, street index, map images | 9.9 MB, 811 KB, 2,004 images in 12 MB |
+| Map build | 31 minutes, plus 2 for the map images |
+| Downloads on disk | 4.3 GB, against the 15 GB I said to allow |
+
+| Road check, all 30,780 km of lanes | Stop 1 | Now | Plan's limit | Met |
+|---|---|---|---|---|
+| Tiles passing, on my own per-tile limits | 97.2% | **98.9%, 1,791 of 1,811** | 98% | **Yes** |
+| Lean | 1.35% over 4%, 0.41% over 6% | 1.13% over 4%, 0.28% over 6%, worst 76% | None over 4%, 6% near a junction | No |
+| Change of grade | 0.99% over 3%, 0.15% over 6% | 0.77% over 3%, 0.11% over 6%, worst 40% | 2%, 0.2%, worst 12% | All but the worst |
+| Dead stops | 415 m at 17 places | 903 m at 32 places, 0.003% of lane | None | No |
+| Steps | 674 m over 25 cm | 1,755 m over 25 cm, 51 km over 5 cm, worst 1.44 m | None over 5 cm | No |
+| Roll change in 1 m | 9,984 m over 4% | 25,004 m over 4%, 93 km over 2%, worst 74% | None over 2% | No |
+| Building under a car | 20 m at 1 place | The same 20 m | None | No, nearly |
+| Wheel on a kerb | 1,260 m | 4,362 m at 1,891 places | None mid-block | No |
+| Paving over a road | 0 on a centre line | 0 on a centre line, 0.01% of area | | **Yes** |
+| Traffic's lanes off the road | 1.38% | 1.18% off, 1.35% over a kerb | 0.3% | No |
+
+The share of tiles rose mostly because the new suburbs are easier than the CBD, and not because any road got better. The worst stops are on Berowra Waters Rd at (-11660, -29170), on a steep run down to the river that I haven't looked at.
+
+| Traffic, new places | Stopped | Moving at | Red: median, 95th | Recycled a minute |
+|---|---|---|---|---|
+| Dee Why | 44% | 3.2 m/s | 11 s, 39 s | 13.5 |
+| Parramatta | 27% | 4.7 m/s | 8 s, 27 s | 4.5 |
+| Hornsby | 45% | 3.1 m/s | 13 s, 37 s | 7 |
+| Sutherland | 30% | 5.0 m/s | 15 s, 37 s | 7 |
+| Cronulla | 39% | 2.9 m/s | 11 s, 30 s | 4 |
+| Palm Beach | 47% | 3.5 m/s | No lights | 5.5 |
+
+These are slower than Inner Sydney's, which is the plan's "acceptable" stretched. Palm Beach has 47% stopped with no lights at all, and I haven't found out why.
+
+**Tests:** `npm run check` passes in about 45 s, and `npm run check -- --full` does the whole map in under 2 minutes. The last full browser run was 32 of 36:
+
+| Scenario | First | Since then |
+|---|---|---|
+| `mode-map` | Failed: a check fired behind the teleport's fade, where the coarser ground under a tile about to arrive is up to 8 m off | Check fixed, passes |
+| `crash-recovery` | Failed, then passed on rerun | Passes |
+| `long-drive` to Bondi | Failed on the fast clock, which outran the map | Passes in real time, no restarts, 558 s |
+| `long-drive-south` to Cronulla | Passed, 3 restarts | |
+| `long-drive-north` to Palm Beach | **Failed** | See below |
+
+**The drive to Palm Beach hasn't been completed.** On the fast clock the scripted car gets stuck at (2128, -8680) in Seaforth, with no tiles built around it, even when it stops to wait for the map. In real time it got past there, and with one car on the map it drives through at 24 m/s, so the road's fine and this looks like the fast clock starving the map's builder. I haven't found out why. In real time it got as far as Dee Why, where a bus knocked it onto a footpath, and it ran out of its 45 minutes. It now picks up where it was knocked off, and a real-time run with that was still going when I wrote this.
+
+## What changed since Stop 1
+
+- **Generators by region.** What needs a 1 m raster now runs in 7.2 km regions with a 1.2 km margin, in six worker threads. Roads and heights are still one job over the whole map. That differs from the plan's "every tile cached by its inputs", and nothing's cached. It reproduces Inner Sydney's kerb islands, 9,303 against 9,305, and it needed one fix on the way, for islands bigger than the margin: 800 such pieces now meet along region edges, with no kerb drawn along those.
+- **`world.json` split.** Land, shore and tunnel mouths are in each tile, suburbs in `far.json`, and each far file has its own ground. A 400 m height grid replaces the 80 m one at the start, 17 KB against about 70 KB. The tile list stays in `world.json` rather than the plan's 8 km index files, as it's small enough zipped: I'll look again at Katoomba.
+- **The map screen.** All of the map as 2,004 images at 32, 8 and 2 m a pixel, drawn by the game's own map code in Chrome, fetched as they come into view. What's near you is drawn over them from the tiles held. An 811 KB street index, fetched when the map first opens, gives names and search.
+- **The coast.** The sea now comes from the OSM coastline, with Pittwater, Botany Bay and Port Hacking, and 152 rivers, canals and lagoons at sea level.
+- **Fixes:** the horizon's file was marked to be cached for a year under a name that doesn't change, so a new one wouldn't have reached players. It's now an hour.
+
+## The stall
+
+Your 836 ms at 0:26 came just before the city finished. On the phone profile the same moment was the worst frame, at 333 ms, while "putting out street furniture". Profiling it found the leaf texture for the trees being painted and read back in one go, then all the tree shapes built in one go. Both now go in small steps, and that stall no longer shows: the worst frame while building is about 170 ms. I can't measure your phone from here, so it's a likely cause and not a certain one. It only happened once a session, at load, so it wouldn't explain the other 505 slow frames.
+
+## What isn't right yet
+
+Everything under "What isn't right yet" for Stop 1 below still stands, as do the road limits. New since then:
+
+- **The first look at far suburbs is rough up close.** Houses in new suburbs still look like the CBD's brick blocks.
+- **A brown wall by a lagoon.** At about (5760, -15005) on Pittwater Rd, Dee Why, the shore eases down to sea level in a way that left a tall bare wall by the lawn. I saw it in a recording and haven't fixed it. There may be more beside the new rivers.
+- **Traffic is slower out here,** as in the table above.
+- **Memory hasn't been measured on the phone profile on this map.** The last figures, 350-440 MB, are from Inner Sydney, and the long flight on the laptop profile stayed flat.
+
+## What to do next
+
+1. **Your phone test.** If the drive doesn't feel smooth, road work comes next, ahead of Katoomba.
+2. **Phase 16b, Katoomba, when you say.** It needs reservoirs with their own water level, the cliffs at Echo Point, bush, and a look at whether one job for roads and heights still fits at three times the size.
+3. **Phase 17,** play and budgets.
+
+---
+
+# Stop 1, for the record
 
 Answers `ai/plan_3.md`, up to its first stop. **Phases A-F, 13 and 14 are done, and Phase 15 is playable, with three of its parts moved to before Palm Beach (below).** The map is now Burwood to Bondi, Manly to the airport. Nothing has been committed or deployed: that's yours. I won't start Palm Beach and Cronulla until you've tried it.
+
+## Real phone test
+
+Reported by you on an iPhone 16e, after the CBD to Bondi, a walk, a flight and a tunnel, with `?stats=1`:
+
+| | iPhone 16e | Phone profile | Spec |
+|---|---|---|---|
+| Loaded in | **0.84 s** | 3.38 s | 2-3 s, 1 s great, 4 s at most |
+| Graphics | WebGPU, Low | WebGPU, Low | |
+| Last second | **60 FPS, 0 slow, worst 17 ms** | 48 FPS, p95 33 ms | |
+| Since load, 15:49 | **505 of 57,325 frames slow, 0.9%. Worst 836 ms at 0:26** | Worst stall 323 ms | |
+| City done | 29.3 s after opening the page | 27.2 s | |
+| Tiles held | 12 | | |
+
+**Stop 1 passes, so Palm Beach and Cronulla go ahead.** The session ran 15:49 with no reload, so the tab wasn't killed. The worst frame, 836 ms at 0:26, falls just before the city finished, so it's a stall in building the city, and not something that happens while driving. It's the number to bring down. City done went from 11.2 s to 29.3 s with the bigger map.
+
+Not reported: how the buttons, road surface and lights felt, and whether the drive felt smooth, so the road limits below are still unjudged. The elevation model is credited as CC BY 3.0, as you said.
+
+This stop's list of what you needed to do, below, is done.
 
 ## What you need to do
 

@@ -1,8 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { attribute, positionWorld, texture, vec2 } from 'three/tsl';
 import { GEO, TILE, fetchFarFile } from './geodata.js';
-import { landAt } from './city-config.js';
-import { terrainHeight } from './terrain.js';
 import { FACADE_TONES, ROOF_COLOURS } from './buildings.js';
 import { outlineMesh } from './building-outlines.js';
 import { originXZ } from './world-origin.js';
@@ -45,11 +43,29 @@ function farGroundMaterial() {
   return groundMaterial;
 }
 
-const inDetail = (x, z) => GEO.frame.detail.some((r) => x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1);
-const isLand = (x, z) => inDetail(x, z) && landAt(x, z);
+// A square's own land and heights, from its file
+function groundOf(fx, fz, file) {
+  const x0 = fx * SQUARE, z0 = fz * SQUARE, ROW = 20, GRID = 80, N = SQUARE / GRID + 1;
+  const { land, grid } = file;
+  const isLand = (x, z) => {
+    if (land === 1) return true;
+    if (land === 0) return false;
+    const row = land[Math.min(land.length - 1, Math.floor((z - z0) / ROW))];
+    const rx = x - x0;
+    for (let k = 0; k + 1 < row.length; k += 2) if (rx >= row[k] && rx <= row[k + 1]) return true;
+    return false;
+  };
+  const heightAt = (x, z) => {
+    const u = Math.max(0, Math.min(N - 1.001, (x - x0) / GRID)), v = Math.max(0, Math.min(N - 1.001, (z - z0) / GRID));
+    const i = u | 0, j = v | 0, tx = u - i, tz = v - j, k = j * N + i;
+    const a = grid[k] + (grid[k + 1] - grid[k]) * tx, b = grid[k + N] + (grid[k + N + 1] - grid[k + N]) * tx;
+    return (a + (b - a) * tz) * 0.25;
+  };
+  return { isLand, heightAt };
+}
 
 // Where the shore crosses from land to water, between two corners
-function crossing(ax, az, bx, bz) {
+function crossing(isLand, ax, az, bx, bz) {
   for (let i = 0; i < 6; i++) {
     const mx = (ax + bx) / 2, mz = (az + bz) / 2;
     if (isLand(mx, mz)) { ax = mx; az = mz; } else { bx = mx; bz = mz; }
@@ -57,10 +73,12 @@ function crossing(ax, az, bx, bz) {
   return [ax, az];
 }
 
-function* farGround(fx, fz, parks, roads) {
+function* farGround(fx, fz, file) {
+  const { parks, roads } = file;
+  const { isLand, heightAt } = groundOf(fx, fz, file);
   const position = [], colors = [], normal = [], index = [];
   const vertex = (x, z, c, lift = 0) => {
-    position.push(x, terrainHeight(x, z) - DROP + lift, z);
+    position.push(x, heightAt(x, z) - DROP + lift, z);
     normal.push(0, 1, 0);
     colors.push(c.r, c.g, c.b);
     return position.length / 3 - 1;
@@ -78,7 +96,7 @@ function* farGround(fx, fz, parks, roads) {
       for (let k = 0; k < 4; k++) {
         const a = corners[k], b = corners[(k + 1) % 4];
         if (land[k]) ring.push(a);
-        if (land[k] !== land[(k + 1) % 4]) ring.push(land[k] ? crossing(a[0], a[1], b[0], b[1]) : crossing(b[0], b[1], a[0], a[1]));
+        if (land[k] !== land[(k + 1) % 4]) ring.push(land[k] ? crossing(isLand, a[0], a[1], b[0], b[1]) : crossing(isLand, b[0], b[1], a[0], a[1]));
       }
       if (ring.length < 3) continue;
       tint.copy(URBAN).lerp(GREEN, (Number(parks[j * (SQUARE / CELL) + i]) || 0) / PARK_LEVELS);
@@ -133,7 +151,7 @@ function createFarLevel() {
       return [];
     }
     const [fx, fz] = key.split('_').map(Number);
-    const ground = yield* farGround(fx, fz, file.parks, file.roads);
+    const ground = yield* farGround(fx, fz, file);
     if (ground) record.meshes.push(ground);
     for (const b of file.buildings) {
       b.wall = FACADE_TONES[b.mat];

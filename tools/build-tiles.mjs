@@ -11,6 +11,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
+import { BitRaster, flat, rdp } from './geo-common.mjs';
+import { onRegionEdge } from './geodata/regions.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const SRC = path.join(ROOT, 'tools/data/generated');
@@ -252,7 +254,8 @@ function packHeights(ix, iz) {
   return Buffer.from(out);
 }
 // The whole grid again, coarser, for what's beyond the tiles held: 80 m cells
-const FAR = { x0: H.x0, z0: H.z0, cell: 80, w: Math.floor(((H.w - 1) * H.cell) / 80) + 1, h: Math.floor(((H.h - 1) * H.cell) / 80) + 1 };
+// A very coarse grid for the whole map, fetched at the start, for where nothing better is held. Each far file has a finer one for its square.
+const FAR = { x0: H.x0, z0: H.z0, cell: 400, w: Math.floor(((H.w - 1) * H.cell) / 400) + 1, h: Math.floor(((H.h - 1) * H.cell) / 400) + 1 };
 function packFarHeights() {
   const out = [];
   for (let j = 0; j < FAR.h; j++) {
@@ -270,7 +273,60 @@ function packFarHeights() {
 // 100 m of the ground is, and the main roads. Beyond the tiles held, this is the city.
 const FAR_FILE = 4000;
 const farKeyOfTile = (ix, iz) => KEY(Math.floor((ix * SIZE) / FAR_FILE), Math.floor((iz * SIZE) / FAR_FILE));
-function packFarFile(entries, parks, roads, derived) {
+// Where the land is, in runs along rows: [from, to, from, to...] in metres from the left of the square, or 1 if all of it is and 0 if none
+const landBits = BitRaster.load(path.join(SRC, 'land.bin'));
+function landRuns(x0, z0, size, rowStep, cellStep) {
+  const rows = [];
+  let cells = 0, land = 0;
+  for (let k = 0; k * rowStep < size; k++) {
+    const z = z0 + (k + 0.5) * rowStep;
+    const row = [];
+    let on = false;
+    for (let c = 0; c * cellStep < size; c++) {
+      const here = landBits.at(x0 + (c + 0.5) * cellStep, z) === 1;
+      cells++;
+      if (here) land++;
+      if (here !== on) { row.push(c * cellStep); on = here; }
+    }
+    if (on) row.push(size);
+    rows.push(row);
+  }
+  return land === cells ? 1 : land === 0 ? 0 : rows;
+}
+const tileLand = new Map();
+const landOfTile = (ix, iz) => {
+  const key = KEY(ix, iz);
+  if (!tileLand.has(key)) tileLand.set(key, landRuns(ix * SIZE, iz * SIZE, SIZE, 2, 1));
+  return tileLand.get(key);
+};
+// The shore a segment at a time, each in the tile it starts in, with which side the land's on. Not where a region's edge cut the land.
+function shoreByTile() {
+  const out = new Map();
+  for (const rings of GEO.shores) {
+    for (const flatRing of rings) {
+      const ring = [];
+      for (let k = 0; k < flatRing.length; k += 2) ring.push([flatRing[k], flatRing[k + 1]]);
+      let area = 0;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) area += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+      const side = area > 0 ? 1 : -1;
+      for (let i = 0; i < ring.length; i++) {
+        const [ax, az] = ring[i], [bx, bz] = ring[(i + 1) % ring.length];
+        if (onRegionEdge(ax, az, bx, bz)) continue;
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 30));
+        for (let k = 0; k < n; k++) {
+          const px = ax + ((bx - ax) * k) / n, pz = az + ((bz - az) * k) / n, qx = ax + ((bx - ax) * (k + 1)) / n, qz = az + ((bz - az) * (k + 1)) / n;
+          const key = KEY(...tileOf(px, pz));
+          if (!out.has(key)) out.set(key, []);
+          out.get(key).push([side, Math.round(px * 10) / 10, Math.round(pz * 10) / 10, Math.round(qx * 10) / 10, Math.round(qz * 10) / 10]);
+        }
+      }
+    }
+  }
+  return out;
+}
+const shores = shoreByTile();
+
+function packFarFile(entries, parks, roads, derived, key) {
   const meta = [], xs = [], zs = [];
   let px = 0, pz = 0, count = 0;
   for (const { b, i, ix, iz } of entries) {
@@ -303,7 +359,12 @@ function packFarFile(entries, parks, roads, derived) {
   uint(head, meta.length);
   uint(head, xs.length);
   uint(head, zs.length);
-  const json = Buffer.from(JSON.stringify({ parks, roads }));
+  // Its own ground: 80 m heights in 0.25 m steps, and where the land is
+  const [fx, fz] = key.split('_').map(Number);
+  const grid = [];
+  for (let j = 0; j <= FAR_FILE / 80; j++) for (let i = 0; i <= FAR_FILE / 80; i++) grid.push(gridAt(fx * FAR_FILE + i * 80, fz * FAR_FILE + j * 80));
+  const land = landRuns(fx * FAR_FILE, fz * FAR_FILE, FAR_FILE, 20, 5);
+  const json = Buffer.from(JSON.stringify({ parks, roads, grid, land }));
   const lead = Buffer.alloc(8);
   lead.writeUInt32LE(json.length, 0);
   lead.writeUInt32LE(head.length, 4);
@@ -311,12 +372,50 @@ function packFarFile(entries, parks, roads, derived) {
 }
 
 // What the map screen draws, all of it: fetched when the map is first opened
-function packMap(derived) {
+// All of the map, for drawing the map screen's images (tools/build-map-images.mjs). Not deployed.
+function packFullMap() {
   const roads = RG.links.map((l) => {
     const [a, b, ni, w, lanes, dir, inner, major, , kind = 0] = l;
     return [RG.names[ni], w, lanes, dir, major ? 1 : 0, kind, [RG.nodes[a * 2], RG.nodes[a * 2 + 1], ...inner, RG.nodes[b * 2], RG.nodes[b * 2 + 1]]];
   });
-  return zlib.gzipSync(JSON.stringify({ roads, scenery: GEO.scenery, blocks: GEO.blocks.map(([flat, holes, park, parkName]) => [flat, holes, park, parkName]) }), { level: 9 });
+  return zlib.gzipSync(JSON.stringify({ roads, scenery: GEO.scenery, shores: GEO.shores, blocks: GEO.blocks.map(([flat, holes, park, parkName]) => [flat, holes, park, parkName]) }), { level: 9 });
+}
+// What the map screen fetches when it's first opened: where every named street is, for its names and for searching. Links of a street are
+// strung together and simplified.
+function packStreetIndex() {
+  const groups = new Map();
+  for (const l of RG.links) {
+    const [a, b, ni, , , , inner, major, , kind = 0] = l;
+    if (!RG.names[ni]) continue;
+    const key = `${ni}|${major ? 1 : 0}|${kind}`;
+    if (!groups.has(key)) groups.set(key, { name: RG.names[ni], major: major ? 1 : 0, kind, links: [] });
+    const pts = [[RG.nodes[a * 2], RG.nodes[a * 2 + 1]]];
+    for (let k = 0; k < inner.length; k += 2) pts.push([inner[k], inner[k + 1]]);
+    pts.push([RG.nodes[b * 2], RG.nodes[b * 2 + 1]]);
+    groups.get(key).links.push({ a, b, pts, used: false });
+  }
+  const roads = [];
+  for (const { name, major, kind, links } of groups.values()) {
+    const at = new Map();
+    for (const l of links) for (const n of [l.a, l.b]) (at.get(n) || at.set(n, []).get(n)).push(l);
+    const walk = (l, from) => {
+      let pts = [], node = from, link = l;
+      while (link && !link.used) {
+        link.used = true;
+        const forward = link.a === node;
+        const part = forward ? link.pts : [...link.pts].reverse();
+        pts = pts.concat(pts.length ? part.slice(1) : part);
+        node = forward ? link.b : link.a;
+        link = (at.get(node) || []).find((o) => !o.used);
+      }
+      return pts;
+    };
+    // From the loose ends first, so a street comes out as one line
+    for (const l of links) for (const n of [l.a, l.b]) if (!l.used && at.get(n).length === 1) roads.push([name, 0, 0, 0, major, kind, flat(rdp(walk(l, n), 8))]);
+    for (const l of links) if (!l.used) roads.push([name, 0, 0, 0, major, kind, flat(rdp(walk(l, l.a), 8))]);
+  }
+  const whole = (list) => list.map((v) => Math.round(v));
+  return zlib.gzipSync(JSON.stringify({ roads: roads.map((r) => [...r.slice(0, 6), whole(r[6])]), scenery: GEO.scenery }), { level: 9 });
 }
 
 // The links the Harbour Bridge's model stands among
@@ -362,7 +461,9 @@ function write(derived, graded_ = null) {
   for (const t of tiles.values()) {
     const json = Buffer.from(JSON.stringify({
       blocks: t.blocks, lawns: t.lawns, pavements: t.pavements, fills: t.fills, signals: t.signals, postBoxes: t.postBoxes, busShelters: t.busShelters,
-      nodes: [...t.nodes].flatMap(([id, [x, z]]) => [id, x, z]), links: t.links, home: t.home, scenery: t.scenery, awnings: t.awnings, tags: t.tags
+      nodes: [...t.nodes].flatMap(([id, [x, z]]) => [id, x, z]), links: t.links, home: t.home, scenery: t.scenery, awnings: t.awnings, tags: t.tags,
+      land: landOfTile(t.ix, t.iz), shore: shores.get(KEY(t.ix, t.iz)) || [],
+      portals: (derived?.portals || []).filter((p) => KEY(...tileOf(p.x, p.z)) === KEY(t.ix, t.iz))
     }));
     const buildings = packBuildings(t.buildings, derived?.floors), trees = packTrees(t.trees), heights = packHeights(t.ix, t.iz);
     const graded = packGround(graded_?.[KEY(t.ix, t.iz)]);
@@ -400,22 +501,23 @@ function write(derived, graded_ = null) {
   }
   let farTotal = 0;
   for (const [key, group] of farGroups) {
-    const packed = packFarFile(group.entries, derived?.farParks?.[key] || '', group.roads, derived);
+    const packed = packFarFile(group.entries, derived?.farParks?.[key] || '', group.roads, derived, key);
     const hash = crypto.createHash('sha256').update(packed).digest('hex').slice(0, 10);
     farFiles[key] = hash;
     farTotal += packed.length;
     fs.writeFileSync(path.join(OUT, `far_${key}.${hash}.bin.gz`), packed);
   }
-  const mapFile = packMap(derived);
+  const mapFile = packStreetIndex();
   fs.writeFileSync(path.join(OUT, 'map.json.gz'), mapFile);
+  fs.writeFileSync(path.join(SRC, 'map-full.json.gz'), packFullMap());
   fs.writeFileSync(path.join(OUT, 'far-heights.bin.gz'), packFarHeights());
   fs.writeFileSync(path.join(OUT, 'far.json.gz'), zlib.gzipSync(JSON.stringify({
-    surroundings: GEO.surroundings, bridgeLinks: bridgeLinks(derived)
+    surroundings: GEO.surroundings, bridgeLinks: bridgeLinks(derived), suburbs: GEO.suburbs ?? []
   }), { level: 9 }));
   const world = {
     version: 2, tileSize: SIZE, frame: GEO.frame, heights: { margin: MARGIN, size: SAMPLES }, ground: GROUND, far: FAR, tiles: names, farFile: FAR_FILE, farFiles,
-    shores: GEO.shores, bridge: GEO.bridge, ferries: GEO.ferries, lightRail: GEO.lightRail, suburbs: GEO.suburbs ?? [],
-    nodeCount: RG.nodes.length / 2, structures: table, portals: derived?.portals || [], landmarkBoxes: derived?.landmarkBoxes || [],
+    bridge: GEO.bridge, ferries: GEO.ferries, lightRail: GEO.lightRail,
+    nodeCount: RG.nodes.length / 2, structures: table, landmarkBoxes: derived?.landmarkBoxes || [],
     ...(derived?.deckProfile && { deckProfile: derived.deckProfile, bridgeSpan: derived.bridgeSpan })
   };
   fs.writeFileSync(path.join(OUT, 'world.json'), JSON.stringify(world));

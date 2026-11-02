@@ -39,7 +39,7 @@ report(await Promise.all([
   ['unit tests', 'node', ['--test', '--test-reporter=dot', 'tests/**/*.test.*']],
   ...(process.argv.includes('--no-build') ? [] : [['build', 'npm', ['run', '--silent', 'build', '--', '--logLevel', 'warn']]]),
   ['ground', 'node', ['--max-old-space-size=12000', 'tools/check-ground.mjs', ...(FULL ? [] : ['--strict'])]],
-  ['roads', 'node', ['--max-old-space-size=12000', 'tools/check-roads.mjs', ...(FULL ? ['--by-tile'] : ['--strict'])]],
+  FULL ? ['roads', 'node', ['tools/check-map.mjs']] : ['roads', 'node', ['--max-old-space-size=12000', 'tools/check-roads.mjs', '--strict']],
   ['traffic', 'node', ['--max-old-space-size=4096', 'tools/check-traffic.mjs', '--strict', '--seconds=120', '--warm=60']]
 ].map(run)));
 report(await Promise.all([['deploy size', 'node', ['tools/check-dist.mjs']]].map(run)));

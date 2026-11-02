@@ -15,7 +15,7 @@ test('surveyed building courtyards remain holes in the map footprint layer', () 
   }
   const { footprintLayers } = loadModule(source + '\nexport { footprintLayers };', {
     globals: { Path2D },
-    imports: { './geodata.js': { GEO: { frame: {} }, loadMapData: () => new Promise(() => {}) }, './city-config.js': { ROADS: [], SUBURBS: [] } }
+    imports: { './geodata.js': { GEO: { frame: {} }, heldTiles: () => [], loadMapData: () => new Promise(() => {}) }, './city-config.js': { ROADS: [], SUBURBS: [] } }
   });
   const ring = (x0, z0, x1, z1) => [{ x: x0, z: z0 }, { x: x1, z: z0 }, { x: x1, z: z1 }, { x: x0, z: z1 }];
   const layers = footprintLayers([{ footprints: [{ h: 120, pts: ring(0, 0, 20, 20), holes: [ring(5, 5, 15, 15)] }] }]);
@@ -32,7 +32,7 @@ for (const [width, height, dpr] of [[500, 300, 1], [320, 180, 1.5], [1920, 1080,
     const window = { innerWidth: width, innerHeight: height, devicePixelRatio: dpr };
     const { CityMapSystem } = loadModule(source, {
       globals: { window, performance: { now: () => 0 } },
-      imports: { './geodata.js': { GEO: { frame: {} }, loadMapData: () => new Promise(() => {}) }, './city-config.js': { ROADS: [], SUBURBS: [] } }
+      imports: { './geodata.js': { GEO: { frame: {} }, heldTiles: () => [], loadMapData: () => new Promise(() => {}) }, './city-config.js': { ROADS: [], SUBURBS: [] } }
     });
     const map = Object.create(CityMapSystem.prototype);
     // Capture the production render viewport; drawing primitives are irrelevant to coordinate conversion.
@@ -117,14 +117,14 @@ function mapHarness() {
     canvas.dispatch('lostpointercapture', { pointerId: id });
   };
   const config = {
-    ROADS: [], BLOCKS: [], LANDMARKS: [{ id: 'opera', name: 'Opera House', short: 'Opera', x: 0, z: 0 }], SHORE_RINGS: [], SUBURBS: [],
+    ROADS: [], BLOCKS: [], LANDMARKS: [{ id: 'opera', name: 'Opera House', short: 'Opera', x: 0, z: 0 }], SUBURBS: [],
     CITY_BOUNDS: { minX: -10000, maxX: 10000, minZ: -10000, maxZ: 10000 },
     getLocationLabel: (x, z) => `${x}, ${z}`,
     isTypingInField: () => false
   };
   const { CityMapSystem } = loadModule(source, {
     globals: { window, document },
-    imports: { './geodata.js': { GEO: { frame: {}, surroundings: [] }, loadMapData: () => new Promise(() => {}) }, './city-config.js': config }
+    imports: { './geodata.js': { GEO: { frame: {}, surroundings: [] }, heldTiles: () => [], loadMapData: () => new Promise(() => {}) }, './city-config.js': config }
   });
   const teleports = [], toggles = [];
   const map = new CityMapSystem({

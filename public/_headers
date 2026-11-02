@@ -10,6 +10,13 @@
   ! Cache-Control
   Cache-Control: public, max-age=3600
 
+/tiles/horizon.bin.gz
+  ! Cache-Control
+  Cache-Control: public, max-age=3600
+
+/map/*
+  Cache-Control: public, max-age=3600
+
 /tiles/*.json.gz
   Cache-Control: public, max-age=3600
 

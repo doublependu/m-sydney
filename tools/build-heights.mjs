@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
-import { GRID, Raster, fromWorld, load, toWorld } from './geo-common.mjs';
+import { BitRaster, GRID, Raster, fromWorld, load, toWorld } from './geo-common.mjs';
 import { heightSampler } from './fetch-elevation.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
@@ -16,7 +16,14 @@ const w = Math.round((x1 - x0) / cell) + 1, h = Math.round((z1 - z0) / cell) + 1
 const { GEO } = await import('./data/generated/geodata.js');
 const land = new Raster(x0, z0, x1, z1, cell);
 for (const rings of GEO.surroundings) rings.forEach((flat, i) => { const ring = []; for (let k = 0; k < flat.length; k += 2) ring.push([flat[k], flat[k + 1]]); land.fillRing(ring, i ? 0 : 1); });
-for (const rings of GEO.shores) rings.forEach((flat, i) => { const ring = []; for (let k = 0; k < flat.length; k += 2) ring.push([flat[k], flat[k + 1]]); land.fillRing(ring, i ? 0 : 1); });
+{
+  const bits = BitRaster.load(fileURLToPath(new URL('./data/generated/land.bin', import.meta.url)));
+  for (let j = 0; j < land.h; j++) {
+    for (let i = 0; i < land.w; i++) {
+      if (bits.at(land.x0 + (i + 0.5) * cell, land.z0 + (j + 0.5) * cell)) land.d[j * land.w + i] = 1;
+    }
+  }
+}
 
 const raw = new Float32Array(w * h);
 const missing = [];

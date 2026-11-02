@@ -25,7 +25,8 @@ const SEED = Number(argument('seed', 1));
 const SEEDS = Number(argument('seeds', 1));
 export const PLACES = {
   northSydney: [-100, -3300], townHall: [3, 30], bridgeDeck: [-120, -2600],
-  burwood: [-9368, 1753], bondiJunction: [4088, 1430], chatswood: [-3548, -8025], m5: [-1741, 5498]
+  burwood: [-9368, 1753], bondiJunction: [4088, 1430], chatswood: [-3548, -8025], m5: [-1741, 5498],
+  deeWhy: [5309, -14416], parramatta: [-19517, -3772], hornsby: [-12477, -17210], sutherland: [-11279, 19282], cronulla: [-2105, 20668], palmBeach: [6476, -31602], seaforth: [2128, -8680]
 };
 const places = argument('at', 'northSydney,townHall').split(',');
 const DT = 1 / 30;

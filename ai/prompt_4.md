@@ -15,16 +15,19 @@ Postpone the expansion of the map to Katoomba to future iterations and focus on 
     - a bus can drive through it
     - I can't drive throught it: collision detection worked there
     - Circular Quay train station is built under this section of Cahill Expy
-2. Bondi Junction: trees and street light poke out in the middle of the road
-3. Sydney suburbs, outside of the city center / downtown area
+3. Bondi Junction: trees and street light poke out in the middle of the road
+4. Sydney suburbs, outside of the city center, i.e., downtown area
     - There shouldn't be that many cars, buses or pedestrians around
     - Some houses in these suburbs don't look like what we have at all
         - Search the internet and find some common looking houses in Sydney suburbs, a few per suburb, and use those as references
         - buildings next to a main road will look different compared to houses on small neighborhood roads
     - Perhaps, pull some population data to decide on how many people and cars to put in each place
     - small roads in the suburbs are often not marked, i.e., without a center line
-4. The loading bar is not always working
+5. The loading bar is not always working
     - For example, if I teleport from one map location to another, some new data must be loaded (I guess?) and sometimes I don't see a loading bar. 
+6. On bridge st, part of the kurb is in the sky, 
+    - it's slightly higher than a person
+    - it looks like a kurb to me
 
 
 # Features

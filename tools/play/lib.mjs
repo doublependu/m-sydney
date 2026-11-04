@@ -1,11 +1,11 @@
 // Shared by the play scenarios and the benchmark: serve the production build, drive system Chrome, record video.
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { execSync, spawn } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { constants, brotliCompressSync } from 'node:zlib';
-import { chromium, firefox } from 'playwright-core';
+import { chromium, firefox, webkit } from 'playwright-core';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -60,10 +60,48 @@ export function launchChrome({ headed = false } = {}) {
   });
 }
 
-// Playwright's own Firefox build: no WebGPU, and no EXT_clip_control, so the game runs WebGL2 with standard depth there
+// Playwright's own Firefox build: no WebGPU, and no EXT_clip_control, so the game runs WebGL2 with standard depth there.
+// WebKit is Safari's engine, here a Linux build that draws WebGL2 in software: the nearest thing to an iPhone this machine
+// has, for what Safari does differently and for how much memory its web process holds (webProcessMemory()).
 export function launchBrowser({ browser = 'chrome', headed = false } = {}) {
   if (browser === 'firefox') return firefox.launch({ headless: !headed, firefoxUserPrefs: { 'webgl.force-enabled': true } });
+  if (browser === 'webkit') return webkit.launch({ headless: !headed });
   return launchChrome({ headed });
+}
+
+/** MB held by WebKit's web processes (WebKit has no performance.memory), or null if none are running */
+export function webProcessMemory() {
+  try {
+    const kb = execSync("ps -eo rss,comm | awk '/WPEWebProcess|WebKitWebProces/ {s+=$1} END {print s+0}'").toString();
+    return Number(kb) ? Math.round(Number(kb) / 1024) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A picture of the page as a player sees it. The browser's own screenshot can't read a WebGPU canvas and comes back black
+ * behind the HUD, so the game's own picture of the world goes in under the HUD for the moment the screenshot takes.
+ */
+export async function screenshot(page, path) {
+  const world = await page.evaluate(() => Promise.race([window.__gameDebug?.grab?.(), new Promise((done) => setTimeout(done, 2000))])).catch(() => null);
+  if (world) {
+    await page.evaluate((url) => {
+      const canvas = document.querySelector('#canvas-container canvas');
+      if (!canvas) return;
+      const img = document.createElement('img');
+      img.id = 'screenshot-world';
+      img.src = url;
+      const box = canvas.getBoundingClientRect();
+      img.style.cssText = `position:fixed;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px;z-index:0;pointer-events:none`;
+      canvas.after(img);
+      return img.decode();
+    }, world).catch(() => {});
+  }
+  const shot = await page.screenshot().catch(() => null);
+  await page.evaluate(() => document.getElementById('screenshot-world')?.remove()).catch(() => {});
+  if (shot) writeFileSync(path, shot);
+  return !!shot;
 }
 
 const warmedUp = new WeakSet();

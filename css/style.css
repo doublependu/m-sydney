@@ -1720,6 +1720,8 @@ body.touch-enabled .pop-item { min-height: 44px; }
   body.touch-enabled #btn-phone-menu { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; border-radius: 12px; }
   body.touch-enabled .toolbar,
   body.touch-enabled .hud-bottom-right { display: none; }
+  /* The HUD already fades by itself here: no button to hide it */
+  body.touch-enabled #btn-toggle-hud { display: none; }
   body.phone-menu-open.touch-enabled .toolbar { display: flex; width: min(300px, calc(100vw - 2 * var(--edge))); height: auto; flex-wrap: wrap; justify-content: center; }
   body.phone-menu-open.touch-enabled .hud-bottom-right {
     display: block;

@@ -6,7 +6,7 @@ import { heldList, heldTrees } from './geodata.js';
 import { cityUniforms, createTreeGrateMaterial } from './tsl-materials.js';
 import { createTreeFieldSteps } from './trees.js';
 import { placeStreetTreesSteps } from './tree-placements.js';
-import { groundHeight, groundRoadAt, groundRoadDistance } from './surfaces.js';
+import { groundHeight, groundRoadAt, groundRoadDistance, roomUnderDeck } from './surfaces.js';
 import { polygonContains } from './building-collision.js';
 import { SignAtlas, bladesOnPole, junctionRoads, namedJunctions } from './street-signs.js';
 import { buildRoadSigns } from './road-signs.js';
@@ -298,10 +298,13 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
     addFootprint(x, z, width, width, true);
   }
 
+  // Under a deck, only where a street light would fit under it: nothing placed here pokes up through a road overhead
+  const FURNITURE_ROOM = 9;
   // True only when (x, z) and its surrounding pad-meter footprint sit on a real curb island (never in a road or median)
   const isOnCurbIsland = (x, z, pad = 0.55) => {
     const b = blockAt(x, z);
     if (!b || b.median) return false;
+    if (roomUnderDeck(x, z, 1) < FURNITURE_ROOM) return false;
     if (pad <= 0) return true;
     const b1 = blockAt(x - pad, z);
     const b2 = blockAt(x + pad, z);
@@ -809,8 +812,9 @@ function* buildStreetDetails(scene, colliders = [], lightPools) {
 
   // Surveyed street trees; parks keep their authored terrain, clearings and tree layouts.
   const realTrees = heldTrees();
+  const TREE_ROOM = 12; // m: a street tree's crown, and its trunk under it
   let sidewalkTreePositions = yield* placeStreetTreesSteps(realTrees.points, realTrees.kinds, realTrees.heights, treePositions,
-    (x, z) => isClearOfPoles(x, z, 2.2));
+    (x, z) => isClearOfPoles(x, z, 2.2) && roomUnderDeck(x, z, 3) >= TREE_ROOM);
   for (const tree of sidewalkTreePositions) treePositions.push(tree);
   sidewalkTreePositions = sidewalkTreePositions.filter((t) => t.tier > 0);
   for (const t of treePositions) t.y = (t.y || 0) + groundHeight(t.x, t.z);

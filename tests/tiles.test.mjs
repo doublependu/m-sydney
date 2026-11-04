@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import zlib from 'node:zlib';
+import { tileFile } from '../js/tiles/paths.js';
 
 // The map in tiles (tools/build-tiles.mjs, js/geodata.js): it's all there, and a tile can come and go without trace.
 const { GEO, TILE, heldTiles, holdTile, isHeld, releaseTile, tileExists, tileKeyAt, tilesNear } = await import('../js/geodata.js');
@@ -23,7 +24,7 @@ test('a tile on the map is found by where it is, nearest first', () => {
 
 test('each file is named for its contents and stays small', () => {
   for (const [key, hash] of Object.entries(GEO.tiles)) {
-    const bytes = fs.readFileSync(new URL(`${key}.${hash}.bin.gz`, DIR));
+    const bytes = fs.readFileSync(new URL(tileFile(key, hash), DIR));
     assert.ok(bytes.length < 200 * 1024, `${key} is ${bytes.length} bytes`);
   }
 });
@@ -75,7 +76,7 @@ test('with no tile there, the coarse grid answers, near the fine one', async () 
 
 test('a damaged tile is an error', () => {
   const [key, hash] = Object.entries(GEO.tiles)[0];
-  const data = zlib.gunzipSync(fs.readFileSync(new URL(`${key}.${hash}.bin.gz`, DIR)));
+  const data = zlib.gunzipSync(fs.readFileSync(new URL(tileFile(key, hash), DIR)));
   assert.throws(() => unpackTile(new Uint8Array(data.subarray(0, data.length - 40)), GEO.heights.size));
 });
 

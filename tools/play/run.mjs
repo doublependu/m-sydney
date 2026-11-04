@@ -3,7 +3,7 @@
 // npm run play -- --full       everything but the soak, long drives on the fast clock: at the end of a phase
 // npm run play -- --soak[=10]  the soak as well, or with --only=soak alone: before a stopping point or a deploy
 // Also: --only=first-minute,touch --video --fast --realtime --repeat=3 --no-rerun --headed --seed=6 --gap=3 --jobs=3
-//       --browser=firefox --tiles=0_-2,1_-2
+//       --browser=firefox|webkit --tiles=0_-2,1_-2
 // Plays on a copy of the production build made at the start, so the next rebuild can't disturb it: a run can go on in the
 // background while work carries on. Writes recordings/<date>/, with what it tested in code.txt, and exits non-zero on a failed
 // check. A failure runs again with the same seed and with video, so a failure that repeats always has a recording.
@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { launchBrowser, openGame, ROOT, serveDist, startRecording } from './lib.mjs';
+import { launchBrowser, openGame, ROOT, screenshot, serveDist, startRecording, webProcessMemory } from './lib.mjs';
 import { Human, Watchdog } from './human.mjs';
 import { SCENARIOS } from './scenarios.mjs';
 import { affectedScenarios, scenariosForTiles } from './affected.mjs';
@@ -129,7 +129,9 @@ async function play(name, index, { video, suffix = '' }) {
   clearTimeout(timer);
   await human.releaseAll().catch(() => {});
   failures.push(...await watchdog.stop());
-  await game.page.screenshot({ path: join(outDir, `${name}${suffix}.png`) }).catch(() => {});
+  await screenshot(game.page, join(outDir, `${name}${suffix}.png`));
+  // WebKit gives the page no figure for memory: its web process's, as the nearest thing to what an iPhone would count
+  if (option('browser') === 'webkit') metrics.webProcessMB = webProcessMemory();
   await stopRecording?.();
   await browser.close();
   return { name, pass: failures.length === 0, seconds: Math.round((Date.now() - started) / 1000), fast, failures, metrics };
@@ -137,7 +139,7 @@ async function play(name, index, { video, suffix = '' }) {
 
 // WebGL2 straight after a closed WebGPU browser loses its context ("GPU state invalid" within a second of launch, on the
 // RTX 3060 here): 3 s between browsers clears it. Nothing a player can reach, as one browser never follows another.
-const gapBefore = (name) => Number(option('gap', ['webgl2-fallback', 'device-lost', 'offline-file'].includes(name) || option('browser') === 'firefox' ? 3 : 0.5)) * 1000;
+const gapBefore = (name) => Number(option('gap', ['webgl2-fallback', 'device-lost', 'offline-file'].includes(name) || ['firefox', 'webkit'].includes(option('browser')) ? 3 : 0.5)) * 1000;
 
 const report = [];
 const startedAll = Date.now();

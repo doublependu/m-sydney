@@ -10,12 +10,16 @@
 //   paving    footpath or lawn at or over the road
 //   turns     step, roll and stops on the curves through junctions
 //   traffic   traffic's own lanes off the road, or over a kerb
+//   tubes     covered tunnel inside another structure's tube: walls through the road, or one tube's floor in another
+//   wet       covered tunnel the sea's sheet passes through, between its road and its ceiling: the game doesn't draw the sea
+//             while the camera's in a tube (js/main.js), so this is where to look, not a fault
+//   decks     buildings rising into a deck, and trees taller than the room under one
 // usage: node tools/check-roads.mjs [--json] [--strict] [--list] [--tiles=0_-2,1_-2]
 console.info = () => {};
 const { heldList, heldTiles } = await import('../js/geodata.js');
-const { LINKS, chooseSurface, clearOfWater, linkById, onGroundRoad, roadHeight } = await import('../js/surfaces.js');
+const { DECK_DEPTH, KIND, LINKS, TUNNEL_HEIGHT, chooseSurface, clearOfWater, groundHeight, linkById, onGroundRoad, roadHeight, tunnelCovered } = await import('../js/surfaces.js');
 const { GroundCells, SIDEWALK_TOP, addSurface, groundLinks, wheelContacts } = await import('../js/ground-geometry.js');
-const { blockAt } = await import('../js/city-config.js');
+const { CITY_BOUNDS, blockAt } = await import('../js/city-config.js');
 const { buildRoadNetworkSteps } = await import('../js/road-network.js');
 
 const started = performance.now();
@@ -338,6 +342,90 @@ const over = (places, limit) => places.all.filter((w) => w[0] > limit).length;
   report.turns = { km: +(out.metres / 1000).toFixed(0), stops: out.stops.summary(), step: { over25cm: over(out.step, 0.25), ...out.step.summary() }, roll: { over8: over(out.roll, 8), ...out.roll.summary() } };
   report.traffic = { km: +(total / 1000).toFixed(0), offRoad: +(off / total * 100).toFixed(2), overKerb: +(kerb / total * 100).toFixed(2), places: offRoad.summary().places, where: offRoad.summary().where };
 }
+
+// --- Tunnels and decks: what's inside a tube, and what stands under a deck ----------------------------------------------------
+{
+  const G = 20, key = (x, z) => Math.floor(x / G) * 100000 + Math.floor(z / G);
+  const put = (cells, x, z, v) => { const k = key(x, z); (cells.get(k) || cells.set(k, []).get(k)).push(v); };
+  // Every 2 m along each structure link: { x, z, y, link, covered }
+  const along = (l, fn) => {
+    let s0 = 0;
+    for (let i = 1; i < l.pts.length; i++) {
+      const p = l.pts[i - 1], q = l.pts[i], L = Math.hypot(q.x - p.x, q.z - p.z);
+      if (L < 1e-6) continue;
+      for (let d = 0; d < L; d += 2) fn(p.x + ((q.x - p.x) * d) / L, p.z + ((q.z - p.z) * d) / L, p.y + ((q.y - p.y) * d) / L, s0 + d, (q.x - p.x) / L, (q.z - p.z) / L);
+      s0 += L;
+    }
+  };
+  const tubes = new Places(), wet = new Places();
+  const tubeCells = new Map(), tubeSamples = [];
+  for (const l of LINKS) {
+    if (l.kind !== KIND.TUNNEL) continue;
+    along(l, (x, z, y, s) => {
+      if (!tunnelCovered(l, s)) return;
+      const smp = { x, z, y, l };
+      tubeSamples.push(smp);
+      put(tubeCells, x, z, smp);
+    });
+  }
+  const water = CITY_BOUNDS.waterLevel;
+  for (const a of tubeSamples) {
+    if (!wanted(a.x, a.z)) continue;
+    if (a.y < water && a.y + TUNNEL_HEIGHT > water) wet.add(a.x, a.z, a.l.name, water - a.y);
+    let worst = 0;
+    for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+      for (const b of tubeCells.get(key(a.x + i * G, a.z + j * G)) || []) {
+        if (b.l.sid === a.l.sid || Math.abs(b.y - a.y) > TUNNEL_HEIGHT + 0.8) continue;
+        const into = a.l.half + b.l.half + 0.6 - Math.hypot(b.x - a.x, b.z - a.z);
+        // Side by side, the walls need room. Stacked, a slab: either is enough
+        const clear = Math.abs(b.y - a.y) >= TUNNEL_HEIGHT + 0.8;
+        if (into > worst && !clear) worst = into;
+      }
+    }
+    if (worst > 0) tubes.add(a.x, a.z, a.l.name, worst);
+  }
+  // Decks, but not the Harbour Bridge's own: samples 2 m apart along and across
+  const deckCells = new Map();
+  for (const l of LINKS) {
+    if (l.kind !== KIND.BRIDGE || l.deck) continue;
+    along(l, (x0, z0, y, s, ux, uz) => {
+      for (let o = -l.half + 0.5; o <= l.half - 0.5; o += 2) put(deckCells, x0 - uz * o, z0 + ux * o, { x: x0 - uz * o, z: z0 + ux * o, y, l });
+    });
+  }
+  const deckOver = (x, z, r) => {
+    let low = null;
+    for (const d of deckCells.get(key(x, z)) || []) if (Math.abs(d.x - x) < r && Math.abs(d.z - z) < r && (!low || d.y < low.y)) low = d;
+    return low;
+  };
+  const intoDeck = new Places(), treesUnder = new Places();
+  let buildingsInto = 0;
+  for (const t of heldTiles()) {
+    for (const b of t.buildings) {
+      let hit = null;
+      for (let ix = Math.floor(b.minX / G); ix <= Math.floor(b.maxX / G) && !hit; ix++) {
+        for (let iz = Math.floor(b.minZ / G); iz <= Math.floor(b.maxZ / G) && !hit; iz++) {
+          for (const d of deckCells.get(ix * 100000 + iz) || []) {
+            if (d.x < b.minX || d.x > b.maxX || d.z < b.minZ || d.z > b.maxZ || !wanted(d.x, d.z)) continue;
+            if (b.floor + b.height <= d.y - DECK_DEPTH || b.floor + (b.bottom || 0) >= d.y) continue;
+            if (b.polygons.some((pg) => inRing(pg.outer, d.x, d.z) && !pg.holes.some((h) => inRing(h, d.x, d.z)))) { hit = d; break; }
+          }
+        }
+      }
+      if (hit) { buildingsInto++; intoDeck.add(hit.x, hit.z, hit.l.name, b.floor + b.height - (hit.y - DECK_DEPTH)); }
+    }
+    const tr = t.trees;
+    for (let i = 0; i < tr.kinds.length; i++) {
+      const x = tr.points[i * 2], z = tr.points[i * 2 + 1];
+      if (!wanted(x, z)) continue;
+      const d = deckOver(x, z, 2);
+      if (!d) continue;
+      const room = d.y - DECK_DEPTH - groundHeight(x, z), tall = tr.heights[i] || 8;
+      if (tall > room) treesUnder.add(x, z, d.l.name, tall - room);
+    }
+  }
+  report.tubes = { overlapping: tubes.metres * 2, wet: wet.metres * 2, overlap: tubes.summary(), water: wet.summary() };
+  report.decks = { buildings: buildingsInto, trees: treesUnder.metres, into: intoDeck.summary(), under: treesUnder.summary() };
+}
 report.seconds = +((performance.now() - started) / 1000).toFixed(1);
 
 if (json) console.log(JSON.stringify(report, null, 1));
@@ -357,6 +445,10 @@ else {
   console.log(`paving    ${r.paving.areaShare}% of road area, ${r.paving.rampShare}% of ramps and bridges, centre line ${r.paving.centreLine.metres * 2} m at ${r.paving.centreLine.places} places, worst ${r.paving.centreLine.worst} m${where(r.paving.centreLine)}`);
   console.log(`turns     ${r.turns.km} km: stops ${r.turns.stops.metres} m at ${r.turns.stops.places} places, ${r.turns.step.over25cm} m step over 25 cm, ${r.turns.roll.over8} m roll over 8% a metre, worst ${r.turns.roll.worst}%`);
   console.log(`traffic   ${r.traffic.km} lane km: ${r.traffic.offRoad}% off every carriageway, ${r.traffic.overKerb}% over a kerb island`);
+  console.log(`tubes     ${r.tubes.overlapping} m of covered tunnel inside another tube${where(r.tubes.overlap)}`);
+  console.log(`wet       ${r.tubes.wet} m of covered tunnel with the sea's sheet inside${where(r.tubes.water)}`);
+  console.log(`decks     ${r.decks.buildings} buildings rising into a deck${where(r.decks.into)}`);
+  console.log(`          ${r.decks.trees} trees taller than the room under a deck${where(r.decks.under)}`);
   console.log(`          in ${r.seconds} s`);
   if (r.byTile) {
     console.log(`by tile   ${r.byTile.passing} of ${r.byTile.tiles} pass, ${r.byTile.share}% (limits, in metres of lane: ${JSON.stringify(TILE_LIMITS)})`);
@@ -381,7 +473,12 @@ if (strict) {
     [r.lanes.kerbs.metres, 260, 'lane metres with a wheel on a kerb'],
     [r.paving.centreLine.places, 0, 'places with paving on a road\'s centre line'],
     [r.paving.areaShare, 0.05, 'road area under paving, %'],
-    [r.traffic.offRoad, 1.8, 'traffic lanes off the road, %']
+    [r.traffic.offRoad, 1.8, 'traffic lanes off the road, %'],
+    // What tools/tiles/separate-tubes.mjs can't move: near mouths, in short underpasses. js/surfaces.js keeps their walls solid
+    [r.tubes.overlapping, 2000, 'metres of covered tunnel inside another tube'],
+    // Buildings with measured heights, which derive lists rather than cuts, and trees by a deck's edge
+    [r.decks.buildings, 7, 'buildings rising into a deck'],
+    [r.decks.trees, 6, 'trees taller than the room under a deck']
   ];
   let failed = false;
   for (const [value, limit, label] of limits) {

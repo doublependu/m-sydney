@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 import { launchBrowser, openGame, serveDist } from './play/lib.mjs';
+import { mapImageFile } from '../js/tiles/paths.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = path.join(ROOT, 'public/map');
@@ -67,7 +68,9 @@ for (const level of LEVELS) {
       return debug.mapImage(x0, z0, size, px, buildings);
     }, { x0: a * level.size, z0: b * level.size, size: level.size, px: level.px, far: level.m <= 2 ? farIn(a * level.size, b * level.size, level.size) : [] });
     const body = Buffer.from(url.split(',')[1], 'base64');
-    fs.writeFileSync(path.join(OUT, String(level.m), `${key}.webp`), body);
+    const file = path.join(OUT, mapImageFile(level.m, a, b));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, body);
     written++;
     bytes += body.length;
     if (written % 200 === 0) console.log(`[map] ${written} images, ${Math.round(bytes / 1048576)} MB, ${Math.round((Date.now() - started) / 1000)} s`);

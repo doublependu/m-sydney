@@ -3,7 +3,7 @@ import { pass, mrt, output, normalView, positionView, metalness, roughness, vec2
 import { ssr } from 'three/addons/tsl/display/SSRNode.js';
 import { createPostProcessing } from './post-processing.js';
 import { ClusteredLighting } from 'three/addons/lighting/ClusteredLighting.js';
-import { getLocationLabel, isTypingInField, LANDMARK_SITES, ROADS, LANDMARKS, SPAWN, TELEPORT_LOCATIONS } from './city-config.js';
+import { getLocationLabel, isTypingInField, LANDMARK_SITES, ROADS, LANDMARKS, SPAWN, TELEPORT_LOCATIONS, suburbAt } from './city-config.js';
 import { TOWER_SIGNS } from './tower-signs.js';
 import { buildTileGround, buildWater } from './city-grid.js';
 import { addHarbourBridge, addTowerSigns, buildLandmarks } from './landmarks.js';
@@ -24,8 +24,10 @@ import { PauseMenu } from './pause-menu.js';
 import { CHOICES, FrameWatcher, detectQuality, saveChoice } from './quality.js';
 import { FrameStats } from './frame-stats.js';
 import { createLightPools } from './light-pools.js';
-import { IDLE, WorldBuilder, runToEnd } from './world-jobs.js';
-import { GEO, TILE, fetchFarFile, heldTiles, holdTile, holdTiles, isHeld, loadFar, releaseTile, tileExists, tileKeyAt, tilesNear } from './geodata.js';
+import { IDLE, WorldBuilder, activity, runToEnd } from './world-jobs.js';
+import { GEO, TILE, fetchFarFile, heldBytes, heldTiles, holdTile, holdTiles, isHeld, loadFar, releaseTile, tileExists, tileKeyAt, tilesNear } from './geodata.js';
+import { estimateMemory } from './memory-estimate.js';
+import { lastSessionNote, noteText, startSessionNote } from './session-note.js';
 import { planTiles } from './tiles/tile-manager.js';
 import { BLOCKS } from './city-config.js';
 import { auditPrecision, moveOriginNear, origin, rebaseMeshes, setOrigin } from './world-origin.js';
@@ -621,6 +623,9 @@ async function initApp() {
   const EDGE_SPEED = 12, EDGE_REACH = 200; // m/s, m
   // Somewhere the map isn't drawn yet: the player waits there, behind a fade, until it is
   let awaitingGround = null;
+  // Set by a teleport: until everything around there is in, the loading bar says so (buildRestOfWorld)
+  let arrival = null;
+  let streaming = null; // the bar's tasks for the map coming in, once the first build is done
   const groundWaits = []; // ms, for tools/play
 
   function awaitGround(x, z, askedX = x, askedZ = z, heading = 0) {
@@ -629,8 +634,11 @@ async function initApp() {
     document.getElementById('mode-fade')?.classList.add('fading');
   }
 
-  function teleportTo(x, z, heading = Math.PI) {
+  function teleportTo(x, z, heading = Math.PI, name = null) {
     const destination = controllerManager.teleportActiveTo(x, z, heading);
+    // The loading bar follows the map coming in around here, from now: whatever's being built for the last place can take a while yet
+    arrival = { x: destination.x, z: destination.z, name };
+    if (worldCompleteAt !== null) startStreaming(destination.x, destination.z, 0);
     awaitGround(destination.x, destination.z, x, z, heading);
     standOnSurfaces();
     touchControls.reset();
@@ -667,7 +675,7 @@ async function initApp() {
       const key = btn.getAttribute('data-teleport');
       const loc = TELEPORT_LOCATIONS[key];
       if (loc) {
-        teleportTo(loc.x, loc.z, loc.heading);
+        teleportTo(loc.x, loc.z, loc.heading, btn.querySelector('.pop-name')?.textContent.trim() || null); // the menu's own name for the place
       }
       closePopovers();
     });
@@ -989,6 +997,10 @@ async function initApp() {
     return step.value;
   }
 
+  // What the last session left if the browser killed it, read before this one writes its own (js/session-note.js)
+  let lastNote = null;
+  try { lastNote = lastSessionNote(localStorage); } catch { /* no storage */ }
+
   // ?stats=1: the numbers that matter, on screen, for trying it on a phone with no developer tools to hand
   function showStats() {
     if (new URLSearchParams(location.search).get('stats') !== '1') return;
@@ -1001,12 +1013,17 @@ async function initApp() {
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) stats.pause(performance.now());
     });
+    // The game's own loop runs before this one in each frame, so frameWork is the frame that came before this one's wait
     const tick = (now) => {
-      if (stats.frame(now)) {
+      if (stats.frame(now, frameWork)) {
         const heap = performance.memory ? `${Math.round(performance.memory.usedJSHeapSize / 1048576)} MB` : 'n/a';
+        const held = Math.round(countMemory(now).total / 1048576);
+        const { x, z } = controllerManager.getActiveEntity().position;
         el.textContent = `loaded in ${(interactiveAt / 1000).toFixed(2)} s, ${backend}, ${quality.level}\n`
           + `${stats.lines(now)}\n`
-          + `city ${worldCompleteAt === null ? 'building' : `done at ${(worldCompleteAt / 1000).toFixed(1)} s`}, tiles ${[...builtTiles.values()].filter((r) => r.done).length}, heap ${heap}`;
+          + `city ${worldCompleteAt === null ? 'building' : `done at ${(worldCompleteAt / 1000).toFixed(1)} s`}, tiles ${[...builtTiles.values()].filter((r) => r.done).length}, heap ${heap}, holds about ${held} MB\n`
+          + `at ${Math.round(x)}, ${Math.round(z)}, ${getLocationLabel(x, z)}`
+          + (lastNote ? `\n${noteText(lastNote)}` : '');
       }
       requestAnimationFrame(tick);
     };
@@ -1053,6 +1070,7 @@ async function initApp() {
   const tileFailedAt = new Map();
 
   function* buildTile(key) {
+    activity.label = `tile ${key}`;
     let tile = null;
     yield holdTile(key).then((t) => { tile = t; }).catch(() => { tileFailedAt.set(key, performance.now()); });
     if (!tile) return;
@@ -1127,6 +1145,7 @@ async function initApp() {
   const REBUILD_AFTER = Math.max(400, tileRange * 0.5); // m moved
 
   function* rebuildDetails(tasks = null) {
+    activity.label = 'street furniture';
     const { buildStreetDetails } = cityCode;
     const stage = new THREE.Group();
     const allColliders = controllerManager.colliders;
@@ -1144,6 +1163,7 @@ async function initApp() {
   }
 
   function* rebuildTraffic(x, z, tasks = null) {
+    activity.label = 'traffic';
     const { buildRoadNetworkSteps, buildRoadPaintSteps, createRoadPaintChunkBuilder, createTrafficSystem } = cityCode;
     const R = TRAFFIC_RADIUS + 200;
     const nearWindow = (c) => c.maxX > x - R && c.minX < x + R && c.maxZ > z - R && c.minZ < z + R;
@@ -1200,11 +1220,13 @@ async function initApp() {
       if (awaitingGround || performance.now() - checkedAt > 250) {
         checkedAt = performance.now();
         const { x, z } = controllerManager.getActiveEntity().position;
+        const doing = activity.label;
         while (!groundReady(x, z, 300)) {
           const key = wantedTiles().load[0];
           if (!key) break;
           yield* buildTile(key);
         }
+        activity.label = doing;
       }
       step = job.next(sent);
     }
@@ -1242,7 +1264,7 @@ async function initApp() {
     for (const record of builtTiles.values()) farLevel.setShown(record.tile.ix, record.tile.iz, true);
     farStage = new THREE.Group();
     farStage.name = 'FarLevel';
-    buildWater(farStage);
+    seaSheet = buildWater(farStage);
     yield revealStage(farStage);
     while (yield* nextFarSquare(here().x, here().z, { forMap: true }));
     yield* mapSystem.prepareBlocks(farLevel.footprints);
@@ -1300,6 +1322,7 @@ async function initApp() {
 
     // From here on, keep up with the player. One thing at a time, the ground under them first, so a frame never pays for much.
     let detailsAt = { x: startX, z: startZ };
+    let detailsDoneAt = detailsAt; // where street furniture was last put out round, once it's done: null while it's being done
     let plannedAt = -Infinity, plannedX = Infinity, plannedZ = Infinity;
     for (;;) {
       const { x, z } = here();
@@ -1312,6 +1335,8 @@ async function initApp() {
       plannedX = x;
       plannedZ = z;
       const next = wantedTiles();
+      if (worldCompleteAt !== null) followStreaming(x, z, next, detailsAt, detailsDoneAt);
+      keepToBudget(performance.now());
       for (const key of next.drop) dropTile(key);
       for (const t of heldTiles()) {
         // Held for a moment by something else, like a jump across the map
@@ -1321,7 +1346,9 @@ async function initApp() {
         yield* buildTile(next.load[0]);
       } else if (Math.hypot(x - detailsAt.x, z - detailsAt.z) > REBUILD_AFTER * (flying() ? 1.5 : 1)) {
         detailsAt = { x, z };
+        detailsDoneAt = null;
         yield* groundFirst(rebuildDetails());
+        detailsDoneAt = { x, z };
         yield* groundFirst(rebuildTraffic(x, z));
       } else if (Math.hypot(x - windowAt.x, z - windowAt.z) > TRAFFIC_RADIUS * (flying() ? 0.75 : 0.4)) {
         yield* groundFirst(rebuildTraffic(x, z));
@@ -1335,18 +1362,90 @@ async function initApp() {
       yield;
     }
   }
+  // The loading bar once the first build is done (js/progress.js). After a teleport: the ground and buildings in range, the street
+  // furniture and the traffic, all of them, named for the suburb. On the move: only while the ground ahead isn't there yet, as when
+  // flying faster than it comes in. A batch done within 300 ms never shows.
+  function startStreaming(x, z, toLoad) {
+    if (arrival && streaming && !streaming.full) {
+      for (const t of streaming.tasks) t.done();
+      streaming = null;
+    }
+    if (streaming) {
+      if (arrival && streaming.arrival !== arrival) {
+        streaming.arrival = arrival;
+        streaming.tasks[0].rename(`Loading ${arrival.name || suburbAt(x, z) || 'the map'}`);
+      }
+      return;
+    }
+    const where = arrival?.name || suburbAt(x, z) || 'the map';
+    const full = !!arrival;
+    const tasks = full
+      ? progress.plan([[`Loading ${where}`, 3], ['Putting out street furniture', 1], ['Starting the traffic', 1]])
+      : [progress.start(`Loading ${where}`, 1)];
+    streaming = { full, tasks, total: Math.max(1, toLoad), arrival };
+  }
+
+  function followStreaming(x, z, next, detailsAt, detailsDoneAt) {
+    const groundShort = next.load.length > 0 && !groundReady(x, z, 600);
+    // A teleport in the middle of a short batch makes it a full one, and another teleport renames it
+    if (arrival && streaming && !streaming.full) {
+      for (const t of streaming.tasks) t.done();
+      streaming = null;
+    }
+    if (arrival && streaming && streaming.arrival !== arrival) {
+      streaming.arrival = arrival;
+      streaming.total = Math.max(1, next.load.length);
+      streaming.tasks[0].rename(`Loading ${arrival.name || suburbAt(x, z) || 'the map'}`);
+    }
+    if (!streaming && (arrival || groundShort)) startStreaming(x, z, next.load.length);
+    if (!streaming) return;
+    const [tiles, details, traffic] = streaming.tasks;
+    streaming.total = Math.max(streaming.total, next.load.length);
+    const tilesDone = streaming.full ? next.load.length === 0 : !groundShort;
+    tiles.set(1 - next.load.length / streaming.total);
+    if (tilesDone) tiles.done();
+    if (!streaming.full) {
+      if (tilesDone) streaming = null;
+      return;
+    }
+    const detailsDone = !!detailsDoneAt && Math.hypot(x - detailsAt.x, z - detailsAt.z) <= REBUILD_AFTER * (flying() ? 1.5 : 1);
+    const trafficDone = !!windowAt && Math.hypot(x - windowAt.x, z - windowAt.z) <= TRAFFIC_RADIUS * (flying() ? 0.75 : 0.4);
+    if (detailsDone) details.done();
+    if (trafficDone && detailsDone) traffic.done();
+    if (tilesDone && detailsDone && trafficDone) {
+      streaming = null;
+      arrival = null;
+    }
+  }
+
   // The squares of the far level around (x, z), each its own stage: one more of them each time, or one gone. False when it's all as it should be.
-  const FAR_KEEP = 2000; // m past the range before one is let go
+  const FAR_KEEP = 1000; // m past the range before one is let go
+  // A budget for what the game holds, by its own count (js/memory-estimate.js), since iOS gives no figure and kills a tab that holds
+  // too much. Over it, the far level reaches less far, a kilometre at a time; back under, it reaches out again.
+  const MEMORY_BUDGET = { low: 170, medium: 280, high: 420 }; // MB
+  const FAR_REACH_LEAST = 2500; // m
+  let farReach = quality.farRange, reachedAt = -Infinity;
+  function keepToBudget(now) {
+    const held = countMemory(now).total / 1048576, budget = MEMORY_BUDGET[quality.level] ?? MEMORY_BUDGET.medium;
+    if (held > budget && farReach > FAR_REACH_LEAST && now - reachedAt > 3000) {
+      farReach = Math.max(FAR_REACH_LEAST, farReach - 1000);
+      reachedAt = now;
+    } else if (held < budget * 0.8 && farReach < quality.farRange && now - reachedAt > 10000) {
+      farReach = Math.min(quality.farRange, farReach + 1000);
+      reachedAt = now;
+    }
+  }
   function* nextFarSquare(x, z, options = {}) {
+    activity.label = 'far level';
     const { farSquaresNear } = cityCode;
     for (const [key, stage] of farStages) {
-      if (farSquaresNear(x, z, quality.farRange + FAR_KEEP).includes(key)) continue;
+      if (farSquaresNear(x, z, farReach + FAR_KEEP).includes(key)) continue;
       farLevel.dropSquare(key);
       farStages.delete(key);
       disposeStage(stage);
       return true;
     }
-    for (const key of farSquaresNear(x, z, quality.farRange)) {
+    for (const key of farSquaresNear(x, z, farReach)) {
       if (farStages.has(key)) continue;
       const stage = new THREE.Group();
       stage.name = 'FarSquare';
@@ -1382,6 +1481,22 @@ async function initApp() {
   let nextPlayerSave = 0;
   let firstFrameDone = false;
   let grabWanted = null;
+  let frameWork = null; // the longest piece of work in the last frame drawn: { label, ms }
+  let seaSheet = null; // the sea, one sheet at sea level across the world (js/city-grid.js)
+  // What the game holds by its own count, in bytes, worked out every couple of seconds (js/memory-estimate.js): { total, parts }
+  let memory = { total: 0, parts: {} };
+  let memoryAt = -Infinity;
+  function countMemory(now, force = false) {
+    if (!force && now - memoryAt < 2000) return memory;
+    memoryAt = now;
+    const { width, height } = renderer.domElement;
+    memory = estimateMemory(scene, {
+      'map data': heldBytes() * 3, // unpacked into JavaScript objects
+      // The frame's own buffers: colour, depth and the post-processing passes, about 32 bytes a pixel in all
+      'screen buffers': width * height * 32
+    });
+    return memory;
+  }
   const shadowFocus = new THREE.Vector3();
   const MAX_FRAMES_IN_FLIGHT = 2;
   let framesInFlight = 0;
@@ -1407,6 +1522,15 @@ async function initApp() {
       mapImage: (x0, z0, size, px, buildings) => mapSystem.renderImage(x0, z0, size, px, buildings),
       farBuildings: async (key) => (await fetchFarFile(key)).buildings,
       interior: () => interiors.state(),
+      seaShown: () => seaSheet?.visible ?? null,
+      farReach: () => farReach,
+      streaming: () => streaming && { full: streaming.full, total: streaming.total, arrival: streaming.arrival, tasks: streaming.tasks.map((t) => ({ ...t.task })) },
+      lastSession: () => lastNote,
+      // What the game holds by its own count, in MB, with the largest parts
+      memory: (split = null) => {
+        const m = split ? estimateMemory(scene, {}, { split }) : countMemory(performance.now(), true);
+        return { total: Math.round(m.total / 1048576), parts: Object.fromEntries(Object.entries(m.parts).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, Math.round(v / 1048576)])) };
+      },
       gpuMemory: () => ({ ...renderer.info.memory }),
       origin: () => ({ ...origin }),
       setOrigin: (x, z) => setOrigin(scene, x, z),
@@ -1637,16 +1761,22 @@ async function initApp() {
     lastTime = now;
     const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
     if (worldCompleteAt !== null) frameWatcher.update(rawDt); // building the city slows frames on purpose
+    const t0 = performance.now();
     simulate(dt, now);
 
     const simEnd = debugFrames && performance.now();
+    const t1 = performance.now();
 
     drawFrame();
+    const t2 = performance.now();
     // The rest of the city gets what this frame left of a 30 FPS budget
     // While the first city goes up, whatever a frame has spare. After that the player comes first: the map only has to keep ahead.
     const spare = 33 - (performance.now() - frameStart);
     // And behind the fade after a teleport, there's nothing to play yet: as fast as it'll go.
     worldBuilder?.step(worldCompleteAt === null || awaitingGround ? Math.max(4, Math.min(20, spare)) : Math.max(2, Math.min(6, spare - 4)));
+    // What this frame spent longest on, for the next frame to blame if it comes late (?stats=1)
+    frameWork = t1 - t0 > t2 - t1 ? { label: 'simulation', ms: t1 - t0 } : { label: 'drawing', ms: t2 - t1 };
+    if (worldBuilder?.longest && worldBuilder.longest.ms > frameWork.ms) frameWork = worldBuilder.longest;
     if (debugFrames) {
       debugFrames.simMs += simEnd - frameStart;
       debugFrames.submitMs += performance.now() - simEnd;
@@ -1667,6 +1797,12 @@ async function initApp() {
         phoneHud.showHint();
         interactive = true;
         showStats();
+        try {
+          startSessionNote(localStorage, () => {
+            const { x, z } = controllerManager.getActiveEntity().position;
+            return { x: Math.round(x), z: Math.round(z), mode: controllerManager.activeMode, memoryMB: Math.round(memory.total / 1048576), tiles: builtTiles.size };
+          });
+        } catch { /* no storage: nothing to note */ }
         if (loadingOverlay) loadingOverlay.classList.add('hidden');
         audioSystem.ready = true;
         audioSystem.prepareSounds();
@@ -1802,10 +1938,15 @@ async function initApp() {
         // Kept in the room, it has to look at you again
         cameraSystem.camera.lookAt(x - origin.x, bodyY + 1.2, z - origin.z);
       }
-      const shelterGoal = indoors || (inTunnel(sid, x, z) && inTunnel(sid, eye.x, eye.z)) ? 1 : 0;
+      const eyeInTube = inTunnel(sid, eye.x, eye.z);
+      const shelterGoal = indoors || (inTunnel(sid, x, z) && eyeInTube) ? 1 : 0;
       lightingSystem.setShelter(lightingSystem.shelter + (shelterGoal - lightingSystem.shelter) * Math.min(1, dt * 2.5));
+      // A tunnel that goes below sea level has the sea's sheet running through it. From inside a closed tube nothing outside
+      // shows anyway, so the sea isn't drawn while the camera's in one.
+      if (seaSheet) seaSheet.visible = !eyeInTube;
     } else {
       lightingSystem.setShelter(0);
+      if (seaSheet) seaSheet.visible = true;
     }
     cameraSystem.camera.updateMatrixWorld();
     updateTunnelMouths(eye.x, eye.z);

@@ -93,9 +93,10 @@ async function crossBridge(human, page, expect, direction) {
 const TUNNEL_HEIGHT = 5.6; // js/surfaces.js
 async function followRoute(human, page, waypoints, { limit = 14, resume = false } = {}) {
   const route = await page.evaluate((w) => window.__gameDebug.route(w), waypoints);
+  if (route) console.log(`[route] ${route.length} points from ${Math.round(route[0].x)}, ${Math.round(route[0].z)} to ${Math.round(route.at(-1).x)}, ${Math.round(route.at(-1).z)}: ${[...new Set(route.map((p) => p.name))].slice(0, 6).join(', ')}`);
   // At walking pace at worst, for the queues at the lights
   const timeout = Math.max(120000, (route?.length ?? 0) * 8 / 3 * 1000);
-  const out = { found: !!route, points: route?.length ?? 0, samples: 0, offLevel: 0, worst: null, tunnelSamples: 0, cameraOut: 0, cameraThrough: 0, otherLevelHits: 0, levelJumps: 0, restarts: 0, darkest: 0, reached: false, seconds: 0 };
+  const out = { found: !!route, points: route?.length ?? 0, samples: 0, offLevel: 0, worst: null, tunnelSamples: 0, cameraOut: 0, cameraThrough: 0, otherLevelHits: 0, levelJumps: 0, restarts: 0, restartsAt: [], darkest: 0, seaInTube: 0, reached: false, seconds: 0 };
   if (!route) return out;
   const first = route[0], next = route[Math.min(2, route.length - 1)];
   const toStart = async () => {
@@ -140,6 +141,7 @@ async function followRoute(human, page, waypoints, { limit = 14, resume = false 
     // On a long way, it picks up from where it was knocked off, rather than going all the way back
     if (resume && lost > 25 && out.restarts < 12) {
       out.restarts++;
+      out.restartsAt.push([Math.round(state.x), Math.round(state.z)]); // where it was knocked off, to look at afterwards
       await human.releaseAll();
       const from = route[Math.max(0, at - 1)], onward = route[Math.min(route.length - 1, at + 2)];
       await page.evaluate(([x, z, h]) => window.__gameDebug.goto(x, z, h, 'car'), [from.x, from.z, Math.atan2(onward.x - from.x, onward.z - from.z)]);
@@ -151,6 +153,7 @@ async function followRoute(human, page, waypoints, { limit = 14, resume = false 
     }
     if (!resume && lost > 25 && out.restarts < 3) {
       out.restarts++;
+      out.restartsAt.push([Math.round(state.x), Math.round(state.z)]);
       out.samples -= thisTry.samples;
       out.offLevel -= thisTry.offLevel;
       thisTry = { samples: 0, offLevel: 0 };
@@ -179,6 +182,8 @@ async function followRoute(human, page, waypoints, { limit = 14, resume = false 
         out.tunnelSamples++;
         if (cam.y > p.y + TUNNEL_HEIGHT - 0.2) out.cameraOut++;
         out.darkest = Math.max(out.darkest, cam.shelter);
+        // The sea runs through a tunnel that dips below it, so it mustn't be drawn while the camera's in one
+        if (cam.shelter > 0.5 && await page.evaluate(() => window.__gameDebug.seaShown())) out.seaInTube++;
       }
     }
     // On a two-way road, the left of it, as a driver would: the middle is nose to nose with whatever is coming
@@ -209,6 +214,12 @@ const LEVEL_ROUTES = {
   // William St under Kings Cross, a tube each way
   williamEast: [{ x: 1217, z: 27 }, { x: 1400, z: 66 }, { x: 1705, z: 115 }, { x: 1901, z: 97 }],
   williamWest: [{ x: 1951, z: 136 }, { x: 1707, z: 130 }, { x: 1396, z: 78 }, { x: 1219, z: 34 }],
+  // The Sydney Harbour Tunnel each way, from the Cahill Expressway's end to North Sydney and back: two tubes side by side under the
+  // harbour, its road below sea level for over a kilometre
+  harbourTunnelNorth: [{ x: 452, z: -1200, name: 'Sydney Harbour Tunnel Northbound' }, { x: 453, z: -1315, name: 'Sydney Harbour Tunnel' },
+    { x: -172, z: -3507, name: 'Sydney Harbour Tunnel' }],
+  harbourTunnelSouth: [{ x: -133, z: -3511, name: 'Sydney Harbour Tunnel' }, { x: 463, z: -1307, name: 'Sydney Harbour Tunnel' },
+    { x: 462, z: -1199, name: 'Sydney Harbour Tunnel Southbound' }],
   // Cumberland St over the Argyle Cut, and Argyle St through it, under Cumberland St
   cumberland: [{ x: -148, z: -1790 }, { x: -195, z: -1568 }, { x: -235, z: -1366 }],
   argyleEast: [{ x: -500, z: -1590, name: 'Argyle Street' }, { x: -112, z: -1548, name: 'Argyle Street' }],
@@ -230,7 +241,7 @@ const LEVEL_ROUTES = {
 async function driveLevels(human, page, metric, expect, names) {
   for (const name of names) {
     const r = await followRoute(human, page, LEVEL_ROUTES[name]);
-    metric(name, { reached: r.reached, seconds: r.seconds, samples: r.samples, offLevel: r.offLevel, tunnelSamples: r.tunnelSamples, cameraOut: r.cameraOut, cameraThrough: r.cameraThrough, otherLevelHits: r.otherLevelHits, levelJumps: r.levelJumps, restarts: r.restarts, darkest: +r.darkest.toFixed(2), worst: r.worst });
+    metric(name, { reached: r.reached, seconds: r.seconds, samples: r.samples, offLevel: r.offLevel, tunnelSamples: r.tunnelSamples, cameraOut: r.cameraOut, cameraThrough: r.cameraThrough, otherLevelHits: r.otherLevelHits, levelJumps: r.levelJumps, restarts: r.restarts, restartsAt: r.restartsAt, darkest: +r.darkest.toFixed(2), seaInTube: r.seaInTube, worst: r.worst });
     expect(r.found, `${name}: no way through the road graph`);
     expect(r.reached, `${name}: didn't get to the end in ${r.seconds} s`);
     expect(r.offLevel <= Math.max(1, r.samples * 0.03), `${name}: off its level ${r.offLevel} times of ${r.samples}, worst ${JSON.stringify(r.worst)}`);
@@ -240,6 +251,7 @@ async function driveLevels(human, page, metric, expect, names) {
     if (r.tunnelSamples) {
       expect(r.cameraOut === 0, `${name}: the camera was above the tunnel's roof ${r.cameraOut} times of ${r.tunnelSamples}`);
       expect(r.darkest > 0.8, `${name}: the light inside the tunnel only went down to ${r.darkest.toFixed(2)}`);
+      expect(r.seaInTube === 0, `${name}: the sea was drawn inside the tunnel ${r.seaInTube} times`);
     }
   }
 }
@@ -424,6 +436,47 @@ export const SCENARIOS = {
     }
   },
 
+  // The Harbour Tunnel's two tubes, end to end each way with no sea in view, and steering hard into each wall half way under the
+  // harbour: a tube's walls hold, so the car never ends up in the other one
+  'harbour-tunnel': {
+    fast: true,
+    query: 'wholeCity=1', // about the roads, not about fetching them, and too quick for fetching to keep up
+    minutes: 10,
+    async run({ human, page, metric, expect }) {
+      await human.wait(1000);
+      await driveLevels(human, page, metric, expect, ['harbourTunnelNorth', 'harbourTunnelSouth']);
+      for (const [name, way] of [['northbound', 'harbourTunnelNorth'], ['southbound', 'harbourTunnelSouth']]) {
+        // Half way along the tube as it is now: the generator moves tubes that ran too close (tools/tiles/separate-tubes.mjs)
+        const route = await page.evaluate((w) => window.__gameDebug.route(w), LEVEL_ROUTES[way]);
+        expect(!!route, `${name}: no way through the tunnel`);
+        if (!route) continue;
+        const i = route.length >> 1, p = route[i], q = route[i + 2];
+        const [x, z, heading] = [p.x, p.z, Math.atan2(q.x - p.x, q.z - p.z)];
+        await human.releaseAll();
+        await page.evaluate(([a, b, c]) => window.__gameDebug.goto(a, b, c, 'car', true), [x, z, heading]);
+        await human.wait(800);
+        const start = await human.state();
+        const surfaces = new Set([start.surface]);
+        for (const side of ['KeyA', 'KeyD']) {
+          await human.down('KeyW');
+          await human.down(side);
+          for (let t = 0; t < 20; t++) {
+            await human.wait(150);
+            surfaces.add((await human.state()).surface);
+          }
+          await human.releaseAll();
+        }
+        const end = await human.state();
+        const moved = Math.round(Math.hypot(end.x - start.x, end.z - start.z));
+        metric(`${name}Walls`, { from: [Math.round(x), Math.round(z)], surfaces: [...surfaces], moved });
+        // Pressed against a wall it's held, as at a parapet: it only has to be able to move at all
+        expect(moved > 3, `${name}: the car only moved ${moved} m with the accelerator down`);
+        expect(surfaces.size === 1, `${name}: steering into the walls took the car from tube ${start.surface} to ${[...surfaces].filter((s) => s !== start.surface).join(', ')}`);
+        expect(start.surface !== 0, `${name}: didn't start in the tunnel`);
+      }
+    }
+  },
+
   // Roads over roads, on each level: the Argyle Cut, Pier St, Central, and the Cahill over Circular Quay and back
   'stacked-roads': {
     fast: true,
@@ -512,6 +565,48 @@ export const SCENARIOS = {
       expect(hiddenAfter !== null && hiddenAfter < 1500, `the bar stayed ${hiddenAfter} ms after the city was finished`);
       const timings = (await page.evaluate(() => window.__gameDebug.progress())).timings;
       metric('stepMs', Object.fromEntries(timings));
+    }
+  },
+
+  // Teleports once the city's built: the bar comes up for each place that needs the map brought in, names it, gets to the end and
+  // goes. It used to be there only for the first build, so a teleport faded to black and then the city arrived with nothing said.
+  'teleport-bar': {
+    minutes: 8,
+    async run({ page, metric, expect }) {
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 240000, polling: 500 });
+      await page.waitForTimeout(1500);
+      const results = {};
+      for (const name of ['bondi', 'parramatta', 'manly', 'cronulla', 'hornsby', 'macquarie']) {
+        await page.evaluate((key) => {
+          // One watcher at a time: the last place's stops when this one starts
+          const seen = (window.__barSeen = []);
+          const started = performance.now();
+          const watch = () => {
+            if (window.__barSeen !== seen) return;
+            const s = window.__gameDebug.progress();
+            seen.push({ t: performance.now() - started, shown: s.shown, value: s.value, label: s.label });
+            if (performance.now() - started < 90000) setTimeout(watch, 100);
+          };
+          // The menu's own button, as a player does: the debug goto() fetches the place's tiles before it moves you
+          document.querySelector(`[data-teleport="${key}"]`).click();
+          watch();
+        }, name);
+        // Till the map's in and the bar has gone
+        await page.waitForFunction(() => {
+          const seen = window.__barSeen;
+          const first = seen.findIndex((s) => s.shown);
+          return first >= 0 && seen.slice(first).some((s) => !s.shown) || (seen.length && seen.at(-1).t > 60000);
+        }, null, { timeout: 120000, polling: 250 }).catch(() => {});
+        const seen = await page.evaluate(() => window.__barSeen);
+        const shown = seen.filter((s) => s.shown);
+        const firstShown = shown[0]?.t ?? null;
+        results[name] = { shownAfterMs: firstShown && Math.round(firstShown), shownMs: shown.length * 100, highest: Math.round(Math.max(0, ...shown.map((s) => s.value)) * 100), labels: [...new Set(shown.map((s) => s.label))] };
+        expect(firstShown !== null && firstShown < 700, `${name}: the bar ${firstShown === null ? 'never showed' : `took ${Math.round(firstShown)} ms to show`}`);
+        expect(shown.some((s) => s.value > 0.99) || seen.some((s, i) => i && seen[i - 1].shown && !s.shown), `${name}: the bar didn't get to the end`);
+        expect(shown.some((s) => s.label.startsWith('Loading')), `${name}: the bar didn't say where it was loading`);
+        await page.waitForTimeout(1000); // the city has to catch up a little before the next jump
+      }
+      metric('teleports', results);
     }
   },
 
@@ -687,7 +782,7 @@ export const SCENARIOS = {
     async run({ human, page, metric, expect }) {
       await human.wait(1000);
       const leg = await followRoute(human, page, [{ x: 1500, z: -8000 }, { x: 5300, z: -14400 }, { x: 6476, z: -31602 }], { limit: 18, resume: true });
-      metric('drive', { found: leg.found, reached: leg.reached, points: leg.points, seconds: leg.seconds, restarts: leg.restarts, levelJumps: leg.levelJumps });
+      metric('drive', { found: leg.found, reached: leg.reached, points: leg.points, seconds: leg.seconds, restarts: leg.restarts, restartsAt: leg.restartsAt, levelJumps: leg.levelJumps });
       expect(leg.found, 'no way to Palm Beach on the map');
       expect(leg.reached, 'never reached Palm Beach');
     }
@@ -699,7 +794,7 @@ export const SCENARIOS = {
     async run({ human, page, metric, expect }) {
       await human.wait(1000);
       const leg = await followRoute(human, page, [{ x: -1741, z: 5498 }, { x: -11279, z: 19282 }, { x: -2105, z: 20668 }], { limit: 18, resume: true });
-      metric('drive', { found: leg.found, reached: leg.reached, points: leg.points, seconds: leg.seconds, restarts: leg.restarts, levelJumps: leg.levelJumps });
+      metric('drive', { found: leg.found, reached: leg.reached, points: leg.points, seconds: leg.seconds, restarts: leg.restarts, restartsAt: leg.restartsAt, levelJumps: leg.levelJumps });
       expect(leg.found, 'no way to Cronulla on the map');
       expect(leg.reached, 'never reached Cronulla');
     }
@@ -713,7 +808,7 @@ export const SCENARIOS = {
     async run({ human, page, metric, expect }) {
       await human.wait(1000);
       const leg = await followRoute(human, page, [{ x: 1200, z: 200 }, { x: 4088, z: 1430 }, { x: 6200, z: 1150 }], { limit: 16 });
-      metric('drive', { found: leg.found, reached: leg.reached, points: leg.points, seconds: leg.seconds, restarts: leg.restarts, levelJumps: leg.levelJumps, offLevel: leg.offLevel });
+      metric('drive', { found: leg.found, reached: leg.reached, points: leg.points, seconds: leg.seconds, restarts: leg.restarts, restartsAt: leg.restartsAt, levelJumps: leg.levelJumps, offLevel: leg.offLevel });
       expect(leg.found, 'no way from the CBD to Bondi on the map');
       expect(leg.reached, 'never reached Bondi');
     }
@@ -1198,10 +1293,12 @@ export const SCENARIOS = {
       expectFit(await fits(), 'portrait again');
 
       // Everything that went behind the menu can still be reached
-      const hidden = ['#btn-teleport', '#btn-open-map', '#btn-pause', '#btn-sound', '#btn-toggle-hud', '#cam-next', '.repo-link'];
+      // Not the eye button: a phone's HUD fades by itself, so there's none (plan 4)
+      const hidden = ['#btn-teleport', '#btn-open-map', '#btn-pause', '#btn-sound', '#cam-next', '.repo-link'];
       for (const selector of hidden) expect(await page.locator(selector).isHidden(), `${selector} shows with the menu closed`);
       await page.locator('#btn-phone-menu').click();
       for (const selector of hidden) expect(await page.locator(selector).isVisible(), `${selector} can't be reached from the menu`);
+      expect(!(await page.locator('#btn-toggle-hud').isVisible()), 'the eye button is on the phone\'s menu');
       await touch('touchStart', [{ x: 300, y: 500, id: 3 }]);
       await touch('touchEnd', []);
       await human.wait(200);

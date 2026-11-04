@@ -4,6 +4,7 @@
 // Under Node (tools and tests), the whole map is held from the start.
 // Sources: © OpenStreetMap contributors (ODbL), City of Sydney open data (CC BY 4.0), Overture Maps.
 import { unpackFarFile, unpackTile } from './tiles/tile-file.js';
+import { farFile, tileFile } from './tiles/paths.js';
 
 const inNode = typeof document === 'undefined';
 // Put together at run time, so the bundler doesn't take it for a file to include
@@ -28,8 +29,8 @@ const fileText = async (name) => new TextDecoder().decode(await fileBytes(name))
 const world = JSON.parse(await fileText('world.json'));
 // The offline file has only a part of the map in it
 if (INLINE) {
-  for (const key of Object.keys(world.tiles)) if (!INLINE[`${key}.${world.tiles[key]}.bin.gz`]) delete world.tiles[key];
-  for (const key of Object.keys(world.farFiles)) if (!INLINE[`far_${key}.${world.farFiles[key]}.bin.gz`]) delete world.farFiles[key];
+  for (const key of Object.keys(world.tiles)) if (!INLINE[tileFile(key, world.tiles[key])]) delete world.tiles[key];
+  for (const key of Object.keys(world.farFiles)) if (!INLINE[farFile(key, world.farFiles[key])]) delete world.farFiles[key];
 }
 
 // What the whole map shares, and the road graph of the tiles held
@@ -105,9 +106,9 @@ function absorb(tile) {
 const fetching = new Map();
 function fetchTile(key) {
   if (!fetching.has(key)) {
-    const file = `${key}.${world.tiles[key]}.bin.gz`;
+    const file = tileFile(key, world.tiles[key]);
     const [ix, iz] = key.split('_').map(Number);
-    fetching.set(key, fileBytes(file).then((data) => Object.assign(unpackTile(data, world.heights.size, world.ground?.size), { key, ix, iz })));
+    fetching.set(key, fileBytes(file).then((data) => Object.assign(unpackTile(data, world.heights.size, world.ground?.size), { key, ix, iz, bytes: data.length })));
   }
   return fetching.get(key);
 }
@@ -158,6 +159,8 @@ function onMap(listener) {
 // In a set order, whichever order they arrived in: the same tiles build the same things
 const heldTiles = () => [...held.values()].sort((a, b) => a.ix - b.ix || a.iz - b.iz);
 const isHeld = (key) => held.has(key);
+/** Bytes of the tiles held, unpacked: as JavaScript objects they take about three times that (js/memory-estimate.js) */
+const heldBytes = () => [...held.values()].reduce((sum, t) => sum + (t.bytes || 0), 0);
 /** One of each tile's lists, for all the tiles held together */
 const heldList = (field) => heldTiles().flatMap((t) => t[field]);
 const TAG_LISTS = ['buses', 'cycles', 'cycleways', 'speeds', 'oneways', 'zebras', 'directions'];
@@ -183,7 +186,7 @@ let farData = null;
 const loadFar = () => (farData ||= fileText('far.json.gz').then((text) => Object.assign(GEO, JSON.parse(text))));
 const farHeightBytes = await fileBytes('far-heights.bin.gz');
 /** One of the far files, by its key in GEO.farFiles */
-const fetchFarFile = async (key) => unpackFarFile(await fileBytes(`far_${key}.${world.farFiles[key]}.bin.gz`));
+const fetchFarFile = async (key) => unpackFarFile(await fileBytes(farFile(key, world.farFiles[key])));
 let mapData = null;
 /** All the roads and blocks for the map screen, fetched when it's first opened */
 const loadMapData = () => (mapData ||= fileText('map.json.gz').then((text) => JSON.parse(text)));
@@ -201,4 +204,4 @@ if (inNode) {
   fetching.clear();
 }
 
-export { GEO, TILE, farHeightBytes, fetchFarFile, fileBytes, loadMapData, heldList, heldTags, heldTiles, heldTrees, holdTile, holdTiles, isHeld, loadFar, onMap, releaseTile, tileExists, tileKey, tileKeyAt, tilesNear };
+export { GEO, TILE, farHeightBytes, fetchFarFile, fileBytes, loadMapData, heldBytes, heldList, heldTags, heldTiles, heldTrees, holdTile, holdTiles, isHeld, loadFar, onMap, releaseTile, tileExists, tileKey, tileKeyAt, tilesNear };

@@ -15,6 +15,7 @@ class FrameStats {
     this.slow = 0;
     this.worst = 0;
     this.worstAt = 0;
+    this.worstCause = '';
   }
 
   /** The tab went out of view: the next frame's long gap is that, not a slow frame */
@@ -22,8 +23,11 @@ class FrameStats {
     if (this.pausedAt === undefined) this.pausedAt = now;
   }
 
-  /** A frame at time `now`. Returns true when a second has gone by, so the readout should be rewritten. */
-  frame(now) {
+  /**
+   * A frame at time `now`. `cause`, if given, is what the frame before took longest over, as { label, ms }: what made this
+   * frame wait. Returns true when a second has gone by, so the readout should be rewritten.
+   */
+  frame(now, cause = null) {
     if (this.pausedAt !== undefined) {
       this.hidden += now - this.pausedAt;
       this.pausedAt = undefined;
@@ -48,6 +52,9 @@ class FrameStats {
     if (gap > this.worst) {
       this.worst = gap;
       this.worstAt = now - this.started - this.hidden;
+      // Work the page timed that took most of the gap, or else something it can't see: the GPU, compiling a shader, or
+      // the browser collecting garbage
+      this.worstCause = !cause ? '' : cause.ms > gap * 0.4 ? `${cause.label} ${Math.round(cause.ms)} ms` : 'GPU or browser';
     }
     return now - this.mark >= 1000;
   }
@@ -57,7 +64,8 @@ class FrameStats {
     const { second } = this;
     const fps = Math.round((second.frames * 1000) / Math.max(1, now - this.mark));
     const text = `${fps} fps, ${second.slow} slow, worst ${Math.round(second.worst)} ms\n`
-      + `since load ${clockText(now - this.started - this.hidden)}: worst ${Math.round(this.worst)} ms at ${clockText(this.worstAt)}, ${this.slow.toLocaleString('en')} of ${this.frames.toLocaleString('en')} slow`;
+      + `since load ${clockText(now - this.started - this.hidden)}: worst ${Math.round(this.worst)} ms at ${clockText(this.worstAt)}`
+      + `${this.worstCause ? ` (${this.worstCause})` : ''}, ${this.slow.toLocaleString('en')} of ${this.frames.toLocaleString('en')} slow`;
     this.second = { frames: 0, slow: 0, worst: 0 };
     this.mark = now;
     return text;

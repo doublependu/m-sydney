@@ -1,5 +1,6 @@
 // tools/tiles/derive.mjs: what needs the whole map at once, worked out by the game's own code over the tiles just written:
-// where each tunnel is open to the sky, the mouths, each building's floor, and which buildings the landmarks replace.
+// where each tunnel is open to the sky, the mouths, each building's floor, and which buildings the landmarks replace. And what
+// stands under a deck without room for it: a building whose height is a guess is cut down to fit, and a tree is left out.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,11 +10,13 @@ const { GEO } = await import('../../js/geodata.js');
 const { blockAt } = await import('../../js/city-config.js');
 const { MAX_POINTS, TALL, TALL_POINTS, outlineOf } = await import('../../js/building-outlines.js');
 const { buildingLook } = await import('../../js/building-look.js');
-const { deriveTunnels, groundHeight } = await import('../../js/surfaces.js');
+const { DECK_DEPTH, KIND, LINKS, deriveTunnels, groundHeight, roomUnderDeck } = await import('../../js/surfaces.js');
 const { buildingFloor } = await import('../../js/building-floor.js');
 const { polygonBoxOverlaps } = await import('../../js/building-collision.js');
 const { landmarkColliders } = await import('../../js/landmarks.js');
-const { REAL_BUILDINGS } = await import(path.join(fileURLToPath(new URL('../data/generated/', import.meta.url)), 'building-geodata.js'));
+const GENERATED = fileURLToPath(new URL('../data/generated/', import.meta.url));
+const { REAL_BUILDINGS } = await import(path.join(GENERATED, 'building-geodata.js'));
+const { REAL_TREES, TREE_HEIGHTS } = await import(path.join(GENERATED, 'tree-geodata.js'));
 
 const { tunnels, portals } = deriveTunnels();
 
@@ -47,6 +50,66 @@ REAL_BUILDINGS.forEach((b, i) => {
   // Up, never down: a floor stays above the ground it was worked out for
   floors[i] = [Math.ceil(f.floor * 10), Math.floor(f.low * 10)];
 });
+// --- Under decks ---------------------------------------------------------------------------------------------------------
+// Where a deck passes over, what's under it has to fit. Decks are indexed by 50 m cell, so only what's near one is looked at.
+const DECK_CELL = 50;
+const deckCells = new Set();
+for (const l of LINKS) {
+  if (l.kind !== KIND.BRIDGE) continue;
+  for (let i = 1; i < l.pts.length; i++) {
+    const a = l.pts[i - 1], b = l.pts[i], pad = l.half + 2;
+    for (let x = Math.floor((Math.min(a.x, b.x) - pad) / DECK_CELL); x <= Math.floor((Math.max(a.x, b.x) + pad) / DECK_CELL); x++) {
+      for (let z = Math.floor((Math.min(a.z, b.z) - pad) / DECK_CELL); z <= Math.floor((Math.max(a.z, b.z) + pad) / DECK_CELL); z++) deckCells.add(x * 100000 + z);
+    }
+  }
+}
+const nearDeck = (minX, minZ, maxX, maxZ) => {
+  for (let x = Math.floor(minX / DECK_CELL); x <= Math.floor(maxX / DECK_CELL); x++) {
+    for (let z = Math.floor(minZ / DECK_CELL); z <= Math.floor(maxZ / DECK_CELL); z++) if (deckCells.has(x * 100000 + z)) return true;
+  }
+  return false;
+};
+const inRing = (ring, x, z) => {
+  let c = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i], b = ring[j];
+    if ((a.z > z) !== (b.z > z) && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) c = !c;
+  }
+  return c;
+};
+// Buildings: the lowest underside of a deck over any part of the outline, every 2 m. A guessed height is cut to leave a metre under
+// it, and a building with less than 2.5 m left goes. One with a measured height is listed, not changed: the deck may be wrong.
+const caps = {}, dropped = [], tooTall = [];
+REAL_BUILDINGS.forEach((b, i) => {
+  if (skip.has(i) || (b.bottom || 0) > 0 || !nearDeck(b.minX, b.minZ, b.maxX, b.maxZ)) return;
+  const floor = floors[i][0] / 10;
+  let underside = Infinity;
+  for (let x = b.minX + 1; x < b.maxX; x += 2) {
+    for (let z = b.minZ + 1; z < b.maxZ; z += 2) {
+      if (!b.polygons.some((p) => inRing(p.outer, x, z) && !p.holes.some((h) => inRing(h, x, z)))) continue;
+      const room = roomUnderDeck(x, z);
+      if (room < Infinity) underside = Math.min(underside, groundHeight(x, z) + room);
+    }
+  }
+  if (underside === Infinity || floor + b.height <= underside) return;
+  if (!b.guess) { tooTall.push(`${Math.round(b.cx)},${Math.round(b.cz)} ${b.height} m by ${(floor + b.height - underside).toFixed(1)} m`); return; }
+  const fits = Math.floor(underside - 1 - floor);
+  if (fits < 2.5) dropped.push(i);
+  else caps[i] = fits;
+});
+for (const [i, h] of Object.entries(caps)) REAL_BUILDINGS[i].height = h;
+for (const i of dropped) skip.add(i);
+console.log(`[derive] under decks: ${Object.keys(caps).length} buildings cut to fit, ${dropped.length} left out, ${tooTall.length} with a measured height in the way${tooTall.length ? `: ${tooTall.slice(0, 8).join('; ')}` : ''}`);
+// Trees: one taller than the room under a deck is left out. A tree with no height on record counts as 8 m.
+const treesUnder = [];
+for (let i = 0; i < TREE_HEIGHTS.length; i++) {
+  const x = REAL_TREES[i * 2], z = REAL_TREES[i * 2 + 1];
+  if (!nearDeck(x - 3, z - 3, x + 3, z + 3)) continue;
+  if (roomUnderDeck(x, z, 2) < (TREE_HEIGHTS[i] || 8)) treesUnder.push(i);
+}
+console.log(`[derive] ${treesUnder.length} trees left out from under decks`);
+void DECK_DEPTH;
+
 // What each building looks like from far away: which facade, which roof, and its outline in 0.5 m
 const looks = {};
 {
@@ -95,6 +158,6 @@ const farParks = {};
 
 const round = (v) => Math.round(v * 1000) / 1000;
 fs.writeFileSync(process.argv[2], JSON.stringify({
-  tunnels, portals, floors, underLandmarks, looks, farParks, deckProfile, bridgeSpan: BRIDGE_SPAN,
+  tunnels, portals, floors, underLandmarks, looks, farParks, deckProfile, bridgeSpan: BRIDGE_SPAN, caps, dropped, treesUnder,
   landmarkBoxes: boxes.map((c) => ({ minX: round(c.minX), maxX: round(c.maxX), minZ: round(c.minZ), maxZ: round(c.maxZ), maxY: round(c.maxY ?? 1e4) }))
 }));

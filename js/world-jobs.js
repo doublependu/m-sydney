@@ -24,6 +24,10 @@ function runToEnd(job) {
 // A job yields this when it has nothing to do this frame
 const IDLE = Symbol('idle');
 
+// What the jobs are doing, in a word or two, set by each as it starts something: so a slow frame can say what held it up
+// (?stats=1, js/frame-stats.js)
+const activity = { label: 'building' };
+
 class WorldBuilder {
   constructor(job) {
     this.job = job;
@@ -32,11 +36,16 @@ class WorldBuilder {
   }
 
   // A job can yield a promise to wait for async work, such as shader compiles, without holding up any frames.
+  // `longest` is the single longest piece of work in the last step, and what it was: { label, ms }
   step(budgetMs) {
+    this.longest = { label: '', ms: 0 };
     if (this.done || this.waiting) return;
     const deadline = performance.now() + budgetMs;
     do {
+      const started = performance.now();
       const { value, done } = this.job.next();
+      const ms = performance.now() - started;
+      if (ms > this.longest.ms) this.longest = { label: activity.label, ms };
       if (done) {
         this.done = true;
         return;
@@ -51,4 +60,4 @@ class WorldBuilder {
   }
 }
 
-export { IDLE, Ready, WorldBuilder, runToEnd, runUntilReady };
+export { IDLE, Ready, WorldBuilder, activity, runToEnd, runUntilReady };

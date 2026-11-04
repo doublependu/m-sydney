@@ -55,14 +55,18 @@ fast the rest moves, what's holding each queue up, how long a car waits at a red
 Bench options: `npm run bench -- --profile=desktop --runs=3 --query=quality=low --headed`.
 
 `node tools/play/stream-bench.mjs --profile=phone` measures frames while the map streams, flying its length and back. Add
-`?stats=1` to the URL to see load time, frames and memory on screen, for trying it on a phone. `?wholeCity=1` with `?debug=1`
-holds all of the map, for scenarios about the roads rather than about fetching them.
+`?stats=1` to the URL to see on screen, for trying it on a phone: load time, frames, the worst frame since load and what the game was
+doing then, how much memory the game holds by its own count (`js/memory-estimate.js`, since iOS gives no figure), where you are, and,
+if the browser killed the last session, where and at what size (`js/session-note.js`). `?wholeCity=1` with `?debug=1` holds all of
+the map, for scenarios about the roads rather than about fetching them.
 
 `node tools/check-ground.mjs [--tiles=0_-2,1_-2]` measures the ground, `node tools/play/look.mjs out-dir
 name:x,z,heading,mode,climbSeconds` saves what the game shows from any place (`--spots` for the stacks, tunnels and bridge
 ends in `tools/play/spots.mjs`), `node tools/play/flicker.mjs out-dir` holds views still and maps the pixels that flicker,
 and `node tools/debug-map.mjs out.png` draws the map data from above. Add `--browser=firefox` to the play, bench, look and
-flicker tools for the WebGL2 path.
+flicker tools for the WebGL2 path, or `--browser=webkit` for Safari's engine: Playwright's Linux build, drawing in software, the
+nearest thing to an iPhone here. A WebKit run reports its web process's memory, as it has no `performance.memory`. Reports' pictures
+are the game's own picture of the world under the page's HUD, as the browser's screenshot comes back black behind a WebGPU canvas.
 
 ## Deploy
 
@@ -78,7 +82,8 @@ a Worker script's requests count against 100,000 a day. Per-version preview URLs
 ## Map data
 
 The map ships as 1 km tiles in `public/tiles/`, each file named for a hash of its contents, so a tile that hasn't changed stays
-in players' caches. It covers Parramatta to the sea and Palm Beach to Cronulla. To rebuild it, download the raw snapshots to `tools/data/`
+in players' caches. They go in a folder for each 8 km square, 64 at most, as GitHub's website lists only the first 1,000 files of a folder
+(`js/tiles/paths.js`; `tools/check-dist.mjs` fails over 1,000). It covers Parramatta to the sea and Palm Beach to Cronulla. To rebuild it, download the raw snapshots to `tools/data/`
 (they are too large to keep in the repository) and run the generators. Allow about 6 GB of disk for the downloads:
 
 ```bash
@@ -103,12 +108,12 @@ what it did.
 |---|---|---|
 | `tiles/world.json` | What the whole map shares: tile list, structures, the bridge's deck | At start |
 | `tiles/far-heights.bin.gz` | The ground on a very coarse grid, for where nothing better is held | At start |
-| `tiles/<x>_<z>.<hash>.bin.gz` | A tile: roads with their shapes, kerbs, where the land and shore are, buildings, trees, heights, tunnel mouths, and a 5 m grid of how far the ground moves to meet the roads | When the player's near |
-| `tiles/far_<x>_<z>.<hash>.bin.gz` | 4 km of the far level: every building as a few points, plain ground with its own land and heights, main roads | Near the player, after the first frame |
+| `tiles/<X>_<Z>/<x>_<z>.<hash>.bin.gz` | A tile, in the folder of the 8 km square it's in: roads with their shapes, kerbs, where the land and shore are, buildings, trees, heights, tunnel mouths, and a 5 m grid of how far the ground moves to meet the roads | When the player's near |
+| `tiles/far/far_<x>_<z>.<hash>.bin.gz` | 4 km of the far level: every building as a few points, plain ground with its own land and heights, main roads | Near the player, after the first frame |
 | `tiles/far.json.gz` | Land beyond the map, suburbs' names, and the streets around the Harbour Bridge | After the first frame |
 | `tiles/horizon.bin.gz` | The whole box out to Katoomba, coarsely | After the first frame |
 | `tiles/map.json.gz` | Where every named street is, for the map screen's names and search | When the map is first opened |
-| `map/<m>/<x>_<z>.webp` | All of the map as images, at 32, 8 and 2 m a pixel | As they come into view on the map |
+| `map/<m>/<x>_<z>.webp`, `map/2/<X>_<Z>/<x>_<z>.webp` | All of the map as images, at 32, 8 and 2 m a pixel, the 2 m ones in the tiles' folders | As they come into view on the map |
 
 ## How it works
 
@@ -129,6 +134,13 @@ what it did.
 - **Each junction runs its own lights,** by who's there, the player and people waiting to cross included (`js/signals.js`).
   Junctions close together, like a divided road's two halves, share one set. Heads read their state from a small texture.
 - **The Harbour Bridge is one of those structures,** with its heights from a table of the real deck (`js/bridge.js`).
+- **Tunnels side by side have room for a wall.** OSM often draws a tunnel's two tubes closer than their roads are wide, so
+  `tools/tiles/separate-tubes.mjs` moves them apart inside, leaving the mouths where they are. A tunnel's walls hold: nothing
+  moves sideways from one tunnel into another (`chooseSurface()`). The sea is one sheet at sea level, so it runs through any tunnel
+  that dips below it: it isn't drawn while the camera's in a tube.
+- **What stands under a deck fits under it.** `roomUnderDeck()` in `js/surfaces.js` says how much room there is. A building whose
+  height is a guess is cut down to fit when the tiles are made (`tools/tiles/derive.mjs`), and trees, street lights and signs
+  aren't put where they wouldn't fit.
 - **The scene is drawn near zero.** The simulation and the map are in the game's own frame, however far out, but a shader only ever sees
   small numbers: `scene` itself moves by whole steps of 4,096 m as you go (`js/world-origin.js`), and every mesh keeps its vertices around
   its own middle. A pattern in a shader reads `patternXZ`, which wraps at the same 4,096 m, so a move changes nothing on screen.
@@ -151,6 +163,9 @@ what it did.
   has moved far enough, in the same places, so nothing near appears to change. Traffic gets a new road network around the
   player every few hundred metres, and everyone on it carries on (`setNetwork` in `js/traffic.js`). Beyond the tiles,
   `js/far-level.js` draws every building as a few points.
+- **The game keeps to a memory budget.** iOS gives a page no figure for its memory and kills a tab that holds too much, so the game
+  counts what it holds itself (`js/memory-estimate.js`). Over the budget for its level, the far level reaches less far, a
+  kilometre at a time. A far square's buildings are packed into 20 bytes a vertex, the largest part of what's held at a distance.
 - **A stage's meshes must let three.js forget them.** Materials are shared by every tile so a new tile compiles nothing, and
   three.js keeps a record of each mesh through its material. `disposeStage()` in `js/main.js` fires the event that lets go of it;
   anything removed without that stays in memory for good.

@@ -1,7 +1,7 @@
 // npm run viewports: checks the HUD at each screen size for panels that overflow or overlap. Saves a screenshot of each.
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { launchChrome, PROFILES, ROOT, openGame, serveDist } from './lib.mjs';
+import { launchChrome, PROFILES, ROOT, openGame, screenshot, serveDist } from './lib.mjs';
 
 const SIZES = {
   touch: [[360, 640], [390, 844], [412, 915], [844, 390], [640, 360], [768, 1024], [1024, 768]],
@@ -49,13 +49,26 @@ for (const [input, sizes] of Object.entries(SIZES)) {
     await game.page.waitForTimeout(700);
     const boxes = await game.page.evaluate(measure, PANELS);
     const label = `${input} ${width}x${height}`;
-    await game.page.screenshot({ path: join(outDir, `${input}-${width}x${height}.png`) });
+    await screenshot(game.page, join(outDir, `${input}-${width}x${height}.png`));
     if (input === 'touch' && PHONES.has(`${width}x${height}`)) {
       const { share, middle } = covered(boxes, width, height);
       console.log(`${label}: the HUD covers ${(share * 100).toFixed(1)}% of the screen`);
       if (share > MAX_COVERED) problems.push(`${label}: the HUD covers ${(share * 100).toFixed(1)}% of the screen, limit ${MAX_COVERED * 100}%`);
       if (middle) problems.push(`${label}: the HUD is in the middle of the screen`);
     }
+    // The eye button hides the HUD: a phone's HUD fades by itself, so there it's gone, even with the menu open
+    const eyeShown = await game.page.evaluate(() => {
+      const phoneMenu = document.getElementById('btn-phone-menu');
+      const menuShown = phoneMenu && getComputedStyle(phoneMenu).display !== 'none';
+      if (menuShown && !document.body.classList.contains('phone-menu-open')) phoneMenu.click();
+      const eye = document.getElementById('btn-toggle-hud');
+      const shown = !!eye && getComputedStyle(eye).display !== 'none' && eye.getBoundingClientRect().width > 0;
+      if (menuShown && document.body.classList.contains('phone-menu-open')) phoneMenu.click();
+      return shown;
+    });
+    const phone = input === 'touch' && PHONES.has(`${width}x${height}`);
+    if (phone && eyeShown) problems.push(`${label}: the eye button shows on a phone`);
+    if (!phone && !eyeShown) problems.push(`${label}: no eye button`);
     for (const box of boxes) {
       if (box.left < -0.5 || box.top < -0.5 || box.right > width + 0.5 || box.bottom > height + 0.5) {
         problems.push(`${label}: ${box.selector} off-screen (${Math.round(box.left)}, ${Math.round(box.top)} to ${Math.round(box.right)}, ${Math.round(box.bottom)})`);

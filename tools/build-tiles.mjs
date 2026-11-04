@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 import { BitRaster, flat, rdp } from './geo-common.mjs';
 import { onRegionEdge } from './geodata/regions.mjs';
+import { farFile, tileFile } from '../js/tiles/paths.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const SRC = path.join(ROOT, 'tools/data/generated');
@@ -34,6 +35,12 @@ const { REAL_TREES, TREE_KINDS, TREE_HEIGHTS } = await import(path.join(SRC, 'tr
 
 const RG = GEO.roadGraph;
 const KIND_CUTTING = 3;
+// Tunnels side by side, moved apart to make room for a wall between them (tools/tiles/separate-tubes.mjs)
+{
+  const { separateTubes } = await import('./tiles/separate-tubes.mjs');
+  const s = separateTubes(RG);
+  console.log(`[tiles] tunnels: ${s.before} m inside another tube, ${s.after} m once ${s.links} links were moved apart`);
+}
 
 // Structures: links off the ground, joined where they share a node (js/surfaces.js reads this table)
 function findStructures() {
@@ -158,13 +165,15 @@ function cutMap(derived) {
   // The pieces of one building stay together, in the tile of its lowest piece: they share a look and a floor
   const pieceHome = new Map();
   for (const b of REAL_BUILDINGS) if (b.group && !b.bottom) pieceHome.set(b.group, [b.cx, b.cz]);
-  const skip = new Set(derived?.underLandmarks || []);
+  // Left out: under a landmark's own model, or under a deck with no room (tools/tiles/derive.mjs)
+  const skip = new Set([...(derived?.underLandmarks || []), ...(derived?.dropped || [])]);
   REAL_BUILDINGS.forEach((b, i) => {
     if (skip.has(i)) return;
     const [hx, hz] = (b.group && pieceHome.get(b.group)) || [b.cx, b.cz];
     at(hx, hz).buildings.push({ b, i });
   });
-  for (let i = 0; i < TREE_KINDS.length; i++) at(REAL_TREES[i * 2], REAL_TREES[i * 2 + 1]).trees.push(i);
+  const noTree = new Set(derived?.treesUnder || []);
+  for (let i = 0; i < TREE_KINDS.length; i++) if (!noTree.has(i)) at(REAL_TREES[i * 2], REAL_TREES[i * 2 + 1]).trees.push(i);
   return { tiles, table };
 }
 
@@ -453,9 +462,15 @@ function packGround(cells) {
 }
 
 function write(derived, graded_ = null) {
+  // Guessed heights cut down to fit under a deck (tools/tiles/derive.mjs)
+  for (const [i, height] of Object.entries(derived?.caps || {})) REAL_BUILDINGS[i].height = height;
   const { tiles, table } = cutMap(derived);
+  // What another tool writes here stays: the horizon (tools/build-horizon.mjs)
+  const horizon = path.join(OUT, 'horizon.bin.gz');
+  const kept = fs.existsSync(horizon) ? fs.readFileSync(horizon) : null;
   fs.rmSync(OUT, { recursive: true, force: true });
   fs.mkdirSync(OUT, { recursive: true });
+  if (kept) fs.writeFileSync(horizon, kept);
   let total = 0, largest = 0;
   const sizes = [], names = {};
   for (const t of tiles.values()) {
@@ -476,7 +491,9 @@ function write(derived, graded_ = null) {
     const packed = zlib.gzipSync(Buffer.concat([head, json, buildings, trees, heights, graded]), { level: 9 });
     const hash = crypto.createHash('sha256').update(packed).digest('hex').slice(0, 10);
     names[KEY(t.ix, t.iz)] = hash;
-    fs.writeFileSync(path.join(OUT, `${KEY(t.ix, t.iz)}.${hash}.bin.gz`), packed);
+    const file = path.join(OUT, tileFile(KEY(t.ix, t.iz), hash));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, packed);
     total += packed.length;
     largest = Math.max(largest, packed.length);
     sizes.push(packed.length);
@@ -505,7 +522,9 @@ function write(derived, graded_ = null) {
     const hash = crypto.createHash('sha256').update(packed).digest('hex').slice(0, 10);
     farFiles[key] = hash;
     farTotal += packed.length;
-    fs.writeFileSync(path.join(OUT, `far_${key}.${hash}.bin.gz`), packed);
+    const file = path.join(OUT, farFile(key, hash));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, packed);
   }
   const mapFile = packStreetIndex();
   fs.writeFileSync(path.join(OUT, 'map.json.gz'), mapFile);

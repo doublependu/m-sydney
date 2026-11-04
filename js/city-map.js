@@ -1,5 +1,6 @@
 import { GEO, heldTiles, loadMapData } from './geodata.js';
 import { ROADS, BLOCKS, LANDMARKS, CITY_BOUNDS, SUBURBS, blockFromRecord, getLocationLabel, getMapVersion, isTypingInField, sceneryRoad, shortName } from './city-config.js';
+import { mapImageFile } from './tiles/paths.js';
 
 // Minimap and full-screen map drawn from the same geography and building footprints as the 3D city.
 // World frame: 1 unit = 1 m, x = grid east, z = grid south. Both maps face grid north, about 8 degrees east of true north.
@@ -88,7 +89,7 @@ class MapImages {
       const image = new Image();
       entry = { image, ready: false, used: 0 };
       image.onload = () => { entry.ready = true; this.version++; };
-      image.src = mapImageUrl(`${name}.webp`).href;
+      image.src = mapImageUrl(mapImageFile(level.m, ix, iz)).href;
       this.images.set(name, entry);
       if (this.images.size > KEEP_IMAGES) {
         let oldest = null;

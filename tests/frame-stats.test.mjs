@@ -41,3 +41,22 @@ test('says when a second has gone by', () => {
   assert.equal(stats.frame(16), false);
   assert.equal(stats.frame(1001), true);
 });
+
+test('the worst frame says what held it up', () => {
+  const stats = new FrameStats(0);
+  stats.frame(0);
+  let now = run(stats, 0, [16, 16]);
+  now += 225;
+  stats.frame(now, { label: 'tile 1_-3', ms: 190 });
+  now = run(stats, now, [16]);
+  assert.match(stats.lines(now).split('\n')[1], /worst 225 ms at 0:00 \(tile 1_-3 190 ms\)/);
+});
+
+test('a slow frame the page did little in is put down to the GPU or the browser', () => {
+  const stats = new FrameStats(0);
+  stats.frame(0);
+  let now = run(stats, 0, [16]);
+  now += 200;
+  stats.frame(now, { label: 'traffic', ms: 12 });
+  assert.match(stats.lines(now).split('\n')[1], /worst 200 ms at 0:00 \(GPU or browser\)/);
+});

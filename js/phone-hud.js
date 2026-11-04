@@ -40,6 +40,8 @@ class PhoneHud {
         this.streetTimer = setTimeout(() => this.location.classList.remove('is-fresh'), STREET_MS);
       }).observe(this.location, { childList: true });
     }
+    // A HUD hidden with the eye button on a bigger screen would have no way back here, where there's no eye button
+    if (this.active()) this.body.classList.remove('hud-minimized');
     this.wake();
   }
 

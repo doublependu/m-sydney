@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import { viteSingleFile } from 'vite-plugin-singlefile';
 
@@ -40,14 +40,17 @@ function offlineTiles(offline) {
       if (source !== `\0${id}`) return null;
       if (!offline) return 'export default null;';
       const dir = new URL('./public/tiles/', import.meta.url);
+      // Named by their path under tiles/, folders and all (js/tiles/paths.js)
       const inFile = (name) => {
-        const tile = name.match(/^(-?\d+)_(-?\d+)\./);
+        const file = name.split('/').pop();
+        const tile = file.match(/^(-?\d+)_(-?\d+)\./);
         if (tile) return +tile[1] >= -4 && +tile[1] <= 3 && +tile[2] >= -6 && +tile[2] <= 3;
-        const far = name.match(/^far_(-?\d+)_(-?\d+)\./);
+        const far = file.match(/^far_(-?\d+)_(-?\d+)\./);
         if (far) return +far[1] >= -1 && +far[1] <= 0 && +far[2] >= -2 && +far[2] <= 0;
         return true;
       };
-      const files = Object.fromEntries(readdirSync(dir).filter(inFile).map((name) => {
+      const names = readdirSync(dir, { recursive: true }).map(String).filter((name) => statSync(new URL(name, dir)).isFile());
+      const files = Object.fromEntries(names.filter(inFile).map((name) => {
         const bytes = readFileSync(new URL(name, dir));
         return [name, `data:application/octet-stream;base64,${bytes.toString('base64')}`];
       }));

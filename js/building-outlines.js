@@ -7,6 +7,8 @@ import { patternXZ } from './world-origin.js';
 // one of these meshes stands in for each 1 km of normal buildings: a fraction of the triangles and far cheaper to shade.
 
 const MAX_POINTS = 6;
+// Each vertex holds its building's tile as two bytes, ix and iz from -128 to 127 km
+const HOME_OFFSET = 128;
 // A tower is what the eye goes to: it keeps more of its shape
 const TALL = 80;
 const TALL_POINTS = 12;
@@ -45,10 +47,12 @@ function outlineOf(ring, most = MAX_POINTS) {
 let material = null;
 function outlineMaterial(hideWhereShown) {
   if (material) return material;
-  material = new THREE.MeshStandardNodeMaterial({ roughness: 0.82, metalness: 0.05 });
-  material.maskNode = hideWhereShown(attribute('outlineHome', 'vec2'));
-  const wall = attribute('outlineColor', 'vec3');
-  const isRoof = step(0.5, attribute('normal', 'vec3').y);
+  // No normals stored: a flat face's own slope gives it, and the colour's fourth byte says which faces are roofs
+  material = new THREE.MeshStandardNodeMaterial({ roughness: 0.82, metalness: 0.05, flatShading: true });
+  material.maskNode = hideWhereShown(attribute('outlineHome', 'vec2').mul(255).round().sub(HOME_OFFSET));
+  const packed = attribute('outlineColor', 'vec4');
+  const wall = packed.xyz;
+  const isRoof = step(0.5, packed.w);
   // Storeys and bays, settling to their average once they're too small to see: so the swap from the full model is gentle
   const storey = positionWorld.y.div(3.7), bay = patternXZ.x.add(patternXZ.y).div(5);
   const fade = float(1).sub(smoothstep(0.2, 0.7, fwidth(storey).add(fwidth(bay)))).mul(float(1).sub(isRoof));
@@ -68,46 +72,59 @@ function outlineMaterial(hideWhereShown) {
  * ix, iz }. Every vertex knows its building's tile: the mesh's material leaves out buildings whose tile is drawn in full.
  */
 function* outlineMesh(records, hideWhereShown) {
-  const position = [], normal = [], colors = [], homes = [], index = [];
+  // Bytes a vertex: 12 for where it is, 4 for its colour and whether it's a roof, 2 (4 on the GPU) for its tile. Written straight
+  // into arrays of the right size, counted first: a square of the far level is a few hundred thousand vertices, and building them
+  // as lists of numbers first would leave tens of megabytes behind for the garbage collector, every square, while flying
+  const outlines = [];
+  let vertices = 0, indices = 0;
   for (const [n, r] of records.entries()) {
-    if (n % 24 === 0) yield;
-    const floorY = r.floor + 0.22, top = floorY + r.height;
-    const bottom = r.bottom ? floorY + r.bottom : r.low - 0.3;
+    if (n % 48 === 0) yield;
     for (const ring of r.rings) {
       if (ring.length < 3) continue;
       const points = ring.map((p) => new THREE.Vector2(p.x, p.z));
       if (THREE.ShapeUtils.isClockWise(points)) points.reverse();
+      const walls = [];
       for (let i = 0; i < points.length; i++) {
         const a = points[i], b = points[(i + 1) % points.length];
-        const L = a.distanceTo(b);
-        if (L < 0.01) continue;
-        const nx = (b.y - a.y) / L, nz = -(b.x - a.x) / L;
-        const k = position.length / 3;
-        position.push(a.x, bottom, a.y, b.x, bottom, b.y, a.x, top, a.y, b.x, top, b.y);
-        for (let m = 0; m < 4; m++) {
-          normal.push(nx, 0, nz);
-          colors.push(r.wall.r, r.wall.g, r.wall.b);
-          homes.push(r.ix, r.iz);
-        }
-        index.push(k, k + 2, k + 1, k + 1, k + 2, k + 3);
+        if (a.distanceTo(b) >= 0.01) walls.push(i);
       }
-      const k = position.length / 3;
-      for (const p of points) {
-        position.push(p.x, top, p.y);
-        normal.push(0, 1, 0);
-        colors.push(r.roof.r, r.roof.g, r.roof.b);
-        homes.push(r.ix, r.iz);
-      }
-      for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(points, [])) index.push(k + a, k + c, k + b);
+      const roof = THREE.ShapeUtils.triangulateShape(points, []);
+      outlines.push({ r, points, walls, roof });
+      vertices += walls.length * 4 + points.length;
+      indices += walls.length * 6 + roof.length * 3;
     }
   }
-  if (!index.length) return null;
+  if (!indices) return null;
+  const position = new Float32Array(vertices * 3), colors = new Uint8Array(vertices * 4), homes = new Uint8Array(vertices * 2);
+  const index = vertices > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
+  let v = 0, k = 0;
+  const vertex = (x, y, z, c, roof, r) => {
+    position[v * 3] = x; position[v * 3 + 1] = y; position[v * 3 + 2] = z;
+    colors[v * 4] = Math.round(c.r * 255); colors[v * 4 + 1] = Math.round(c.g * 255); colors[v * 4 + 2] = Math.round(c.b * 255); colors[v * 4 + 3] = roof ? 255 : 0;
+    homes[v * 2] = r.ix + HOME_OFFSET; homes[v * 2 + 1] = r.iz + HOME_OFFSET;
+    return v++;
+  };
+  for (const [n, { r, points, walls, roof }] of outlines.entries()) {
+    if (n % 48 === 0) yield;
+    const floorY = r.floor + 0.22, top = floorY + r.height;
+    const bottom = r.bottom ? floorY + r.bottom : r.low - 0.3;
+    for (const i of walls) {
+      const a = points[i], b = points[(i + 1) % points.length];
+      const q = vertex(a.x, bottom, a.y, r.wall, false, r);
+      vertex(b.x, bottom, b.y, r.wall, false, r);
+      vertex(a.x, top, a.y, r.wall, false, r);
+      vertex(b.x, top, b.y, r.wall, false, r);
+      index[k++] = q; index[k++] = q + 2; index[k++] = q + 1; index[k++] = q + 1; index[k++] = q + 2; index[k++] = q + 3;
+    }
+    const first = v;
+    for (const p of points) vertex(p.x, top, p.y, r.roof, true, r);
+    for (const [a, b, c] of roof) { index[k++] = first + a; index[k++] = first + c; index[k++] = first + b; }
+  }
   const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(position, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(normal, 3));
-  g.setAttribute('outlineColor', new THREE.Float32BufferAttribute(colors, 3));
-  g.setAttribute('outlineHome', new THREE.Float32BufferAttribute(homes, 2));
-  g.setIndex(index);
+  g.setAttribute('position', new THREE.BufferAttribute(position, 3));
+  g.setAttribute('outlineColor', new THREE.BufferAttribute(colors, 4, true));
+  g.setAttribute('outlineHome', new THREE.BufferAttribute(homes, 2, true));
+  g.setIndex(new THREE.BufferAttribute(index, 1));
   g.computeBoundingSphere();
   const mesh = new THREE.Mesh(g, outlineMaterial(hideWhereShown));
   mesh.name = 'BuildingOutlines';

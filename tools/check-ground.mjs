@@ -6,6 +6,7 @@
 //   crossings  roads that cross with no junction, and how far apart their surfaces are there
 //   buildings  whether the ground beside any wall rises over its foot, and how much stone shows under floors
 //   grid       steps between neighbouring cells of the height grid on land
+//   kerb line  a kerb drawn straight between its points that strays from the ground under it: up in the air, or buried
 // usage: node tools/check-ground.mjs [--json] [--strict] [--tiles=0_-2,1_-2]
 import fs from 'node:fs';
 
@@ -255,6 +256,39 @@ function drawnRoad(x, z, near = Infinity, below = 1) {
   };
 }
 
+// --- The kerb line -------------------------------------------------------------------------------------------------------
+// A kerb is drawn straight between points some metres apart. Where the ground bends between them, as at a cutting's edge, the
+// kerb leaves it: a metre or more and it's a kerb in the air. Measured every metre along every drawn kerb.
+{
+  let metres = 0, off = 0, offBig = 0;
+  const worst = [];
+  for (const t of heldTiles()) {
+    for (const b of t.placedBlocks || []) {
+      for (const ring of [b.poly, ...b.holes]) {
+        const pts = ground.kerbRing(ring);
+        const ys = pts.map((p) => groundHeight(p.x, p.z));
+        for (let i = 0; i < pts.length; i++) {
+          const a = pts[i], c = pts[(i + 1) % pts.length], ya = ys[i], yc = ys[(i + 1) % pts.length];
+          const L = Math.hypot(c.x - a.x, c.z - a.z);
+          for (let d = 0.5; d < L; d += 1) {
+            const x = a.x + ((c.x - a.x) * d) / L, z = a.z + ((c.z - a.z) * d) / L;
+            if (!wanted(x, z)) continue;
+            metres++;
+            const gap = Math.abs(ya + ((yc - ya) * d) / L - groundHeight(x, z));
+            if (gap > 0.5) { off++; worst.push([+gap.toFixed(2), Math.round(x), Math.round(z)]); }
+            if (gap > 1) offBig++;
+          }
+        }
+      }
+    }
+  }
+  // The worst few, one per 40 m
+  worst.sort((p, q) => q[0] - p[0]);
+  const kept = [];
+  for (const w of worst) if (kept.length < 6 && !kept.some((k) => Math.hypot(k[1] - w[1], k[2] - w[2]) < 40)) kept.push(w);
+  report.kerbLine = { metres, over50cm: off, over1m: offBig, worst: kept };
+}
+
 // --- The height grid ----------------------------------------------------------------------------------------------------
 {
   const { x0, z0, cell, w, h } = GEO.frame.heights;
@@ -287,6 +321,7 @@ else {
   for (const c of r.crossings.examples.slice(0, 6)) console.log(`          ${c.a} x ${c.b} at (${c.x}, ${c.z}): ${c.apart} m apart`);
   const bs = r.buildings;
   console.log(`buildings ${bs.buildings}: ground over the wall's foot at ${bs.groundOverWall} of ${bs.wallSamples} samples, worst ${bs.worst} m${bs.at ? ` at ${bs.at.join(',')}` : ''}; stone under floors median ${bs.stone.median} m, 99th percentile ${bs.stone.p99} m, ${bs.stone.over4m} over 4 m`);
+  console.log(`kerb line ${r.kerbLine.metres} m of kerb: ${r.kerbLine.over50cm} m off the ground by over 50 cm, ${r.kerbLine.over1m} m by over 1 m${r.kerbLine.worst.length ? `, worst ${r.kerbLine.worst.map(([g, x, z]) => `${g} m (${x}, ${z})`).join('; ')}` : ''}`);
   console.log(`grid      ${r.grid.landCells} land cells: ${r.grid.stepsOver4m} steps over 4 m, ${r.grid.stepsOver10m} over 10 m, worst ${r.grid.worst} m at ${r.grid.at}`);
 }
 
@@ -298,9 +333,13 @@ if (strict) {
     [r.wheels.over3cmShare, 8.6, 'wheels over 3 cm under the road, %'],
     [r.wheels.over15cmShare, 0.9, 'wheels over 15 cm under the road, %'],
     [r.kerbs.openShare, 0.6, 'kerbs onto nothing or a slit, %'],
-    [r.crossings.tooClose, 40, 'crossings too close'],
+    // 40 till plan 4 moved tunnels side by side apart (tools/tiles/separate-tubes.mjs): a few of them now cross over another road
+    [r.crossings.tooClose, 45, 'crossings too close'],
     [r.grid.stepsOver10m, 2000, 'height grid steps over 10 m'], // real cliffs and quarries: the 5 m model has them where contours smoothed them over
-    [r.buildings.groundOverWall, 5, 'wall samples with the ground over the wall']
+    [r.buildings.groundOverWall, 5, 'wall samples with the ground over the wall'],
+    // What's left is on cliffs, where a kerb can't follow the ground in steps of a metre
+    [r.kerbLine.over50cm, 950, 'metres of kerb off the ground by over 50 cm'],
+    [r.kerbLine.over1m, 600, 'metres of kerb off the ground by over 1 m']
   ];
   let failed = false;
   for (const [value, limit, label] of limits) {

@@ -278,9 +278,41 @@ const REGION = 7200;
 const nearRegionLine = (v) => Math.abs(v - Math.round(v / REGION) * REGION) < 1.5;
 const onSeam = (a, b) => (nearRegionLine(a.x) && nearRegionLine(b.x)) || (nearRegionLine(a.z) && nearRegionLine(b.z));
 
+// The points a kerb is drawn through, round a ring, with straight lines between: tools/check-ground.mjs measures the same. Every
+// EDGE_STEP, and closer where the ground bends between two of them, as where a road drops into a cutting: a straight kerb across
+// that would leave the ground and stand in the air.
+const KERB_FIT = 0.15; // m the ground may stray from a straight kerb
+const KERB_MIN = 1; // m: no closer than this
+function kerbRing(ring) {
+  const pts = denseRing(ring, EDGE_STEP);
+  const out = [];
+  const between = (a, ya, b, yb, depth) => {
+    const L = Math.hypot(b.x - a.x, b.z - a.z);
+    if (L < KERB_MIN * 2 || depth > 4) return;
+    let worst = 0;
+    for (const f of [0.25, 0.5, 0.75]) {
+      const y = groundHeight(a.x + (b.x - a.x) * f, a.z + (b.z - a.z) * f);
+      worst = Math.max(worst, Math.abs(y - (ya + (yb - ya) * f)));
+    }
+    if (worst <= KERB_FIT) return;
+    const m = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 };
+    const ym = groundHeight(m.x, m.z);
+    between(a, ya, m, ym, depth + 1);
+    out.push(m);
+    between(m, ym, b, yb, depth + 1);
+  };
+  const ys = pts.map((p) => groundHeight(p.x, p.z));
+  for (let i = 0; i < pts.length; i++) {
+    out.push(pts[i]);
+    const j = (i + 1) % pts.length;
+    between(pts[i], ys[i], pts[j], ys[j], 0);
+  }
+  return out;
+}
+
 // A curb along a ring: a wall from under the road up to the kerb's top, and a ledge along the footpath's edge
 function addCurb(cells, ring, ledge = 0.3) {
-  const pts = denseRing(ring, EDGE_STEP);
+  const pts = kerbRing(ring);
   const n = pts.length;
   let area = 0;
   for (let i = 0, j = n - 1; i < n; j = i++) area += pts[j].x * pts[i].z - pts[i].x * pts[j].z;
@@ -510,6 +542,6 @@ function wheelContacts(x, z, heading, sid = 0, near = null, track = 0.8, axle = 
 }
 
 export {
-  GroundCells, SIDEWALK_TOP, STACK_CLEARANCE, addBase, addCurb, addRoadDeck, addSurface, allLinks, denseRing,
+  GroundCells, SIDEWALK_TOP, STACK_CLEARANCE, addBase, addCurb, addRoadDeck, addSurface, allLinks, denseRing, kerbRing,
   groundLinks, kerbFootAt, offsetLine, pointInPolygonXZ, roadSurfaceMeshes, wheelContacts, wheelGround
 };

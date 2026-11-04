@@ -131,10 +131,15 @@ test('structures are joined up: a deck that meets the ground has a way on and of
 });
 
 test('a tunnel opens only where it comes to the surface, never under a street\'s cutting', () => {
-  // The Cross City Tunnel, under the William St cutting: 6 m of cover there, and no hole in the street
-  const cross = LINKS.find((l) => l.name === 'Cross City Tunnel' && l.pts.some((p) => Math.hypot(p.x - 1385, p.z - 63) < 1));
-  assert.ok(cross, 'no Cross City Tunnel at Kings Cross');
-  assert.ok(inTunnel(cross.sid, 1385, 63), 'the Cross City Tunnel is open under William St');
+  // The Cross City Tunnel, under the William St cutting: 6 m of cover there, and no hole in the street. Found by its nearest point,
+  // since tunnels side by side are moved apart a little (tools/tiles/separate-tubes.mjs)
+  let cross = null, at = null;
+  for (const l of LINKS) {
+    if (l.name !== 'Cross City Tunnel') continue;
+    for (const p of l.pts) if (!at || Math.hypot(p.x - 1385, p.z - 63) < Math.hypot(at.x - 1385, at.z - 63)) { cross = l; at = p; }
+  }
+  assert.ok(cross && Math.hypot(at.x - 1385, at.z - 63) < 12, 'no Cross City Tunnel at Kings Cross');
+  assert.ok(inTunnel(cross.sid, at.x, at.z), 'the Cross City Tunnel is open under William St');
   // A link's open stretches run in from its ends; between them, all tube
   for (const l of LINKS) {
     if (l.kind !== KIND.TUNNEL) continue;

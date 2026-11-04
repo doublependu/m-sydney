@@ -143,7 +143,9 @@ for (const r of buildings) {
   for (let i = ix - 2; i <= ix + 2; i++) {
     for (let j = iz - 2; j <= iz + 2; j++) {
       for (const o of known.get(i * 100000 + j) || []) {
-        if (Math.hypot(o.cx - r.cx, o.cz - r.cz) < 130 && (o.kind === r.kind || (r.kind === KIND.other && o.kind !== KIND.shed))) near.push(o.height);
+        // Of about the same size and sort: a small outline among towers takes its height from small buildings, not from them
+        if (Math.hypot(o.cx - r.cx, o.cz - r.cz) < 130 && o.area < r.area * 3 && o.area > r.area / 3
+          && (o.kind === r.kind || (r.kind === KIND.other && o.kind !== KIND.shed))) near.push(o.height);
       }
     }
   }
@@ -155,6 +157,7 @@ for (const r of buildings) {
   const cap = storeys.at(r.cx, r.cz);
   if (cap && h > cap * 3.6 + 0.6) { h = cap * 3.6 + 0.6; stats.capped++; }
   r.height = h;
+  r.guess = true; // tools/tiles/derive.mjs may cut a guess down to fit under a deck
   if (r.area > 2500) missingLarge.push(`${Math.round(r.area)} m² ${Math.round(h)} m ${r.b.class || '-'} ${r.b.name || ''} @${Math.round(r.cx)},${Math.round(r.cz)}`);
 }
 
@@ -306,7 +309,7 @@ for (const r of buildings) {
   const shape = r.b.roof_shape;
   const pitched = !r.group && (shape ? /gabled|hipped|pyramidal|mansard|gambrel|half/.test(shape) : (r.kind === KIND.house && r.height < 13) || (r.kind === KIND.shed && r.area > 30) || (r.height < 10 && r.kind === KIND.civic));
   uint(meta, Math.max(1, Math.round(r.height)));
-  uint(meta, r.kind | (pitched ? 8 : 0) | (r.group ? 16 : 0) | (!r.part && frontsAwning(r) ? 32 : 0));
+  uint(meta, r.kind | (pitched ? 8 : 0) | (r.group ? 16 : 0) | (!r.part && frontsAwning(r) ? 32 : 0) | (r.guess ? 64 : 0));
   if (r.group) {
     uint(meta, r.group);
     uint(meta, Math.round(r.bottom || 0));
@@ -389,7 +392,8 @@ export const REAL_BUILDINGS = Array.from({ length: count }, () => {
     }
     polygons.push({ outer: rings[0], holes: rings.slice(1) });
   }
-  return { height, kind: style & 7, pitched: !!(style & 8), group, bottom, realAwning: !!(style & 32), polygons,
+  // guess: nothing measured or counted its height
+  return { height, kind: style & 7, pitched: !!(style & 8), group, bottom, realAwning: !!(style & 32), guess: !!(style & 64), polygons,
     minX, maxX, minZ, maxZ, cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2 };
 });
 if (!metadata.done() || !xs.done() || !zs.done()) throw invalidData();

@@ -678,6 +678,20 @@ function structuresAt(x, z, margin = 0) {
   return out;
 }
 
+/**
+ * Room between the ground and the underside of the lowest deck over (x, z), reaching `r` past the deck's edge: Infinity under
+ * open sky. What stands on the ground has to fit in it: trees, street lights, signs, buildings (tools/tiles/derive.mjs).
+ */
+function roomUnderDeck(x, z, r = 0) {
+  const ground = groundHeight(x, z);
+  let room = Infinity;
+  for (const s of structuresAt(x, z, -r)) {
+    if (STRUCTURES[s.sid]?.kind !== KIND.BRIDGE || s.y <= ground + 0.5) continue; // a road at the ground's own height isn't over it
+    room = Math.min(room, s.y - DECK_DEPTH - ground);
+  }
+  return room;
+}
+
 /** Whether (x, z) on surface `sid` is inside a tunnel, under its roof */
 function inTunnel(sid, x, z) {
   if (!sid || STRUCTURES[sid]?.kind !== KIND.TUNNEL) return false;
@@ -767,6 +781,14 @@ function chooseSurface(current, y, x, z, margin = 0) {
   // ...and on the ground, the road at this height, where another passes over it with nothing but its own surface
   const road = groundRoadAt(x, z, y);
   if (road) consider(0, roadHeight(road, x, z), roadDistance);
+  // A tunnel's walls hold: nothing moves sideways from one tunnel into another, even where the two run so close their roads touch.
+  // Two tunnels never share a node, or they'd be one structure, so there's no way from one to the other but through a wall.
+  if (current && STRUCTURES[current]?.kind === KIND.TUNNEL) {
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const c = candidates[i];
+      if (c.sid !== current && c.sid && STRUCTURES[c.sid]?.kind === KIND.TUNNEL) candidates.splice(i, 1);
+    }
+  }
   // Something only moves to another surface at about the same height, where a ramp joins a road. Passing close to a road a metre below
   // isn't a reason to drop onto it, while what it's on is still there.
   let pool = candidates.filter((c) => c.gap < SWITCH);
@@ -864,6 +886,6 @@ function roadRoute(waypoints, step = 8) {
 
 export {
   setFloor, clearFloor, DECK_DEPTH, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, deriveTunnels, linkById, SAME_LEVEL, SEGMENTS, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
-  clearOfWater, edgeHeight, floorBelow, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, roadHeight, roadRoute, sameLevel,
+  clearOfWater, edgeHeight, floorBelow, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, roadHeight, roadRoute, roomUnderDeck, sameLevel,
   structureAt, structuresAt, surfaceHeight, surfaceSlope, tunnelCovered
 };

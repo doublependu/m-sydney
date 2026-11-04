@@ -189,7 +189,9 @@ function createWalkSignalMaterial(clock) {
   return mat;
 }
 
-function* buildStreetDetails(scene, colliders = [], lightPools) {
+function* buildStreetDetails(scene, allColliders = [], lightPools) {
+  // Cars parked along the kerb come and go: nothing on the footpath makes way for them
+  const colliders = allColliders.filter((c) => !c.parked);
   const group = new THREE.Group();
   group.name = 'StreetDetails';
 

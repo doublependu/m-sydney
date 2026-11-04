@@ -387,3 +387,41 @@ test('createRoadPaintMaterial caches one material, gates dry/distant noise, and 
   env.camPos = [0, 40, 1660];
   assert.equal(m1.opacityNode.eval()[0], 0, 'fades cleanly to zero before chunk cull distance');
 });
+
+// Plan 4, Phase J: a small street has no centre line, but for a short one where it meets a main road
+test('small two-way streets get a centre line only up to a main road, and service roads none at all', () => {
+  const node = (id) => ({ id, shape: false, signal: false });
+  const street = (from, to, cls, half = 4.4, axis = 'st') => {
+    const forward = { from, to, x0: 0, z0: 0, sx: 0, sz: 0, dx: 1, dz: 0, rx: 0, rz: 1, len: 100, span: 100, half, axis, lanes: [1.8], cls, link: 1 };
+    const back = { from: to, to: from, x0: 100, z0: 0, sx: 100, sz: 0, dx: -1, dz: 0, rx: 0, rz: -1, len: 100, span: 100, half, axis, lanes: [1.8], cls, link: 1 };
+    return [forward, back];
+  };
+  // Metres of white along the centre line, by where along the street
+  const centre = (edges) => {
+    const group = buildRoadPaint(new Scene(), { edges, isRoadClear: () => true });
+    const runs = [];
+    for (const chunk of group.children) {
+      const pos = chunk.geometry.attributes.position.array;
+      for (let v = 0; v < pos.length / 3; v += 4) {
+        const zs = [0, 1, 2, 3].map((k) => pos[(v + k) * 3 + 2]), xs = [0, 1, 2, 3].map((k) => pos[(v + k) * 3]);
+        if (zs.every((z) => Math.abs(z) < 0.07) && Math.max(...xs) - Math.min(...xs) > 0.5 && Math.max(...xs) > 0 && Math.min(...xs) < 100) runs.push([Math.min(...xs), Math.max(...xs)]);
+      }
+    }
+    return runs;
+  };
+  const RESIDENTIAL = 7, SERVICE = 9;
+  // A main road through the junction at the street's start: ave edges there
+  const A = node(1), B = node(2), C = node(3);
+  const main = { from: C, to: A, x0: 0, z0: -60, sx: 0, sz: -60, dx: 0, dz: 1, rx: -1, rz: 0, len: 60, span: 60, half: 7, axis: 'ave', lanes: [1.8, 5.4], cls: 3 };
+  const small = centre([...street(A, B, RESIDENTIAL), main]);
+  assert.ok(small.length > 0, 'a short line at the main road');
+  for (const [x0, x1] of small) assert.ok(x0 >= 0 && x1 <= 15.5, `only the first 15 m: ${x0}..${x1}`);
+  // The same street between two quiet corners: nothing down its middle
+  assert.equal(centre(street(node(4), node(5), RESIDENTIAL)).length, 0);
+  // Wider than 11 m, or of a class the map didn't give: as before
+  assert.ok(centre(street(node(6), node(7), RESIDENTIAL, 6)).some(([x0, x1]) => x1 - x0 > 50 || x0 > 30), 'a wide street keeps its line');
+  assert.ok(centre(street(node(8), node(9), 0)).some(([x0]) => x0 > 30), 'an unknown class keeps its line');
+  // A service road: no lines at all
+  const group = buildRoadPaint(new Scene(), { edges: street(node(10), node(11), SERVICE), isRoadClear: () => true });
+  assert.equal(group.children.length, 0);
+});

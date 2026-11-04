@@ -9,6 +9,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 import { dataPath, jsonLines, Raster, DETAIL_BOUNDS as B, inDetail, load, rdpRing, ringArea, toWorld } from './geo-common.mjs';
+import { USE, ZONE, loadPlaces } from './population/places.mjs';
+import { HOUSE_STYLES, STOREY, STYLE, pick } from '../js/house-styles.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const OUT = process.argv[2] || path.join(ROOT, 'tools/data/generated/building-geodata.js');
@@ -106,6 +108,99 @@ for (const b of rows) {
   buildings.push({ b, ...shape, kind: kindOf(b) });
 }
 
+// --- Homes, flats and shops ---------------------------------------------------------------------------------------------
+// Most outlines in the suburbs come with no use: Microsoft's machine-learned ones. The Census says what each Mesh Block is for and how
+// many homes it has, and the councils' zoning what may be built there (tools/build-population.mjs). A building of no use in a block of
+// homes is a house, or flats if it's big and the block has more homes than buildings; in a block of shops and offices, a shop. Each
+// home then gets a style of house by where it is (js/house-styles.js), the same along most of a street.
+const PLACES_FILE = path.join(ROOT, 'tools/data/generated/places.bin.gz');
+const places = fs.existsSync(PLACES_FILE) ? loadPlaces(PLACES_FILE) : null;
+if (!places) console.warn('[buildings] no places.bin.gz (node tools/build-population.mjs): buildings of no use stay so');
+const hash = (...values) => {
+  let h = 2166136261;
+  for (const v of values) { h ^= Math.round(v * 16) & 0xffffffff; h = Math.imul(h, 16777619); h ^= h >>> 13; }
+  return (h >>> 0) / 4294967296;
+};
+// The mix of styles in each group of suburbs, by the ABS's SA4 (the first three digits of a Mesh Block's SA1): the period most of
+// its houses were built in (ai/plan_4.md, "Sydney's houses")
+const S = STYLE;
+const HOUSE_MIX = {
+  117: [[S['Victorian terrace'], 7], [S.Federation, 1], [S['Project home'], 2]], // City and Inner South
+  118: [[S['Victorian terrace'], 3], [S.Federation, 3], [S['California bungalow'], 2], [S['Project home'], 2]], // Eastern Suburbs
+  120: [[S['Victorian terrace'], 3], [S.Federation, 3.5], [S['California bungalow'], 2.5], [S['Project home'], 1]], // Inner West
+  121: [[S.Federation, 3.5], [S['California bungalow'], 2], [S['Triple-fronted brick veneer'], 2.5], [S['Project home'], 2]], // North Sydney and Hornsby
+  122: [[S['Post-war fibro'], 2], [S['Triple-fronted brick veneer'], 2.5], [S['Project home'], 2.5], [S['Beach house'], 2], [S['California bungalow'], 1]], // Northern Beaches
+  119: [[S['California bungalow'], 3.5], [S['Post-war fibro'], 2.5], [S['Triple-fronted brick veneer'], 2], [S['Project home'], 2]], // Inner South West
+  128: [[S['Post-war fibro'], 3], [S['Triple-fronted brick veneer'], 3.5], [S['Project home'], 2.5], [S['Beach house'], 1]], // Sutherland
+  125: [[S['Post-war fibro'], 2.5], [S['California bungalow'], 1.5], [S['Triple-fronted brick veneer'], 3], [S['Project home'], 3]], // Parramatta
+  126: [[S['Triple-fronted brick veneer'], 4], [S['Post-war fibro'], 2], [S['California bungalow'], 1.5], [S['Project home'], 2.5]] // Ryde
+};
+const OTHER_MIX = [[S['Triple-fronted brick veneer'], 3.5], [S['Project home'], 3.5], [S['Post-war fibro'], 1.5], [S['California bungalow'], 1.5]];
+const OLD_FLATS = new Set(['117', '118', '120', '121', '122']); // where the walk-ups are as often inter-war as 1960s
+const TERRACE_SUBURBS = new Set(['117', '118', '120', '121']);
+const SAME_STREET = 0.65; // of a block's houses, how many share its style
+// The CBD keeps the look it had: its buildings of no use stay as they were (ai/plan_4.md, Phase I)
+const CBD = new Set(['Sydney (North) - Millers Point', 'Sydney (South) - Haymarket']);
+// How wide and long a footprint is, along its longest wall
+function shapeOf(r) {
+  const ring = r.polygons[0][0].map(([x, z]) => [x * PRECISION, z * PRECISION]);
+  let best = 0, ux = 1, uz = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const [ax, az] = ring[i], [bx, bz] = ring[(i + 1) % ring.length];
+    const L = Math.hypot(bx - ax, bz - az);
+    if (L > best) { best = L; ux = (bx - ax) / L; uz = (bz - az) / L; }
+  }
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+  for (const [x, z] of ring) {
+    const u = x * ux + z * uz, v = -x * uz + z * ux;
+    u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v);
+  }
+  return { long: Math.max(u1 - u0, v1 - v0), wide: Math.min(u1 - u0, v1 - v0) };
+}
+const placeStats = { houses: 0, flats: 0, shops: 0, civic: 0, sheds: 0, styled: {} };
+if (places) {
+  const homeSized = new Map(); // Mesh Block -> buildings of a home's size in it
+  for (const r of buildings) {
+    r.block = places.blockIdAt(r.cx, r.cz);
+    r.zone = places.zoneAt(r.cx, r.cz);
+    if (r.block >= 0 && r.area >= 40 && r.kind !== KIND.shed) homeSized.set(r.block, (homeSized.get(r.block) || 0) + 1);
+  }
+  for (const r of buildings) {
+    const block = r.block >= 0 ? places.blocks[r.block] : null;
+    const use = block?.use || 0;
+    if (CBD.has(block?.sa2)) continue;
+    if (r.kind === KIND.other) {
+      const homesHere = use === USE.Residential || (!use && [ZONE.houses, ZONE.medium, ZONE.flats].includes(r.zone));
+      if (homesHere) {
+        const perBuilding = block ? block.dwellings / Math.max(1, homeSized.get(r.block) || 0) : 1;
+        if (r.area < 30) { r.kind = KIND.shed; placeStats.sheds++; }
+        else if (r.area >= 700 || (r.area >= 300 && (perBuilding > 1.8 || r.zone === ZONE.flats || r.zone === ZONE.medium))) { r.kind = KIND.flats; placeStats.flats++; }
+        else { r.kind = KIND.house; placeStats.houses++; }
+      } else if (use === USE.Commercial || r.zone === ZONE.centre || r.zone === ZONE.office) {
+        if (r.area < 1500) { r.kind = KIND.work; placeStats.shops++; }
+      } else if (use === USE.Education || use === USE['Hospital/Medical']) { r.kind = KIND.civic; placeStats.civic++; }
+      else if ((use === USE.Parkland || use === USE.Transport || use === USE.Water) && r.area < 60) { r.kind = KIND.shed; placeStats.sheds++; }
+    }
+    // A style for homes and small shops of the size of a house or a walk-up, with no height that says they're something else
+    if (r.b.height > 16 || r.b.num_floors > 4 || !block) continue;
+    const sa4 = (block.sa1 || '').slice(0, 3);
+    const t = hash(r.cx, r.cz, 7);
+    if (r.kind === KIND.house) {
+      const { long, wide } = shapeOf(r);
+      if (wide < 7 && long > wide * 1.6) r.style = TERRACE_SUBURBS.has(sa4) ? S['Victorian terrace'] : S['Project home'];
+      else {
+        const mix = HOUSE_MIX[sa4] || OTHER_MIX;
+        r.style = t < SAME_STREET ? pick(mix, hash(r.block, 11)) : pick(mix, hash(r.cx, r.cz, 13));
+      }
+    } else if (r.kind === KIND.flats && r.area < 1500) {
+      r.style = hash(r.block, 17) < (OLD_FLATS.has(sa4) ? 0.5 : 0.2) ? S['Inter-war flats'] : S['Walk-up flats'];
+    } else if (r.kind === KIND.work && r.area < 800 && (use === USE.Commercial || r.zone === ZONE.centre)) {
+      r.style = S['Shop-top terrace'];
+    }
+    if (r.style) placeStats.styled[HOUSE_STYLES[r.style].name] = (placeStats.styled[HOUSE_STYLES[r.style].name] || 0) + 1;
+  }
+}
+
 // Known heights, then neighbours for the rest
 const CELL = 64;
 const known = new Map();
@@ -150,15 +245,31 @@ for (const r of buildings) {
     }
   }
   let h;
-  if (r.kind === KIND.shed || r.area < 28) h = 3.4;
+  const style = HOUSE_STYLES[r.style || 0];
+  if (style) {
+    // To its eaves, at its style's number of storeys: a pitched roof stands on top
+    const storeys = style.storeys.length > 1 && r.style === STYLE['Project home'] && r.area < 160 ? 1 : pick(style.storeys, hash(r.cx, r.cz, 23));
+    h = storeys * STOREY + (style.roofs ? 0.2 : 1.1);
+    stats.styled = (stats.styled || 0) + 1;
+  } else if (r.kind === KIND.shed || r.area < 28) h = 3.4;
   else if (near.length >= 3) { h = median(near); stats.neighbours++; }
   else { h = r.kind === KIND.house ? 7.4 : r.area < 180 ? 7.4 : r.area < 1500 ? 12 : 15; stats.typical++; }
-  if (r.kind === KIND.house) h = Math.min(h, 11);
+  if (r.kind === KIND.house) h = Math.min(h, style ? 9.5 : 11);
   const cap = storeys.at(r.cx, r.cz);
   if (cap && h > cap * 3.6 + 0.6) { h = cap * 3.6 + 0.6; stats.capped++; }
   r.height = h;
   r.guess = true; // tools/tiles/derive.mjs may cut a guess down to fit under a deck
   if (r.area > 2500) missingLarge.push(`${Math.round(r.area)} m² ${Math.round(h)} m ${r.b.class || '-'} ${r.b.name || ''} @${Math.round(r.cx)},${Math.round(r.cz)}`);
+}
+
+// A house with a pitched roof of its style stands its roof on its storeys: a measured height is to the top of the roof, so it
+// says how many storeys there are under it, and a guess already is
+for (const r of buildings) {
+  const style = HOUSE_STYLES[r.style || 0];
+  if (!style?.roofs || r.guess) continue;
+  const storeys = Math.max(1, Math.min(3, Math.round((r.height - 2) / STOREY)));
+  r.height = storeys * STOREY + 0.2;
+  stats.storeys = (stats.storeys || 0) + 1;
 }
 
 // Each part taller than its building stands on top of it, starting where the building's own walls stop, so no two walls
@@ -307,9 +418,11 @@ let px = 0, pz = 0, vertices = 0;
 uint(meta, buildings.length);
 for (const r of buildings) {
   const shape = r.b.roof_shape;
-  const pitched = !r.group && (shape ? /gabled|hipped|pyramidal|mansard|gambrel|half/.test(shape) : (r.kind === KIND.house && r.height < 13) || (r.kind === KIND.shed && r.area > 30) || (r.height < 10 && r.kind === KIND.civic));
+  const style = HOUSE_STYLES[r.style || 0];
+  const pitched = !r.group && (shape ? /gabled|hipped|pyramidal|mansard|gambrel|half/.test(shape)
+    : style ? !!style.roofs : (r.kind === KIND.house && r.height < 13) || (r.kind === KIND.shed && r.area > 30) || (r.height < 10 && r.kind === KIND.civic));
   uint(meta, Math.max(1, Math.round(r.height)));
-  uint(meta, r.kind | (pitched ? 8 : 0) | (r.group ? 16 : 0) | (!r.part && frontsAwning(r) ? 32 : 0) | (r.guess ? 64 : 0));
+  uint(meta, r.kind | (pitched ? 8 : 0) | (r.group ? 16 : 0) | (!r.part && frontsAwning(r) ? 32 : 0) | (r.guess ? 64 : 0) | ((r.part ? 0 : r.style || 0) << 7));
   if (r.group) {
     uint(meta, r.group);
     uint(meta, Math.round(r.bottom || 0));
@@ -392,13 +505,14 @@ export const REAL_BUILDINGS = Array.from({ length: count }, () => {
     }
     polygons.push({ outer: rings[0], holes: rings.slice(1) });
   }
-  // guess: nothing measured or counted its height
-  return { height, kind: style & 7, pitched: !!(style & 8), group, bottom, realAwning: !!(style & 32), guess: !!(style & 64), polygons,
+  // guess: nothing measured or counted its height. houseStyle: js/house-styles.js, 0 for none
+  return { height, kind: style & 7, pitched: !!(style & 8), group, bottom, realAwning: !!(style & 32), guess: !!(style & 64), houseStyle: (style >> 7) & 15, polygons,
     minX, maxX, minZ, maxZ, cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2 };
 });
 if (!metadata.done() || !xs.done() || !zs.done()) throw invalidData();
 `);
 console.log('[buildings]', buildings.length, 'buildings,', vertices, 'vertices,', (packed.length / 1024).toFixed(0), 'KB gzip');
 console.log('[buildings]', JSON.stringify(stats));
+console.log('[buildings] from the Census and zoning:', JSON.stringify(placeStats));
 console.log('[buildings] tallest', buildings.slice().sort((p, q) => q.height - p.height).slice(0, 30).map((r) => `${r.b.name || '?'} ${Math.round(r.height)}`).join(', '));
 console.log('[buildings] large guesses:\n  ' + missingLarge.sort((p, q) => parseInt(q, 10) - parseInt(p, 10)).slice(0, 30).join('\n  '));

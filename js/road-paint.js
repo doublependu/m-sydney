@@ -1,11 +1,13 @@
 import * as THREE from 'three/webgpu';
 import { CROSSWALK } from './road-network.js';
 import { createRoadPaintMaterial } from './tsl-materials.js';
-import { edgeHeight } from './surfaces.js';
+import { ROAD_CLASS, edgeHeight, linkById } from './surfaces.js';
 
 // Road markings generated from the drivable road network (js/road-network.js), so the paint matches where traffic
 // actually drives and stops: dashed lane lines, white centre lines (double on main roads), stop lines at signals and
 // dashed give-way lines elsewhere, pedestrian crossings at signals and green cycle lanes along wide one-way roads.
+// A small street has no centre line: a two-way residential or unclassified street under 11 m, unless the map gives it lanes. Where one
+// meets a main road it gets a short one up to its give-way line, and service roads get no lines at all.
 
 const WHITE = new THREE.Color(0xe6e2d6);
 const GREEN = new THREE.Color(0x2a8a4e);
@@ -14,6 +16,16 @@ const PAINT_CELL_SIZE = 1200;
 const PAINT_CULL_DISTANCE = 1650;
 const PAINT_MAX_SEGMENT = 18; // short enough to follow the ground
 const WIDEN_SPHERE_PAD = 16; // createRoadPaintMaterial widens thin distant strips up to 16x in screen space
+const SMALL_STREET = 11; // m wide: narrower, a two-way local street has no centre line (one council's standard; see ai/plan_4.md)
+const STUB = 15; // m of centre line where a small street meets a main road
+const SMALL_CLASSES = new Set([ROAD_CLASS.residential, ROAD_CLASS.unclassified, ROAD_CLASS.living_street]);
+
+/** What's painted on a road: 'none' (a service road or lane), 'small' (no centre line but at a main road), or 'all' */
+function markingsOf(e) {
+  if (e.cls === ROAD_CLASS.service || e.cls === ROAD_CLASS.pedestrian) return 'none';
+  if (!SMALL_CLASSES.has(e.cls) || e.half * 2 >= SMALL_STREET || e.axis === 'ave') return 'all';
+  return linkById.get(e.link)?.lanes > 0 ? 'all' : 'small';
+}
 
 // Spatial chunk builder for the street markings, so
 // off-screen and distant (> 1.65 km) road paint is culled instead of transforming all 12.5 km of vertices every frame.
@@ -113,6 +125,7 @@ function createRoadPaintChunkBuilder(name, { cellSize = PAINT_CELL_SIZE, cullDis
 function* buildRoadPaintSteps(scene, network, sharedBuilder = null, tags = null) {
   const builder = sharedBuilder || createRoadPaintChunkBuilder('RoadMarkings');
   const lines = [];
+  const stubs = [];
   const bends = new Map();
 
   // Flat strip w wide from a to b, with a dash pattern (period, duty cycle) running along it
@@ -151,8 +164,18 @@ function* buildRoadPaintSteps(scene, network, sharedBuilder = null, tags = null)
     else roads.set(key, [e]);
   }
 
+  // Junctions a main road goes through, for the short centre lines of the small streets that meet it
+  const mainRoadAt = new Set();
+  for (const e of network.paintEdges || network.edges) {
+    if (e.axis !== 'ave') continue;
+    mainRoadAt.add(e.from);
+    mainRoadAt.add(e.to);
+  }
+
   for (const [e, back] of roads.values()) {
     const firstLine = lines.length;
+    const markings = markingsOf(e);
+    if (markings === 'none') continue;
     // Lanes of both directions, measured to the right of e, left to right
     const lanes = e.lanes.map((o) => ({ o, dir: 1 }));
     if (back) for (const o of back.lanes) lanes.push({ o: -o, dir: -1 });
@@ -167,6 +190,12 @@ function* buildRoadPaintSteps(scene, network, sharedBuilder = null, tags = null)
       if (q.o - p.o > 4.5 && (p.dir === q.dir || !clearCentre(e, mid))) continue;
       if (p.dir === q.dir) {
         along(e, mid, 0.13, WHITE, 12, 0.25);
+      } else if (markings === 'small') {
+        // Only up to a main road: from the give-way line back along the street
+        for (const [node, from, to] of [[e.from, 0.9, Math.min(STUB, e.len / 2)], [e.to, Math.max(e.len - STUB, e.len / 2), e.len - 0.9]]) {
+          if (node.shape || !mainRoadAt.has(node) || to - from < 3) continue;
+          stubs.push([e, mid, from, to]);
+        }
       } else {
         if (e.axis === 'ave') {
           along(e, mid - 0.14, 0.11, WHITE);
@@ -199,6 +228,9 @@ function* buildRoadPaintSteps(scene, network, sharedBuilder = null, tags = null)
       bends.get(node.id).push({ e, end, lines: lines.slice(firstLine) });
     }
   }
+
+  // The short centre lines, which join nothing
+  for (const [e, o, from, to] of stubs) onEdge(e, () => strip(...at(e, from, o), ...at(e, to, o), 0.11, WHITE));
 
   // At a simple bend, corresponding offset lines meet at a bounded miter, without an intersection-sized gap.
   for (const roadsAtBend of bends.values()) {
@@ -284,4 +316,4 @@ function buildRoadPaint(scene, network, sharedBuilder = null, tags = null) {
   return step.value;
 }
 
-export { buildRoadPaint, buildRoadPaintSteps, createRoadPaintChunkBuilder };
+export { buildRoadPaint, buildRoadPaintSteps, createRoadPaintChunkBuilder, markingsOf };

@@ -395,7 +395,8 @@ const WALL_KINDS = { shop: 0, front: 1, rear: 2, lotLine: 3, below: 4 }; // belo
  * supply wall dimensions to fit whole window bays between the corners. `cornerPier` reserves solid masonry
  * at each end above the ground-floor shops. Partial storeys and the coping remain solid at each wall's top.
  */
-function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprintLocal = false) {
+// groundWindows: 1 where the ground floor has windows like the rest, as a house's does, rather than a shopfront or a plain base
+function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprintLocal = false, groundWindows = float(0.0)) {
   // Local walls use geometry normals; world-space walls use the stable facade frame.
   const nWall = boxLocal ? normalGeometry : facadeWorldNormal;
   const nW = abs(nWall);
@@ -465,7 +466,7 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
   const belowFloor = step(WALL_KINDS.below - 0.5, kind);
   const blank = step(WALL_KINDS.lotLine - 0.5, kind).mul(float(1.0).sub(belowFloor)).mul(wall);
   const back = step(WALL_KINDS.rear - 0.5, kind).mul(float(1.0).sub(belowFloor)).mul(wall);
-  const baseWall = floor0.sub(isGroundFloor).mul(float(1.0).sub(back)).mul(wall);
+  const baseWall = floor0.sub(isGroundFloor).mul(float(1.0).sub(back)).mul(wall).mul(float(1.0).sub(groundWindows));
   const clearOfGround = kind.sub(WALL_KINDS.below);
   const rowBase = floor(gridV).mul(floorHeight);
   const lowerWindows = belowFloor.mul(step(rowBase, -0.01)).mul(step(float(0.4).sub(clearOfGround), rowBase));
@@ -481,7 +482,8 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
     // Surveyed walls start at the sidewalk; only stacked boxes need a bottom cutoff.
     const whole = footprintLocal ? belowTop : step(top.sub(wallH).sub(0.05), floorBase).mul(belowTop);
     partial = float(1.0).sub(whole).mul(wall);
-    coping = float(1.0).sub(step(0.32, fromTop)).mul(wall);
+    // (not up a gable end, which is above the wall's top: js/building-footprints.js)
+    coping = float(1.0).sub(step(0.32, fromTop)).mul(step(-0.05, fromTop)).mul(wall);
   }
   const solid = max(max(max(inPier.mul(float(1.0).sub(isGroundFloor)), blank), max(partial, baseWall)), plinth);
   return {
@@ -871,6 +873,7 @@ function createCurtainWallMaterial(opts = {}) {
 function createPreWarBuildingMaterial(opts = {}) {
   const {
     stoneColor = 0xd8ceb8,
+    stoneColor2 = stoneColor, // the other end of the walls' colours, which a building's tone picks between: a street of houses isn't one colour
     trimColor = 0x9e937f,
     windowGlassColor = 0x162432,
     windowWidth = 2.7,
@@ -885,10 +888,11 @@ function createPreWarBuildingMaterial(opts = {}) {
     seed = 42.0,
     boxLocal = false,
     footprintLocal = false,
-    cornerPier = 1.2 // solid masonry at both ends of every wall above the shopfronts (box-local mode)
+    cornerPier = 1.2, // solid masonry at both ends of every wall above the shopfronts (box-local mode)
+    groundWindows = 0 // 1: windows on the ground floor too, a house's
   } = opts;
 
-  const cacheKey = `${coursing}_${stoneColor}_${trimColor}_${windowWidth}_${floorHeight}_${litProbability}_${warmth}_${crownGlowHeight}_${seed}_${boxLocal}_${footprintLocal}_${cornerPier}`;
+  const cacheKey = `${coursing}_${stoneColor}_${stoneColor2}_${groundWindows}_${trimColor}_${windowWidth}_${floorHeight}_${litProbability}_${warmth}_${crownGlowHeight}_${seed}_${boxLocal}_${footprintLocal}_${cornerPier}`;
   if (_preWarCache.has(cacheKey)) {
     return _preWarCache.get(cacheKey);
   }
@@ -900,6 +904,8 @@ function createPreWarBuildingMaterial(opts = {}) {
 
   // The style's parameters are uniforms (not baked-in constants), so every masonry style compiles to one shader
   const cStone = uniform(new THREE.Color(stoneColor));
+  const cStone2 = uniform(new THREE.Color(stoneColor2));
+  const uGroundWindows = uniform(groundWindows);
   const cTrim = uniform(new THREE.Color(trimColor));
   const uCoursing = uniform(coursing);
   const cGlass = uniform(new THREE.Color(windowGlassColor));
@@ -918,7 +924,7 @@ function createPreWarBuildingMaterial(opts = {}) {
 
   // The facade cell, the window opening and the apartment behind it are built once and shared by every output below,
   // so the shader carries a single copy of them (and evaluates the interior mapping once per pixel)
-  const facade = facadeCell(uWindowWidth, uFloorHeight, boxLocal || footprintLocal, cornerPier, footprintLocal);
+  const facade = facadeCell(uWindowWidth, uFloorHeight, boxLocal || footprintLocal, cornerPier, footprintLocal, uGroundWindows);
   const { isRoof, uCoord, vCoord, gridV, cellId, cellUV, fw, bayWidth, isGroundFloor, solid, back, blank, tone, coping } = facade;
   mat.aoNode = canyonSkyAONode(vCoord);
   const { wallS, wallW, wallH, exposedHeight, fromTop, boxSeed } = facade;
@@ -1052,7 +1058,7 @@ function createPreWarBuildingMaterial(opts = {}) {
       signPaint.assign(vec4(mix(ground, ink, max(letters, border)), cover));
     });
 
-    const wallTint = mix(mix(cStone, backTint, back), signPaint.xyz, signPaint.w);
+    const wallTint = mix(mix(mix(cStone, cStone2, tone), backTint, back), signPaint.xyz, signPaint.w);
     // Trim stone on the band courses, the storefront fascia and the coping capping every wall
     const trimMix = max(isCornice.mul(0.62).add(isGroundFloor.mul(0.28)), coping.mul(0.8));
     const masonryTint = mix(wallTint, cTrim, trimMix)

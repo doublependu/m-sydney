@@ -1577,7 +1577,9 @@ export const SCENARIOS = {
     memory: true,
     async run({ human, page, options, metric, expect, watchdog }) {
       const minutes = options.soakMinutes;
-      const places = ['macquarie', 'circularQuay', 'townHall', 'hydePark', 'darlingHarbour', 'centralStation', 'kingsCross', 'northSydney', 'harbourBridge'];
+      // The CBD, and streets of houses, where cars are parked along the kerbs
+      const places = ['macquarie', 'circularQuay', 'townHall', 'hydePark', 'darlingHarbour', 'centralStation', 'kingsCross', 'northSydney', 'harbourBridge',
+        'bondiJunction', 'deeWhy', 'bankstown', 'cronulla', 'parramatta', 'chatswood'];
       const pick = (list) => list[Math.floor(human.random() * list.length)];
       const end = human.now() + minutes * 60000;
       let actions = 0;

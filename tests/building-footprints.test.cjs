@@ -219,3 +219,41 @@ test('a storey of windows only fits where the wall stands that far clear of the 
   const clear = kinds.map((k) => k - 4);
   assert.ok(Math.max(...clear) > 7 && Math.min(...clear) < 1, `clearances ${Math.min(...clear)} to ${Math.max(...clear)}`);
 });
+
+// Plan 4, Phase I: a house's roof, hipped or gabled at its style's pitch, with eaves
+test('a pitched roof covers the house and its eaves at its pitch, and a gable end is walled up to it', () => {
+  Geometry.prototype.computeVertexNormals ??= function () {};
+  const colours = Array.from({ length: 13 }, (_, i) => ({ r: i / 12, g: 0.5, b: 0.25 }));
+  const roofs = { material: 'roof', colours };
+  const area = (pos) => {
+    let sum = 0;
+    for (let i = 0; i < pos.length; i += 9) sum += Math.abs((pos[i + 3] - pos[i]) * (pos[i + 8] - pos[i + 2]) - (pos[i + 5] - pos[i + 2]) * (pos[i + 6] - pos[i])) / 2;
+    return sum;
+  };
+  const tan30 = Math.tan(Math.PI / 6);
+  for (const gabled of [true, false]) {
+    triangulations = [];
+    const house = record([p(0, 0), p(12, 0), p(12, 8), p(0, 8)], { height: 3.2, pitched: true, pitch: 30, gabled, eaves: 0.5, roof: 4, storefronts: false });
+    const group = createBuildingFootprints({}, [house], undefined, roofs);
+    const roof = group.children.find((m) => m.material === 'roof');
+    const pos = roof.geometry.attributes.position.array;
+    // The footprint grown by the eaves, 13 by 9, all of it under the roof
+    close(area(pos), 13 * 9);
+    const ys = []; for (let i = 1; i < pos.length; i += 3) ys.push(pos[i]);
+    close(Math.max(...ys), 0.22 + 3.2 + 4 * tan30);
+    close(Math.min(...ys), 0.22 + 3.2 - 0.5 * tan30);
+    const col = roof.geometry.attributes.color.array;
+    close(col[0], colours[4].r);
+    // No flat roof under it
+    const walls = group.children.find((m) => m.material !== 'roof').geometry;
+    const normals = walls.attributes.normal.array;
+    for (let i = 1; i < normals.length; i += 3) assert.equal(normals[i], 0, 'walls only: the roof is pitched');
+    // A gable's walls go up to the ridge at the short ends; a hip's walls stop at the eaves
+    const wall = walls.attributes.facadeWall.array;
+    const raised = [];
+    // Above the wall's top: metres from it below zero
+    for (let v = 0; v < wall.length / 3; v++) if (wall[v * 3 + 1] < -0.01) raised.push(walls.attributes.position.array[v * 3 + 1]);
+    if (gabled) close(Math.max(...raised), 0.22 + 3.2 + 4 * tan30);
+    else assert.equal(raised.length, 0);
+  }
+});

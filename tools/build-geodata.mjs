@@ -129,6 +129,10 @@ function wallClearance(pts) {
 const DRIVEN = /^(motorway|motorway_link|trunk|primary|secondary|tertiary|unclassified|residential|living_street|trunk_link|primary_link|secondary_link|tertiary_link)$/;
 const MAJOR = /^(motorway|trunk|primary|secondary)/;
 const MOTORWAY = /^motorway/;
+// Each link's OSM class, in its flags from the second bit (js/surfaces.js ROAD_CLASSES has the same list): road markings and
+// how busy a street is follow it
+const ROAD_CLASSES = ['', 'motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service', 'link', 'pedestrian'];
+const classOf = (highway) => Math.max(0, /_link$/.test(highway) ? ROAD_CLASSES.indexOf('link') : ROAD_CLASSES.indexOf(highway));
 const WIDTH = { motorway: 11, motorway_link: 7, trunk: 17, primary: 15, secondary: 13.5, tertiary: 11.5, unclassified: 9, residential: 8.8, living_street: 6.5, service: 5.5, trunk_link: 7, primary_link: 7, secondary_link: 7, tertiary_link: 7 };
 const oneWay = (t) => t.oneway === 'yes' || t.oneway === '-1' || t.junction === 'roundabout' || t.junction === 'circular';
 function classWidth(t) {
@@ -300,6 +304,29 @@ const densify = (pts, step = 15) => {
   }
   return out;
 };
+// A road that comes back near itself, a hairpin down a gorge, is no wider than the gap between its legs: else its outer lanes run on
+// the leg below, metres lower, and a car stops dead there (Berowra Waters Road). Two of its points count as two legs when they're
+// further apart along the road than three times the gap between them and 10 m more, which a curve's own points never are.
+const segDistance = ([px, pz], [ax, az], [bx, bz]) => {
+  const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz || 1;
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / L2));
+  return Math.hypot(ax + dx * t - px, az + dz * t - pz);
+};
+function legGap(pts, from, to) {
+  const along = [0];
+  for (let k = 1; k < pts.length; k++) along.push(along[k - 1] + Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]));
+  let least = Infinity;
+  for (let a = from; a <= to; a++) {
+    for (let k = 1; k < pts.length; k++) {
+      const d = segDistance(pts[a], pts[k - 1], pts[k]);
+      if (d >= least) continue;
+      const apart = Math.min(Math.abs(along[k] - along[a]), Math.abs(along[k - 1] - along[a]));
+      if (apart > 3 * d + 10) least = d;
+    }
+  }
+  return least;
+}
+let hairpins = 0;
 const kinds = [0, 0, 0];
 for (const w of kept) {
   const t = w.tags;
@@ -308,7 +335,7 @@ for (const w of kept) {
   const lanes = parseInt(t.lanes, 10) || 0;
   const kind = kindOf(w, pts);
   const layer = Math.max(-5, Math.min(5, parseInt(t.layer, 10) || 0));
-  const flags = MOTORWAY.test(t.highway) ? 1 : 0;
+  const flags = (MOTORWAY.test(t.highway) ? 1 : 0) | (classOf(t.highway) << 1);
   let a = 0;
   for (let i = 1; i < pts.length; i++) {
     if (i !== pts.length - 1 && !(uses.get(w.nodes[i]) > 1)) continue;
@@ -322,7 +349,10 @@ for (const w of kept) {
     const want = classWidth(t);
     const least = dir ? 4.8 : 6.4;
     const walled = kind === KIND.GROUND ? (wallClearance(seg) - 2.2) * 2 : want;
-    const width = Math.max(least, Math.min(want, walled));
+    // Its legs' roads and the wall between them (js/surfaces.js: 0.6 m past the road each side)
+    const legs = legGap(pts, start, i) - 1.2;
+    if (legs < want) hairpins++;
+    const width = Math.max(least, Math.min(want, walled, legs));
     if (width < want) narrowed++;
     const ia = idOf(w.nodes[start], pts[start]);
     const ib = idOf(w.nodes[i], pts[i]);
@@ -334,7 +364,7 @@ for (const w of kept) {
     links.push([ia, ib, nameOf(t.name || ''), q1(width), lanes, dir, shape.slice(1, -1).flatMap(([x, z]) => [q1(x), q1(z)]), MAJOR.test(t.highway) ? 1 : 0, 0, kind, layer, flags]);
   }
 }
-log(`levels: ${kinds[0]} links on the ground, ${kinds[1]} on bridges, ${kinds[2]} in tunnels`);
+log(`levels: ${kinds[0]} links on the ground, ${kinds[1]} on bridges, ${kinds[2]} in tunnels; ${hairpins} narrowed to the gap between a hairpin's legs`);
 
 // The corridor: links between every node of the bridge's ways that another road meets, so ramps join it where they do
 const nearestNode = (x, z) => {

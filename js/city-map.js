@@ -1,6 +1,12 @@
 import { GEO, heldTiles, loadMapData } from './geodata.js';
 import { ROADS, BLOCKS, LANDMARKS, CITY_BOUNDS, SUBURBS, blockFromRecord, getLocationLabel, getMapVersion, isTypingInField, sceneryRoad, shortName } from './city-config.js';
 import { mapImageFile } from './tiles/paths.js';
+import { eachPlaceCell, placeVersion } from './places.js';
+
+// ?places=1: who lives and works where and how the land is zoned (js/places.js), over the full map, for checking it by eye.
+// The colour is the zone, the strength how many live and work in the hectare.
+const SHOW_PLACES = typeof location !== 'undefined' && new URLSearchParams(location.search).get('places') === '1';
+const ZONE_COLOURS = { houses: '#e8c35a', medium: '#e8913a', flats: '#d0533a', centre: '#b04fc0', office: '#4f6fd0', industry: '#8a8a8a', park: '#4caf50', special: '#3fb5b5', water: '#3a7fd0', rural: '#a8865a' };
 
 // Minimap and full-screen map drawn from the same geography and building footprints as the 3D city.
 // World frame: 1 unit = 1 m, x = grid east, z = grid south. Both maps face grid north, about 8 degrees east of true north.
@@ -1159,7 +1165,7 @@ class CityMapSystem {
     // Ground layers, names & landmark pins: re-rendered only when the view, the search or the buildings change
     const fp = footprintLayers(this.allBlocks);
     addSuburbLabels();
-    const key = `${mapImages?.version ?? 0}|${layersOf}|${v.cx}|${v.cz}|${v.s}|${this.fullCanvas.width}|${this.fullCanvas.height}|${this.searchHighlight}|${fp ? fp.version : 0}`;
+    const key = `${mapImages?.version ?? 0}|${layersOf}|${v.cx}|${v.cz}|${v.s}|${this.fullCanvas.width}|${this.fullCanvas.height}|${this.searchHighlight}|${fp ? fp.version : 0}|${SHOW_PLACES ? placeVersion() : 0}`;
     if (!this.fullStatic) this.fullStatic = document.createElement('canvas');
     if (key !== this.fullStaticKey) {
       this.fullStaticKey = key;
@@ -1222,6 +1228,22 @@ class CityMapSystem {
     v.screen(ctx);
     const toX = (wx) => v.toX(wx);
     const toY = (wz) => v.toY(wz);
+
+    // 2b. Who lives and works where, for checking by eye (?places=1)
+    if (SHOW_PLACES) {
+      ctx.save();
+      eachPlaceCell((x0, z0, size, cell) => {
+        const colour = ZONE_COLOURS[cell.zone];
+        const people = cell.res + cell.jobs;
+        if (!colour && !people) return;
+        const sx = toX(x0), sy = toY(z0), sw = toX(x0 + size) - sx, sh = toY(z0 + size) - sy;
+        if (sx > w || sy > h || sx + sw < 0 || sy + sh < 0) return;
+        ctx.globalAlpha = 0.2 + 0.6 * Math.min(1, people / 300);
+        ctx.fillStyle = colour || '#ffffff';
+        ctx.fillRect(sx, sy, sw, sh);
+      });
+      ctx.restore();
+    }
 
     // 3. Iconic Landmark Pins & Collision-Free Labels (placed first: their boxes keep the other names clear)
     ctx.font = `700 11px ${FONT}`;

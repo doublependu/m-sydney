@@ -116,13 +116,60 @@ const FACADES = [
     litProbability: 0.58,
     warmth: 0.6,
     seed: 57.7
+  }],
+  // Houses and walk-ups (js/house-styles.js): a house's storeys and windows, on the ground floor too. Each spans two colours,
+  // which a building's tone picks between. Only uniforms differ from the masonry above, so the GPU compiles nothing more.
+  // 7: Face brick, red through orange to cream and blond: Federation, the bungalows, post-war veneer, walk-ups
+  [createPreWarBuildingMaterial, {
+    stoneColor: 0x9e4632,
+    stoneColor2: 0xd8c79e,
+    trimColor: 0xe0d8c8,
+    windowGlassColor: 0x16222e,
+    windowWidth: 3.0,
+    floorHeight: 3.0,
+    groundWindows: 1,
+    litProbability: 0.5,
+    warmth: 0.9,
+    seed: 71.3
+  }],
+  // 8: Painted render, fibro and weatherboard, white to sand
+  [createPreWarBuildingMaterial, {
+    stoneColor: 0xece9e1,
+    stoneColor2: 0xd6bd96,
+    trimColor: 0xf7f5ef,
+    windowGlassColor: 0x16222e,
+    windowWidth: 3.0,
+    floorHeight: 3.0,
+    coursing: 0,
+    groundWindows: 1,
+    litProbability: 0.5,
+    warmth: 0.9,
+    seed: 78.1
   }]
 ];
 // What each facade averages out to from far away: its walls and its windows together
 const FACADE_TONES = FACADES.map(([create, o]) => create === createCurtainWallMaterial
   ? new THREE.Color(o.glassTint).lerp(new THREE.Color(o.frameTint), 0.25).multiplyScalar(1.5)
-  : new THREE.Color(o.stoneColor).lerp(new THREE.Color(o.windowGlassColor), 0.28));
-const ROOF_COLOURS = [0x8d8f8e, 0xa3a4a1, 0xb5b5af, 0xc6c5be].map((c) => new THREE.Color(c));
+  : new THREE.Color(o.stoneColor).lerp(new THREE.Color(o.stoneColor2 ?? o.stoneColor), 0.5).lerp(new THREE.Color(o.windowGlassColor), o.groundWindows ? 0.18 : 0.28));
+// The far level's tones of the house facades, each at a few of its tones (js/building-look.js farMat): 9-11 brick, 12-13 painted
+for (const [mat, tones] of [[7, [0.12, 0.5, 0.88]], [8, [0.15, 0.7]]]) {
+  const o = FACADES[mat][1];
+  for (const t of tones) FACADE_TONES.push(new THREE.Color(o.stoneColor).lerp(new THREE.Color(o.stoneColor2), t).lerp(new THREE.Color(o.windowGlassColor), 0.18));
+}
+// Roofs: the flat ones' four greys (js/building-look.js ROOF_TONES), then the pitched ones' terracotta, slate, concrete tile and
+// Colorbond (js/house-styles.js picks them). Near and far alike.
+const ROOF_COLOURS = [
+  0x8d8f8e, 0xa3a4a1, 0xb5b5af, 0xc6c5be,
+  0xa8583a, // 4 terracotta
+  0x565d63, // 5 slate
+  0xb86a40, // 6 orange terracotta
+  0x6e5547, // 7 brown concrete tile
+  0x47494b, // 8 charcoal concrete tile
+  0xcfccc1, // 9 Colorbond Surfmist
+  0x5b5f59, // 10 Colorbond Woodland Grey
+  0x3b3d3f, // 11 Colorbond Monument
+  0x9aa0a2 // 12 galvanised iron
+].map((c) => new THREE.Color(c));
 
 /**
  * Spatial 2D quadtree for range queries around the active player/camera position.
@@ -227,7 +274,8 @@ function createCityBlocks(scene) {
   const tiles = new Map(); // key -> { x, z, quadtree, details, colliders, reserves }
 
   const materials = FACADES.map(([create, opts]) => create({ ...opts, footprintLocal: true }));
-  const roofMaterials = [new THREE.MeshStandardNodeMaterial({ color: 0xa8583a, roughness: 0.82 }), new THREE.MeshStandardNodeMaterial({ color: 0x565d63, roughness: 0.7 })];
+  // Every pitched roof, in its own colour (ROOF_COLOURS): seen from under the eaves too
+  const roofMaterials = { material: new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.78, side: THREE.DoubleSide }), colours: ROOF_COLOURS };
 
   // The landmarks' own models stand where the buildings they replace were (tools/tiles/derive.mjs)
   const landmarkReserves = GEO.landmarkBoxes.map((c) => ({ x0: c.minX, x1: c.maxX, z0: c.minZ, z1: c.maxZ, height: c.maxY }));
@@ -642,13 +690,13 @@ function createCityBlocks(scene) {
       // A building with a model of its own: by itself, so the model can take its place when it comes (js/interiors.js)
       const site = siteOfBuilding(b);
       if (site) {
-        const { mat, tone } = buildingLook(b, b);
+        const { mat, tone, roof, pitch, gabled, eaves } = buildingLook(b, b);
         const top = b.height + 0.22;
         const own = b.polygons.map((polygon) => {
           const xs = polygon.outer.map((p) => p.x), zs = polygon.outer.map((p) => p.z);
           return { minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs), minY: b.bottom || 0, maxY: top, baseY: b.floor, polygon };
         });
-        const made = yield* createBuildingFootprintsSteps(materials[mat], [{ ...b, tone, storefronts: false, base: b.floor }], undefined, roofMaterials, {
+        const made = yield* createBuildingFootprintsSteps(materials[mat], [{ ...b, tone, roof, pitch, gabled, eaves, storefronts: false, base: b.floor }], undefined, roofMaterials, {
           groundAt: groundHeight, storey: { width: FACADES[mat][1].windowWidth, height: FACADES[mat][1].floorHeight }
         });
         const meshes = [...made.children];
@@ -659,13 +707,14 @@ function createCityBlocks(scene) {
       }
       // The pieces of one building share its look and its floor
       const whole = b.group ? wholes.get(b.group) : b;
-      const { mat, tone, seed } = buildingLook(b, whole);
+      const { mat, tone, seed, roof, pitch, gabled, eaves } = buildingLook(b, whole);
       const rand = mulberry32(b.group ? seed ^ Math.round(b.cx * 7 + b.cz * 13) : seed);
       // The survey has no building-use data; choose retail independently of facade style and roof details.
       const storefronts = !b.bottom && b.height >= 6 && (b.kind === 3 || (b.kind === 0 && mulberry32(seed ^ 0x53544f52)() < 0.45));
+      const house = mat >= 7;
       // Level, on the highest ground along its walls: no wall starts underground (js/building-floor.js, when the tile was made)
       const base = whole.floor;
-      const item = { ...b, tone, storefronts, base };
+      const item = { ...b, tone, storefronts, base, roof, pitch, gabled, eaves };
       surveyedBuckets[mat].push(item);
       const detail = {
         cx: b.cx, cz: b.cz, minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ, base,
@@ -678,7 +727,8 @@ function createCityBlocks(scene) {
         colliders.push({ minX, maxX, minZ, maxZ, minY: b.bottom || 0, maxY: top, baseY: base, polygon });
         detail.footprints.push({ h: top, pts: polygon.outer, holes: polygon.holes });
       }
-      detailsToPlace.push({ b: item, detail, masonry: mat < 2 || mat > 4, rand });
+      // A house has none of a city building's fire escapes, roof plant and cornices
+      if (!house) detailsToPlace.push({ b: item, detail, masonry: mat < 2 || mat > 4, rand });
       record.details.push(detail);
       yield;
     }

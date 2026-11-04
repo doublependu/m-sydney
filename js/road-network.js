@@ -1,7 +1,7 @@
 import { CITY_BOUNDS, DRIVE_SIDE, BLOCKS, blockAt, landAt } from './city-config.js';
 import { GEO } from './geodata.js';
 import { polygonBoxOverlaps } from './building-collision.js';
-import { linkById } from './surfaces.js';
+import { linkById, roadClass } from './surfaces.js';
 
 // How far either side of the Harbour Bridge's line a lane counts as on the bridge (its own height, nothing in its way)
 const DECK_REACH = 15;
@@ -154,14 +154,15 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
     }
     // In a set order, whichever order the tiles arrived in: the same roads make the same network
     const links = RG.links.filter(inArea).sort((p, q) => p.id - q.id).map((record) => {
-      const [a, b, ni, w, lanes, dir, inner, major, deck] = record, id = record.id;
+      const [a, b, ni, w, lanes, dir, inner, major, deck, , , flags = 0] = record, id = record.id;
       const pts = [pos[a]];
       for (let k = 0; k < inner.length; k += 2) pts.push({ x: inner[k], z: inner[k + 1] });
       pts.push(pos[b]);
       let len = 0;
       for (let k = 0; k + 1 < pts.length; k++) len += Math.hypot(pts[k + 1].x - pts[k].x, pts[k + 1].z - pts[k].z);
       // sid: the structure it's on (js/surfaces.js), 0 on the ground
-      return { id, a, b, name: RG.names[ni], w, lanes, dir, major: !!major, deck: !!deck, sid: linkById.get(id).sid, pts, len };
+      // cls: its OSM class (js/surfaces.js ROAD_CLASSES), 0 where the map doesn't say
+      return { id, a, b, name: RG.names[ni], w, lanes, dir, major: !!major, deck: !!deck, sid: linkById.get(id).sid, cls: roadClass(flags), pts, len };
     });
     // Junctions a few metres apart (divided roads, offset corners) are one: collapse links under 14 m
     const parent = new Map();
@@ -245,7 +246,7 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
       }
       stations.push(B);
       const lanes = lanesOf(l);
-      for (let k = 0; k + 1 < stations.length; k++) runs.push({ from: stations[k], to: stations[k + 1], deck: l.deck, sid: l.sid, link: l.id, ...lanes });
+      for (let k = 0; k + 1 < stations.length; k++) runs.push({ from: stations[k], to: stations[k + 1], deck: l.deck, sid: l.sid, link: l.id, cls: l.cls, ...lanes });
     }
     console.info(`[roads] centreline streets: ${links.length} links, ${runs.length} straight runs`);
     return runs;
@@ -278,7 +279,7 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
     const dz = (to.z - z0) / span;
     const open = run.sid ? lanes.slice() : lanes.filter((o) => laneOpen(x0, z0, dx, dz, span, o, maxOnKerb));
     if (!open.length) return false;
-    edges.push({ from, to, axis, x0, z0, dx, dz, rx: -dz * DRIVE_SIDE, rz: dx * DRIVE_SIDE, span, half, lanes: open.sort((p, q) => p - q), moves: [], general: true, cand: lanes, divided: !!divided, deck: !!run.deck, sid: run.sid || 0, link: run.link });
+    edges.push({ from, to, axis, x0, z0, dx, dz, rx: -dz * DRIVE_SIDE, rz: dx * DRIVE_SIDE, span, half, lanes: open.sort((p, q) => p - q), moves: [], general: true, cand: lanes, divided: !!divided, deck: !!run.deck, sid: run.sid || 0, link: run.link, cls: run.cls || 0 });
     return true;
   }
   // A divided road drawn as two one-way roadways between the same two junctions (most of the Bowery) runs both ways
@@ -568,8 +569,8 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
   // Paint describes the physical streets, including dead ends and roads AI traffic cannot circulate through.
   // Snapshot their geometry before routing moves stop lines, drops edges and renumbers the surviving junctions.
   const paintNodes = new Map(nodes.map((n, id) => [n, { id, x: n.x, z: n.z, shape: n.shape }]));
-  const paintEdges = edges.map(({ from, to, axis, x0, z0, sx, sz, dx, dz, rx, rz, span, len, half, lanes, deck, sid, link }) => ({
-    from: paintNodes.get(from), to: paintNodes.get(to), axis, x0, z0, sx, sz, dx, dz, rx, rz, span, len, half, lanes, deck, sid, link
+  const paintEdges = edges.map(({ from, to, axis, x0, z0, sx, sz, dx, dz, rx, rz, span, len, half, lanes, deck, sid, link, cls }) => ({
+    from: paintNodes.get(from), to: paintNodes.get(to), axis, x0, z0, sx, sz, dx, dz, rx, rz, span, len, half, lanes, deck, sid, link, cls
   }));
 
   yield;
@@ -1002,6 +1003,12 @@ function makeCurve(e, i, f, j) {
     const t = ((x3 - x0) * f.dz - (z3 - z0) * f.dx) / cross;
     k0 = 0.552 * Math.abs(t);
     k3 = 0.552 * Math.hypot(x3 - (x0 + e.dx * t), z3 - (z0 + e.dz * t));
+    // Where the two lanes' lines meet next to one end, that end's handle all but vanishes and the curve has a cusp there: its
+    // curvature runs to infinity, and a car crawls through it at walking pace (Palm Beach's queues, ai/next_3.md). A fifth
+    // of the way across at the least.
+    const chord = Math.hypot(x3 - x0, z3 - z0);
+    k0 = Math.min(Math.max(k0, chord * 0.2), chord * 1.2);
+    k3 = Math.min(Math.max(k3, chord * 0.2), chord * 1.2);
   }
   const c = {
     x0, z0, x3, z3,

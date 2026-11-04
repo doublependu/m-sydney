@@ -15,6 +15,10 @@ const WORLD_ORIGIN = {
   auditPrecision: () => ({})
 };
 
+// Each road's OSM class (js/surfaces.js): plain data, which a stub of surfaces.js gets unless it says otherwise
+const ROAD_CLASSES = ['', 'motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service', 'link', 'pedestrian'];
+const ROAD_CLASS_STUB = { ROAD_CLASSES, ROAD_CLASS: Object.fromEntries(ROAD_CLASSES.map((name, i) => [name, i])), roadClass: (flags) => (flags >> 1) & 15, linkById: new Map() };
+
 function loadModule(source, { imports = {}, globals = {}, filename = 'module.js' } = {}) {
   const exported = [];
   const names = (list) => list.split(',').map((name) => name.trim()).filter(Boolean).map((name) => {
@@ -29,6 +33,9 @@ function loadModule(source, { imports = {}, globals = {}, filename = 'module.js'
     if (specifier === './tiles/paths.js' && !Object.hasOwn(imports, specifier)) {
       imports[specifier] = loadModule(require('node:fs').readFileSync(require('node:path').join(__dirname, '../../js/tiles/paths.js'), 'utf8'));
     }
+    if (specifier === './surfaces.js' && Object.hasOwn(imports, specifier)) imports[specifier] = { ...ROAD_CLASS_STUB, ...imports[specifier] };
+    // Who lives where (js/places.js): nowhere, so traffic and people do what they did before the map had it
+    if (specifier === './places.js' && !Object.hasOwn(imports, specifier)) imports[specifier] = { busyAt: () => null, placesNear: () => ({ known: 0 }), placeAt: () => null, eachPlaceCell() {}, placeVersion: () => 0 };
     if (!Object.hasOwn(imports, specifier)) throw new Error(`Missing import stub: ${specifier}`);
     const namespace = /^\*\s+as\s+([\w$]+)$/.exec(bindings.trim());
     const target = `imports[${JSON.stringify(specifier)}]`;

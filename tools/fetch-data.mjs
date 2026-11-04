@@ -40,7 +40,12 @@ async function arcgis(url, params) {
   const out = [];
   for (let offset = 0; ;) {
     const query = new URLSearchParams({ where: '1=1', outSR: '4326', f: 'geojson', resultOffset: offset, resultRecordCount: 1000, geometryPrecision: 6, ...params });
-    const response = await fetch(`${url}/query?${query}`);
+    let response;
+    for (let attempt = 0; ; attempt++) {
+      response = await fetch(`${url}/query?${query}`).catch((error) => ({ ok: false, status: error.message }));
+      if (response.ok || attempt === 3) break;
+      await new Promise((resolve) => setTimeout(resolve, 2000 * (attempt + 1)));
+    }
     if (!response.ok) throw new Error(`${url}: ${response.status}`);
     const page = await response.json();
     if (page.error) throw new Error(`${url}: ${JSON.stringify(page.error)}`);
@@ -60,13 +65,29 @@ const LAYERS = {
   cos_awnings: [`${COS}/Sydney_Development_Control_Plan_2012/FeatureServer/6`, { outFields: '*' }],
   cos_storeys: [`${COS}/Sydney_Development_Control_Plan_2012/FeatureServer/7`, { outFields: 'Storeys' }],
   nsw_contours: [`${NSW}/NSW_Elevation_and_Depth_Theme/FeatureServer/2`, { outFields: 'elevation', ...box('151.02,-34.02,151.36,-33.68') }],
-  nsw_ferries: [`${NSW}/NSW_Transport_Theme/FeatureServer/8`, { outFields: '*', ...box('151.05,-33.95,151.33,-33.78') }]
+  nsw_ferries: [`${NSW}/NSW_Transport_Theme/FeatureServer/8`, { outFields: '*', ...box('151.05,-33.95,151.33,-33.78') }],
+  // ABS Mesh Blocks, 2021 (CC BY 4.0): each one's outline and land use, over every tile's square. Outlines to about 3 m.
+  abs_meshblocks: ['https://geo.abs.gov.au/arcgis/rest/services/ASGS2021/MB/MapServer/0',
+    { outFields: 'mb_code_2021,mb_category_2021,sa1_code_2021,sa2_name_2021,area_albers_sqkm', orderByFields: 'objectid', maxAllowableOffset: 0.00003, ...box('150.90,-34.12,151.36,-33.51') }],
+  // NSW land zoning from the councils' plans (CC BY 4.0, NSW Department of Planning, Housing and Infrastructure): R2 houses, R3 and R4 flats,
+  // E1 and B2 local centres, MU1 mixed use and so on
+  nsw_zoning: ['https://mapprod3.environment.nsw.gov.au/arcgis/rest/services/ePlanning/Planning_Portal_Principal_Planning/MapServer/19',
+    { outFields: 'SYM_CODE,LAY_CLASS', orderByFields: 'OBJECTID', maxAllowableOffset: 0.00003, ...box('150.90,-34.12,151.36,-33.51') }]
 };
 for (const [name, [url, params]] of Object.entries(LAYERS)) {
   if (!wanted(name)) continue;
   const features = await arcgis(url, params);
   fs.writeFileSync(path.join(DATA, `${name}.json`), JSON.stringify(features));
   console.log(`${name}: ${features.length} features`);
+}
+
+// ABS Census 2021 Mesh Block counts (CC BY 4.0): dwellings and residents in each Mesh Block, a spreadsheet. tools/build-population.mjs reads it.
+if (wanted('abs_counts')) {
+  const response = await fetch('https://www.abs.gov.au/census/guide-census-data/mesh-block-counts/2021/Mesh%20Block%20Counts%2C%202021.xlsx');
+  if (!response.ok) throw new Error(`Mesh Block counts: ${response.status}`);
+  fs.mkdirSync(path.join(DATA, 'abs'), { recursive: true });
+  fs.writeFileSync(path.join(DATA, 'abs/meshblock-counts-2021.xlsx'), Buffer.from(await response.arrayBuffer()));
+  console.log('abs_counts written');
 }
 
 // Overture buildings (OSM + Microsoft ML footprints, with heights where known), read straight from the release

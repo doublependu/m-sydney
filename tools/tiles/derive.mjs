@@ -10,6 +10,7 @@ const { GEO } = await import('../../js/geodata.js');
 const { blockAt } = await import('../../js/city-config.js');
 const { MAX_POINTS, TALL, TALL_POINTS, outlineOf } = await import('../../js/building-outlines.js');
 const { buildingLook } = await import('../../js/building-look.js');
+const { roofFrame } = await import('../../js/building-footprints.js');
 const { DECK_DEPTH, KIND, LINKS, deriveTunnels, groundHeight, roomUnderDeck } = await import('../../js/surfaces.js');
 const { buildingFloor } = await import('../../js/building-floor.js');
 const { polygonBoxOverlaps } = await import('../../js/building-collision.js');
@@ -110,7 +111,8 @@ for (let i = 0; i < TREE_HEIGHTS.length; i++) {
 console.log(`[derive] ${treesUnder.length} trees left out from under decks`);
 void DECK_DEPTH;
 
-// What each building looks like from far away: which facade, which roof, and its outline in 0.5 m
+// What each building looks like from far away: which facade, which roof, its outline in 0.5 m, and for a pitched roof, metres more to
+// the far model's flat top, about the middle of the roof, so a street of houses stands as tall far away as near
 const looks = {};
 {
   const whole = new Map();
@@ -125,10 +127,11 @@ const looks = {};
   }
   REAL_BUILDINGS.forEach((b, i) => {
     if (skip.has(i)) return;
-    const { mat, roof } = buildingLook(b, b.group ? whole.get(b.group) : b);
+    const look = buildingLook(b, b.group ? whole.get(b.group) : b);
     const points = b.height >= TALL ? TALL_POINTS : MAX_POINTS;
     const rings = b.polygons.map((p) => outlineOf(p.outer, points).flatMap((q) => [Math.round(q.x * 2), Math.round(q.z * 2)]));
-    looks[i] = [mat, roof, rings];
+    const frame = b.pitched && b.polygons.length === 1 && !b.polygons[0].holes.length && !b.bottom ? roofFrame(b.polygons[0].outer.map((q) => ({ x: q.x, y: q.z })), look) : null;
+    looks[i] = [look.farMat, look.roof, rings, frame ? Math.round(frame.tan * frame.W * 0.45) : 0];
   });
 }
 

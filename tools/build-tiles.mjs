@@ -35,6 +35,11 @@ const { REAL_TREES, TREE_KINDS, TREE_HEIGHTS } = await import(path.join(SRC, 'tr
 
 const RG = GEO.roadGraph;
 const KIND_CUTTING = 3;
+// Who lives and works where (tools/build-population.mjs), for each tile's 100 m grid
+const PLACES_FILE = path.join(SRC, 'places.bin.gz');
+const PLACES = fs.existsSync(PLACES_FILE) ? (await import('./population/places.mjs')).loadPlaces(PLACES_FILE) : null;
+if (!PLACES) console.warn('[tiles] no places.bin.gz: tiles have no grid of residents and land use (node tools/build-population.mjs)');
+const { placeGrid, workersByCell } = await import('./tiles/place-grid.mjs');
 // Tunnels side by side, moved apart to make room for a wall between them (tools/tiles/separate-tubes.mjs)
 {
   const { separateTubes } = await import('./tiles/separate-tubes.mjs');
@@ -185,7 +190,7 @@ function packBuildings(list, floors) {
   uint(meta, list.length);
   for (const { b, i } of list) {
     uint(meta, b.height);
-    uint(meta, b.kind | (b.pitched ? 8 : 0) | (b.group ? 16 : 0) | (b.realAwning ? 32 : 0));
+    uint(meta, b.kind | (b.pitched ? 8 : 0) | (b.group ? 16 : 0) | (b.realAwning ? 32 : 0) | ((b.houseStyle || 0) << 7));
     if (b.group) { uint(meta, b.group); uint(meta, b.bottom || 0); }
     const [floor, low] = floors?.[i] || [0, 0];
     sint(meta, floor);
@@ -343,7 +348,7 @@ function packFarFile(entries, parks, roads, derived, key) {
     if (!look) continue;
     count++;
     const [floor, low] = derived.floors[i];
-    uint(meta, b.height);
+    uint(meta, b.height + (look[3] || 0)); // a pitched roof's middle (tools/tiles/derive.mjs)
     uint(meta, b.bottom || 0);
     sint(meta, floor);
     sint(meta, low);
@@ -465,6 +470,8 @@ function write(derived, graded_ = null) {
   // Guessed heights cut down to fit under a deck (tools/tiles/derive.mjs)
   for (const [i, height] of Object.entries(derived?.caps || {})) REAL_BUILDINGS[i].height = height;
   const { tiles, table } = cutMap(derived);
+  const workers = PLACES && workersByCell(REAL_BUILDINGS, PLACES);
+  let placeBytes = 0;
   // What another tool writes here stays: the horizon (tools/build-horizon.mjs)
   const horizon = path.join(OUT, 'horizon.bin.gz');
   const kept = fs.existsSync(horizon) ? fs.readFileSync(horizon) : null;
@@ -474,11 +481,14 @@ function write(derived, graded_ = null) {
   let total = 0, largest = 0;
   const sizes = [], names = {};
   for (const t of tiles.values()) {
+    const place = PLACES && placeGrid(PLACES, workers, t.ix, t.iz);
+    if (place) placeBytes += zlib.gzipSync(JSON.stringify(place)).length;
     const json = Buffer.from(JSON.stringify({
       blocks: t.blocks, lawns: t.lawns, pavements: t.pavements, fills: t.fills, signals: t.signals, postBoxes: t.postBoxes, busShelters: t.busShelters,
       nodes: [...t.nodes].flatMap(([id, [x, z]]) => [id, x, z]), links: t.links, home: t.home, scenery: t.scenery, awnings: t.awnings, tags: t.tags,
       land: landOfTile(t.ix, t.iz), shore: shores.get(KEY(t.ix, t.iz)) || [],
-      portals: (derived?.portals || []).filter((p) => KEY(...tileOf(p.x, p.z)) === KEY(t.ix, t.iz))
+      portals: (derived?.portals || []).filter((p) => KEY(...tileOf(p.x, p.z)) === KEY(t.ix, t.iz)),
+      ...(place && { place })
     }));
     const buildings = packBuildings(t.buildings, derived?.floors), trees = packTrees(t.trees), heights = packHeights(t.ix, t.iz);
     const graded = packGround(graded_?.[KEY(t.ix, t.iz)]);
@@ -535,14 +545,14 @@ function write(derived, graded_ = null) {
   }), { level: 9 }));
   const world = {
     version: 2, tileSize: SIZE, frame: GEO.frame, heights: { margin: MARGIN, size: SAMPLES }, ground: GROUND, far: FAR, tiles: names, farFile: FAR_FILE, farFiles,
-    bridge: GEO.bridge, ferries: GEO.ferries, lightRail: GEO.lightRail,
+    bridge: GEO.bridge, ferries: GEO.ferries, lightRail: GEO.lightRail, stations: GEO.stations || [],
     nodeCount: RG.nodes.length / 2, structures: table, landmarkBoxes: derived?.landmarkBoxes || [],
     ...(derived?.deckProfile && { deckProfile: derived.deckProfile, bridgeSpan: derived.bridgeSpan })
   };
   fs.writeFileSync(path.join(OUT, 'world.json'), JSON.stringify(world));
   sizes.sort((a, b) => a - b);
   const worldBytes = fs.statSync(path.join(OUT, 'world.json')).size;
-  return `far files ${(farTotal / 1024).toFixed(0)} KB, map ${(mapFile.length / 1024).toFixed(0)} KB; ${tiles.size} tiles, ${(total / 1024).toFixed(0)} KB, median ${(sizes[sizes.length >> 1] / 1024).toFixed(1)} KB, largest ${(largest / 1024).toFixed(1)} KB; world.json ${(worldBytes / 1024).toFixed(0)} KB, ${(zlib.gzipSync(fs.readFileSync(path.join(OUT, 'world.json'))).length / 1024).toFixed(0)} KB zipped`;
+  return `places ${(placeBytes / tiles.size).toFixed(0)} bytes a tile zipped; far files ${(farTotal / 1024).toFixed(0)} KB, map ${(mapFile.length / 1024).toFixed(0)} KB; ${tiles.size} tiles, ${(total / 1024).toFixed(0)} KB, median ${(sizes[sizes.length >> 1] / 1024).toFixed(1)} KB, largest ${(largest / 1024).toFixed(1)} KB; world.json ${(worldBytes / 1024).toFixed(0)} KB, ${(zlib.gzipSync(fs.readFileSync(path.join(OUT, 'world.json'))).length / 1024).toFixed(0)} KB zipped`;
 }
 
 // Three passes. The ground's grid wants the roads; each building's floor and the rest want the ground.

@@ -11,7 +11,8 @@ const PED_SPAWN_DISTANCE = 150;
 const PED_AVOID_INTERVAL = 0.12;
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 
-function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCross, walkOn, visible, nearView, numPeds = NUM_PEDS }) {
+// `wanted()` is how many people to have out at once around the player, at most numPeds: fewer in a street of houses (js/traffic.js)
+function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCross, walkOn, visible, nearView, numPeds = NUM_PEDS, wanted = () => numPeds }) {
   let clock = 0;
   let focusX = 0, focusZ = 140;
   let hasView = false;
@@ -636,15 +637,31 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
     let pedBudget = jump ? numPeds : 6;
     const keepRadius = jump ? NEAR_RADIUS : PED_RADIUS;
     const keepRadiusSq = keepRadius * keepRadius;
+    const want = Math.min(numPeds, wanted());
+    let out = 0;
+    for (let i = 0; i < numPeds; i++) if (peds[i].placed) out++;
     for (let scanned = 0; scanned < numPeds && pedBudget > 0; scanned++) {
       const p = peds[pedCursor];
       pedCursor = (pedCursor + 1) % numPeds;
       if (p.placed) {
         const dx = p.x - focusX, dz = p.z - focusZ;
-        if (dx * dx + dz * dz <= keepRadiusSq) continue;
-      }
+        if (dx * dx + dz * dz <= keepRadiusSq) {
+          // More out than the place wants: someone out of sight goes home
+          if (out > want && !p.conversation && (jump || !nearView(p.x, p.z, 2, PED_SPAWN_DISTANCE))) {
+            p.placed = false;
+            out--;
+          }
+          continue;
+        }
+      } else if (out >= want) continue;
       pedBudget--;
-      spawnPed(p, jump ? 0 : 60, jump ? NEAR_RADIUS : 280, !jump);
+      const had = p.placed;
+      // One too far away is placed again near, or goes if there are more than wanted
+      if (had && out > want) {
+        if (p.conversation) endConversation(p.conversation);
+        p.placed = false;
+        out--;
+      } else if (spawnPed(p, jump ? 0 : 60, jump ? NEAR_RADIUS : 280, !jump) && !had) out++;
     }
     for (let i = 0; i < numPeds; i++) {
       const p = peds[i];
@@ -666,8 +683,10 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
   function* populate(x, z) {
     focusX = x;
     focusZ = z;
+    let out = peds.filter((p) => p.placed).length;
     for (const p of peds) {
-      if (!p.placed) spawnPed(p, 0, NEAR_RADIUS, false);
+      if (out >= Math.min(numPeds, wanted())) break;
+      if (!p.placed && spawnPed(p, 0, NEAR_RADIUS, false)) out++;
       yield;
     }
   }

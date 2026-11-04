@@ -51,13 +51,16 @@ Two checks need no browser. `node tools/check-roads.mjs [--list] [--tiles=0_-2,1
 game's own rules and says what would slant, jolt or stop a car: lean, change of grade, steps, roll, dead stops, buildings and
 kerbs in lanes, paving over roads. `node tools/check-traffic.mjs [--seeds=3] [--at=northSydney,townHall,bridgeDeck]` runs the
 real traffic about 50 times faster than real time with a seeded random number generator, and says how much is stopped, how
-fast the rest moves, what's holding each queue up, how long a car waits at a red and how often nobody is using the green.
+fast the rest moves, what's holding each queue up, how long a car waits at a red and how often nobody is using the green. It
+also says how many cars and people a place wants, by who lives and works there, and how many cars it got: `--at=cronullaHouses,
+deeWhyHouses,bankstownHouses,hornsbyHouses,palmBeach` for streets of houses.
 Bench options: `npm run bench -- --profile=desktop --runs=3 --query=quality=low --headed`.
 
 `node tools/play/stream-bench.mjs --profile=phone` measures frames while the map streams, flying its length and back. Add
 `?stats=1` to the URL to see on screen, for trying it on a phone: load time, frames, the worst frame since load and what the game was
 doing then, how much memory the game holds by its own count (`js/memory-estimate.js`, since iOS gives no figure), where you are, and,
-if the browser killed the last session, where and at what size (`js/session-note.js`). `?wholeCity=1` with `?debug=1` holds all of
+if the browser killed the last session, where and at what size (`js/session-note.js`). `?places=1` draws who lives and works where,
+and the zoning, over the full map. `?wholeCity=1` with `?debug=1` holds all of
 the map, for scenarios about the roads rather than about fetching them.
 
 `node tools/check-ground.mjs [--tiles=0_-2,1_-2]` measures the ground, `node tools/play/look.mjs out-dir
@@ -95,6 +98,7 @@ SYDNEY_DATA=tools/data/east SYDNEY_BOX='-34.1571,150.8743,-33.4732,151.4826' nod
 node tools/fetch-data.mjs overture_density             # for the horizon: 90 s
 node tools/fetch-elevation.mjs --cell=100              # for the horizon: 4 min
 node tools/fetch-elevation.mjs --cell=5 --box=$BOX     # about 1 GB, 15 min
+node tools/fetch-data.mjs abs_counts,abs_meshblocks,nsw_zoning   # who lives where and the zoning: 50 MB, 1 min
 npm run data:build                                     # about 30 min. Leave 16 GB of memory free for it
 npm run data:map                                       # the map screen's images: 2 min
 ```
@@ -108,7 +112,7 @@ what it did.
 |---|---|---|
 | `tiles/world.json` | What the whole map shares: tile list, structures, the bridge's deck | At start |
 | `tiles/far-heights.bin.gz` | The ground on a very coarse grid, for where nothing better is held | At start |
-| `tiles/<X>_<Z>/<x>_<z>.<hash>.bin.gz` | A tile, in the folder of the 8 km square it's in: roads with their shapes, kerbs, where the land and shore are, buildings, trees, heights, tunnel mouths, and a 5 m grid of how far the ground moves to meet the roads | When the player's near |
+| `tiles/<X>_<Z>/<x>_<z>.<hash>.bin.gz` | A tile, in the folder of the 8 km square it's in: roads with their shapes and OSM class, kerbs, where the land and shore are, buildings with each house's style, trees, heights, tunnel mouths, a 5 m grid of how far the ground moves to meet the roads, and a 100 m grid of residents, homes, workers, land use and zoning | When the player's near |
 | `tiles/far/far_<x>_<z>.<hash>.bin.gz` | 4 km of the far level: every building as a few points, plain ground with its own land and heights, main roads | Near the player, after the first frame |
 | `tiles/far.json.gz` | Land beyond the map, suburbs' names, and the streets around the Harbour Bridge | After the first frame |
 | `tiles/horizon.bin.gz` | The whole box out to Katoomba, coarsely | After the first frame |
@@ -141,6 +145,22 @@ what it did.
 - **What stands under a deck fits under it.** `roomUnderDeck()` in `js/surfaces.js` says how much room there is. A building whose
   height is a guess is cut down to fit when the tiles are made (`tools/tiles/derive.mjs`), and trees, street lights and signs
   aren't put where they wouldn't fit.
+- **Who lives and works where.** `tools/build-population.mjs` reads the ABS 2021 Census's Mesh Blocks, 30-60 homes each with their
+  residents, dwellings and land use, and NSW's land zoning, into a 10 m raster. Each tile gets a 100 m grid of it, with workers judged
+  from the floor area of the buildings that aren't homes (`tools/tiles/place-grid.mjs`), and `js/places.js` reads it. Add `?places=1`
+  to see it on the full map: the colour is the zone, the strength how many live and work there.
+- **How busy a place is follows who's there.** A road's share of the most traffic it holds (one car per 80 m of lane) comes from the
+  residents and workers within 250 m: motorways are always full, main roads at least a third, a street of houses a twentieth
+  (`roadShare()` in `js/traffic.js`). People out walking are one for every 200 residents and workers within 350 m, and a crowd at each
+  station. The graphics level's numbers are the most there are. Cars are parked along the kerbs of streets of homes, as many as
+  the homes there, drawn as the far cars are and simulating nothing; the player hits them.
+- **Houses look like Sydney's.** Most outlines in the suburbs come with no use. `tools/build-buildings.mjs` makes one a house, flats or a
+  shop by its Mesh Block and zoning, and gives a house a style by its group of suburbs: Victorian terrace, Federation, California
+  bungalow, post-war fibro, brick veneer, project home, beach house, walk-ups (`js/house-styles.js`). A style says its walls, roof
+  colours, pitch, gables and eaves. The walls are two more sets of uniforms for the masonry facade, so the GPU compiles nothing more,
+  and every pitched roof is one vertex-coloured material. References are in `ref/houses/`, which git ignores.
+- **Small streets have no centre line.** A two-way residential street under 11 m gets one only where it meets a main road, and a
+  service road none at all (`markingsOf()` in `js/road-paint.js`), by each road's OSM class.
 - **The scene is drawn near zero.** The simulation and the map are in the game's own frame, however far out, but a shader only ever sees
   small numbers: `scene` itself moves by whole steps of 4,096 m as you go (`js/world-origin.js`), and every mesh keeps its vertices around
   its own middle. A pattern in a shader reads `patternXZ`, which wraps at the same 4,096 m, so a move changes nothing on screen.
@@ -199,6 +219,10 @@ Map data keeps its own licences:
 - [Overture Maps](https://docs.overturemaps.org/attribution/) (OpenStreetMap and Microsoft ML footprints): buildings
 - [City of Sydney](https://data.cityofsydney.nsw.gov.au), CC BY 4.0: trees, building height controls
 - [NSW Spatial Services](https://www.spatial.nsw.gov.au), © State of NSW, CC BY 3.0: terrain, from the 5 m elevation model
+- [Australian Bureau of Statistics](https://www.abs.gov.au/census/guide-census-data/mesh-block-counts/2021), CC BY 4.0: residents, dwellings
+  and land use, from the 2021 Census's Mesh Block counts and ASGS Edition 3 boundaries
+- [NSW Department of Planning, Housing and Infrastructure](https://www.planningportal.nsw.gov.au/opendata/dataset/environment-planning-instrument-local-environmental-plan-land-zoning),
+  CC BY 4.0: land zoning
 
 ## Backed by
 

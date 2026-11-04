@@ -56,7 +56,8 @@ function unpackBuildings(data, start, end) {
       }
       polygons.push({ outer: rings[0], holes: rings.slice(1) });
     }
-    out.push({ height, kind: style & 7, pitched: !!(style & 8), group, bottom, realAwning: !!(style & 32), polygons, floor, low,
+    // houseStyle: js/house-styles.js, 0 for none
+    out.push({ height, kind: style & 7, pitched: !!(style & 8), group, bottom, realAwning: !!(style & 32), houseStyle: (style >> 7) & 15, polygons, floor, low,
       minX, maxX, minZ, maxZ, cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2 });
   }
   return out;

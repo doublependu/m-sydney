@@ -4,10 +4,12 @@ import { createPedestrianSystem } from './pedestrian-system.js';
 import { vehicleContact, resolveVehicleContact, sweptVehicleContact } from './vehicle-physics.js';
 import { DRIVE_SIDE } from './city-config.js';
 import { assignLights, junctionKey } from './signals.js';
-import { edgeHeight, sameLevel, surfaceHeight } from './surfaces.js';
+import { ROAD_CLASS, edgeHeight, sameLevel, surfaceHeight } from './surfaces.js';
+import { busyAt, placeAt, placesNear } from './places.js';
+import { GEO } from './geodata.js';
 import { cityUniforms, createContactShadowMaterial } from './tsl-materials.js';
 import { HEADLIGHTS, placeVehicleHeadlight } from './vehicle-lights.js';
-import { anchorToOrigin, origin } from './world-origin.js';
+import { anchorToOrigin, onOriginMove, origin } from './world-origin.js';
 import {
   BODY_SPECS,
   buildCarGeometry,
@@ -67,7 +69,15 @@ const VEHICLE_RADIUS = 380;
 const DECK_SPAWN_GAP = 60;
 const DECK_PACE = 1.5; // of a street's speed: the bridge is signed 70 km/h
 const NEAR_RADIUS = 350;
-const LANE_METRES_PER_VEHICLE = 80; // of road near the player, for each vehicle on it
+const LANE_METRES_PER_VEHICLE = 80; // of road near the player, for each vehicle on it, at the most a road holds
+// How full a road is, of the most it holds, follows who lives and works around it (js/places.js): motorways carry traffic through
+// wherever they are, main roads some of it, and a street of houses only its own cars. Where the map has no grid, every road is full.
+const MAIN_ROAD_LEAST = 0.35;
+const STREET_LEAST = 0.05;
+// People out walking within NEAR_RADIUS: one for each 200 residents and workers there, a crowd at a station, never nobody
+const PEOPLE_PER_RESIDENT = 1 / 200;
+const PEOPLE_AT_STATION = 30;
+const PEOPLE_LEAST = 4;
 const STUCK_OUT_OF_VIEW = 45, STUCK_IN_VIEW = 180; // s without moving
 const VEHICLE_SPAWN_DISTANCE = 250;
 
@@ -114,7 +124,8 @@ function createBusDestinationTexture() {
 
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 
-function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars = NUM_CARS, numBuses = NUM_BUSES, numPeds, lightPools, firstNetwork = null } = {}) {
+// kerbsideChanged(old, now): the colliders of the cars parked along the kerbs, as they change (js/main.js gives them to the player's)
+function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars = NUM_CARS, numBuses = NUM_BUSES, numPeds, lightPools, firstNetwork = null, kerbsideChanged = null } = {}) {
   const group = new THREE.Group();
   group.name = 'CityTrafficAndPedestrians';
   let collisionListener = null;
@@ -463,9 +474,10 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
   const nearEdges = [];
   const nearSignals = [];
   let nearLaneMetres = Infinity;
+  let peopleWanted = Infinity;
   yield;
   const pedestrianSystem = createPedestrianSystem(network, {
-    player, nearEdges, nearSignals, mayCross, walkOn, visible, nearView, numPeds
+    player, nearEdges, nearSignals, mayCross, walkOn, visible, nearView, numPeds, wanted: () => peopleWanted
   });
   group.add(...pedestrianSystem.meshes);
   yield;
@@ -717,13 +729,34 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
       const dx = e.sx + e.dx * s - focusX, dz = e.sz + e.dz * s - focusZ;
       if (dx * dx + dz * dz < NEAR_RADIUS * NEAR_RADIUS) {
         nearEdges.push(e);
-        nearLaneMetres += Math.min(e.len, NEAR_RADIUS * 2) * e.lanes.length;
+        if (!e.shareKnown) e.share = roadShare(e);
+        nearLaneMetres += Math.min(e.len, NEAR_RADIUS * 2) * e.lanes.length * e.share;
       }
     }
+    peopleWanted = peopleAround(focusX, focusZ);
     for (const n of nodes) {
       const dx = n.x - focusX, dz = n.z - focusZ;
       if (n.signal && dx * dx + dz * dz < NEAR_RADIUS * NEAR_RADIUS) nearSignals.push(n);
     }
+  }
+
+  /** How full of traffic a road is, of the most it can hold (see MAIN_ROAD_LEAST) */
+  function roadShare(e) {
+    const busy = busyAt(e.sx + (e.dx * e.len) / 2, e.sz + (e.dz * e.len) / 2);
+    // Asked again until the tile with its grid is held
+    e.shareKnown = busy !== null;
+    if (busy === null || e.cls === ROAD_CLASS.motorway || e.cls === ROAD_CLASS.trunk) return 1;
+    if (e.axis === 'ave' || e.cls === ROAD_CLASS.link) return MAIN_ROAD_LEAST + (1 - MAIN_ROAD_LEAST) * busy;
+    return Math.max(STREET_LEAST, busy);
+  }
+  /** How many people the place around (x, z) has out walking: the level's numPeds is the most there are (js/pedestrian-system.js) */
+  function peopleAround(x, z) {
+    const near = placesNear(x, z, NEAR_RADIUS);
+    if (!near.known) return Infinity;
+    let stations = 0;
+    for (const [, sx, sz] of GEO.stations || []) if ((sx - x) * (sx - x) + (sz - z) * (sz - z) < NEAR_RADIUS * NEAR_RADIUS) stations++;
+    const people = ((near.res + near.jobs) * near.cells) / near.known;
+    return Math.round(Math.max(PEOPLE_LEAST, people * PEOPLE_PER_RESIDENT + stations * PEOPLE_AT_STATION));
   }
 
   // Where the player is relative to v: metres ahead, metres to the right, and how fast it moves v's way
@@ -1172,7 +1205,8 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
   }
 
   // Fastest v can take curve c at without exceeding the sideways acceleration its driver accepts
-  const bendSpeed = (v, c) => Math.sqrt(v.driver.aLat / Math.max(c.curv, 1e-3));
+  // (no tighter than a car turns, 3 m: a curve's sharpest point, where it's tighter, isn't what a driver slows to)
+  const bendSpeed = (v, c) => Math.sqrt(v.driver.aLat / Math.min(Math.max(c.curv, 1e-3), 1 / 3));
 
   // IDM acceleration for vehicles ahead in the lane (and, through the intersection, in the lane it leads to),
   // the stop line while v may not go, a red beyond, the player, and slowing down for turns and give-way lines
@@ -1674,8 +1708,11 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
 
   // Put v in a free lane around the focus. Normal replenishment protects the near view; teleports can fill it.
   function spawnVehicle(v, rMin, rMax, protectView) {
-    for (let attempt = 0; attempt < 12; attempt++) {
+    for (let attempt = 0, draws = 0; attempt < 12 && draws < 60; draws++) {
       const e = nearEdges[Math.floor(Math.random() * nearEdges.length)];
+      // A quiet street is picked as often as it's full (roadShare): what isn't taken doesn't count as a try
+      if (e && e.share < 1 && Math.random() >= e.share) continue;
+      attempt++;
       if (!e || (v.bus && e.axis !== 'ave') || e.len < 2 * v.half + 10) continue;
       const lane = Math.floor(Math.random() * e.lanes.length);
       const along = (focusX - e.sx) * e.dx + (focusZ - e.sz) * e.dz;
@@ -2019,6 +2056,103 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
   }
 
   // =========================================================================
+  // 7b. CARS PARKED ALONG THE KERB
+  // =========================================================================
+  // A street of houses has cars outside them, even when nobody's driving. They're drawn as the far cars are, sharing their
+  // material, and simulate nothing: the player hits them (their colliders go to js/main.js), traffic keeps to its lanes past them.
+  // Each kerb's slots are filled the same way every time, by who lives there (js/places.js), so a car stays where it was parked as
+  // the network around the player is rebuilt.
+  const KERB_REACH = 260; // m around the player
+  const KERB_SLOT = 7.5; // m of kerb a parked car takes, a driveway's gap included
+  const KERB_CLEAR = 10; // m clear of a junction
+  const KERB_STREETS = new Set([ROAD_CLASS.residential, ROAD_CLASS.unclassified, ROAD_CLASS.living_street, ROAD_CLASS.tertiary]);
+  const KERB_KINDS = ['sedan', 'suv'];
+  const KERB_MAX = Math.round(numCars * 1.5);
+  const kerbMeshes = KERB_KINDS.map((kind) => {
+    const source = bodies[kind].far;
+    const g = source.geometry.clone();
+    g.setAttribute('paintColor', new THREE.InstancedBufferAttribute(new Float32Array(KERB_MAX * 3), 3));
+    g.setAttribute('carState', new THREE.InstancedBufferAttribute(new Float32Array(KERB_MAX * 4), 4));
+    const mesh = new THREE.InstancedMesh(g, source.material, KERB_MAX);
+    mesh.count = 0;
+    mesh.frustumCulled = false;
+    mesh.castShadow = mesh.receiveShadow = true;
+    mesh.userData.sharesPipelineWith = source;
+    mesh.name = 'ParkedCars';
+    return mesh;
+  });
+  group.add(...kerbMeshes);
+  const kerbPaints = Object.values(fleetStyles).flat();
+  let kerbCars = [], kerbColliders = [], kerbAt = { x: Infinity, z: Infinity }, kerbDirty = false;
+  onOriginMove(() => { kerbDirty = true; });
+  const slotHash = (a, b, c) => {
+    let h = Math.imul(a | 0, 73856093) ^ Math.imul(b | 0, 19349663) ^ Math.imul(c | 0, 83492791);
+    h = Math.imul(h ^ (h >>> 15), 2246822507);
+    return ((h ^ (h >>> 13)) >>> 0) / 4294967296;
+  };
+  /** Fills the kerbs within KERB_REACH of (x, z) */
+  function parkAlongKerbs(x, z) {
+    kerbAt = { x, z };
+    const cars = [];
+    for (const e of edges) {
+      if (cars.length >= KERB_MAX) break;
+      if (!KERB_STREETS.has(e.cls) || e.half < 4.2 || e.len < KERB_CLEAR * 2 + KERB_SLOT || e.sid || e.deck) continue;
+      const s0 = clamp((x - e.sx) * e.dx + (z - e.sz) * e.dz, 0, e.len);
+      if (Math.hypot(e.sx + e.dx * s0 - x, e.sz + e.dz * s0 - z) > KERB_REACH) continue;
+      const mid = placeAt(e.sx + (e.dx * e.len) / 2, e.sz + (e.dz * e.len) / 2);
+      // Where the map knows nobody lives, no one parks; a main street's shops get a few
+      if (!mid || (!mid.dw && mid.zone !== 'centre')) continue;
+      const share = clamp(mid.dw / 50, 0.12, 0.55) * (e.cls === ROAD_CLASS.tertiary ? 0.5 : 1);
+      // Slots counted from the junction the edge leaves, so the same ones come back
+      const sx = Math.round(e.sx), sz = Math.round(e.sz);
+      for (let s = KERB_CLEAR; s + KERB_SLOT <= e.len - KERB_CLEAR && cars.length < KERB_MAX; s += KERB_SLOT) {
+        const h = slotHash(sx * 7 + sz, Math.round(s), e.link || 0);
+        if (h > share) continue;
+        const along = s + KERB_SLOT / 2 + (h / share - 0.5) * 1.2;
+        const off = e.half - 0.95;
+        const px = e.sx + e.dx * along + e.rx * off, pz = e.sz + e.dz * along + e.rz * off;
+        if (Math.hypot(px - x, pz - z) > KERB_REACH) continue;
+        // Never on top of the player, who'd be caught in it
+        if (player.active && Math.hypot(px - player.x, pz - player.z) < 6) continue;
+        const kind = KERB_KINDS[Math.floor(h * 977) % KERB_KINDS.length];
+        const { col, style } = kerbPaints[Math.floor(h * 7919) % kerbPaints.length];
+        cars.push({ x: px, z: pz, yaw: Math.atan2(e.dx, e.dz), edge: e, kind, paint: [col.r, col.g, col.b], style });
+      }
+    }
+    kerbCars = cars;
+    const old = kerbColliders;
+    kerbColliders = cars.map((c) => {
+      const cs = Math.cos(c.yaw), sn = Math.sin(c.yaw), hx = 0.92, hz = 2.3;
+      const ex = Math.abs(cs) * hx + Math.abs(sn) * hz, ez = Math.abs(sn) * hx + Math.abs(cs) * hz;
+      return { minX: c.x - ex, maxX: c.x + ex, minZ: c.z - ez, maxZ: c.z + ez, minY: 0, maxY: 1.55, obb: { cx: c.x, cz: c.z, hx, hz, cs, sn }, parked: true };
+    });
+    kerbsideChanged?.(old, kerbColliders);
+    kerbDirty = true;
+  }
+  function drawKerbside() {
+    if (!kerbDirty) return;
+    kerbDirty = false;
+    for (const m of kerbMeshes) m.count = 0;
+    for (const c of kerbCars) {
+      const mesh = kerbMeshes[KERB_KINDS.indexOf(c.kind)];
+      const slot = mesh.count++;
+      dummyEdge = c.edge;
+      dummy.position.set(c.x, 0, c.z);
+      dummy.rotation.set(-Math.atan(slopeOn(c.edge, c.x, c.z, Math.sin(c.yaw), Math.cos(c.yaw))), c.yaw, 0, 'YXZ');
+      dummy.scale.set(1, 1, 1);
+      placeDummy();
+      mesh.setMatrixAt(slot, dummy.matrix);
+      mesh.geometry.attributes.paintColor.array.set(c.paint, slot * 3);
+      mesh.geometry.attributes.carState.array.set([0, 0, 0, c.style], slot * 4);
+    }
+    for (const m of kerbMeshes) {
+      m.instanceMatrix.needsUpdate = true;
+      m.geometry.attributes.paintColor.needsUpdate = true;
+      m.geometry.attributes.carState.needsUpdate = true;
+    }
+  }
+
+  // =========================================================================
   // 8. UPDATE
   // =========================================================================
   let lastFocusX = Infinity;
@@ -2030,8 +2164,10 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     focusX = lastFocusX = focusPos.x;
     focusZ = lastFocusZ = focusPos.z;
     refreshNear();
+    // As many as the roads here hold (roadShare)
+    let active = vehicles.filter((v) => v.edge).length;
     for (const v of vehicles) {
-      if (!v.edge) spawnVehicle(v, 0, NEAR_RADIUS, false);
+      if (!v.edge && active < nearLaneMetres / LANE_METRES_PER_VEHICLE && spawnVehicle(v, 0, NEAR_RADIUS, false)) active++;
       yield;
     }
     yield* pedestrianSystem.populate(focusX, focusZ);
@@ -2118,6 +2254,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     pedestrianSystem.setNetwork(next, keyOf);
     nearX = nearZ = Infinity;
     refreshNear();
+    parkAlongKerbs(focusX, focusZ);
     handover.count++;
     handover.kept = kept;
     handover.lost = lost;
@@ -2134,6 +2271,8 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     lastFocusZ = focusZ;
     refreshNear();
     updateView(camera);
+    if (Math.hypot(focusX - kerbAt.x, focusZ - kerbAt.z) > KERB_REACH * 0.4) parkAlongKerbs(focusX, focusZ);
+    drawKerbside();
 
     player.active = Boolean(playerEntity && activeMode !== 'helicopter' && playerEntity.position.y < 2.6);
     if (playerEntity) {
@@ -2172,7 +2311,14 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
         v.edge = null;
         active--;
         recycled++;
-      } else if (d <= (jump ? NEAR_RADIUS : VEHICLE_RADIUS)) continue;
+      } else if (d <= (jump ? NEAR_RADIUS : VEHICLE_RADIUS)) {
+        // More than the roads here want, coming from somewhere busier: one out of sight goes
+        if (active > room + 1 && !v.isPolice && !nearView(v.x, v.z, v.half + 4, VEHICLE_SPAWN_DISTANCE)) {
+          v.edge = null;
+          active--;
+        }
+        continue;
+      }
       if (active >= room) {
         // Out of sight and not needed here
         if (v.edge) {
@@ -2286,6 +2432,8 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     handover,
     holdingBack,
     roadRoom: () => nearLaneMetres / LANE_METRES_PER_VEHICLE,
+    peopleWanted: () => peopleWanted,
+    parkedAlongKerbs: () => kerbCars.length,
     recycled: () => recycled,
     get network() { return network; },
     phaseOf,

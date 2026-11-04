@@ -8,6 +8,8 @@
 //   red       how long the car at the front of a red has waited, median and 95th percentile
 //   unused    how often, when a car waits at a red, nobody at all is using the green: no car within 60 m, none in the junction
 //   recycled  cars a minute stuck long enough for the safety valve to take them away
+//   wanted    how many cars the roads within 350 m want, by who lives and works there (js/places.js), at most --cars; and how many there were
+//   people    how many people the place wants out walking, before the level's cap
 // Traffic is chaotic enough that one seed can swing a result by 5%: use --seeds=3 to compare two versions.
 // usage: node tools/check-traffic.mjs [--json] [--strict] [--seconds=240] [--warm=60] [--cars=200] [--seed=1] [--seeds=1] [--at=name,name]
 console.info = () => {};
@@ -26,7 +28,9 @@ const SEEDS = Number(argument('seeds', 1));
 export const PLACES = {
   northSydney: [-100, -3300], townHall: [3, 30], bridgeDeck: [-120, -2600],
   burwood: [-9368, 1753], bondiJunction: [4088, 1430], chatswood: [-3548, -8025], m5: [-1741, 5498],
-  deeWhy: [5309, -14416], parramatta: [-19517, -3772], hornsby: [-12477, -17210], sutherland: [-11279, 19282], cronulla: [-2105, 20668], palmBeach: [6476, -31602], seaforth: [2128, -8680]
+  deeWhy: [5309, -14416], parramatta: [-19517, -3772], hornsby: [-12477, -17210], sutherland: [-11279, 19282], cronulla: [-2105, 20668], palmBeach: [6476, -31602], seaforth: [2128, -8680],
+  // Streets of houses near the centres: the most zoned R2 within 300 m, near the teleport
+  cronullaHouses: [-3205, 20518], deeWhyHouses: [5009, -14566], bankstownHouses: [-16054, 7045], hornsbyHouses: [-12777, -16210]
 };
 const places = argument('at', 'northSydney,townHall').split(',');
 const DT = 1 / 30;
@@ -90,7 +94,7 @@ async function measure(name, seed) {
   const fill = system.populate(focus);
   if (fill?.next) do step = fill.next(); while (!step.done);
 
-  const t = { cars: 0, samples: 0, stopped: 0, speed: 0, queues: {}, chain: {}, redWaits: [], unused: 0, used: 0 };
+  const t = { cars: 0, samples: 0, stopped: 0, speed: 0, queues: {}, chain: {}, redWaits: [], unused: 0, used: 0, active: 0, wanted: 0 };
   let time = 0, recycledAtStart = 0;
   const ticks = Math.round((WARM + SECONDS) / DT), warmTicks = Math.round(WARM / DT), every = Math.round(2 / DT);
   const started = performance.now();
@@ -100,6 +104,8 @@ async function measure(name, seed) {
     if (i === warmTicks) recycledAtStart = system.recycled();
     if (i <= warmTicks || i % every) continue;
     t.samples++;
+    t.wanted += Math.min(CARS + Math.round(CARS * 0.06), system.roadRoom());
+    for (const v of [...system.cars, ...system.buses]) if (v.edge) t.active++;
     for (const v of [...system.cars, ...system.buses]) {
       if (!v.edge || Math.hypot(v.x - x, v.z - z) > NEAR) continue;
       t.cars++;
@@ -147,8 +153,11 @@ async function measure(name, seed) {
   return {
     place: name,
     cars: Math.round(t.cars / t.samples),
-    stopped: Math.round((t.stopped / t.cars) * 100),
-    speed: +(t.speed / t.cars).toFixed(2),
+    wanted: Math.round(t.wanted / t.samples),
+    active: Math.round(t.active / t.samples),
+    people: system.peopleWanted(),
+    stopped: Math.round((t.stopped / (t.cars || 1)) * 100),
+    speed: +(t.speed / (t.cars || 1)).toFixed(2),
     queues: share(t.queues),
     noRoomEndsAt: share(t.chain),
     redMedian: quantile(t.redWaits, 0.5),
@@ -165,12 +174,12 @@ for (const name of places) {
   for (let k = 0; k < SEEDS; k++) runs.push(await measure(name, SEED + k));
   // The mean of the numbers; what holds queues up, from the first
   const mean = (key) => +(runs.reduce((sum, r) => sum + (r[key] ?? 0), 0) / runs.length).toFixed(2);
-  results.push({ ...runs[0], cars: mean('cars'), stopped: mean('stopped'), speed: mean('speed'), redMedian: mean('redMedian'), red95: mean('red95'), unused: mean('unused'), recycledPerMinute: mean('recycledPerMinute') });
+  results.push({ ...runs[0], cars: mean('cars'), wanted: mean('wanted'), active: mean('active'), stopped: mean('stopped'), speed: mean('speed'), redMedian: mean('redMedian'), red95: mean('red95'), unused: mean('unused'), recycledPerMinute: mean('recycledPerMinute') });
 }
 if (json) console.log(JSON.stringify(results, null, 1));
 else {
   for (const r of results) {
-    console.log(`${r.place}: ${r.cars} cars, ${r.stopped}% stopped, ${r.speed} m/s, red ${r.redMedian} s median and ${r.red95} s 95th, green unused ${r.unused}%, ${r.recycledPerMinute} recycled a minute (${r.seconds} s)`);
+    console.log(`${r.place}: ${r.cars} cars within ${NEAR} m, ${r.active} out of ${r.wanted} wanted, ${r.people} people wanted, ${r.stopped}% stopped, ${r.speed} m/s, red ${r.redMedian} s median and ${r.red95} s 95th, green unused ${r.unused}%, ${r.recycledPerMinute} recycled a minute (${r.seconds} s)`);
     console.log(`  queues held by ${Object.entries(r.queues).slice(0, 6).map(([k, v]) => `${k} ${v}%`).join(', ')}`);
     console.log(`  no room ends at ${Object.entries(r.noRoomEndsAt).slice(0, 5).map(([k, v]) => `${k} ${v}%`).join(', ')}`);
   }

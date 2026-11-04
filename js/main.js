@@ -1193,7 +1193,9 @@ async function initApp() {
     } else {
       const trafficStage = new THREE.Group();
       const made = yield* createTrafficSystem(trafficStage, obstacles, streetDetails.signalIntersections, {
-        numCars: debugCars ?? quality.cars, numBuses: debugCars === null ? quality.buses : 1, numPeds: debugCars === null ? quality.pedestrians : 1, lightPools, firstNetwork: network
+        numCars: debugCars ?? quality.cars, numBuses: debugCars === null ? quality.buses : 1, numPeds: debugCars === null ? quality.pedestrians : 1, lightPools, firstNetwork: network,
+        // The cars parked along the kerbs stand in the player's way
+        kerbsideChanged: (old, now) => { controllerManager.removeColliders(old); controllerManager.addColliders(now); }
       });
       tasks?.traffic.set(0.8);
       yield* made.populate(cameraSystem.currentPos);

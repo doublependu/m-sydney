@@ -37,6 +37,11 @@ const linkById = new Map();
 const STRUCTURES = GEO.structures.map((s, id) => (s ? { id, links: [], kind: s[0], deck: !!s[1], motorway: !!s[2] } : null));
 const DECK_STRUCTURE = STRUCTURES.find((s) => s?.deck)?.id ?? 0; // the Harbour Bridge's
 
+// Each link's OSM class, from its flags (tools/build-geodata.mjs has the same list). 0 where the map doesn't say: tiles made before it
+const ROAD_CLASSES = ['', 'motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service', 'link', 'pedestrian'];
+const ROAD_CLASS = Object.fromEntries(ROAD_CLASSES.map((name, i) => [name, i]));
+const roadClass = (flags) => (flags >> 1) & 15;
+
 function linkFromRecord(l) {
   const [a, b, ni, width, lanes, dir, inner, major, deck, kind = 0, layer = 0, flags = 0, ys = null, sid = 0, openA = 0, openB = 0, length = 0, profile = null, lean = null] = l;
   const pts = [{ x: N[a * 2], z: N[a * 2 + 1] }];
@@ -48,7 +53,7 @@ function linkFromRecord(l) {
   const cut = kind === KIND.CUTTING && !!ys;
   const link = {
     id: l.id, a, b, name: RG.names[ni], width, lanes, dir, major: !!major, deck: !!deck, kind: cut ? KIND.GROUND : kind && ys ? kind : 0,
-    cut, layer, motorway: !!(flags & 1), pts, sid, half: deck ? DECK_HALF : width / 2 + 0.6, openA, openB, length
+    cut, layer, motorway: !!(flags & 1), cls: roadClass(flags), pts, sid, half: deck ? DECK_HALF : width / 2 + 0.6, openA, openB, length
   };
   // A road on the ground has a shape of its own (tools/build-heights.mjs): heights and lean at even steps along it
   if (profile) {
@@ -885,7 +890,7 @@ function roadRoute(waypoints, step = 8) {
 }
 
 export {
-  setFloor, clearFloor, DECK_DEPTH, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, deriveTunnels, linkById, SAME_LEVEL, SEGMENTS, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
+  setFloor, clearFloor, DECK_DEPTH, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, ROAD_CLASS, ROAD_CLASSES, deriveTunnels, linkById, roadClass, SAME_LEVEL, SEGMENTS, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
   clearOfWater, edgeHeight, floorBelow, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, roadHeight, roadRoute, roomUnderDeck, sameLevel,
   structureAt, structuresAt, surfaceHeight, surfaceSlope, tunnelCovered
 };

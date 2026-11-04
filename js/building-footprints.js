@@ -21,44 +21,143 @@ function partyWallHeight(record, a, b, neighbours) {
 }
 
 // One merged facade/roof mesh per 1 km cell. Explicit wall coordinates keep window bays metre-sized on any angle.
-// A hipped roof over a simple footprint: the walls' top ring drawn in towards a ridge line. Terracotta or slate by seed.
-function addPitchedRoof(roofs, ring, top, seed) {
+
+// A pitched roof over a simple footprint: hipped, or gabled (js/building-look.js), at its pitch, standing `eaves` past the walls.
+// Its planes are laid over the footprint's tightest rectangle: two slopes along it and, for a hip, two across its ends, each where
+// it's the lowest. Where a wall stands under the roof rather than at its edge (a gable end, the inside corner of an L) the wall is
+// filled up to it (rooflineOf).
+const MAX_RISE = 5.5; // m
+const MAX_SPAN = 0.6; // of the half-width: a broad roof is lower than its pitch says
+const ROOF_LIMITS = { points: 40, least: 25, most: 1500 }; // m²
+
+/** The roof's frame for a ring of { x, y }, or null where it takes a flat roof: { cx, cy, ux, uy, W, L, tan, gabled, eaves } */
+function roofFrame(ring, record) {
   const n = ring.length;
-  let area = 0, cx = 0, cz = 0;
-  for (let i = 0, j = n - 1; i < n; j = i++) {
-    area += ring[j].x * ring[i].y - ring[i].x * ring[j].y;
-    cx += ring[i].x;
-    cz += ring[i].y;
-  }
+  let area = 0;
+  for (let i = 0, j = n - 1; i < n; j = i++) area += ring[j].x * ring[i].y - ring[i].x * ring[j].y;
   area = Math.abs(area / 2);
-  if (n > 14 || area < 25 || area > 900) return false;
-  cx /= n;
-  cz /= n;
-  // Longest edge sets the ridge
-  let best = 0, ux = 1, uz = 0;
+  if (n > ROOF_LIMITS.points || area < ROOF_LIMITS.least || area > ROOF_LIMITS.most) return null;
+  // The rectangle of least area along one of its walls
+  let best = null;
   for (let i = 0; i < n; i++) {
     const a = ring[i], b = ring[(i + 1) % n];
     const L = Math.hypot(b.x - a.x, b.y - a.y);
-    if (L > best) { best = L; ux = (b.x - a.x) / L; uz = (b.y - a.y) / L; }
+    if (L < 1) continue;
+    const ux = (b.x - a.x) / L, uy = (b.y - a.y) / L;
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (const p of ring) {
+      const u = p.x * ux + p.y * uy, v = -p.x * uy + p.y * ux;
+      if (u < u0) u0 = u; if (u > u1) u1 = u; if (v < v0) v0 = v; if (v > v1) v1 = v;
+    }
+    const size = (u1 - u0) * (v1 - v0);
+    if (!best || size < best.size - 0.01) best = { size, ux, uy, u0, u1, v0, v1 };
   }
-  let lo = Infinity, hi = -Infinity, wide = 0;
-  for (const p of ring) {
-    const u = (p.x - cx) * ux + (p.y - cz) * uz, v = -(p.x - cx) * uz + (p.y - cz) * ux;
-    lo = Math.min(lo, u); hi = Math.max(hi, u); wide = Math.max(wide, Math.abs(v));
+  if (!best) return null;
+  let { ux, uy, u0, u1, v0, v1 } = best;
+  // The ridge runs along the longer side
+  if (v1 - v0 > u1 - u0) {
+    [ux, uy] = [-uy, ux];
+    [u0, u1, v0, v1] = [v0, v1, -u1, -u0];
   }
-  const rise = Math.min(3.4, wide * 0.55);
-  const inset = Math.min(wide, (hi - lo) * 0.3);
-  const a = { x: cx + ux * (lo + inset), z: cz + uz * (lo + inset) }, b = { x: cx + ux * (hi - inset), z: cz + uz * (hi - inset) };
-  const list = seed % 3 < 2 ? roofs.tile : roofs.slate;
+  const uc = (u0 + u1) / 2, vc = (v0 + v1) / 2;
+  const W = (v1 - v0) / 2, L = (u1 - u0) / 2;
+  const tan = Math.min(Math.tan(((record.pitch ?? 28) * Math.PI) / 180), MAX_RISE / W, MAX_SPAN * 2);
+  return { cx: uc * ux - vc * uy, cy: uc * uy + vc * ux, ux, uy, W, L, tan, gabled: !!record.gabled, eaves: record.eaves ?? 0.3 };
+}
+
+// In the roof's frame: u along the ridge, v across it, from the rectangle's middle
+const toFrame = (f, p) => ({ x: (p.x - f.cx) * f.ux + (p.y - f.cy) * f.uy, y: -(p.x - f.cx) * f.uy + (p.y - f.cy) * f.ux });
+const fromFrame = (f, u, v) => ({ x: f.cx + u * f.ux - v * f.uy, y: f.cy + u * f.uy + v * f.ux });
+// The roof's planes as a * u + b * v + c, heights over the walls' top in units of the pitch; each is the roof where it's the lowest
+const planesOf = (f, grow = 0) => {
+  const W = f.W + grow, L = f.L + grow;
+  const slopes = [[0, -1, W], [0, 1, W]];
+  return f.gabled ? slopes : [...slopes, [-1, 0, L], [1, 0, L]];
+};
+/** How far above the walls' top the roof is at (u, v) of the frame */
+const roofRise = (f, u, v) => f.tan * Math.max(0, Math.min(f.W - Math.abs(v), f.gabled ? Infinity : f.L - Math.abs(u)));
+
+// Sutherland-Hodgman: the part of a polygon where a * x + b * y + c <= 0
+function clipHalf(poly, a, b, c) {
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i], q = poly[(i + 1) % poly.length];
+    const fp = a * p.x + b * p.y + c, fq = a * q.x + b * q.y + c;
+    if (fp <= 0) out.push(p);
+    if ((fp < 0 && fq > 0) || (fp > 0 && fq < 0)) {
+      const t = fp / (fp - fq);
+      out.push({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
+    }
+  }
+  return out;
+}
+
+// The footprint grown by the eaves, each corner moved out along its walls' normals (at most twice the eaves at a sharp corner)
+function grown(ring, by) {
+  const n = ring.length, out = [];
   for (let i = 0; i < n; i++) {
-    const p = ring[i], q = ring[(i + 1) % n];
-    // Each wall's slope climbs to whichever end of the ridge lies nearer
-    const mid = ((p.x + q.x) / 2 - cx) * ux + ((p.y + q.y) / 2 - cz) * uz;
-    const r = mid < (lo + hi) / 2 ? a : b;
-    list.push(p.x, top, p.y, q.x, top, q.y, r.x, top + rise, r.z);
+    const p = ring[(i + n - 1) % n], q = ring[i], r = ring[(i + 1) % n];
+    const l1 = Math.hypot(q.x - p.x, q.y - p.y) || 1, l2 = Math.hypot(r.x - q.x, r.y - q.y) || 1;
+    // Outward, as the walls' normals (clockwise rings: createBuildingFootprintsSteps)
+    const n1x = -(q.y - p.y) / l1, n1y = (q.x - p.x) / l1, n2x = -(r.y - q.y) / l2, n2y = (r.x - q.x) / l2;
+    let mx = n1x + n2x, my = n1y + n2y;
+    const m = Math.hypot(mx, my);
+    if (m < 1e-6) { mx = n1x; my = n1y; } else { mx /= m; my /= m; }
+    const cos = Math.max(0.5, mx * n1x + my * n1y);
+    out.push({ x: q.x + (mx * by) / cos, y: q.y + (my * by) / cos });
   }
-  list.push(a.x, top + rise, a.z, b.x, top + rise, b.z, b.x, top + rise, b.z);
-  return true;
+  return out;
+}
+
+/** Adds the roof's triangles, in its colour, to `roofs` ({ positions, colors }) */
+function addPitchedRoof(roofs, ring, top, f, colour) {
+  const planes = planesOf(f, f.eaves);
+  const base = top - f.eaves * f.tan;
+  const outline = grown(ring, f.eaves).map((p) => toFrame(f, p));
+  for (let k = 0; k < planes.length; k++) {
+    let piece = outline;
+    for (let j = 0; j < planes.length && piece.length >= 3; j++) {
+      if (j === k) continue;
+      const [ak, bk, ck] = planes[k], [aj, bj, cj] = planes[j];
+      piece = clipHalf(piece, ak - aj, bk - bj, ck - cj);
+    }
+    if (piece.length < 3) continue;
+    const points = piece.map((p) => new THREE.Vector2(p.x, p.y));
+    const [a, b, c] = planes[k];
+    const height = (p) => base + f.tan * Math.max(0, a * p.x + b * p.y + c);
+    for (const tri of THREE.ShapeUtils.triangulateShape(points, [])) {
+      const [p, q, r] = tri.map((i) => piece[i]);
+      // Facing up
+      const flip = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x) > 0;
+      for (const v of flip ? [p, r, q] : [p, q, r]) {
+        const w = fromFrame(f, v.x, v.y);
+        roofs.positions.push(w.x, height(v), w.y);
+        roofs.colors.push(colour.r, colour.g, colour.b);
+      }
+    }
+  }
+}
+
+/**
+ * Where the roof stands over a wall from a to b: [t, rise] at each point along it where its rise changes slope, from 0 to 1.
+ * All zero for a wall at the roof's edge.
+ */
+function rooflineOf(f, a, b) {
+  const p = toFrame(f, a), q = toFrame(f, b);
+  const cuts = [0, 1];
+  const du = q.x - p.x, dv = q.y - p.y;
+  // Where it crosses the ridge's line, the middle across, or a hip: |v| - |u| = W - L
+  const lines = [[0, 1, 0], [1, 0, 0]];
+  if (!f.gabled) for (const su of [1, -1]) for (const sv of [1, -1]) lines.push([-su, sv, f.L - f.W]);
+  for (const [a2, b2, c2] of lines) {
+    const fp = a2 * p.x + b2 * p.y + c2, d = a2 * du + b2 * dv;
+    if (Math.abs(d) > 1e-9) {
+      const t = -fp / d;
+      if (t > 1e-4 && t < 1 - 1e-4) cuts.push(t);
+    }
+  }
+  cuts.sort((x, y) => x - y);
+  return cuts.map((t) => [t, roofRise(f, p.x + du * t, p.y + dv * t)]);
 }
 
 const SEAL = 0.3; // how far a wall's foot goes into the ground, so nothing shows between them
@@ -105,7 +204,7 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
     if (!(record.height > 0)) continue;
     const key = Math.floor(record.cx / 1000) + ',' + Math.floor(record.cz / 1000);
     let cell = cells.get(key);
-    if (!cell) cells.set(key, (cell = { key, positions: [], normals: [], indices: [], boxes: [], walls: [], roofs: { tile: [], slate: [] } }));
+    if (!cell) cells.set(key, (cell = { key, positions: [], normals: [], indices: [], boxes: [], walls: [], roofs: { positions: [], colors: [] } }));
     const height = record.height, base = (record.base ?? 0) + 0.22, top = height + base;
     // A piece standing on another starts this far up. Its floors count from the building's floor all the same.
     const bottom = record.bottom || 0;
@@ -121,6 +220,8 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
         return points;
       });
       if (rings[0].length < 3) continue;
+      // A pitched roof over a footprint with no courtyard, simple enough for one
+      const frame = record.pitched && roofMaterials && rings.length === 1 && !bottom ? roofFrame(rings[0], record) : null;
       rings.forEach((ring, i) => {
         for (let j = 0; j < ring.length; j++) {
           const a = ring[j], b = ring[(j + 1) % ring.length];
@@ -144,9 +245,31 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
           }
           cell.indices.push(offset, offset + 1, offset + 2, offset + 2, offset + 1, offset + 3);
           if (groundAt && !bottom) addWallFoot(cell, a, b, width, height, base, seed, reverse, groundAt, storey);
+          // Up to the roof, where the wall stands under it: a gable end, the inside corner of an L. The wall's own, with no windows:
+          // above the wall's top, no storey of windows fits (js/tsl-materials.js facadeCell)
+          if (frame) {
+            const line = rooflineOf(frame, a, b);
+            for (let k = 1; k < line.length; k++) {
+              const [t0, r0] = line[k - 1], [t1, r1] = line[k];
+              if (r0 < 0.01 && r1 < 0.01) continue;
+              const o = cell.positions.length / 3;
+              const ax = a.x + dx * t0, az = a.y + dz * t0, bx = a.x + dx * t1, bz = a.y + dz * t1;
+              cell.positions.push(ax, top, az, bx, top, bz, ax, top + r0, az, bx, top + r1, bz);
+              for (let v = 0; v < 4; v++) {
+                const along = v % 2 ? t1 : t0;
+                cell.normals.push(-dz / width, 0, dx / width);
+                cell.boxes.push(width, height, exposedHeight, seed);
+                cell.walls.push(reverse ? 1 - along : along, v < 2 ? 0 : -(v % 2 ? r1 : r0), kind);
+              }
+              cell.indices.push(o, o + 1, o + 2, o + 2, o + 1, o + 3);
+            }
+          }
         }
       });
-      if (record.pitched && roofMaterials && rings.length === 1 && addPitchedRoof(cell.roofs, rings[0], top, Math.floor(seed))) continue;
+      if (frame) {
+        addPitchedRoof(cell.roofs, rings[0], top, frame, roofMaterials.colours[record.roof ?? 4] || roofMaterials.colours[4]);
+        continue;
+      }
       const triangles = THREE.ShapeUtils.triangulateShape(rings[0], rings.slice(1));
       const points = rings.flat(), offset = cell.positions.length / 3;
       for (const p of points) {
@@ -184,19 +307,18 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
     group.add(mesh);
   }
   for (const cell of roofMaterials ? cells.values() : []) {
-    for (const [list, roofMaterial] of [[cell.roofs.tile, roofMaterials[0]], [cell.roofs.slate, roofMaterials[1]]]) {
-      if (!list.length) continue;
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute('position', new THREE.Float32BufferAttribute(list, 3));
-      geometry.computeVertexNormals();
-      geometry.computeBoundingSphere();
-      const mesh = new THREE.Mesh(geometry, roofMaterial);
-      mesh.name = 'PitchedRoofs';
-      mesh.castShadow = mesh.receiveShadow = true;
-      mesh.userData.lifted = true;
-      mesh.userData.cell = cell.key;
-      group.add(mesh);
-    }
+    if (!cell.roofs.positions.length) continue;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(cell.roofs.positions, 3));
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(cell.roofs.colors, 3));
+    geometry.computeVertexNormals();
+    geometry.computeBoundingSphere();
+    const mesh = new THREE.Mesh(geometry, roofMaterials.material);
+    mesh.name = 'PitchedRoofs';
+    mesh.castShadow = mesh.receiveShadow = true;
+    mesh.userData.lifted = true;
+    mesh.userData.cell = cell.key;
+    group.add(mesh);
   }
   return group;
 }
@@ -208,4 +330,4 @@ function createBuildingFootprints(material, records, getNeighbours, roofMaterial
   return step.value;
 }
 
-export { createBuildingFootprints, createBuildingFootprintsSteps };
+export { createBuildingFootprints, createBuildingFootprintsSteps, roofFrame, roofRise, rooflineOf };

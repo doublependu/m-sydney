@@ -223,4 +223,4 @@ Phone profile, `npm run bench`, three runs each, today on this machine:
    - Garages and carports where the lot leaves room.
    - Yards in more than one green, with a tree or two.
 4. **Redraw the map screen's images.**
-5. **Katoomba,** planned in `ai/map_expension.md`.
+5. **Katoomba,** planned in `ai/map_expansion.md`.

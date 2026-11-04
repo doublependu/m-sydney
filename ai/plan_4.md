@@ -1,8 +1,8 @@
 # Plan 4: tunnels with walls, nothing standing in the road, a loading bar that always shows, no reloads on the phone, folders GitHub can show, and suburbs that look, move and sound like suburbs
 
-Answers `ai/prompt_4.md`. Katoomba is postponed as you asked: its plan is in `ai/map_expension.md`.
+Answers `ai/prompt_4.md`. Katoomba is postponed as you asked: its plan is in `ai/map_expansion.md`.
 
-Nothing is implemented yet. The experiments ran from the scratchpad, against the game as it is. The only changes to this repo are this file and `ai/map_expension.md`. `dist/`, which git ignores, was rebuilt once.
+Nothing is implemented yet. The experiments ran from the scratchpad, against the game as it is. The only changes to this repo are this file and `ai/map_expansion.md`. `dist/`, which git ignores, was rebuilt once.
 
 ## Your phone test
 
@@ -49,7 +49,7 @@ iPhone 16e, Safari, from Macquarie St, left into Bridge St and up onto the Harbo
 
 | Prompt item | Status | Phase |
 |---|---|---|
-| Plan for Katoomba in `ai/map_expension.md` | Written | |
+| Plan for Katoomba in `ai/map_expansion.md` | Written | |
 | Folders past GitHub's limit | Measured, layout below | B |
 | Postpone Katoomba | Yes | |
 | Issue 1: Harbour Tunnel walls and water | Both causes found, map-wide counts | C |
@@ -220,7 +220,7 @@ Say so if you want any of these changed.
 5. **The sea isn't drawn while the camera is in a covered tunnel.** That's simpler and cheaper than cutting the sheet, and from inside a closed tube nothing outside shows anyway.
 6. **Nothing stands taller than the room under a deck.** A building with no height of its own is cut to fit. One with a real height that still rises into a deck is listed, as the Western Distributor's may be modelled wrong. Trees and street furniture under a deck are left out.
 7. **A guessed height comes from similar buildings,** of about the same footprint and use, not from any building within 130 m.
-8. **Folders hold 64 tiles at most,** one per 8 km square, for tiles and map images alike. Katoomba will reuse them for its tile indexes (`ai/map_expension.md`, decision 2).
+8. **Folders hold 64 tiles at most,** one per 8 km square, for tiles and map images alike. Katoomba will reuse them for its tile indexes (`ai/map_expansion.md`, decision 2).
 9. **Population and land use come from the ABS 2021 Census, by Mesh Block** (CC BY 4.0), stored in each tile as a 100 m grid. NSW's land zoning is the second source, for telling a main road's shops from a street of houses. Its licence is to be checked first.
 10. **How busy a place is follows who lives and works there.** The CBD stays as it is. A street of houses gets a few people and the odd car, and a shopping strip or a station is busy. Buses keep to main roads.
 11. **Houses are one material with many looks,** chosen per building, so the suburbs add no shader to compile on a phone.
@@ -389,7 +389,7 @@ Chosen because they stop a car, hide a problem from the tests, or are quick:
 
 ## Not in this plan
 
-From `next_3`: the other road limits (lean, grade, steps, roll, wheels on kerbs, traffic lanes off the road) stay as ratchets. Also the Eastern Distributor on-ramp's 35% dip, crossings with roads too close, and the flaky `motorways` scenario. Ponds above sea level are in `ai/map_expension.md`. From `next_2`: load at High, draws and triangles at High beyond what Phase F does, shoreline detail in the far level, STOP plates and push-button detail, and the bridge at night. From `next_1`: wheel contacts for buses, bicycles and traffic, and the pale band in the William St tube. An Android or older phone is still worth trying when you can.
+From `next_3`: the other road limits (lean, grade, steps, roll, wheels on kerbs, traffic lanes off the road) stay as ratchets. Also the Eastern Distributor on-ramp's 35% dip, crossings with roads too close, and the flaky `motorways` scenario. Ponds above sea level are in `ai/map_expansion.md`. From `next_2`: load at High, draws and triangles at High beyond what Phase F does, shoreline detail in the far level, STOP plates and push-button detail, and the bridge at night. From `next_1`: wheel contacts for buses, bicycles and traffic, and the pale band in the William St tube. An Android or older phone is still worth trying when you can.
 
 ## Risks
 

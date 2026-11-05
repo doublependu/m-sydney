@@ -210,7 +210,9 @@ const over = (places, limit) => places.all.filter((w) => w[0] > limit).length;
   const out = walker(2);
   for (const l of LINKS) {
     const half = l.width / 2;
-    const lanes = l.deck ? [-6, -2, 2, 6] : l.width > 7 ? [-(half - 1.8), 0, half - 1.8] : [0];
+    // The deck's roads by their own lanes: each is its own width now (plan 5), not one 23 m corridor
+    const lanes = l.deck && l.lanes > 1 ? Array.from({ length: l.lanes }, (_, i) => -half + ((i + 0.5) * l.width) / l.lanes)
+      : l.width > 7 ? [-(half - 1.8), 0, half - 1.8] : [0];
     for (const off of lanes) {
       const path = [];
       const { out: st } = stations(l.pts, 1);
@@ -275,7 +277,7 @@ const over = (places, limit) => places.all.filter((w) => w[0] > limit).length;
   let area = 0, covered = 0, rampArea = 0, rampCovered = 0;
   for (const l of LINKS) {
     if (l.kind === 2) continue; // under the ground, the ground is meant to be over it
-    const half = l.deck ? 12 : l.width / 2 - 0.4;
+    const half = l.width / 2 - 0.4;
     const n = Math.max(1, Math.round((half * 2) / 1.5));
     const cell = 2 * ((2 * half) / (n + 1));
     for (let i = 1; i < l.pts.length; i++) {

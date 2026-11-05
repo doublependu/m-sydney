@@ -11,7 +11,7 @@ import {
   createWaterMaterial,
   createParkLawnMaterial
 } from './tsl-materials.js';
-import { groundHeight, linkById } from './surfaces.js';
+import { groundHeight, groundRoadAt, linkById } from './surfaces.js';
 import { GroundCells, SIDEWALK_TOP, addBase, addCurb, addRoadDeck, addSurface, denseRing, pointInPolygonXZ } from './ground-geometry.js';
 import { buildStructures } from './structures.js';
 import { outsideTunnelMouths } from './tunnel-mouths.js';
@@ -131,7 +131,78 @@ function buildCells(cells, group, material, { cast = false, cullDistance = 0 } =
 }
 
 // Distances past which the ground's small parts aren't worth drawing: a kerb is under a pixel by then
-const GROUND_CULL = { curbs: 1100, hedges: 900, base: 1600 };
+const GROUND_CULL = { curbs: 1100, hedges: 900, base: 1600, bollards: 300 };
+
+// A traffic island between a motorway's carriageways is a low concrete separator with yellow-and-black bollards along it
+// (ref/details/2.png and 6.png, the Harbour Bridge's south end), never lawn or hedge (plan 5, decision 9). An island is one where
+// it's narrow and most of its edge is beside a motorway or its ramps.
+const SEPARATOR_WIDTH = 6; // m: its area over its length
+function isSeparator(b) {
+  if (b.area / Math.max(b.maxX - b.minX, b.maxZ - b.minZ, 1) > SEPARATOR_WIDTH || b.area > 4000) return false;
+  let beside = 0, motorway = 0;
+  for (const p of denseRing(b.poly, 6)) {
+    const road = groundRoadAt(p.x, p.z);
+    if (!road) continue;
+    beside++;
+    if (road.motorway) motorway++;
+  }
+  return beside >= 3 && motorway >= beside * 0.6;
+}
+// Bollards along an island's middle, every BOLLARD_STEP m along its longest way across, where it's wide enough to stand one
+const BOLLARD_STEP = 8;
+function bollardSpots(b) {
+  const ux0 = b.maxX - b.minX >= b.maxZ - b.minZ ? 1 : 0, uz0 = 1 - ux0;
+  // Its long way, from the outline's spread about its centre
+  let sxx = 0, sxz = 0, szz = 0;
+  for (const p of b.poly) {
+    const dx = p.x - b.cx, dz = p.z - b.cz;
+    sxx += dx * dx; sxz += dx * dz; szz += dz * dz;
+  }
+  const angle = 0.5 * Math.atan2(2 * sxz, sxx - szz);
+  const ux = Number.isFinite(angle) ? Math.cos(angle) : ux0, uz = Number.isFinite(angle) ? Math.sin(angle) : uz0;
+  let lo = Infinity, hi = -Infinity;
+  for (const p of b.poly) {
+    const t = (p.x - b.cx) * ux + (p.z - b.cz) * uz;
+    lo = Math.min(lo, t); hi = Math.max(hi, t);
+  }
+  const out = [];
+  for (let t = lo + 1.5; t <= hi - 1.5; t += BOLLARD_STEP) {
+    // Where the line across the island at t meets its outline
+    const ox = b.cx + ux * t, oz = b.cz + uz * t;
+    let a = Infinity, c = -Infinity;
+    for (let i = 0, j = b.poly.length - 1; i < b.poly.length; j = i++) {
+      const p = b.poly[j], q = b.poly[i];
+      const tp = (p.x - ox) * ux + (p.z - oz) * uz, tq = (q.x - ox) * ux + (q.z - oz) * uz;
+      if ((tp > 0) === (tq > 0) || tp === tq) continue;
+      const f = tp / (tp - tq);
+      const across = (p.x + (q.x - p.x) * f - ox) * -uz + (p.z + (q.z - p.z) * f - oz) * ux;
+      a = Math.min(a, across); c = Math.max(c, across);
+    }
+    if (!(c - a > 0.5)) continue;
+    const m = (a + c) / 2;
+    out.push({ x: ox - uz * m, z: oz + ux * m });
+  }
+  return out;
+}
+// A bollard: a post in bands, yellow and black, standing on the island's top
+const BOLLARD = { half: 0.09, bands: [[0, 0.3, 0], [0.3, 0.5, 1], [0.5, 0.7, 0], [0.7, 0.9, 1]] }; // [from, to, black?]
+function addBollard(yellow, black, x, z) {
+  const y0 = groundHeight(x, z) + SIDEWALK_TOP, h = BOLLARD.half;
+  for (const [from, to, dark] of BOLLARD.bands) {
+    const cells = dark ? black : yellow;
+    const c = cells.cell(x, z);
+    for (const [nx, nz] of [[1, 0], [0, 1], [-1, 0], [0, -1]]) {
+      const ax = x + (nx - nz) * h, az = z + (nz + nx) * h, bx = x + (nx + nz) * h, bz = z + (nz - nx) * h;
+      const v0 = cells.vertex(c, ax, y0 + from, az, nx, 0, nz), v1 = cells.vertex(c, bx, y0 + from, bz, nx, 0, nz);
+      const v2 = cells.vertex(c, ax, y0 + to, az, nx, 0, nz), v3 = cells.vertex(c, bx, y0 + to, bz, nx, 0, nz);
+      c.index.push(v0, v1, v2, v1, v3, v2);
+    }
+    if (to === BOLLARD.bands[BOLLARD.bands.length - 1][1]) {
+      const v = [[-h, -h], [h, -h], [h, h], [-h, h]].map(([dx, dz]) => cells.vertex(c, x + dx, y0 + to, z + dz, 0, 1, 0));
+      c.index.push(v[0], v[2], v[1], v[0], v[3], v[2]);
+    }
+  }
+}
 
 // One set of materials for all the tiles, so a new tile compiles nothing
 let shared = null;
@@ -143,6 +214,8 @@ function groundMaterials() {
     curb: createCurbMaterial(),
     lawn: createParkLawnMaterial(false),
     hedge: new THREE.MeshStandardNodeMaterial({ color: 0x3f7a3f, roughness: 0.84 }),
+    bollardYellow: new THREE.MeshStandardNodeMaterial({ color: 0xe0b020, roughness: 0.6 }),
+    bollardBlack: new THREE.MeshStandardNodeMaterial({ color: 0x1c1c1c, roughness: 0.6 }),
     // Under all of it, a plain dark ground: a seam anywhere shows that, never the harbour
     base: new THREE.MeshStandardNodeMaterial({ color: 0x2c2b29, roughness: 1 }),
     seawall: new THREE.MeshStandardNodeMaterial({ color: 0x8d7a5e, roughness: 0.85, metalness: 0.02 })
@@ -181,6 +254,8 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
   const wanted = (x, z) => inTile(x, z) && part(x, z);
   const cells = () => new GroundCells(1e6);
   const road = cells(), curbs = cells(), paving = cells(), lawns = cells(), hedges = cells(), base = cells();
+  const yellow = cells(), black = cells();
+  const separators = [];
   const links = tile.links.map((r) => linkById.get(r[0])).filter(Boolean);
 
   yield* addRoadDeck(road, wanted, links, tile.fills);
@@ -190,7 +265,10 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
     if (!part(mid.x, mid.z)) continue;
     addCurb(curbs, b.poly);
     for (const hole of b.holes) addCurb(curbs, hole);
-    if (b.median) {
+    if (isSeparator(b)) {
+      separators.push(b);
+      for (const p of bollardSpots(b)) addBollard(yellow, black, p.x, p.z);
+    } else if (b.median) {
       const hedge = Math.min(b.maxX - b.minX, b.maxZ - b.minZ) > 3 && b.area > 60 && offsetPolygonInward(b.poly, 1.1);
       if (hedge) addSurface(hedges, [hedge], SIDEWALK_TOP + 0.4);
     }
@@ -201,9 +279,15 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
     if (part(mid.x, mid.z)) addSurface(paving, rings, SIDEWALK_TOP);
     if (i % 2 === 0) yield;
   }
+  // Concrete where a separator's lawn would be
+  const onSeparator = (rings) => {
+    if (!separators.length) return false;
+    const ring = rings[0], x = ring.reduce((t, p) => t + p.x, 0) / ring.length, z = ring.reduce((t, p) => t + p.z, 0) / ring.length;
+    return separators.some((b) => x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ && pointInPolygonXZ(b.poly, x, z));
+  };
   for (const [i, rings] of tile.placedLawns.entries()) {
     const mid = midOf(rings);
-    if (part(mid.x, mid.z)) addSurface(lawns, rings, SIDEWALK_TOP + 0.02);
+    if (part(mid.x, mid.z)) addSurface(onSeparator(rings) ? paving : lawns, rings, SIDEWALK_TOP + 0.02);
     if (i % 8 === 0) yield;
   }
   yield;
@@ -213,6 +297,8 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
   buildCells(paving, target, mats.sidewalk);
   buildCells(lawns, target, mats.lawn);
   buildCells(hedges, target, mats.hedge, { cullDistance: GROUND_CULL.hedges });
+  buildCells(yellow, target, mats.bollardYellow, { cullDistance: GROUND_CULL.bollards });
+  buildCells(black, target, mats.bollardBlack, { cullDistance: GROUND_CULL.bollards });
   yield;
   if (!last) return [];
 

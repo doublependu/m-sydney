@@ -153,7 +153,7 @@ test('a tunnel opens only where it comes to the surface, never under a street\'s
 
 test('every tunnel mouth faces into its tube, with the cutting behind it', () => {
   assert.ok(PORTALS.length > 20, `${PORTALS.length} mouths`);
-  const tunnels = new Set(STRUCTURES.slice(1).filter((s) => s.kind === KIND.TUNNEL).map((s) => s.id));
+  const tunnels = new Set(STRUCTURES.slice(1).filter((s) => s?.kind === KIND.TUNNEL).map((s) => s.id));
   for (const m of PORTALS) {
     if (nearEdgeOfHeld(m)) continue; // its tube may not be held
     const inside = [...tunnels].some((sid) => inTunnel(sid, m.x + m.ux * 6, m.z + m.uz * 6));
@@ -214,19 +214,34 @@ test('roads off the ground climb gently: only where a tunnel must dive under ano
   for (const { l, grade } of steep) assert.ok(grade < 0.37, `${l.name} climbs ${(grade * 100).toFixed(0)}%`);
 });
 
+// The deck carries OSM's own carriageways (plan 5): the northbound on the corridor's structure, the southbound and the Cahill's
+// lanes on their own. Each ramp leaving one of them is part of its structure.
 test('a ramp leaving the Harbour Bridge keeps its own level, and the deck keeps its', () => {
-  const ramp = LINKS.find((l) => l.name === 'Cahill Expressway' && l.pts.some((p) => Math.hypot(p.x + 273, p.z + 1515) < 1) && !l.deck);
-  const deck = LINKS.find((l) => l.deck);
-  assert.equal(ramp.sid, deck.sid, 'the ramp is part of the bridge\'s structure');
-  // Across the deck's own width the ramp is at the deck's height: nothing to fall into
-  const start = ramp.pts[0], next = ramp.pts[1];
-  assert.ok(Math.abs(start.y - next.y) < 0.5, `it drops ${(start.y - next.y).toFixed(1)} m across the deck`);
-  // Further along, wherever two levels of it overlap, something on one stays on that one
-  for (const l of LINKS.filter((o) => o.sid === deck.sid && !o.deck)) {
-    for (let i = 1; i < l.pts.length; i++) {
-      const p = l.pts[i];
-      const levels = structuresAt(p.x, p.z).filter((s) => s.sid === deck.sid);
-      for (const level of levels) assert.ok(Math.abs(surfaceHeight(deck.sid, p.x, p.z, level.y) - level.y) < 1e-6, 'a level lost at ' + Math.round(p.x) + ', ' + Math.round(p.z));
+  const deckLinks = LINKS.filter((l) => l.deck);
+  const deckSids = new Set(deckLinks.map((l) => l.sid));
+  const deckNodes = new Map();
+  for (const l of deckLinks) {
+    deckNodes.set(l.a, l.pts[0]);
+    deckNodes.set(l.b, l.pts[l.pts.length - 1]);
+  }
+  const ramps = LINKS.filter((l) => !l.deck && deckSids.has(l.sid) && (deckNodes.has(l.a) || deckNodes.has(l.b)));
+  assert.ok(ramps.some((l) => l.name === 'Cahill Expressway'), 'the Cahill leaves the deck at its south end');
+  for (const ramp of ramps) {
+    // Where it leaves the deck it's at the deck's height, and it doesn't drop away at once: nothing to fall into
+    const fromA = deckNodes.has(ramp.a), pts = fromA ? ramp.pts : [...ramp.pts].reverse();
+    const at = deckNodes.get(fromA ? ramp.a : ramp.b);
+    assert.ok(Math.abs(pts[0].y - at.y) < 0.05, `${ramp.name} starts ${(pts[0].y - at.y).toFixed(2)} m off the deck at ${Math.round(at.x)}, ${Math.round(at.z)}`);
+    const run = Math.hypot(pts[1].x - pts[0].x, pts[1].z - pts[0].z);
+    assert.ok(Math.abs(pts[0].y - pts[1].y) < Math.max(0.5, run * 0.08), `${ramp.name} drops ${(pts[0].y - pts[1].y).toFixed(1)} m in ${run.toFixed(0)} m off the deck`);
+  }
+  // Further along, wherever two levels of one overlap, something on one stays on that one
+  for (const sid of deckSids) {
+    for (const l of LINKS.filter((o) => o.sid === sid && !o.deck)) {
+      for (let i = 1; i < l.pts.length; i++) {
+        const p = l.pts[i];
+        const levels = structuresAt(p.x, p.z).filter((s) => s.sid === sid);
+        for (const level of levels) assert.ok(Math.abs(surfaceHeight(sid, p.x, p.z, level.y) - level.y) < 1e-6, 'a level lost at ' + Math.round(p.x) + ', ' + Math.round(p.z));
+      }
     }
   }
 });

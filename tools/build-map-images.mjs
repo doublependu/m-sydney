@@ -1,5 +1,7 @@
 // The map screen's images: all of the map, drawn by the game's own map code in Chrome from everything the generators made, at three levels
 // of detail, into public/map/. Needs a build of the game in dist/, and npm run build again afterwards to take them in. npm run data:map does all that.
+// --area=x0,z0,x1,z1 or MAP_AREA=x0,z0,x1,z1 (the game's frame, as tools/local/'s boxes): only the images over that area, the rest left as
+// they are, so a local change to the map redraws only its own: MAP_AREA=-800,-3600,650,-850 npm run data:map
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +17,10 @@ const FAR = 4000;
 const world = JSON.parse(fs.readFileSync(path.join(ROOT, 'public/tiles/world.json'), 'utf8'));
 const tiles = Object.keys(world.tiles).map((k) => k.split('_').map(Number));
 const started = Date.now();
-fs.rmSync(OUT, { recursive: true, force: true });
+const AREA = (process.argv.find((a) => a.startsWith('--area='))?.slice(7) || process.env.MAP_AREA)?.split(',').map(Number);
+if (AREA && (AREA.length !== 4 || AREA.some((v) => !Number.isFinite(v)))) throw new Error('--area=x0,z0,x1,z1');
+const overArea = (x0, z0, size) => !AREA || (x0 < AREA[2] && x0 + size > AREA[0] && z0 < AREA[3] && z0 + size > AREA[1]);
+if (!AREA) fs.rmSync(OUT, { recursive: true, force: true });
 const fullMap = zlib.gunzipSync(fs.readFileSync(path.join(ROOT, 'tools/data/generated/map-full.json.gz')));
 
 const server = await serveDist(0, process.env.MAP_DIST || path.join(ROOT, 'dist'));
@@ -50,6 +55,7 @@ for (const level of LEVELS) {
   }
   for (const key of keys) {
     const [a, b] = key.split('_').map(Number);
+    if (!overArea(a * level.size, b * level.size, level.size)) continue;
     const url = await page.evaluate(async ({ x0, z0, size, px, far }) => {
       const debug = window.__gameDebug;
       const cache = (window.__farCache ??= new Map());
@@ -78,7 +84,8 @@ for (const level of LEVELS) {
   index.levels.push({ ...level, keys: [...keys] });
 }
 void farCache;
-fs.writeFileSync(path.join(OUT, 'index.json'), JSON.stringify(index));
+// Over an area, the index stays: the map's squares are the same
+if (!AREA) fs.writeFileSync(path.join(OUT, 'index.json'), JSON.stringify(index));
 console.log(`[map] ${written} images, ${Math.round(bytes / 1048576)} MB, in ${Math.round((Date.now() - started) / 1000)} s; errors ${game.errors.length} ${game.errors.slice(0, 2).join(' | ').slice(0, 200)}`);
 await browser.close();
 await server.close();

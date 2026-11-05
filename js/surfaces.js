@@ -53,7 +53,9 @@ function linkFromRecord(l) {
   const cut = kind === KIND.CUTTING && !!ys;
   const link = {
     id: l.id, a, b, name: RG.names[ni], width, lanes, dir, major: !!major, deck: !!deck, kind: cut ? KIND.GROUND : kind && ys ? kind : 0,
-    cut, layer, motorway: !!(flags & 1), cls: roadClass(flags), pts, sid, half: width / 2 + 0.6, openA, openB, length
+    cut, layer, motorway: !!(flags & 1), cls: roadClass(flags), pts, sid, half: width / 2 + 0.6, openA, openB, length,
+    // A tunnel open to the sky all along, between sheer walls (flag 64, tools/build-geodata.mjs openCutting)
+    openCutting: !!(flags & 64)
   };
   // A road on the ground has a shape of its own (tools/build-heights.mjs): heights and lean at even steps along it
   if (profile) {
@@ -205,6 +207,7 @@ function deriveTunnels() {
   const lengthOf = (l) => l.pts.reduce((sum, p, i) => (i ? sum + Math.hypot(p.x - l.pts[i - 1].x, p.z - l.pts[i - 1].z) : 0), 0);
   // Metres open from one end of a link: till the ground closes over it
   const openFrom = (l, fromA) => {
+    if (l.openCutting) return Infinity;
     const pts = fromA ? l.pts : [...l.pts].reverse();
     let s = 0;
     for (let i = 1; i < pts.length; i++) {

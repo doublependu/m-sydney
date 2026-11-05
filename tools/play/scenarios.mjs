@@ -316,13 +316,16 @@ const LEVEL_ROUTES = {
   cahillWest: [{ x: 452, z: -1200 }, { x: 405, z: -1337 }, { x: -345, z: -1382 }],
   // Plan 5: the video's drive (ref/, "Driving across the Sydney Harbour Bridge"): up Clarence St, its tidal-flow ramp onto the bridge,
   // over it and on to North Sydney
-  bridgeClarence: [{ x: -280, z: -700, name: 'Clarence Street' }, { x: -338, z: -1083, name: 'Bradfield Highway Onramp' },
+  // (The tidal-flow lane's way in from Clarence St is OSM's "Bradfield Highway", way 1186155127 and on, meeting the ramp from Grosvenor St
+  // at (-339, -1133): the ramp's own start at (-338, -1083) is that other way up)
+  bridgeClarence: [{ x: -280, z: -700, name: 'Clarence Street' }, { x: -339, z: -1133, name: 'Bradfield Highway' },
     { x: -185, z: -1758, name: 'Sydney Harbour Bridge' }, { x: 141, z: -2803, name: 'Sydney Harbour Bridge' }, { x: -55, z: -3261, name: 'Sydney Harbour Bridge' }],
   // The other ways up at the CBD end: from Bridge St by Grosvenor St, and round the Cahill's loop in its cutting
   grosvenorUp: [{ x: -60, z: -1047, name: 'Bridge Street' }, { x: -170, z: -1066, name: 'Grosvenor Street' }, { x: -185, z: -1758, name: 'Sydney Harbour Bridge' }],
   cahillLoopUp: [{ x: 200, z: -1330, name: 'Cahill Expressway' }, { x: -420, z: -1345, name: 'Cahill Expressway' }, { x: -185, z: -1758, name: 'Sydney Harbour Bridge' }],
-  // And the ways off, from the southbound carriageway and the Cahill's lane
-  westernSuburbsOff: [{ x: 149, z: -2805, name: 'Bradfield Highway' }, { x: -362, z: -1078, name: 'Western Distributor' }, { x: -459, z: -587, name: 'Western Distributor' }],
+  // And the ways off, from the southbound carriageway and the Cahill's lane (the Western Distributor's southbound carriageway passes
+  // (-337, -1066); (-362, -1078) is its northbound one's)
+  westernSuburbsOff: [{ x: 149, z: -2805, name: 'Bradfield Highway' }, { x: -337, z: -1066, name: 'Western Distributor' }, { x: -459, z: -587, name: 'Western Distributor' }],
   grosvenorOff: [{ x: 149, z: -2805, name: 'Bradfield Highway' }, { x: -200, z: -1062, name: 'Grosvenor Street' }],
   cahillOff: [{ x: 157, z: -2806, name: 'Cahill Expressway' }, { x: -246, z: -1365 }, { x: 405, z: -1345 }]
 };
@@ -717,17 +720,21 @@ export const SCENARIOS = {
     minutes: 5,
     async run({ human, page, metric, expect }) {
       await expectCityCompletes(human, page, expect);
+      // Along the deck's outer barriers (plan 5: the deck is its roads side by side, from the corridor's west edge to the Cahill's lane,
+      // the outermost east), keeping this far in from the edge of the outermost lane
+      const IN = 1.3;
       const legs = [
         { from: 640, to: 1360, direction: 1 }, // northbound along the west barrier
         { from: 1360, to: 640, direction: -1 } // southbound along the east barrier
       ];
+      // m left of the corridor's line, travelling the leg's way, hard against its barrier
+      const leftOf = (span, d) => (d > 0 ? -span.west - IN : span.east - IN);
       let invisibleStops = 0, closest = Infinity;
       const stops = [];
       for (const leg of legs) {
-        const start = await page.evaluate(([s, d]) => {
-          const at = window.__gameDebug.bridgePlace(s);
-          return { x: at.x - at.nx * 11 * d, z: at.z - at.nz * 11 * d, h: d > 0 ? at.h : at.h + Math.PI };
-        }, [leg.from, leg.direction]);
+        const place = await page.evaluate((s) => window.__gameDebug.bridgePlace(s), leg.from);
+        const east = -leftOf(place, leg.direction) * leg.direction; // m east of the line
+        const start = { x: place.x + place.nx * east, z: place.z + place.nz * east, h: leg.direction > 0 ? place.h : place.h + Math.PI };
         await page.evaluate(([x, z, h]) => window.__gameDebug.goto(x, z, h, 'car', true), [start.x, start.z, start.h]);
         await human.wait(600);
         expect(await page.evaluate(() => window.__gameDebug.onDeck()), 'the leg did not start on the deck');
@@ -739,11 +746,12 @@ export const SCENARIOS = {
           const aim = await page.evaluate(([x, z, d]) => window.__gameDebug.bridgeAim(x, z, d), [state.x, state.z, leg.direction]);
           expect(aim && await page.evaluate(() => window.__gameDebug.onDeck()), `left the deck at ${Math.round(state.x)}, ${Math.round(state.z)}`);
           if (!aim || (leg.direction > 0 ? aim.s > leg.to : aim.s < leg.to) || human.now() - started > 100000) break;
-          // Keep 11 m left of the centre line, hard against the barrier (the tangent points the way we're going)
+          // Keep hard against the barrier (the tangent points the way we're going)
           const fx = Math.sin(aim.tangent), fz = Math.cos(aim.tangent);
-          const lx = fz, lz = -fx;
-          await human.steerTowards(state, { x: aim.aheadX + lx * 11, z: aim.aheadZ + lz * 11 }, 0.02);
-          closest = Math.min(closest, 12.5 - Math.abs(aim.off));
+          const lx = fz, lz = -fx, left = leftOf(aim, leg.direction);
+          await human.steerTowards(state, { x: aim.aheadX + lx * left, z: aim.aheadZ + lz * left }, 0.02);
+          // From the outermost lane's edge; the barrier's face is half a metre past it (js/harbour-bridge.js layout)
+          closest = Math.min(closest, leg.direction > 0 ? aim.off - aim.west : aim.east - aim.off);
           // Traffic in the way explains a stop; anything else doesn't
           const ahead = (await page.evaluate(([x, z]) => window.__gameDebug.trafficNear(x, z, 20), [state.x, state.z]))
             .filter((v) => v.deck && (v.x - state.x) * Math.sin(state.heading) + (v.z - state.z) * Math.cos(state.heading) > 0);
@@ -1328,12 +1336,13 @@ export const SCENARIOS = {
       await human.hold('KeyW', 2500);
       const walked = await human.state();
       expect(at(walked, footway) > 3 && walked.onFootway, `walking the footway went ${at(walked, footway).toFixed(1)} m`);
+      // From the footway the nearest of the deck's roads is the Cahill's lane, on its own structure (plan 5): on the deck, all the same
       const deckRider = await go('cyclist');
-      expect(deckRider.surface === onDeck.surface, 'the bicycle left the deck');
+      expect(deckRider.deck, 'the bicycle left the deck');
       const overDeck = await go('helicopter');
       expect(overDeck.y + overDeck.surfaceY >= 150, `the helicopter would hit the arch at ${(overDeck.y + overDeck.surfaceY).toFixed(0)} m`);
       const backOnDeck = await go('car');
-      expect(backOnDeck.surface === onDeck.surface, 'down from the air, the car should land on the deck under it');
+      expect(backOnDeck.deck, 'down from the air, the car should land on the deck under it');
 
       // In a tunnel
       await place(1550, 112, 1.43, 'car', true);

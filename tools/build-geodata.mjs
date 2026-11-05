@@ -147,7 +147,16 @@ function classWidth(t) {
 // Hickson Rd under the Walsh Bay wharves are the only ways out of The Rocks, and through it to the bridge. They're streets
 // at ground level. Tunnels, bridges and motorways are all kept, each on its own level (KIND below).
 const underground = (t) => t.tunnel && t.tunnel !== 'no' && t.tunnel !== 'building_passage';
-function driven(t) {
+// Under the ground's level but open to the sky all along, between sheer walls: tunnel=yes with cutting=yes, which OSM never has
+// together, so only a hand edit makes one (the Cahill's loop up to the bridge, tools/local/harbour-bridge-cbd.json). Flag 64: the
+// game never closes it over, however deep it runs (js/surfaces.js deriveTunnels)
+const openCutting = (t) => underground(t) && t.cutting === 'yes';
+// Bus-only: access=no, for buses. Taken in only where an area's hand edits name the way (tools/local/), as the bus lane between
+// the Harbour Bridge's east pylons: the map has 279 of them, and taking them all at once would change tiles everywhere. Their
+// links carry flag 32, and traffic keeps cars off them (js/road-network.js busOnly)
+const busOnly = (t) => t.access === 'no' && (t.psv === 'designated' || t.bus === 'designated');
+function driven(t, w) {
+  if (busOnly(t) && w?.local) return DRIVEN.test(t.highway);
   if (t.access === 'private' || t.access === 'no' || t.motor_vehicle === 'no' || t.motorcar === 'no') return false;
   if (t.highway === 'service') return !!t.name && !/parking_aisle|driveway/.test(t.service || '');
   return DRIVEN.test(t.highway);
@@ -203,14 +212,24 @@ const eastOfCorridor = (w) => {
   return offs.length && offs.reduce((t, o) => t + o, 0) / offs.length > DECK_EAST.from;
 };
 const BRIDGE_IDS = new Set(BRIDGE_WAYS);
-// Along the corridor, and so it: the northbound ways it's made of, and any that run on along it. Not those east of it.
+const BRIDGE_NODES = new Set(bridgeOsm.flatMap((w) => w.nodes));
+// A one-way road from beside the corridor that ends on one of its nodes: a way on, not along it. The Western Distributor's last 37 m
+// (OSM 1097892516), where the Clarence St ramp has joined it, ends where the corridor's first way becomes four lanes: dropped as along
+// the bridge, the two main ways up from the city were left ending in the air. (Ways off at the north end are joined, below.)
+const wayOn = (w) => {
+  if (w.tags?.oneway !== 'yes') return false;
+  const first = w.geometry[0];
+  return BRIDGE_NODES.has(w.nodes[w.nodes.length - 1]) && Math.abs(onBridge(...toWorld(first.lon, first.lat)).off) > 6;
+};
+// Along the corridor, and so it: the northbound ways it's made of, and any that run on along it. Not those east of it, nor ways on.
 const alongBridge = (w) => {
   if (BRIDGE_IDS.has(w.id)) return true;
+  if (wayOn(w)) return false;
   if (!MOTORWAY.test(w.tags?.highway || '') && w.tags?.bridge !== 'yes') return false;
   const pts = w.geometry.map((g) => toWorld(g.lon, g.lat));
   return pts.filter(([x, z]) => toBridge(x, z) < 30).length >= pts.length * 0.5 && !eastOfCorridor(w);
 };
-const kept = osmRoads.filter((w) => driven(w.tags || {}) && inPlay(w) && !alongBridge(w));
+const kept = osmRoads.filter((w) => driven(w.tags || {}, w) && inPlay(w) && !alongBridge(w));
 // Plain streets rarely tell the whole story: a short underpass or an unnamed service road can be all that joins a
 // neighbourhood to the rest. Bring back any road that joins two parts of the network, shortest first.
 {
@@ -313,6 +332,9 @@ function crossesAnother(w, pts) {
 function kindOf(w, pts) {
   const t = w.tags;
   if (underground(t)) return KIND.TUNNEL;
+  // A way onto the corridor climbs to the deck's height where it meets it: part of the bridge, as the joins below are (on the ground,
+  // the Western Distributor met the deck 3.6 m below it)
+  if (wayOn(w)) return KIND.BRIDGE;
   const layer = parseInt(t.layer, 10) || 0;
   const bridge = !!(t.bridge && t.bridge !== 'no');
   if (!bridge && !(layer > 0 && crossesAnother(w, pts))) return KIND.GROUND;
@@ -360,7 +382,7 @@ for (const w of kept) {
   const lanes = parseInt(t.lanes, 10) || 0;
   const kind = kindOf(w, pts);
   const layer = Math.max(-5, Math.min(5, parseInt(t.layer, 10) || 0));
-  const flags = (MOTORWAY.test(t.highway) ? 1 : 0) | (classOf(t.highway) << 1);
+  const flags = (MOTORWAY.test(t.highway) ? 1 : 0) | (classOf(t.highway) << 1) | (busOnly(t) ? 32 : 0) | (openCutting(t) ? 64 : 0);
   let a = 0;
   for (let i = 1; i < pts.length; i++) {
     if (i !== pts.length - 1 && !(uses.get(w.nodes[i]) > 1)) continue;
@@ -382,8 +404,9 @@ for (const w of kept) {
     const ia = idOf(w.nodes[start], pts[start]);
     const ib = idOf(w.nodes[i], pts[i]);
     if (ia === ib) continue;
-    // Only roads on the ground cut the curb islands: under a bridge or over a tunnel the ground is whatever is there
-    if (kind === KIND.GROUND) strips.push({ pts: seg, r: width / 2 + KERB_CLEAR });
+    // Only roads on the ground cut the curb islands: under a bridge or over a tunnel the ground is whatever is there. And an open
+    // cutting, which is open to the sky all along: else the island's footpath was laid over its road, down between its walls
+    if (kind === KIND.GROUND || openCutting(t)) strips.push({ pts: seg, r: width / 2 + KERB_CLEAR });
     kinds[kind]++;
     const shape = kind === KIND.GROUND ? rdp(seg, 0.4) : densify(rdp(seg, 0.4));
     // On the bridge's deck east of the corridor, all of it: part of the deck

@@ -28,6 +28,14 @@ const PIER = 1.0; // m of granite at least between the roads and an opening
 const PYLON_FROM_MIDDLE = 282; // m along the deck from the middle of the arch to each pair of pylons
 const BEARINGS = 503; // m between the arch's hinges
 const BARRIER = { width: 0.5, height: 0.9 };
+const KIND_CUTTING = 3; // a street on the ground sunk into a cutting (js/surfaces.js KIND)
+// The sign gantry over the lanes coming off the bridge southbound, where they run side by side on the ground before they part
+// (ref/details/3.png): across the line z = SOUTH_GANTRY.z, over the southbound roads within `reach` of x. Its boards from the left
+// as you drive under it (the east, the bus lanes to York St) to the right: [style, line, line]
+const SOUTH_GANTRY = {
+  x: -290, z: -1285, reach: 25,
+  boards: [['bus', 'LANE', '24 hrs'], ['bus', 'LANE'], ['green', 'Western', 'Suburbs'], ['green', 'City South', 'Darling Hbr'], ['blank'], ['green', 'GROSVENOR ST', 'City North']]
+};
 const RAIL_WIDTH = 10.6, CYCLE_WIDTH = 2.8, FOOT_WIDTH = 2.8;
 
 // What's where across the deck s m along it, m east of the corridor's line
@@ -410,6 +418,54 @@ function buildHarbourBridge(group) {
     }
   }
 
+  // The sign gantry at the south end, over the southbound lanes (SOUTH_GANTRY): boards on top of its truss, read by those coming
+  // off the bridge, and a green arrow over each lane under it
+  const boards = [], boardBacks = [];
+  {
+    const { x: gx, z: gz, reach, boards: BOARDS } = SOUTH_GANTRY;
+    let west = Infinity, east = -Infinity;
+    for (const [, flat, width, , , , kind, , dir] of GEO.bridgeLinks || []) {
+      if ((kind && kind !== KIND_CUTTING) || !dir) continue; // on the ground, or sunk a little into it
+      for (let i = 0; i + 3 < flat.length; i += 2) {
+        const az = flat[i + 1], bz = flat[i + 3];
+        if ((az - gz) * (bz - gz) > 0 || az === bz || (bz - az) * dir < 0) continue;
+        const x = flat[i] + ((flat[i + 2] - flat[i]) * (gz - az)) / (bz - az);
+        if (Math.abs(x - gx) > reach) continue;
+        west = Math.min(west, x - width / 2);
+        east = Math.max(east, x + width / 2);
+      }
+    }
+    if (east > west) {
+      const P = (x, h) => ({ x, y: groundHeight(x, gz) + h, z: gz });
+      const w0 = west - 1.2, e0 = east + 1.2;
+      for (const h of [6.0, 7.4]) strut(P(w0, h), P(e0, h), 0.22, 0.22);
+      for (let x = w0; x + 2.4 <= e0; x += 2.4) strut(P(x, 6.0), P(x + 2.4, 7.4), 0.07, 0.07);
+      for (const x of [w0, e0]) strut(P(x, 0), P(x, 7.6), 0.45, 0.45);
+      const span = east - west, n = BOARDS.length, bw = Math.min(4.6, span / n - 0.3), bh = 1.6;
+      BOARDS.forEach((_, k) => {
+        const x = east - (span * (k + 0.5)) / n, p = P(x, 7.4 + bh / 2 + 0.1);
+        const g = new THREE.PlaneGeometry(bw, bh);
+        const coords = g.attributes.uv;
+        for (let m = 0; m < coords.count; m++) coords.setY(m, (coords.getY(m) + (n - 1 - k)) / n);
+        // Facing north, up the road towards the bridge
+        g.rotateY(Math.PI).translate(p.x, p.y, gz - 0.3);
+        boards.push(g);
+        boardBacks.push(new THREE.BoxGeometry(bw + 0.1, bh + 0.1, 0.12).translate(p.x, p.y, gz - 0.2));
+      });
+      const lanes = Math.max(1, Math.round(span / 3.5));
+      for (let l = 0; l < lanes; l++) {
+        const x = west + ((l + 0.5) * span) / lanes;
+        strut(P(x, 5.6), P(x, 6.0), 0.08, 0.08);
+        const g = new THREE.PlaneGeometry(1.0, 1.0);
+        const coords = g.attributes.uv;
+        for (let m = 0; m < coords.count; m++) coords.setX(m, coords.getX(m) / 3);
+        const p = P(x, 5.3);
+        g.rotateY(Math.PI).translate(p.x, p.y, gz - 0.25);
+        laneSigns.push(g);
+      }
+    }
+  }
+
   // Flags on top of the arch
   for (const side of [-3, 3]) strut(at(middle, TRUSS_MID + side, upper(0)), at(middle, TRUSS_MID + side, upper(0) + 14), 0.22, 0.22);
 
@@ -714,6 +770,46 @@ function buildHarbourBridge(group) {
     const mesh = new THREE.Mesh(mergeGeometries(laneSigns, false), material);
     mesh.userData.lifted = true;
     bridge.add(mesh);
+  }
+  if (boards.length && typeof document !== 'undefined') {
+    const n = SOUTH_GANTRY.boards.length, W = 512, H = 160;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H * n;
+    const c = canvas.getContext('2d');
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    SOUTH_GANTRY.boards.forEach(([style, ...lines], k) => {
+      const y0 = k * H;
+      c.fillStyle = style === 'bus' ? '#f4f4f0' : style === 'green' ? '#0f6a3a' : '#3b352e';
+      c.fillRect(0, y0, W, H);
+      c.strokeStyle = style === 'bus' ? '#111' : style === 'green' ? '#f4f4f0' : '#2a2520';
+      c.lineWidth = 6;
+      c.strokeRect(8, y0 + 8, W - 16, H - 16);
+      let x = W / 2;
+      if (style === 'bus') {
+        // The bus lane's B, white on red, then its words
+        c.fillStyle = '#d4402a';
+        c.fillRect(30, y0 + 30, 100, 100);
+        c.fillStyle = '#fff';
+        c.font = '800 80px Arial, sans-serif';
+        c.fillText('B', 80, y0 + 84);
+        c.fillStyle = '#111';
+        x = (W + 140) / 2;
+      } else c.fillStyle = '#fff';
+      const big = lines.length > 1 ? 52 : 64;
+      c.font = `700 ${big}px Arial, sans-serif`;
+      lines.forEach((line, i) => c.fillText(line, x, y0 + H / 2 + (i - (lines.length - 1) / 2) * (big + 6), W - (style === 'bus' ? 180 : 40)));
+    });
+    const map = new THREE.CanvasTexture(canvas);
+    map.colorSpace = THREE.SRGBColorSpace;
+    map.anisotropy = 4;
+    const signs = new THREE.Mesh(mergeGeometries(boards, false), new THREE.MeshBasicNodeMaterial({ map, side: THREE.FrontSide }));
+    signs.userData.lifted = true;
+    bridge.add(signs);
+    const backs = new THREE.Mesh(mergeGeometries(boardBacks, false), new THREE.MeshStandardNodeMaterial({ color: 0x6d7174, roughness: 0.7 }));
+    backs.userData.lifted = true;
+    bridge.add(backs);
   }
   {
     const flagGeo = [-3, 3].map((off) => new THREE.BoxGeometry(0.06, 2.6, 5).translate(at(middle, off, 0).x, upper(0) + 12.4, at(middle, off, 0).z + 2.6));

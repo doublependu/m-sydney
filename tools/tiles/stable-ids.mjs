@@ -149,6 +149,8 @@ export function stableIds(RG, prev) {
   const gone = prev.links.length - (RG.links.filter(Boolean).length - added);
   return {
     sidFor,
-    report: () => `roads ${RG.links.filter(Boolean).length - added} kept, ${added} new, ${gone} gone; nodes ${nodeId.size - newNodes} kept, ${newNodes} new; structures ${takenSid.size - newStructures} kept, ${newStructures} new`
+    report: () => `roads ${RG.links.filter(Boolean).length - added} kept, ${added} new, ${gone} gone; nodes ${nodeId.size - newNodes} kept, ${newNodes} new`,
+    // Once findStructures (tools/build-tiles.mjs) has asked for every structure's id
+    structureReport: () => `structures ${takenSid.size - newStructures} kept, ${newStructures} new`
   };
 }

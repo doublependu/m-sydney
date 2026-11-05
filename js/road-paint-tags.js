@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { edgeHeight, groundRoadAt, roadHeight } from './surfaces.js';
+import { edgeHeight, groundRoadAt, roadHeight, structureAt, structuresAt } from './surfaces.js';
 import { heldTags } from './geodata.js';
 
 // Road paint from OpenStreetMap's tags (js/road-paint.js draws the rest): red bus lanes, green cycle lanes and cycleways,
@@ -8,15 +8,27 @@ import { heldTags } from './geodata.js';
 const BUS_RED = new THREE.Color(0x96302a);
 
 // Along a way, its road's edge: a lane `width` wide against the kerb on the left (side 1) or right (side 2) of travel
+// The road at (x, z): on the ground, or else the nearest on a bridge (the bus lane over the Harbour Bridge), never in a tunnel
+function roadAt(x, z) {
+  const ground = groundRoadAt(x, z);
+  if (ground) return ground;
+  let best = null;
+  for (const { sid } of structuresAt(x, z)) {
+    const here = structureAt(sid, x, z);
+    if (here && here.link.kind === 1 && (!best || here.d < best.d)) best = here;
+  }
+  return best ? best.link : null;
+}
 function eachKerbLane(flat, side, width, paint) {
   for (let i = 0; i + 3 < flat.length; i += 2) {
     const ax = flat[i], az = flat[i + 1], bx = flat[i + 2], bz = flat[i + 3];
     const L = Math.hypot(bx - ax, bz - az);
     if (L < 2) continue;
-    const road = groundRoadAt((ax + bx) / 2, (az + bz) / 2);
+    const road = roadAt((ax + bx) / 2, (az + bz) / 2);
     if (!road) continue;
     const ux = (bx - ax) / L, uz = (bz - az) / L;
-    const off = (road.width / 2 - width / 2 - 0.2) * (side === 1 ? 1 : -1);
+    // A road of one lane is all that lane
+    const off = road.lanes === 1 ? 0 : (road.width / 2 - width / 2 - 0.2) * (side === 1 ? 1 : -1);
     // Left of travel is (uz, -ux)
     paint(ax + uz * off, az - ux * off, bx + uz * off, bz - ux * off, road);
   }

@@ -35,7 +35,7 @@ import { createInteriors } from './interiors.js';
 import { ceilingOver, groundHeight, inTunnel, roadRoute, structuresAt, surfaceHeight, surfaceSlope } from './surfaces.js';
 import { updateTunnelMouths } from './tunnel-mouths.js';
 import { wheelContacts } from './ground-geometry.js';
-import { BRIDGE_LENGTH, bridgeAt, bridgePoint } from './bridge.js';
+import { BRIDGE_LENGTH, DECK_REACH, bridgeAt, bridgePoint, deckSpanAt } from './bridge.js';
 import { fullscreenElement, fullscreenSupported, onFullscreenChange, toggleFullscreen } from './fullscreen.js';
 
 // Application setup, background city build and frame loop.
@@ -1593,17 +1593,21 @@ async function initApp() {
       },
       // Where the corridor heads from (x, z), for steering across the bridge
       bridgeAim(x, z, direction = 1) {
-        const here = bridgeAt(x, z);
+        // Across all of the deck's roads: the southbound and the Cahill's lanes run up to 28 m east of the corridor's line
+        const here = bridgeAt(x, z, DECK_REACH);
         if (!here) return null;
         const along = (m) => bridgePoint(Math.max(0, Math.min(BRIDGE_LENGTH, here.s + m * direction)));
         const ahead = along(22), at = along(0), next = along(2);
+        // west, east: the deck's roads' outer edges here, m east of the corridor's line (js/bridge.js deckSpanAt)
+        const span = deckSpanAt(here.s);
         return { h: Math.atan2(ahead.x - x, ahead.z - z), tangent: Math.atan2(next.x - at.x, next.z - at.z),
-          aheadX: ahead.x, aheadZ: ahead.z, s: Math.round(here.s), off: +here.off.toFixed(1), y: +here.y.toFixed(1) };
+          aheadX: ahead.x, aheadZ: ahead.z, s: Math.round(here.s), off: +here.off.toFixed(1), y: +here.y.toFixed(1), west: span.west, east: span.east };
       },
       // A place on the bridge's corridor s metres from its south end: its centre, the normal to the east and the heading north
       bridgePlace(s) {
         const p = bridgePoint(Math.max(0, Math.min(BRIDGE_LENGTH, s)));
-        return { x: p.x, z: p.z, nx: -p.uz, nz: p.ux, h: Math.atan2(p.ux, p.uz) };
+        const span = deckSpanAt(Math.max(0, Math.min(BRIDGE_LENGTH, s)));
+        return { x: p.x, z: p.z, nx: -p.uz, nz: p.ux, h: Math.atan2(p.ux, p.uz), west: span.west, east: span.east };
       },
       // For looking at the city, and for putting a scenario where it needs to start. `deck` puts the player on the Harbour Bridge's deck
       // above (x, z) instead of the street under it.
@@ -1685,7 +1689,7 @@ async function initApp() {
         const { x, y, z } = entity.position;
         const mode = controllerManager.activeMode;
         return {
-          mode, x, y, z, heading: entity.heading, speed: entity.speed, onFootway: !!entity.onFootway, footpath: walkable(x, z),
+          mode, x, y, z, heading: entity.heading, speed: entity.speed, onFootway: !!entity.onFootway, deck: !!entity.deck, footpath: walkable(x, z),
           ground: controllerManager.getGroundHeight(x, z, mode),
           roof: controllerManager.roofHeightAt(x, z, y),
           frame: simulatedFrames, surface: entity.surface || 0, surfaceY: surfaceHeight(entity.surface || 0, x, z, entity.surfaceY ?? null), drawnY: entity.mesh?.position.y ?? null

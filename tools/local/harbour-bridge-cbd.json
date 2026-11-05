@@ -35,9 +35,10 @@
       },
       "tags": {
         "tunnel": "yes",
+        "cutting": "yes",
         "layer": "-1"
       },
-      "why": "The Cahill loop up to the bridge northbound runs in a cutting with sheer sandstone walls both sides (ref/details/1.png). As the open end of the tunnel it comes out of, the game draws it that way; on the ground it was a graded slope, with buildings standing over the road's edge"
+      "why": "The Cahill loop up to the bridge northbound runs in a cutting with sheer sandstone walls both sides, open to the sky all the way round (ref/details/1.png). On the ground it was a graded slope, with buildings standing over the road's edge; as a tunnel alone it was covered wherever the ground over it was 6.3 m. tunnel=yes with cutting=yes: the game's open cutting, walled, never closed over (flag 64)"
     },
     {
       "ids": [
@@ -48,12 +49,26 @@
         "psv": "designated"
       },
       "tags": {
-        "access": null,
         "bus:lanes": "designated",
         "oneway": "yes",
         "lanes": "1"
       },
-      "why": "The bus lane between the pylons, lane 7 (ref/details/4.png: the bus lane beside the Cahill's lane through the pylon). OSM keeps all but buses off it (access=no), and the build leaves out what cars can't drive, so the deck had a hole where it is. Taken in as a road, painted as a bus lane"
+      "why": "The bus lane between the pylons, lane 7 (ref/details/4.png: the bus lane beside the Cahill's lane through the pylon). OSM keeps all but buses off it (access=no), and the build leaves out what cars can't drive, so the deck had a hole where it is. Named here, it's taken in as a bus-only road (flag 32: traffic keeps cars off it), painted as a bus lane"
+    },
+    {
+      "ids": [
+        1538940324,
+        1290005497
+      ],
+      "expect": {
+        "bridge": null,
+        "layer": null
+      },
+      "tags": {
+        "bridge": "yes",
+        "layer": "1"
+      },
+      "why": "The Western Distributor and the Clarence St ramp come up level with the Cahill and Bradfield Hwy's lanes beside them, and merge with them where the bridge's four lanes begin (ref/details/6.png; the video at 0:45-0:51). On the ground they ran 3 m below the corridor's start where their lanes reach under it: cars on one level met cars on the other, and the way on climbed 3.6 m in 37 m. As bridges they rise to the deck's height"
     }
   ]
 }

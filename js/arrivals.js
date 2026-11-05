@@ -1,5 +1,5 @@
 import { blockAt, landAt } from './city-config.js';
-import { BRIDGE_LENGTH, DECK_REACH, DECK_SID, bridgeAt, bridgePoint, deckSpanAt } from './bridge.js';
+import { BRIDGE_LENGTH, DECK_REACH, DECK_SID, bridgeAt, bridgePoint, deckHeight, deckSpanAt } from './bridge.js';
 import { onMap } from './geodata.js';
 import { KIND, LINKS, floorBelow, groundHeight, roadHeight, structureAt, structuresAt } from './surfaces.js';
 
@@ -156,6 +156,16 @@ function footwayNear(x, z) {
   return { x: p.x - p.uz * off, z: p.z + p.ux * off, surface: DECK_SID };
 }
 
+/** The deck under (x, z), for something above it at height y: across all of it, its footway and cycleway too. { y } or null */
+const DECK_SIDES = 6; // m past its outermost roads: the footway or the cycleway and the railway
+function deckUnder(x, z, y) {
+  const here = bridgeAt(x, z, DECK_REACH + DECK_SIDES);
+  if (!here) return null;
+  const span = deckSpanAt(here.s), top = deckHeight(here.s);
+  if (here.off < span.west - DECK_SIDES || here.off > span.east + DECK_SIDES || y < top - 1) return null;
+  return { y: top };
+}
+
 /** Holds a walker on the footway: where they end up from (x, z), or null if they've reached its end */
 function holdOnFootway(x, z) {
   const here = bridgeAt(x, z, DECK_REACH + 5);
@@ -186,11 +196,14 @@ function arrivalFor(mode, from, world) {
   if (mode === 'helicopter') {
     return { x, z, heading, surface: 0, altitude: flyingHeight(world.roofs(x, z), ground, archClearance(x, z)) };
   }
-  // Out of the air, onto whatever's underneath: never into a tunnel, and the deck rather than the road under it
-  const level = from.flying ? floorBelow(x, z, from.y) : from.y;
-  const levelSurface = from.flying
-    ? (structuresAt(x, z).find((st) => Math.abs(st.y - level) < 0.5)?.sid ?? 0)
-    : from.surface;
+  // Out of the air, onto whatever's underneath: never into a tunnel, and the deck rather than the road under it. Anywhere over the
+  // Harbour Bridge's deck, its footway and cycleway too, at the deck's level: over the footway only the harbour is directly below,
+  // and from its level every road on the deck was out of reach (a car went to the shore, 160 m off)
+  const deck = from.flying ? deckUnder(x, z, from.y) : null;
+  const level = deck ? deck.y : from.flying ? floorBelow(x, z, from.y) : from.y;
+  const levelSurface = deck ? DECK_SID
+    : from.flying ? (structuresAt(x, z).find((st) => Math.abs(st.y - level) < 0.5)?.sid ?? 0)
+      : from.surface;
   const onDeck = levelSurface === DECK_SID && DECK_SID !== 0;
   if (mode === 'car') {
     const lane = nearestLane(x, z, heading, level, levelSurface, world.isClear);

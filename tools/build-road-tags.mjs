@@ -3,9 +3,11 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { inDetail, load, q1, rdp, toWorld } from './geo-common.mjs';
+import { editWays } from './local-edits.mjs';
 
 const OUT = process.argv[2] || fileURLToPath(new URL('./data/generated/road-tags.js', import.meta.url));
-const ways = load('all_roads.json').elements.filter((e) => e.type === 'way' && e.geometry);
+// With the hand edits (tools/local/), as tools/build-geodata.mjs reads them
+const ways = editWays(load('all_roads.json').elements.filter((e) => e.type === 'way' && e.geometry)).elements;
 const worldOf = (w) => {
   const pts = w.geometry.map((g) => toWorld(g.lon, g.lat));
   return w.tags?.oneway === '-1' ? pts.reverse() : pts;

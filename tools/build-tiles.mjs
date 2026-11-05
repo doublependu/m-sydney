@@ -154,6 +154,8 @@ function cutMap(derived) {
   // --- Roads: a link is in every tile within reach of it, with its id --------------------------------------------------
   const REACH = 40; // m: wide enough for a cutting's slope and a junction's disc beside the road
   const { table, sid } = findStructures();
+  if (STABLE && !STABLE.told) console.log(`[tiles] ids: ${STABLE.structureReport()}`);
+  if (STABLE) STABLE.told = true;
   RG.links.forEach((l, id) => {
     const [a, b, ni, width, lanes, dir, inner, major, deck, kind = 0, layer = 0, flags = 0, ys = null, profile = null, lean = null] = l;
     const pts = [[RG.nodes[a * 2], RG.nodes[a * 2 + 1]]];

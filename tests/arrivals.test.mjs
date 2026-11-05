@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 globalThis.fetch = async (url) => new Response(fs.readFileSync(new URL(url)));
-const { arrivalFor, flyingHeight, footwayNear, holdOnFootway, nearestFootpath, nearestLane, walkable } = await import('../js/arrivals.js');
-const { bridgePoint, BRIDGE_LENGTH, DECK_SID } = await import('../js/bridge.js');
+const { FOOTWAY, arrivalFor, flyingHeight, footwayNear, holdOnFootway, nearestFootpath, nearestLane, walkable } = await import('../js/arrivals.js');
+const { bridgePoint, BRIDGE_LENGTH, DECK_SID, deckSpanAt } = await import('../js/bridge.js');
 const { groundHeight, structuresAt, KIND, LINKS } = await import('../js/surfaces.js');
 
 const world = { isClear: () => true, roofs: () => [] };
@@ -69,11 +69,14 @@ test('on the Harbour Bridge a driver stays on the deck, and a walker goes to its
   assert.ok(Math.hypot(held.x - walker.x, held.z - walker.z) < 0.01);
 });
 
+// The footway runs past the east edge of the deck's roads (plan 5: OSM's carriageways, the Cahill's lane furthest east)
 test('the footway holds a walker to it, and ends before the corridor does', () => {
-  const p = bridgePoint(BRIDGE_LENGTH / 2);
-  const out = holdOnFootway(p.x - p.uz * 19, p.z + p.ux * 19);
-  const expected = 16.2;
-  assert.ok(Math.abs(Math.hypot(out.x - p.x, out.z - p.z) - expected) < 0.2, 'not past the railing');
+  const p = bridgePoint(BRIDGE_LENGTH / 2), east = deckSpanAt(BRIDGE_LENGTH / 2).east;
+  const at = (off) => holdOnFootway(p.x - p.uz * off, p.z + p.ux * off);
+  const offOf = (q) => Math.hypot(q.x - p.x, q.z - p.z);
+  assert.ok(Math.abs(offOf(at(east + FOOTWAY.MAX + 2)) - (east + FOOTWAY.MAX)) < 0.2, 'not past the railing');
+  assert.ok(Math.abs(offOf(at(east)) - (east + FOOTWAY.MIN)) < 0.2, 'not onto the road');
+  assert.ok(Math.abs(offOf(at(east + FOOTWAY.MIDDLE)) - (east + FOOTWAY.MIDDLE)) < 0.2, 'free along it');
   const q = bridgePoint(10);
   assert.equal(holdOnFootway(q.x, q.z), null);
   assert.equal(footwayNear(q.x, q.z), null);

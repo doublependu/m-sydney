@@ -5,7 +5,7 @@ import test from 'node:test';
 // The modules fetch their binary data at import: serve it from disk
 globalThis.fetch = async (url) => new Response(fs.readFileSync(new URL(url)));
 const { rawTerrainHeight, terrainHeight, terrainSlope } = await import('../js/terrain.js');
-const { BRIDGE_LENGTH, BRIDGE_SPAN, DECK_SID, HALF_WIDTH, bridgeAt, bridgePoint, deckHeight } = await import('../js/bridge.js');
+const { BRIDGE_LENGTH, BRIDGE_SPAN, DECK_SID, HALF_WIDTH, bridgeAt, bridgePoint, deckHeight, deckSpanAt } = await import('../js/bridge.js');
 const { chooseSurface, groundHeight } = await import('../js/surfaces.js');
 
 test('the ground matches surveyed heights at known places', () => {
@@ -80,14 +80,20 @@ test('the corridor has a width, and nothing outside it is on the bridge', () => 
   assert.equal(bridgeAt(p.x + nx * (HALF_WIDTH + 1), p.z + nz * (HALF_WIDTH + 1)), null);
 });
 
+// The deck carries several roads side by side (plan 5): the northbound on the corridor, the southbound and the Cahill's lanes east of
+// it. Across them a car can move, past the deck's outer barriers it can't.
 test('mid-span, nothing past the barrier is in reach: the car stays on the deck', () => {
-  const mid = bridgePoint(BRIDGE_LENGTH / 2);
-  const y = deckHeight(BRIDGE_LENGTH / 2);
+  const s = BRIDGE_LENGTH / 2, mid = bridgePoint(s), y = deckHeight(s), span = deckSpanAt(s);
   const nx = -mid.uz, nz = mid.ux;
-  assert.ok(chooseSurface(DECK_SID, y, mid.x + nx * (HALF_WIDTH - 2), mid.z + nz * (HALF_WIDTH - 2), 1), 'inside the barrier');
-  assert.equal(chooseSurface(DECK_SID, y, mid.x + nx * (HALF_WIDTH + 3), mid.z + nz * (HALF_WIDTH + 3), 1), null, 'past the barrier');
+  const at = (off) => chooseSurface(DECK_SID, y, mid.x + nx * off, mid.z + nz * off, 1);
+  assert.ok(at(span.west + 2), 'inside the west barrier');
+  assert.equal(at(span.west - 3), null, 'past the west barrier');
+  assert.ok(at(span.east - 2), 'the deck\'s easternmost road');
+  assert.equal(at(span.east + 3), null, 'past the east barrier');
 });
 
+// Each pylon collides as its granite either side of its arched opening (plan 5): the railway and cycleway go through the west
+// pair, the Cahill's lane and the footway through the east pair. No road, on the deck or under it, runs into the granite.
 test('the pylons stand clear of the deck and of the streets beneath, and collide only where they are drawn', async () => {
   const THREE = await import('three/webgpu');
   const { GEO } = await import('../js/geodata.js');
@@ -95,18 +101,22 @@ test('the pylons stand clear of the deck and of the streets beneath, and collide
   const colliders = [];
   harbourBridgeColliders(colliders);
   buildHarbourBridge(new THREE.Group());
-  const pylons = colliders.filter((c) => c.obb && c.maxY > 60);
-  assert.equal(pylons.length, 4);
+  const pieces = colliders.filter((c) => c.obb && c.maxY > 60);
+  const pylons = new Map();
+  for (const c of pieces) {
+    const here = bridgeAt(c.obb.cx, c.obb.cz, 60);
+    const key = `${Math.round(here.s / 50)}${here.off < 0 ? 'w' : 'e'}`;
+    pylons.set(key, (pylons.get(key) || 0) + 1);
+  }
+  assert.equal(pylons.size, 4, `four pylons: ${[...pylons.keys()]}`);
+  for (const [key, n] of pylons) assert.equal(n, 2, `pylon ${key}: granite either side of its opening`);
   const RG = GEO.roadGraph, N = RG.nodes;
-  for (const c of pylons) {
+  for (const c of pieces) {
     const o = c.obb;
-    // Inner face from the corridor's centre line
-    const here = bridgeAt(o.cx, o.cz, 60);
-    assert.ok(Math.abs(here.off) - o.hx > 17, `a pylon's inner face is ${(Math.abs(here.off) - o.hx).toFixed(1)} m from the centre line`);
-    // No street ribbon reaches into it
     const inside = (x, z) => Math.abs((x - o.cx) * o.cs - (z - o.cz) * o.sn) < o.hx && Math.abs((x - o.cx) * o.sn + (z - o.cz) * o.cs) < o.hz;
-    for (const [a, b, name, width, , , inner, , deck] of RG.links) {
-      if (deck) continue;
+    for (const record of RG.links) {
+      if (!record) continue;
+      const [a, b, name, width, , , inner] = record;
       const pts = [[N[a * 2], N[a * 2 + 1]]];
       for (let k = 0; k < inner.length; k += 2) pts.push([inner[k], inner[k + 1]]);
       pts.push([N[b * 2], N[b * 2 + 1]]);
@@ -118,7 +128,7 @@ test('the pylons stand clear of the deck and of the streets beneath, and collide
           const x = ax + ((bx - ax) * t) / (L || 1), z = az + ((bz - az) * t) / (L || 1);
           const nx = -(bz - az) / (L || 1), nz = (bx - ax) / (L || 1);
           for (const side of [-1, 0, 1]) {
-            assert.ok(!inside(x + nx * side * width / 2, z + nz * side * width / 2), `${RG.names[name]} runs into a pylon`);
+            assert.ok(!inside(x + nx * side * width / 2, z + nz * side * width / 2), `${RG.names[name]} runs into a pylon at ${Math.round(x)}, ${Math.round(z)}`);
           }
         }
       }

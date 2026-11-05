@@ -343,7 +343,10 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
   // ...and where only some of the junctions on both sides of its median became one (Pike St), the stretches of its two
   // roadways that run on top of each other the same way
   {
-    const oneWay = edges.filter((e) => e.general && !e.divided && e.cand[0] <= 0); // lanes about its centreline
+    // Lanes about its centreline. Not on the Harbour Bridge's deck: its roads are OSM's own carriageways side by side, the
+    // southbound's line 8.8 m from the northbound's. Paired, the northbound's lanes were tested against the ground plan under
+    // the deck, kerbs and buildings took them, and the bridge and all north of it fell out of the network
+    const oneWay = edges.filter((e) => e.general && !e.divided && !e.deck && e.cand[0] <= 0);
     const cells = new Map(); // 16 m cells -> the one-way edges passing within 4 m
     oneWay.forEach((e, i) => {
       e.oneWay = i;
@@ -793,6 +796,10 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
     const cars = e.lanes.map((o) => [e.sx + e.dx * (e.len - HALF_CAR) + e.rx * o, e.sz + e.dz * (e.len - HALF_CAR) + e.rz * o]);
     for (const o of inOf.get(n)) {
       if (o === e || o.inArm.group === e.inArm.group) continue;
+      // Two roads whose one way on is the same road merge there, they don't cross: traffic takes turns (the Western Distributor and
+      // the Clarence St ramp, then both and the corridor, where the Harbour Bridge's northbound lanes begin). Only a merge: an approach
+      // whose turns are some of another's is a junction, and kept clear of it (Town Hall's signals waited 17 s for one)
+      if (o.moves.length === 1 && e.moves.length === 1 && o.moves[0].to === e.moves[0].to) continue;
       for (const m of o.moves) {
         for (let i = 0; i < o.lanes.length; i++) {
           if (m.out[i] < 0) continue;

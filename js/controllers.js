@@ -22,7 +22,10 @@ import { anchorToOrigin } from './world-origin.js';
 import { polygonContact, polygonContains } from './building-collision.js';
 import { DECK_SID } from './bridge.js';
 import { FLY, arrivalFor, holdOnFootway } from './arrivals.js';
-import { chooseSurface, clearOfWater, floorBelow, groundHeight, structureAt, surfaceHeight } from './surfaces.js';
+import { STRUCTURES, chooseSurface, clearOfWater, floorBelow, groundHeight, structureAt, surfaceHeight } from './surfaces.js';
+
+// On the Harbour Bridge's deck: any of its roads' structures, the corridor's and those of the carriageways east of it (plan 5)
+const onDeck = (sid) => !!sid && !!STRUCTURES[sid]?.deck;
 
 // Player models, animation and movement for walking, driving, cycling and flying.
 
@@ -480,7 +483,7 @@ class ThirdPersonControllerManager {
       ent.surface = onStructure ? surface : 0;
       ent.onFootway = false;
       ent.surfaceY = surfaceHeight(ent.surface, destination.x, destination.z);
-      ent.deck = !!onStructure && surface === DECK_SID;
+      ent.deck = !!onStructure && onDeck(surface);
       ent.position.landed = { x: destination.x, z: destination.z };
       ent.position.y = heli ? altitude : this.getGroundHeight(destination.x, destination.z, this.activeMode);
     }
@@ -1133,7 +1136,7 @@ class ThirdPersonControllerManager {
       }
       active.surface = here.sid;
       active.surfaceY = here.y;
-      active.deck = here.sid !== 0 && here.sid === DECK_SID; // the Harbour Bridge, for the scripts that ask
+      active.deck = onDeck(here.sid); // the Harbour Bridge, for the scripts that ask
       if (here.sid) {
         // On a structure nothing of the ground is in the way: not the water, not the buildings under it
         last.x = pos.x;

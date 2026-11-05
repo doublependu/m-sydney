@@ -8,6 +8,7 @@ import {
 } from './geo-common.mjs';
 import { heightSampler } from './fetch-elevation.mjs';
 import { MARGIN, REGION, regionsOver, runJobs } from './geodata/regions.mjs';
+import { editWays } from './local-edits.mjs';
 
 const OUT = (process.argv[2]?.startsWith('--') ? null : process.argv[2]) || fileURLToPath(new URL('./data/generated/geodata.js', import.meta.url));
 const B = DETAIL_BOUNDS;
@@ -151,12 +152,19 @@ function driven(t) {
   if (t.highway === 'service') return !!t.name && !/parking_aisle|driveway/.test(t.service || '');
   return DRIVEN.test(t.highway);
 }
-const osmRoads = load('all_roads.json').elements.filter((e) => e.geometry);
+// Hand edits by area (tools/local/): applied to OSM's own ways, so every later step sees them as OSM
+const osmRoads = (() => {
+  const edited = editWays(load('all_roads.json').elements.filter((e) => e.geometry));
+  log(edited.summary);
+  return edited.elements;
+})();
 const inPlay = (w) => w.geometry.some((g) => inDetail(...toWorld(g.lon, g.lat)));
 
-// The Harbour Bridge: one two-way corridor along the real alignment, from Upper Fort St in The Rocks to the Pacific Hwy
-// at North Sydney, with its own height (js/bridge.js). OSM draws it as several one-way carriageways side by side (the
-// Bradfield Hwy each way, the Cahill along its east side): those that run along the corridor are the corridor.
+// The Harbour Bridge: a corridor along the real alignment, from Upper Fort St in The Rocks to the Pacific Hwy at North Sydney,
+// with its own height (js/bridge.js): OSM's northbound Bradfield Hwy, four lanes. OSM draws the bridge as several one-way
+// carriageways side by side. Those east of the corridor are kept as they are, on its deck: the Bradfield Hwy southbound, and the
+// Cahill Expressway's two lanes, the bus lane and the one through the east pylons. Before plan 5 the corridor was all of them,
+// one road 23 m wide carrying three lanes each way.
 const BRIDGE_WAYS = [172606922, 1530533294, 1530532875, 1530532878, 171978153, 1530530701, 1530530700, 1530531824, 1530531818, 388949145, 11900573, 4354223, 723859054];
 const bridgeOsm = BRIDGE_WAYS.map((id) => {
   const way = osmRoads.find((w) => w.id === id);
@@ -168,22 +176,39 @@ for (const way of bridgeOsm) {
   const pts = way.geometry.map((g) => toWorld(g.lon, g.lat));
   bridgeRaw.push(...(bridgeRaw.length ? pts.slice(1) : pts));
 }
-const toBridge = (x, z) => {
-  let best = Infinity;
+const toBridge = (x, z) => onBridge(x, z).d;
+// Where (x, z) is along the corridor: { s (m from its south end), off (m east of it, to the right travelling north), d }
+const bridgeAlong = [0];
+for (let i = 1; i < bridgeRaw.length; i++) bridgeAlong.push(bridgeAlong[i - 1] + Math.hypot(bridgeRaw[i][0] - bridgeRaw[i - 1][0], bridgeRaw[i][1] - bridgeRaw[i - 1][1]));
+function onBridge(x, z) {
+  let best = { d: Infinity, s: 0, off: 0 };
   for (let i = 1; i < bridgeRaw.length; i++) {
     const [ax, az] = bridgeRaw[i - 1], [bx, bz] = bridgeRaw[i];
-    const dx = bx - ax, dz = bz - az;
-    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
-    best = Math.min(best, Math.hypot(ax + dx * t - x, az + dz * t - z));
+    const dx = bx - ax, dz = bz - az, L = Math.hypot(dx, dz) || 1;
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (L * L)));
+    const px = ax + dx * t, pz = az + dz * t, d = Math.hypot(px - x, pz - z);
+    if (d < best.d) best = { d, s: bridgeAlong[i - 1] + t * L, off: (-(x - px) * dz + (z - pz) * dx) / L };
   }
   return best;
+}
+// The deck east of the corridor: its southbound lanes, the bus lane and the Cahill's lane, from where they leave the approaches'
+// ramps to where they reach them again. A way all on it is part of the deck (its height is the deck's, tools/build-heights.mjs).
+const DECK_EAST = { from: 4.5, to: 28, s0: 170, s1: 1800 };
+const onDeckEast = (x, z) => {
+  const b = onBridge(x, z);
+  return b.off >= DECK_EAST.from && b.off <= DECK_EAST.to && b.s >= DECK_EAST.s0 && b.s <= DECK_EAST.s1;
+};
+const eastOfCorridor = (w) => {
+  const offs = w.geometry.map((g) => onBridge(...toWorld(g.lon, g.lat))).filter((b) => b.d < 30).map((b) => b.off);
+  return offs.length && offs.reduce((t, o) => t + o, 0) / offs.length > DECK_EAST.from;
 };
 const BRIDGE_IDS = new Set(BRIDGE_WAYS);
+// Along the corridor, and so it: the northbound ways it's made of, and any that run on along it. Not those east of it.
 const alongBridge = (w) => {
   if (BRIDGE_IDS.has(w.id)) return true;
   if (!MOTORWAY.test(w.tags?.highway || '') && w.tags?.bridge !== 'yes') return false;
   const pts = w.geometry.map((g) => toWorld(g.lon, g.lat));
-  return pts.filter(([x, z]) => toBridge(x, z) < 30).length >= pts.length * 0.5;
+  return pts.filter(([x, z]) => toBridge(x, z) < 30).length >= pts.length * 0.5 && !eastOfCorridor(w);
 };
 const kept = osmRoads.filter((w) => driven(w.tags || {}) && inPlay(w) && !alongBridge(w));
 // Plain streets rarely tell the whole story: a short underpass or an unnamed service road can be all that joins a
@@ -361,7 +386,9 @@ for (const w of kept) {
     if (kind === KIND.GROUND) strips.push({ pts: seg, r: width / 2 + KERB_CLEAR });
     kinds[kind]++;
     const shape = kind === KIND.GROUND ? rdp(seg, 0.4) : densify(rdp(seg, 0.4));
-    links.push([ia, ib, nameOf(t.name || ''), q1(width), lanes, dir, shape.slice(1, -1).flatMap(([x, z]) => [q1(x), q1(z)]), MAJOR.test(t.highway) ? 1 : 0, 0, kind, layer, flags]);
+    // On the bridge's deck east of the corridor, all of it: part of the deck
+    const deck = kind === KIND.BRIDGE && seg.every(([x, z]) => onDeckEast(x, z)) ? 1 : 0;
+    links.push([ia, ib, nameOf(t.name || ''), q1(width), lanes, dir, shape.slice(1, -1).flatMap(([x, z]) => [q1(x), q1(z)]), MAJOR.test(t.highway) ? 1 : 0, deck, kind, layer, flags]);
   }
 }
 log(`levels: ${kinds[0]} links on the ground, ${kinds[1]} on bridges, ${kinds[2]} in tunnels; ${hairpins} narrowed to the gap between a hairpin's legs`);
@@ -376,6 +403,9 @@ const nearestNode = (x, z) => {
   return best;
 };
 const bridgePath = [];
+// OSM's northbound Bradfield Hwy, four lanes, as classWidth() makes a one-way road of four lanes. In the afternoon, which is the
+// only time the game has: in the morning the tidal lane runs south (js/harbour-bridge.js shows it on the lane signals).
+const CORRIDOR = { width: 14.7, lanes: 4 };
 {
   // Every point of the chained ways, each with its OSM node
   const path = [];
@@ -391,7 +421,7 @@ const bridgePath = [];
   for (let k = 0; k + 1 < stops.length; k++) {
     const pts = [ends[k], ...path.slice(stops[k].i + 1, stops[k + 1].i).map((q) => q.p), ends[k + 1]];
     const shape = densify(rdp(pts, 0.6), 20);
-    links.push([stops[k].id, stops[k + 1].id, nameOf('Sydney Harbour Bridge'), 23, 6, 0, shape.slice(1, -1).flatMap(([x, z]) => [q1(x), q1(z)]), 1, 1, KIND.BRIDGE, 1, 1]);
+    links.push([stops[k].id, stops[k + 1].id, nameOf('Sydney Harbour Bridge'), CORRIDOR.width, CORRIDOR.lanes, 1, shape.slice(1, -1).flatMap(([x, z]) => [q1(x), q1(z)]), 1, 1, KIND.BRIDGE, 1, 1]);
     bridgePath.push(...(bridgePath.length ? shape.slice(1) : shape));
   }
   log(`Harbour Bridge: ${stops.length - 1} links, ${stops.length - 2} roads joining it`);
@@ -400,6 +430,7 @@ const bridgePath = [];
 // A motorway the corridor cut off (it ran on along the bridge in OSM) ends beside it: join it to the corridor there. Further off than
 // this, a join runs over other roads with no room between them.
 const JOIN_REACH = 45;
+const corridorName = nameOf('Sydney Harbour Bridge');
 {
   const degree = new Map();
   for (const l of links) { degree.set(l[0], (degree.get(l[0]) || 0) + 1); degree.set(l[1], (degree.get(l[1]) || 0) + 1); }
@@ -414,7 +445,7 @@ const JOIN_REACH = 45;
       // The nearest point of a corridor link, which is split there
       let best = null;
       for (const c of links) {
-        if (!c[8]) continue;
+        if (!c[8] || c[2] !== corridorName) continue; // the corridor, not the deck's other carriageways
         const pts = [[nodes[c[0] * 2], nodes[c[0] * 2 + 1]]];
         for (let k = 0; k < c[6].length; k += 2) pts.push([c[6][k], c[6][k + 1]]);
         pts.push([nodes[c[1] * 2], nodes[c[1] * 2 + 1]]);
@@ -490,10 +521,11 @@ log(`${signals.length / 2} signalised junctions`);
 // (They're cut KERB_CLEAR past each road's edge, and traced no looser than this, so a kerb can't come into a lane)
 const capsules = []; // ax, az, bx, bz, r
 for (const { pts, r } of strips) for (let i = 0; i + 1 < pts.length; i++) capsules.push([pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], r]);
-// Structures low over the ground too, as tools/build-heights.mjs found on the run before this one
+// Structures low over the ground too, as tools/build-heights.mjs found on the run before this one: this build's, on the second run. The
+// first doesn't read them, or every build would start from what the last one left, and no two would come out the same (plan 5).
 {
   const lowDecks = new URL('./data/generated/low-decks.json', import.meta.url);
-  if (fs.existsSync(lowDecks)) {
+  if (REUSE && fs.existsSync(lowDecks)) {
     const stretches = JSON.parse(fs.readFileSync(lowDecks, 'utf8'));
     for (const [ax, az, bx, bz, r] of stretches) capsules.push([ax, az, bx, bz, r]);
     log(`${stretches.length} stretches of low structure cut from the curb islands`);

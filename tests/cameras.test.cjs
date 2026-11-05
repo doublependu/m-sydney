@@ -257,3 +257,79 @@ test('portrait screens widen the view instead of looking through a slot', () => 
   h.camera.onResize(1600, 900);
   assert.equal(h.camera.camera.fov, 46, 'rotating back restores the preset');
 });
+
+// Where a point falls on the screen: -1..1 across and up, from the camera's position and what it was pointed at
+function onScreen(camera, point) {
+  const p = camera.camera.position, t = camera.camera.target;
+  const f = norm([t.x - p.x, t.y - p.y, t.z - p.z]);
+  const r = norm([-f[2], 0, f[0]]); // across: forward × up
+  const u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]];
+  const v = [point.x - p.x, point.y - p.y, point.z - p.z];
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const depth = dot(v, f);
+  const half = Math.tan((camera.camera.fov * Math.PI) / 360);
+  return { depth, x: dot(v, r) / (depth * half * camera.camera.aspect), y: dot(v, u) / (depth * half) };
+}
+function norm(v) {
+  const l = Math.hypot(...v) || 1;
+  return v.map((c) => c / l);
+}
+
+test('the chase camera keeps you in the middle third of the screen at any orbit, pitch and zoom', () => {
+  // Aiming ahead along the heading put a walker off a phone's screen at 90 degrees of orbit, and behind the camera at 180
+  const modes = {
+    person: { type: 'person', chaseDistance: 4.3, chaseHeight: 1.95, target: 1.55, body: 0.95 },
+    cyclist: { type: 'cyclist', chaseDistance: 4.8, chaseHeight: 2.05, target: 1.35, body: 1.0 },
+    car: { type: 'car', chaseDistance: 6.9, chaseHeight: 2.12, target: 0.96, body: 0.7 },
+    helicopter: { type: 'helicopter', chaseDistance: 11.4, chaseHeight: 3.3, target: 1.55, body: 1.2 }
+  };
+  for (const [name, m] of Object.entries(modes)) {
+    const entity = { position: new Vector3(40, 12, -30), heading: 0.7, speed: 0, type: m.type, chaseDistance: m.chaseDistance, chaseHeight: m.chaseHeight, cameraTargetOffset: new Vector3(0, m.target, 0) };
+    const { camera } = cameraHarness(entity);
+    for (const aspect of [390 / 844, 1600 / 900]) {
+      camera.onResize(aspect * 1000, 1000);
+      for (let yaw = -Math.PI; yaw <= Math.PI + 1e-9; yaw += Math.PI / 12) {
+        for (const pitch of [-0.32, 0.09, 0.68]) {
+          for (const zoom of [0.45, 1, 2.4]) {
+            camera.orbitYawOffset = yaw;
+            camera.orbitPitchOffset = pitch;
+            camera.zoomMultiplier = zoom;
+            camera.initialized = false;
+            camera.update(1 / 60, 0);
+            const at = onScreen(camera, { x: entity.position.x, y: entity.position.y + m.body, z: entity.position.z });
+            const where = `${name}, aspect ${aspect.toFixed(2)}, orbit ${(yaw * 180 / Math.PI).toFixed(0)}, pitch ${pitch}, zoom ${zoom}`;
+            assert.ok(at.depth > 0.5, `${where}: in front of the camera (${at.depth.toFixed(2)} m)`);
+            assert.ok(Math.abs(at.x) < 1 / 3, `${where}: ${at.x.toFixed(2)} across`);
+            assert.ok(Math.abs(at.y) < 0.8, `${where}: ${at.y.toFixed(2)} up`);
+          }
+        }
+      }
+    }
+  }
+});
+
+test('turning to the view: the camera turns back by what you turned, and stops swinging behind you meanwhile', () => {
+  const entity = { position: new Vector3(0, 0, 0), heading: 0, speed: 10, type: 'car', chaseDistance: 6.9, chaseHeight: 2.12, cameraTargetOffset: new Vector3(0, 0.96, 0) };
+  const { camera } = cameraHarness(entity);
+  const manager = camera.controllerManager;
+  camera.update(1 / 60, 0);
+  camera.orbitYawOffset = 1;
+  camera.userOrbitTimer = 4; // as if just dragged round
+  camera.update(1 / 60, 0);
+  assert.ok(Math.abs(manager.viewOffset - 1) < 1e-9, 'the controller is told how far round the camera is');
+  const worldYaw = entity.heading + camera.orbitYawOffset;
+  for (let i = 0; i < 300; i++) {
+    entity.followingView = true;
+    entity.heading += 0.01;
+    camera.update(1 / 60, i / 60);
+  }
+  assert.ok(Math.abs(entity.heading + camera.orbitYawOffset - worldYaw) < 1e-9, 'the camera stays where it was put');
+  // Not following the view, moving, and no gesture for 4 s: it swings back behind, as before
+  entity.followingView = false;
+  for (let i = 0; i < 600; i++) camera.update(1 / 60, i / 60);
+  assert.ok(Math.abs(camera.orbitYawOffset) < 0.01);
+  // A scenic camera doesn't orbit: nothing to steer by
+  camera.setCameraPreset('quay');
+  camera.update(1 / 60, 0);
+  assert.equal(manager.viewOffset, null);
+});

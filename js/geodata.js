@@ -9,11 +9,10 @@ import { farFile, tileFile } from './tiles/paths.js';
 const inNode = typeof document === 'undefined';
 // Put together at run time, so the bundler doesn't take it for a file to include
 const BASE = inNode ? new URL(['..', 'public', 'tiles', ''].join('/'), import.meta.url) : new URL('tiles/', document.baseURI);
-const INLINE = import.meta.env?.MODE === 'offline' ? (await import('virtual:offline-tiles')).default : null;
 
 async function fileBody(name) {
   if (inNode) return new Uint8Array(process.getBuiltinModule('node:fs').readFileSync(new URL(name, BASE)));
-  const response = await fetch(INLINE ? INLINE[name] : new URL(name, BASE));
+  const response = await fetch(new URL(name, BASE));
   if (!response.ok) throw new Error(`Map data request failed: ${response.status} ${name}`);
   return new Uint8Array(await response.arrayBuffer());
 }
@@ -27,11 +26,6 @@ async function fileBytes(name) {
 const fileText = async (name) => new TextDecoder().decode(await fileBytes(name));
 
 const world = JSON.parse(await fileText('world.json'));
-// The offline file has only a part of the map in it
-if (INLINE) {
-  for (const key of Object.keys(world.tiles)) if (!INLINE[tileFile(key, world.tiles[key])]) delete world.tiles[key];
-  for (const key of Object.keys(world.farFiles)) if (!INLINE[farFile(key, world.farFiles[key])]) delete world.farFiles[key];
-}
 
 // What the whole map shares, and the road graph of the tiles held
 const GEO = { ...world, roadGraph: { nodes: new Float32Array(world.nodeCount * 2), links: [], names: [] } };

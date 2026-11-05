@@ -748,3 +748,40 @@ test('poseCharacters skips stationary inactive cyclist IK/uploads and culls park
   assert.equal(person.mesh.visible, true);
   assert.equal(personUpdates, 1);
 });
+
+test('A rider is drawn on the saddle, on whatever the bike stands on, whatever the ground is elsewhere', () => {
+  // The simulation is flat: the bike's frame is at its flat height, and it's drawn on its surface, a road or a deck. The crowd
+  // stood the rider on the ground at the rig's x and z instead, which a rider never set: (0, 0), 22.5 m in the CBD.
+  const load = (groundHeight) => loadModule(pedestriansSource, {
+    imports: {
+      'three/webgpu': { Vector3, Quaternion, Matrix4, BufferAttribute, BufferGeometry, Float32BufferAttribute, MeshStandardNodeMaterial, Mesh },
+      'three/tsl': tslStub,
+      'three/addons/utils/BufferGeometryUtils.js': { mergeGeometries },
+      './surfaces.js': { edgeHeight: () => 0, groundHeight, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), structureAt: () => null, structuresAt: () => [], LINKS: [] }
+    }
+  });
+  const frame = { seat: new Vector3(0, 0.98, -0.28), bars: new Vector3(0, 0.98, 0.4), gripHalf: 0.22, bracket: new Vector3(0, 0.34, -0.145), crankLength: 0.17 };
+  // The bike's frame where the simulation has it: (x, flat y, z)
+  const bikeAt = (x, y, z) => ({ updateWorldMatrix() {}, matrixWorld: { decompose(p, q, s) { p.set(x, y, z); q.x = q.y = q.z = 0; q.w = 1; s.set(1, 1, 1); } } });
+  const drawn = (mod, bike, base) => {
+    const crowd = new mod.PersonCrowd(1, { farDistance: Infinity });
+    const rig = new mod.PersonRig({ seed: 12.8 });
+    rig.ride(bike, 0.7, frame);
+    crowd.begin();
+    crowd.add(rig, 0, base);
+    crowd.end();
+    return { pose: Array.from(crowd.lods[0].pose.value.array.slice(0, STRIDE * 4)), head: rig.headPosition.y + base, rig };
+  };
+  const flat = load(() => 0);
+  const hilly = load((x, z) => 22.5 + 0.05 * x - 0.02 * z);
+  // On a street at the start, on the bridge's deck, and at (0, 0)
+  for (const [x, z, base] of [[397, -1000, 28.03], [-120, -2500, 61.4], [0, 0, 22.5]]) {
+    const a = drawn(flat, bikeAt(x, 0, z), base), b = drawn(hilly, bikeAt(x, 0, z), base);
+    assert.equal(b.rig.x, x, 'the rig is where the bike is');
+    for (let i = 0; i < a.pose.length; i++) assert.ok(Math.abs(a.pose[i] - b.pose[i]) < 1e-3, `pose value ${i} at (${x}, ${z}): ${a.pose[i]} drawn as ${b.pose[i]}`);
+    // Exactly as high as what the bike stands on
+    const low = drawn(hilly, bikeAt(x, 0, z), 0);
+    for (let bone = 0; bone < 4; bone++) assert.ok(Math.abs(b.pose[bone * 8 + 5] - low.pose[bone * 8 + 5] - base) < 1e-3, `bone ${bone} raised by ${b.pose[bone * 8 + 5] - low.pose[bone * 8 + 5]}, not ${base}`);
+    assert.ok(b.head > base + 1.3 && b.head < base + 2, `head at ${b.head.toFixed(2)} on a bike at ${base}`);
+  }
+});

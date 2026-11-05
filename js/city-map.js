@@ -84,7 +84,7 @@ class MapImages {
       if (!index) return;
       this.index = index.levels.map((l) => ({ ...l, have: new Set(l.keys) }));
       this.version++;
-    }).catch(() => {}); // The offline file has none: the map is what's held
+    }).catch(() => {}); // Without its images, the map draws what's held
   }
 
   get(level, ix, iz) {

@@ -744,3 +744,75 @@ test('a helicopter settles on a roof and flies on from it', () => {
   heli.position.y = 120;
   assert.equal(controller.roofHeightAt(0, 0, heli.position.y), 0, 'a tower still above it is no roof to land on');
 });
+
+function modeEntity(mode, motion = {}) {
+  const entity = { type: mode.toLowerCase(), position: { x: 0, y: 0, z: 0 }, heading: 0, speed: 0, ...motion };
+  if (mode === 'Person') Object.assign(entity, { verticalVel: 0 });
+  if (mode === 'Car') Object.assign(entity, {
+    vx: 0, vz: 0, angularVel: 0, steerAngle: 0, pitchVel: 0, rollVel: 0, heaveVel: 0, heaveY: 0, wheelSpin: 0,
+    chassisPivot: { rotation: { x: 0, z: 0 }, position: { y: 0 } }, wheels: [], carState: { value: { x: 0, w: 0 } }
+  });
+  if (mode === 'Cyclist') Object.assign(entity, {
+    leanAngle: 0, leanPivot: { rotation: { z: 0 } },
+    frontWheel: { rotation: { x: 0 } }, rearWheel: { rotation: { x: 0 } },
+    pedalPhase: 0, crankPivot: { rotation: { x: 0 } }, pedals: []
+  });
+  if (mode === 'Helicopter') Object.assign(entity, {
+    verticalSpeed: 0, pitchAngle: 0, rollAngle: 0,
+    tiltPivot: { rotation: { x: 0, z: 0 }, position: { y: 0 } }
+  });
+  return entity;
+}
+
+// Holds forward for `seconds` with the camera turned `offset` round, doing what js/cameras.js does each frame: telling the
+// controller how far round it is, and turning back by what the entity turned while following it
+function followView(mode, offset, { seconds = 2, motion = {}, keys = {} } = {}) {
+  const { controller } = keyboardHarness();
+  const entity = modeEntity(mode, motion);
+  controller.entities = { [mode.toLowerCase()]: entity };
+  controller.getGroundHeight = () => 0;
+  controller.roofHeightAt = () => 0;
+  controller.resolveHorizontalCollision = () => {};
+  controller.keys.forward = true;
+  Object.assign(controller.keys, keys);
+  const startYaw = entity.heading + offset;
+  let followed = false;
+  for (let i = 0; i < seconds * 60; i++) {
+    controller.viewOffset = offset;
+    const before = entity.heading;
+    controller[`update${mode}`](1 / 60, i / 60);
+    if (entity.followingView) {
+      followed = true;
+      offset -= entity.heading - before;
+    }
+  }
+  return { entity, offset, followed, viewYaw: entity.heading + offset, startYaw };
+}
+
+for (const mode of ['Person', 'Car', 'Cyclist', 'Helicopter']) {
+  test(`${mode.toLowerCase()}: holding forward turns you to where the camera looks, and the camera stays put`, () => {
+    const motion = mode === 'Car' ? { speed: 12 } : mode === 'Cyclist' ? { speed: 5 } : {};
+    // A car at 43 km/h can only turn as fast as its tyres grip: 57 degrees takes it nearly 2 s
+    const seconds = mode === 'Car' ? 3 : 2;
+    for (const offset of [1, -1, 0.3]) {
+      const run = followView(mode, offset, { motion, seconds });
+      assert.ok(run.followed, `${mode} ${offset}: follows the view`);
+      assert.ok(Math.abs(run.offset) < 0.052, `${mode} ${offset}: ${(run.offset * 180 / Math.PI).toFixed(1)}° still to go after ${seconds} s`);
+      assert.ok(Math.abs(run.viewYaw - run.startYaw) < 0.035, `${mode} ${offset}: the view moved ${((run.viewYaw - run.startYaw) * 180 / Math.PI).toFixed(1)}°`);
+    }
+    // Your own steering wins, and reversing never turns you
+    const steering = followView(mode, 1, { motion, keys: { left: false, right: true } });
+    assert.equal(steering.followed, false, `${mode}: steering yourself`);
+    const back = followView(mode, 1, { motion, keys: { forward: false, backward: true } });
+    assert.equal(back.followed, false, `${mode}: reversing`);
+  });
+}
+
+test('a car only turns to the view within 90 degrees: further round is a look', () => {
+  const look = followView('Car', 2, { motion: { speed: 12 } });
+  assert.equal(look.followed, false);
+  assert.ok(Math.abs(look.entity.heading) < 1e-9, 'it drives on straight');
+  // Walking turns all the way round
+  const walk = followView('Person', 3, { seconds: 3 });
+  assert.ok(Math.abs(walk.offset) < 0.052);
+});

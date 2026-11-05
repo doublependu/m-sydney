@@ -83,10 +83,10 @@ export class Human {
     await this.up(key);
   }
 
-  async until(check, { timeout = 15000, every = 100 } = {}) {
+  async until(check, { timeout = 15000, every = 100, read = () => this.state() } = {}) {
     const deadline = this.now() + timeout;
     while (this.now() < deadline) {
-      const state = await this.state();
+      const state = await read();
       if (check(state)) return state;
       await this.wait(every);
     }

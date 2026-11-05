@@ -13,6 +13,84 @@ async function teleportAndSettle(human, place, mode) {
   return human.state();
 }
 
+const wrapTurn = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+
+function orbitFollowScenario(profile) {
+  return {
+    profile,
+    async run({ human, game, page, metric, expect }) {
+      const framing = () => page.evaluate(() => window.__gameDebug.framing());
+      const size = page.viewportSize();
+      // A drag where the camera takes it: the middle of a laptop's screen; the right half of a phone's, as the left is the stick's
+      const from = profile === 'phone' ? { x: size.width * 0.75, y: size.height * 0.45 } : { x: size.width * 0.5, y: size.height * 0.45 };
+      const touch = (type, points) => game.cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points });
+      let finger = 10;
+      const drag = async (path, sample) => {
+        const id = finger++;
+        if (profile === 'phone') await touch('touchStart', [{ x: from.x, y: from.y, id }]);
+        else { await page.mouse.move(from.x, from.y); await page.mouse.down(); }
+        for (const [dx, dy] of path) {
+          if (profile === 'phone') await touch('touchMove', [{ x: from.x + dx, y: from.y + dy, id }]);
+          else await page.mouse.move(from.x + dx, from.y + dy, { steps: 2 });
+          await human.wait(60);
+          if (sample) await sample(await framing());
+        }
+        if (profile === 'phone') await touch('touchEnd', []);
+        else await page.mouse.up();
+      };
+      const worst = {};
+      await human.wait(800);
+      for (const mode of ['person', 'cyclist', 'car', 'helicopter']) {
+        // Macquarie St, facing the Opera House: wide and open. Put there directly, as a phone's teleport button is behind its menu
+        await page.evaluate((m) => window.__gameDebug.goto(397, -1000, Math.PI, m), mode);
+        if (mode === 'helicopter') await human.hold('Space', 1800);
+        await human.wait(600);
+        // Round the whole way in strokes a finger could make, going up and down as it goes
+        const seen = { across: 0, up: 0, behind: 0 };
+        const sample = (f) => {
+          if (f.depth <= 0.3) seen.behind++;
+          else {
+            seen.across = Math.max(seen.across, Math.abs(f.x));
+            seen.up = Math.max(seen.up, Math.abs(f.y));
+          }
+        };
+        const stroke = (profile === 'phone' ? 0.42 : 1) * 160; // px, about 60 degrees on a laptop
+        for (let k = 0; k < (profile === 'phone' ? 14 : 6); k++) {
+          await drag(Array.from({ length: 8 }, (_, i) => [stroke * (i + 1) / 8, 90 * Math.sin(((i + 1) / 8) * Math.PI) * (k % 2 ? -1 : 1)]), sample);
+        }
+        worst[mode] = { across: Number(seen.across.toFixed(2)), up: Number(seen.up.toFixed(2)), behind: seen.behind };
+        expect(seen.behind === 0, `${mode}: the camera lost you behind it ${seen.behind} times going round`);
+        expect(seen.across < 1 / 3, `${mode}: ${seen.across.toFixed(2)} across from the middle going round`);
+        expect(seen.up < 0.95, `${mode}: ${seen.up.toFixed(2)} up or down from the middle going round`);
+
+        // Turned about 50 degrees round and let go: forward turns you there, and the camera stays where it was put
+        await human.wait(400);
+        const start = await framing();
+        await drag([[-50, 0], [-100, 0], [-150, 0]]); // back across, which a phone's narrow screen has room for
+        await human.wait(900); // the camera eases into where it's been put
+        const turned = await framing();
+        expect(Math.abs(wrapTurn(turned.orbit)) > 0.5, `${mode}: the drag turned the camera only ${(wrapTurn(turned.orbit) * 57.3).toFixed(0)} degrees`);
+        await human.down('KeyW');
+        // A car can only turn as fast as its tyres grip, from a standstill
+        const done = await human.until((s) => Math.abs(wrapTurn(s.orbit)) < 0.052, { timeout: mode === 'car' ? 6000 : 3000, every: 50, read: framing });
+        await human.up('KeyW');
+        const after = done || await framing();
+        metric(`${mode}TurnedToView`, { left: Number((wrapTurn(after.orbit) * 57.3).toFixed(1)), viewMoved: Number((wrapTurn(after.viewYaw - turned.viewYaw) * 57.3).toFixed(1)) });
+        expect(done, `${mode}: still ${(wrapTurn(after.orbit) * 57.3).toFixed(1)} degrees from the view`);
+        expect(Math.abs(wrapTurn(after.viewYaw - turned.viewYaw)) < 0.035, `${mode}: the camera turned ${(wrapTurn(after.viewYaw - turned.viewYaw) * 57.3).toFixed(1)} degrees with you`);
+        expect(Math.abs(wrapTurn(start.heading - after.heading)) > 0.5, `${mode}: you didn't turn`);
+        // The rider sits on the bike: it floated 22.5 m less the bike's own height off it
+        if (mode === 'cyclist') {
+          metric('riderHelmetOverBike', Number(after.riderUp.toFixed(2)));
+          expect(after.riderUp > 1.3 && after.riderUp < 2.1, `the rider's helmet is ${after.riderUp.toFixed(2)} m over the bike`);
+        }
+        await human.wait(800);
+      }
+      metric('framing', worst);
+    }
+  };
+}
+
 // The city builds behind the game; this waits for all of it, which is what the first scripted minute can't show
 async function expectCityCompletes(human, page, expect, minutes = 2.5) {
   const done = await human.page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: minutes * 60000, polling: 500 }).catch(() => null);
@@ -20,17 +98,17 @@ async function expectCityCompletes(human, page, expect, minutes = 2.5) {
   return page.evaluate(() => window.__gameDebug.renderInfo());
 }
 
-// Along the bridge's corridor, 1 from the south end, -1 from the north end, as a person would: left of the double line,
-// out to whichever lane has room, lifting off when all of them are full. The centre line was fine on an empty bridge;
-// with traffic it's nose to nose with whatever is coming, and a car that sees you coming stops for you.
-const DECK_LANES = [5.4, 9, 1.8]; // m left of the centre line
-// In the southbound lanes, 28 m from the end: the deck is boarded only in its last 45 m, and a car turned round on the
-// very last metre leaves the corridor at once
-const DECK_NORTH_END = { x: -169, z: -3438, heading: 0.94 };
+// Along the bridge's corridor, 1 from the south end, -1 from the north end, as a person would: in a lane of its own
+// carriageway, out to whichever has room, lifting off when all of them are full. Northbound is the corridor itself, OSM's four
+// lanes; southbound the two east of it (plan 5).
+const DECK_LANES = { 1: [4.95, 1.65, -1.65, -4.95], [-1]: [10.3, 7.0] }; // m left of the corridor's line, travelling that way
+// In the southbound carriageway on the deck, 1,700 m along it from the south end
+const DECK_NORTH_END = { x: 88, z: -2997, heading: 0.46 };
 
 async function crossBridge(human, page, expect, direction) {
   let highest = -Infinity, far = 0, near = Infinity, left = false, blocked = 0, standoff = 0, last = null, stuck = null;
-  let lane = DECK_LANES[0];
+  const lanes = DECK_LANES[direction];
+  let lane = lanes[0];
   const started = human.now();
   await human.down('KeyW');
   while (human.now() - started < 330000) { // at the traffic's pace, 8 to 12 m/s, a crossing takes 3 to 5 minutes
@@ -55,7 +133,7 @@ async function crossBridge(human, page, expect, direction) {
       .map((v) => ({ ahead: (v.x - state.x) * fx + (v.z - state.z) * fz, left: (v.x - state.x) * lx + (v.z - state.z) * lz + mine }));
     // Only what's ahead: a car behind isn't in the way, and it may well be waiting for this one to move
     const clear = (at, range) => !cars.some((v) => v.ahead > 0 && v.ahead < range && Math.abs(v.left - at) < 2.6);
-    if (!clear(lane, 34)) lane = DECK_LANES.find((at) => clear(at, 34)) ?? lane;
+    if (!clear(lane, 34)) lane = lanes.find((at) => clear(at, 34)) ?? lane;
     const boxedIn = !clear(lane, 16);
     // What it was last doing, for the message if it never arrives
     stuck = { s: Math.round(aim.s), off: +aim.off.toFixed(1), lane, speed: +state.speed.toFixed(1), boxedIn, surface: state.surface,
@@ -231,11 +309,22 @@ const LEVEL_ROUTES = {
   eddyAvenue: [{ x: 196, z: 1023, name: 'Eddy Avenue' }, { x: 35, z: 946, name: 'Eddy Avenue' }],
   // The Western Distributor up from Darling Harbour and onto the bridge
   distributorNorth: [{ x: -420, z: -397 }, { x: -465, z: -584 }, { x: -362, z: -1078 }, { x: -312, z: -1348 }, { x: -120, z: -2100, name: 'Sydney Harbour Bridge' }],
-  // Off the bridge by the York St ramp
-  yorkStreetOff: [{ x: -150, z: -2100, name: 'Sydney Harbour Bridge' }, { x: -285, z: -1288, name: 'York Street Offramp' }, { x: -294, z: -1055 }],
+  // Off the bridge by the York St ramp, from its southbound carriageway (plan 5: the corridor is northbound only)
+  yorkStreetOff: [{ x: 149, z: -2805, name: 'Bradfield Highway' }, { x: -285, z: -1288, name: 'York Street Offramp' }, { x: -294, z: -1055 }],
   // The Cahill Expressway over Circular Quay, and back through its tunnel under the Domain end
   cahillEast: [{ x: -250, z: -1503 }, { x: -246, z: -1365 }, { x: 405, z: -1345 }, { x: 475, z: -1215 }],
-  cahillWest: [{ x: 452, z: -1200 }, { x: 405, z: -1337 }, { x: -345, z: -1382 }]
+  cahillWest: [{ x: 452, z: -1200 }, { x: 405, z: -1337 }, { x: -345, z: -1382 }],
+  // Plan 5: the video's drive (ref/, "Driving across the Sydney Harbour Bridge"): up Clarence St, its tidal-flow ramp onto the bridge,
+  // over it and on to North Sydney
+  bridgeClarence: [{ x: -280, z: -700, name: 'Clarence Street' }, { x: -338, z: -1083, name: 'Bradfield Highway Onramp' },
+    { x: -185, z: -1758, name: 'Sydney Harbour Bridge' }, { x: 141, z: -2803, name: 'Sydney Harbour Bridge' }, { x: -55, z: -3261, name: 'Sydney Harbour Bridge' }],
+  // The other ways up at the CBD end: from Bridge St by Grosvenor St, and round the Cahill's loop in its cutting
+  grosvenorUp: [{ x: -60, z: -1047, name: 'Bridge Street' }, { x: -170, z: -1066, name: 'Grosvenor Street' }, { x: -185, z: -1758, name: 'Sydney Harbour Bridge' }],
+  cahillLoopUp: [{ x: 200, z: -1330, name: 'Cahill Expressway' }, { x: -420, z: -1345, name: 'Cahill Expressway' }, { x: -185, z: -1758, name: 'Sydney Harbour Bridge' }],
+  // And the ways off, from the southbound carriageway and the Cahill's lane
+  westernSuburbsOff: [{ x: 149, z: -2805, name: 'Bradfield Highway' }, { x: -362, z: -1078, name: 'Western Distributor' }, { x: -459, z: -587, name: 'Western Distributor' }],
+  grosvenorOff: [{ x: 149, z: -2805, name: 'Bradfield Highway' }, { x: -200, z: -1062, name: 'Grosvenor Street' }],
+  cahillOff: [{ x: 157, z: -2806, name: 'Cahill Expressway' }, { x: -246, z: -1365 }, { x: 405, z: -1345 }]
 };
 
 async function driveLevels(human, page, metric, expect, names) {
@@ -422,6 +511,18 @@ export const SCENARIOS = {
       expect(south.near < 200 || south.left, `turned back and stopped at metre ${south.near} of the bridge: ${JSON.stringify(south.stuck)}`);
       const home = await human.state();
       expect(home.z > -1700, `ended short of the CBD, at z ${Math.round(home.z)}`);
+    }
+  },
+
+  // Plan 5: every way on and off the Harbour Bridge at the CBD end, and the drive in the video: on its level all the way, nothing
+  // overhead through the camera, no jump between levels, no traffic hit on another level
+  'bridge-ways': {
+    fast: true,
+    query: 'wholeCity=1',
+    minutes: 25,
+    async run({ human, page, metric, expect }) {
+      await human.wait(1000);
+      await driveLevels(human, page, metric, expect, ['bridgeClarence', 'distributorNorth', 'grosvenorUp', 'cahillLoopUp', 'yorkStreetOff', 'westernSuburbsOff', 'grosvenorOff', 'cahillOff']);
     }
   },
 
@@ -1043,6 +1144,11 @@ export const SCENARIOS = {
     }
   },
 
+  // Dragging the camera round, by mouse or by a finger on the right half of a phone, never loses you; and moving forward turns
+  // you to where it looks, with the camera staying put (js/cameras.js, steerToView() in js/controllers.js)
+  'orbit-follow': orbitFollowScenario('laptop'),
+  'orbit-follow-phone': orbitFollowScenario('phone'),
+
   helicopter: {
     async run({ human, metric, expect }) {
       await human.wait(800);
@@ -1490,19 +1596,6 @@ export const SCENARIOS = {
       await human.wait(2000);
       await human.releaseAll();
       await expectCityCompletes(human, page, expect);
-    }
-  },
-
-  'offline-file': {
-    file: 'sydney.html',
-    async run({ human, page, expect }) {
-      expect(await page.evaluate(() => location.protocol) === 'file:', 'not running from a file');
-      expect(await page.evaluate(() => document.fonts.check('14px Inter')), 'the embedded font did not load');
-      expect(await page.locator('#loading-overlay .offline-link').evaluate((link) => getComputedStyle(link).display) === 'none', 'the offline copy still offers itself');
-      await expectCityCompletes(human, page, expect);
-      await human.down('KeyW');
-      await human.wait(2000);
-      await human.releaseAll();
     }
   },
 

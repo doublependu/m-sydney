@@ -96,14 +96,22 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
   }
   const deckLine = [];
   for (let i = 0; i + 1 < (GEO.bridge?.length ?? 0); i += 2) deckLine.push([GEO.bridge[i], GEO.bridge[i + 1]]);
+  // Under the deck's roads, a few metres past them: they reach east of the corridor's line further than west (js/bridge.js deckSpanAt)
+  const span = GEO.deckSpan;
   const onDeckLine = (x, z) => {
+    let s0 = 0, best = null;
     for (let i = 1; i < deckLine.length; i++) {
       const [ax, az] = deckLine[i - 1], [bx, bz] = deckLine[i];
-      const dx = bx - ax, dz = bz - az;
-      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
-      if (Math.hypot(ax + dx * t - x, az + dz * t - z) < DECK_REACH) return true;
+      const dx = bx - ax, dz = bz - az, L = Math.hypot(dx, dz) || 1;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (L * L)));
+      const px = ax + dx * t, pz = az + dz * t, d = Math.hypot(px - x, pz - z);
+      if (!best || d < best.d) best = { d, s: s0 + t * L, off: (-(x - px) * dz + (z - pz) * dx) / L };
+      s0 += L;
     }
-    return false;
+    if (!best) return false;
+    if (!span) return best.d < DECK_REACH;
+    const k = Math.max(0, Math.min(span.west.length - 1, Math.round(best.s / span.step)));
+    return best.off > span.west[k] - 2.5 && best.off < span.east[k] + 2.5;
   };
   const blockedOnStreet = (x, z, clear) => !landAt(x, z) && !onDeckLine(x, z) || curbAt(x, z) || nearMedian(x, z, clear) ||
     query(x - clear, x + clear, z - clear, z + clear, (r) => !r.pedestrianOnly && (r.maxX - r.minX < 50 || r.maxZ - r.minZ < 50) && !medianBox(r));
@@ -162,7 +170,9 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
       for (let k = 0; k + 1 < pts.length; k++) len += Math.hypot(pts[k + 1].x - pts[k].x, pts[k + 1].z - pts[k].z);
       // sid: the structure it's on (js/surfaces.js), 0 on the ground
       // cls: its OSM class (js/surfaces.js ROAD_CLASSES), 0 where the map doesn't say
-      return { id, a, b, name: RG.names[ni], w, lanes, dir, major: !!major, deck: !!deck, sid: linkById.get(id).sid, cls: roadClass(flags), pts, len };
+      // busOnly: buses and nothing else in traffic, as the bus lane between the Harbour Bridge's east pylons (flag 32,
+      // tools/build-geodata.mjs)
+      return { id, a, b, name: RG.names[ni], w, lanes, dir, major: !!major, deck: !!deck, sid: linkById.get(id).sid, cls: roadClass(flags), busOnly: !!(flags & 32), pts, len };
     });
     // Junctions a few metres apart (divided roads, offset corners) are one: collapse links under 14 m
     const parent = new Map();
@@ -246,7 +256,7 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
       }
       stations.push(B);
       const lanes = lanesOf(l);
-      for (let k = 0; k + 1 < stations.length; k++) runs.push({ from: stations[k], to: stations[k + 1], deck: l.deck, sid: l.sid, link: l.id, cls: l.cls, ...lanes });
+      for (let k = 0; k + 1 < stations.length; k++) runs.push({ from: stations[k], to: stations[k + 1], deck: l.deck, sid: l.sid, link: l.id, cls: l.cls, busOnly: l.busOnly, ...lanes });
     }
     console.info(`[roads] centreline streets: ${links.length} links, ${runs.length} straight runs`);
     return runs;
@@ -279,7 +289,7 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
     const dz = (to.z - z0) / span;
     const open = run.sid ? lanes.slice() : lanes.filter((o) => laneOpen(x0, z0, dx, dz, span, o, maxOnKerb));
     if (!open.length) return false;
-    edges.push({ from, to, axis, x0, z0, dx, dz, rx: -dz * DRIVE_SIDE, rz: dx * DRIVE_SIDE, span, half, lanes: open.sort((p, q) => p - q), moves: [], general: true, cand: lanes, divided: !!divided, deck: !!run.deck, sid: run.sid || 0, link: run.link, cls: run.cls || 0 });
+    edges.push({ from, to, axis, x0, z0, dx, dz, rx: -dz * DRIVE_SIDE, rz: dx * DRIVE_SIDE, span, half, lanes: open.sort((p, q) => p - q), moves: [], general: true, cand: lanes, divided: !!divided, deck: !!run.deck, sid: run.sid || 0, link: run.link, cls: run.cls || 0, busOnly: !!run.busOnly });
     return true;
   }
   // A divided road drawn as two one-way roadways between the same two junctions (most of the Bowery) runs both ways

@@ -11,7 +11,6 @@ import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { launchBrowser, openGame, ROOT, screenshot, serveDist, startRecording, webProcessMemory } from './lib.mjs';
 import { Human, Watchdog } from './human.mjs';
 import { SCENARIOS } from './scenarios.mjs';
@@ -33,7 +32,7 @@ function changedFiles() {
 // scenarios side by side take about two thirds of the time of one after another, and drive-route's time went from 49 to 67 s.
 export const ALONE = new Set([
   'hill-start', 'loading-bar', 'first-minute', 'drive-route', 'crash-recovery', 'helicopter', 'auto-steps-down', 'webgl2-fallback',
-  'device-lost', 'offline-file', 'tile-streaming', 'soak', 'long-flight'
+  'device-lost', 'tile-streaming', 'soak', 'long-flight'
 ]);
 
 function chooseScenarios() {
@@ -88,13 +87,11 @@ async function play(name, index, { video, suffix = '' }) {
   const scenario = SCENARIOS[name];
   const fast = fastWanted && !!scenario.fast;
   const browser = await launchBrowser({ browser: option('browser', 'chrome'), headed: option('headed', false) });
-  const url = scenario.file ? pathToFileURL(join(dist, scenario.file)).href : server.url;
-  const game = await openGame(browser, url, {
+  const game = await openGame(browser, server.url, {
     profile: scenario.profile || 'laptop',
     query: scenario.query,
     storage: scenario.storage,
-    initScript: scenario.initScript,
-    offline: Boolean(scenario.file)
+    initScript: scenario.initScript
   });
   // On the fast clock the world has to be there first: nothing builds it between advances
   if (fast) {
@@ -139,7 +136,7 @@ async function play(name, index, { video, suffix = '' }) {
 
 // WebGL2 straight after a closed WebGPU browser loses its context ("GPU state invalid" within a second of launch, on the
 // RTX 3060 here): 3 s between browsers clears it. Nothing a player can reach, as one browser never follows another.
-const gapBefore = (name) => Number(option('gap', ['webgl2-fallback', 'device-lost', 'offline-file'].includes(name) || ['firefox', 'webkit'].includes(option('browser')) ? 3 : 0.5)) * 1000;
+const gapBefore = (name) => Number(option('gap', ['webgl2-fallback', 'device-lost'].includes(name) || ['firefox', 'webkit'].includes(option('browser')) ? 3 : 0.5)) * 1000;
 
 const report = [];
 const startedAll = Date.now();

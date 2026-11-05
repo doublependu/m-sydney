@@ -995,14 +995,18 @@ class PersonCrowd {
     for (const l of this.lods) l.count = 0;
   }
 
-  add(rig, distance = 0) {
+  /**
+   * `base`: the height of what the person stands on, which their pose is written from. The ground under them unless said:
+   * the player's walker and the cyclist give their own surface, a bridge or a ramp as it may be.
+   */
+  add(rig, distance = 0, base = null) {
     const l = this.lods.length > 1 && distance > this.farDistance ? this.lods[1] : this.lods[0];
     if (l.count >= l.max) return;
     const offset = l.count * STRIDE * 4;
     const pose = l.pose.value.array;
     pose.set(rig.pose, offset);
     // The rig walks on the flat simulation: the crowd is drawn on the ground. Its pose is from the origin as it was when it was last written.
-    const ground = groundHeight(rig.x, rig.z);
+    const ground = base ?? groundHeight(rig.x, rig.z);
     const dx = rig.poseOriginX - origin.x, dz = rig.poseOriginZ - origin.z;
     for (let b = 0; b < BONE_COUNT; b++) {
       pose[offset + b * 8 + 4] += dx;
@@ -1801,6 +1805,9 @@ class PersonRig {
     root.matrixWorld.decompose(_rootPos, _qRoot, _v);
     _rootPos.x += origin.x; // back into the game's frame, as everything writing a bone is
     _rootPos.z += origin.z;
+    // Where it is, for the crowd. Its height is the flat simulation's, as a walker's is: the crowd stands it on its surface.
+    this.x = _rootPos.x;
+    this.z = _rootPos.z;
     const toWorld = (local) => local.applyQuaternion(_qRoot).add(_rootPos);
 
     // Pelvis on the saddle, leaning forward; chest further forward, head up looking ahead
@@ -1812,6 +1819,7 @@ class PersonRig {
     _qa.copy(_qRoot).multiply(qX(_q, -0.12));
     this.jointFrom(BONE.CHEST, BONE.HEAD, _qChest, _chest, _v);
     this.writeBone(BONE.HEAD, _qa, _v);
+    // The head, for the helmet: like the bones, from the flat simulation, before the crowd stands it on its surface
     this.headPosition = (this.headPosition || new THREE.Vector3()).copy(_v);
     this.headQuaternion = (this.headQuaternion || new THREE.Quaternion()).copy(_qa);
 

@@ -20,7 +20,7 @@ npm run build
 npm run preview
 ```
 
-`npm run build` makes the site in `dist/`, plus `dist/sydney.html`: the game as one file to play offline, with the CBD and around it in it.
+`npm run build` makes the site in `dist/`.
 
 ## Test
 

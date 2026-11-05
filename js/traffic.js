@@ -865,6 +865,8 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
       const m = e.moves[k];
       let w = m.turn === 'S' ? (v.bus ? 8 : 3) : 1;
       if (v.bus && m.turn !== 'S' && m.to.lanes.length < 2) w *= 0.05;
+      // A bus lane: a car only where there's nowhere else to go
+      if (!v.bus && m.to.busOnly) w *= 1e-6;
       if (fromLane) {
         if (m.out[v.lane] < 0) w = 0;
       } else if (Math.abs(nearestLane(m, v.lane) - v.lane) * 22 > e.len - v.s) {
@@ -1713,7 +1715,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
       // A quiet street is picked as often as it's full (roadShare): what isn't taken doesn't count as a try
       if (e && e.share < 1 && Math.random() >= e.share) continue;
       attempt++;
-      if (!e || (v.bus && e.axis !== 'ave') || e.len < 2 * v.half + 10) continue;
+      if (!e || (v.bus && e.axis !== 'ave') || (!v.bus && e.busOnly) || e.len < 2 * v.half + 10) continue;
       const lane = Math.floor(Math.random() * e.lanes.length);
       const along = (focusX - e.sx) * e.dx + (focusZ - e.sz) * e.dz;
       const minS = Math.max(v.half + 5, along - rMax);

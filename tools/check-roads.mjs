@@ -14,10 +14,11 @@
 //   wet       covered tunnel the sea's sheet passes through, between its road and its ceiling: the game doesn't draw the sea
 //             while the camera's in a tube (js/main.js), so this is where to look, not a fault
 //   decks     buildings rising into a deck, and trees taller than the room under one
+//   walls     a raised road's barrier or wall standing in another road's lane at its level, where the two run side by side
 // usage: node tools/check-roads.mjs [--json] [--strict] [--list] [--tiles=0_-2,1_-2]
 console.info = () => {};
 const { heldList, heldTiles } = await import('../js/geodata.js');
-const { DECK_DEPTH, KIND, LINKS, TUNNEL_HEIGHT, chooseSurface, clearOfWater, groundHeight, linkById, onGroundRoad, roadHeight, tunnelCovered } = await import('../js/surfaces.js');
+const { DECK_DEPTH, KIND, LINKS, TUNNEL_HEIGHT, chooseSurface, clearOfWater, edgeNeighbour, groundHeight, laneAt, linkById, onGroundRoad, roadHeight, tunnelCovered } = await import('../js/surfaces.js');
 const { GroundCells, SIDEWALK_TOP, addSurface, groundLinks, wheelContacts } = await import('../js/ground-geometry.js');
 const { CITY_BOUNDS, blockAt } = await import('../js/city-config.js');
 const { buildRoadNetworkSteps } = await import('../js/road-network.js');
@@ -426,6 +427,39 @@ const over = (places, limit) => places.all.filter((w) => w[0] > limit).length;
   report.tubes = { overlapping: tubes.metres * 2, wet: wet.metres * 2, overlap: tubes.summary(), water: wet.summary() };
   report.decks = { buildings: buildingsInto, trees: treesUnder.metres, into: intoDeck.summary(), under: treesUnder.summary() };
 }
+
+// --- Walls in the road: every 2 m along each side of each raised road, where js/structures.js draws its barrier or wall -----------
+{
+  const walls = new Places();
+  let before = 0;
+  for (const l of LINKS) {
+    if (!l.kind || l.deck) continue;
+    let s0 = 0;
+    for (let i = 1; i < l.pts.length; i++) {
+      const p = l.pts[i - 1], q = l.pts[i], L = Math.hypot(q.x - p.x, q.z - p.z);
+      if (L < 1e-6) continue;
+      const ux = (q.x - p.x) / L, uz = (q.z - p.z) / L;
+      for (let d = 1; d < L; d += 2) {
+        const x = p.x + ux * d, z = p.z + uz * d, y = p.y + ((q.y - p.y) * d) / L;
+        // A covered tunnel's walls are its tube's: those are "tubes"
+        if (!wanted(x, z) || (l.kind === KIND.TUNNEL && tunnelCovered(l, s0 + d))) continue;
+        for (const side of [1, -1]) {
+          const nx = -uz * side, nz = ux * side;
+          const ex = x + nx * l.half, ez = z + nz * l.half;
+          // The barrier's face, a little in from the deck's edge
+          if (!laneAt(ex - nx * 0.3, ez - nz * 0.3, y, l)) continue;
+          before++;
+          const next = edgeNeighbour(l, ex, ez, nx, nz, y, ux, uz);
+          if (!next) walls.add(ex, ez, l.name);
+          // A median barrier, between roads carrying traffic opposite ways: in a lane only where the two overlap
+          else if (next.opposite && next.gap < 0.5 && (!next.link.kind || l.id < next.link.id)) walls.add(ex, ez, `${l.name} (median)`);
+        }
+      }
+      s0 += L;
+    }
+  }
+  report.walls = { ...walls.summary(), metres: walls.metres * 2, everyEdge: before * 2 };
+}
 report.seconds = +((performance.now() - started) / 1000).toFixed(1);
 
 if (json) console.log(JSON.stringify(report, null, 1));
@@ -449,6 +483,7 @@ else {
   console.log(`wet       ${r.tubes.wet} m of covered tunnel with the sea's sheet inside${where(r.tubes.water)}`);
   console.log(`decks     ${r.decks.buildings} buildings rising into a deck${where(r.decks.into)}`);
   console.log(`          ${r.decks.trees} trees taller than the room under a deck${where(r.decks.under)}`);
+  console.log(`walls     ${r.walls.metres} m of barrier or wall in another road's lane at its level (${r.walls.everyEdge} m if every edge had one)${where(r.walls)}`);
   console.log(`          in ${r.seconds} s`);
   if (r.byTile) {
     console.log(`by tile   ${r.byTile.passing} of ${r.byTile.tiles} pass, ${r.byTile.share}% (limits, in metres of lane: ${JSON.stringify(TILE_LIMITS)})`);
@@ -478,7 +513,10 @@ if (strict) {
     [r.tubes.overlapping, 2000, 'metres of covered tunnel inside another tube'],
     // Buildings with measured heights, which derive lists rather than cuts, and trees by a deck's edge
     [r.decks.buildings, 7, 'buildings rising into a deck'],
-    [r.decks.trees, 6, 'trees taller than the room under a deck']
+    [r.decks.trees, 6, 'trees taller than the room under a deck'],
+    // Plan 5, Phase B: 4,070 m before roads side by side shared a deck. What's left is in the data: opposite carriageways drawn
+    // overlapping, so their median stands in a lane, and roads meeting 0.35-0.5 m apart in height
+    [r.walls.metres, 1260, 'metres of barrier or wall in another road\'s lane']
   ];
   let failed = false;
   for (const [value, limit, label] of limits) {

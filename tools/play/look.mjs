@@ -1,16 +1,22 @@
 // Boots the build and saves what the game shows from a list of places, for checking the city by eye.
 // usage: node tools/play/look.mjs out-dir [--query=...] [--browser=firefox] [--time=midday|golden|twilight|midnight] [--spots[=a,b]]
-//        [name:x,z,heading[,mode[,climbSeconds]] ...]
+//        [name:x,z,heading[,mode[,climbSeconds]] ...] [name@x,y,z>tx,ty,tz ...]
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { serveDist, launchBrowser, openGame } from './lib.mjs';
 import { SPOTS } from './spots.mjs';
 
 const args = process.argv.slice(2);
-const out = args.find((a) => !a.startsWith('--') && !a.includes(':')) || 'recordings/look';
+const out = args.find((a) => !a.startsWith('--') && !a.includes(':') && !a.includes('@')) || 'recordings/look';
 const query = args.find((a) => a.startsWith('--query='))?.slice(8) || '';
 const browserName = args.find((a) => a.startsWith('--browser='))?.slice(10) || 'chrome';
 const spots = args.find((a) => a === '--spots' || a.startsWith('--spots='));
-const places = args.filter((a) => !a.startsWith('--') && a.includes(':')).map((a) => {
+// name@x,y,z>tx,ty,tz: the camera at (x, y, z) looking at (tx, ty, tz)
+const views = args.filter((a) => !a.startsWith('--') && a.includes('@')).map((a) => {
+  const [name, rest] = a.split('@');
+  const [from, to] = rest.split('>').map((p) => p.split(',').map(Number));
+  return { name, from, to };
+});
+const places = args.filter((a) => !a.startsWith('--') && a.includes(':') && !a.includes('@')).map((a) => {
   const [name, rest] = a.split(':');
   const [x, z, heading = 0, mode = 'car', climb = 0, deck = ''] = rest.split(',');
   return { name, x: +x, z: +z, heading: +heading, mode, climb: +climb, deck: deck === 'deck' };
@@ -48,6 +54,10 @@ for (const p of places) {
     await page.keyboard.up('Space');
   }
   await grab(p.name);
+}
+for (const v of views) {
+  await page.evaluate(({ from, to }) => window.__gameDebug.view(from, to), v);
+  await grab(v.name);
 }
 console.log(JSON.stringify(await page.evaluate(() => ({ ...window.__gameDebug.frameCost(), ...window.__gameDebug.renderInfo() }))));
 console.log('errors', game.errors.length, game.errors.slice(0, 8).join('\n').slice(0, 1600));

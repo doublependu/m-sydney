@@ -58,6 +58,12 @@ function driveSpeed(speed, throttle, dt, drive) {
   return Math.sign(throttle) * Math.min(Math.max(limit, coasting), coasting + Math.abs(throttle) * acceleration * dt);
 }
 
+// Steering where you look. js/cameras.js says how far round the camera has been turned (viewOffset). With forward held and no
+// steering of your own, each mode turns that way through its own steering, and the camera turns back by as much, so it stays
+// where it was put: GAIN is how much steering per radian still to go, DONE where it counts as there. A car only does it
+// within CAR_REACH: further round is a look, not somewhere to drive, and the camera swings back behind it as before.
+const VIEW = { gain: 3, carGain: 4, carDamping: 0.2, done: 0.02, settled: 0.03, carReach: Math.PI / 2 };
+
 // A car or bicycle you left: how close you have to be to get back in it where it is, and to still see it
 const RESUME_PARKED = 30, SHOW_PARKED = 200;
 const FLY_AREA = FLY.AREA;
@@ -206,6 +212,7 @@ class ThirdPersonControllerManager {
     this.activeMode = 'car'; // 'person' | 'car' | 'cyclist' | 'helicopter'
 
     this.jumpQueued = 0;
+    this.viewOffset = null; // how far round the camera's been turned from your heading (rad, + to the left), or null
     this.keys = {
       forward: false,
       backward: false,
@@ -1229,7 +1236,8 @@ class ThirdPersonControllerManager {
         const air = p.position.y - this.getGroundHeight(p.position.x, p.position.z, 'person');
         p.rig.update(dt, p.position.x, p.position.z, p.heading, personGround, this, air > 0.02 ? air : 0);
         p.crowd.begin();
-        p.crowd.add(p.rig, 0);
+        // On whatever it stands on: the ground, or a deck (the simulation is flat, js/surfaces.js)
+        p.crowd.add(p.rig, 0, surfaceHeight(p.surface || 0, p.position.x, p.position.z, p.surfaceY ?? null));
         p.crowd.end();
       } else if (!p._charHidden) {
         p.rig.placed = false;
@@ -1248,9 +1256,12 @@ class ThirdPersonControllerManager {
       const dz = focus ? b.position.z - focus.z : 0;
       if (this.activeMode === 'cyclist' || (b._parked && dx * dx + dz * dz <= maxDistSq)) {
         if (b.helmet) b.helmet.visible = true;
+        // What it stands on can change under a parked bike, as the ground there arrives
+        const base = surfaceHeight(b.surface || 0, b.position.x, b.position.z, b.surfaceY ?? null);
         const moved =
           this.activeMode === 'cyclist' ||
           b._riderHidden ||
+          b._posedBase !== base ||
           b._posedX !== b.position.x ||
           b._posedY !== b.position.y ||
           b._posedZ !== b.position.z ||
@@ -1259,18 +1270,22 @@ class ThirdPersonControllerManager {
           b._posedPedal !== b.pedalPhase;
         b._riderHidden = false;
         if (moved) {
+          // Posed from the bike as the simulation has it, flat, then stood on the bike's surface as the bike itself is drawn.
+          // Before, the crowd stood the rider on the ground at (0, 0), 22.5 m whatever the bike was on.
           b.riderRig.ride(b.leanPivot, b.pedalPhase, b.bikeFrame);
           b.riderCrowd.begin();
-          b.riderCrowd.add(b.riderRig, 0);
+          b.riderCrowd.add(b.riderRig, 0, base);
           b.riderCrowd.end();
           b.helmet.quaternion.copy(b.riderRig.headQuaternion);
           b.helmet.position.set(0, 0.175, -0.012).applyQuaternion(b.helmet.quaternion).add(b.riderRig.headPosition);
+          b.helmet.position.y += base;
           b._posedX = b.position.x;
           b._posedY = b.position.y;
           b._posedZ = b.position.z;
           b._posedH = b.heading;
           b._posedLean = b.leanAngle;
           b._posedPedal = b.pedalPhase;
+          b._posedBase = base;
         }
       } else if (!b._riderHidden) {
         b.riderCrowd.begin();
@@ -1325,6 +1340,22 @@ class ThirdPersonControllerManager {
     this.poseCharacters(dt, focusPos);
   }
 
+  /**
+   * Steering towards the view, from -1 (right) to 1 (left), or 0 when it doesn't apply: forward held, no steering or reversing
+   * of your own, and the camera turned round further than DONE (and no further than `reach`). `rate` is how fast the entity is
+   * already turning (rad/s), for a car whose yaw lags its wheels. Marks the entity as following the view, for the camera.
+   */
+  steerToView(entity, gain = VIEW.gain, reach = Infinity, rate = 0, damping = 0) {
+    entity.followingView = false;
+    const off = this.viewOffset;
+    const k = this.keys;
+    if (off === null || off === undefined || !(k.forward > 0.1) || k.backward || k.left > 0.05 || k.right > 0.05) return 0;
+    // There, and no longer turning: a car's yaw runs on after its wheels straighten
+    if ((Math.abs(off) < VIEW.done && Math.abs(rate) < VIEW.settled) || Math.abs(off) > reach) return 0;
+    entity.followingView = true;
+    return Math.max(-1, Math.min(1, off * gain - rate * damping));
+  }
+
   updatePerson(dt) {
     const p = this.entities.person;
     const maxSpeed = 8.2;
@@ -1336,6 +1367,7 @@ class ThirdPersonControllerManager {
 
     if (this.keys.left) p.heading += turnRate * dt * this.keys.left;
     if (this.keys.right) p.heading -= turnRate * dt * this.keys.right;
+    p.heading += turnRate * dt * this.steerToView(p);
 
     const accelerating = Math.abs(targetSpeed) > Math.abs(p.speed) && p.speed * targetSpeed >= 0;
     const acceleration = accelerating ? 5.5 * Math.abs(targetSpeed) / maxSpeed : 12;
@@ -1372,6 +1404,8 @@ class ThirdPersonControllerManager {
     let steerInput = 0;
     if (this.keys.left) steerInput = this.keys.left;
     if (this.keys.right) steerInput = -this.keys.right;
+    if (!steerInput && c.speed > 0) steerInput = this.steerToView(c, VIEW.carGain, VIEW.carReach, c.angularVel, VIEW.carDamping);
+    else c.followingView = false;
 
     const prevX = c.position.x;
     const prevZ = c.position.z;
@@ -1464,6 +1498,7 @@ class ThirdPersonControllerManager {
     let turnInput = 0;
     if (this.keys.left) turnInput = this.keys.left;
     if (this.keys.right) turnInput = -this.keys.right;
+    if (!turnInput) turnInput = this.steerToView(b);
 
     if (Math.abs(b.speed) > 0.15) {
       const dirSign = b.speed >= 0 ? 1 : -1;
@@ -1502,6 +1537,7 @@ class ThirdPersonControllerManager {
     let yawInput = 0;
     if (this.keys.left) yawInput = this.keys.left;
     if (this.keys.right) yawInput = -this.keys.right;
+    if (!yawInput) yawInput = this.steerToView(h);
 
     let vertInput = 0;
     if (this.keys.up) vertInput = this.keys.up;

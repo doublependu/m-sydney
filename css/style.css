@@ -274,9 +274,6 @@ body::after {
   .fullmap-search { font-size: 16px; }
 }
 
-/* The downloaded copy has no need to offer itself */
-html[data-offline] .offline-link { display: none; }
-
 .loader-links {
   max-width: min(420px, calc(100vw - 32px));
   margin-top: 18px;

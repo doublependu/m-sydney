@@ -12,8 +12,10 @@ const PATH = [];
 for (let i = 0; i < GEO.bridge.length; i += 2) PATH.push({ x: GEO.bridge[i], z: GEO.bridge[i + 1], s: 0 });
 for (let i = 1; i < PATH.length; i++) PATH[i].s = PATH[i - 1].s + Math.hypot(PATH[i].x - PATH[i - 1].x, PATH[i].z - PATH[i - 1].z);
 const LENGTH = PATH[PATH.length - 1].s;
-const HALF_WIDTH = 12.5; // of the corridor anything can use
+const HALF_WIDTH = 12.5; // of the corridor anything can use, where the tiles don't say how far the deck reaches (deckSpanAt())
 const DECK_SID = DECK_STRUCTURE;
+// m from the corridor's line that any of the deck can be, either side
+const DECK_REACH = 30;
 
 /** Point on the corridor s metres from its south end, with its direction */
 function bridgePoint(s) {
@@ -56,6 +58,18 @@ function deckHeight(s) {
   return DECK_Y[i] + (DECK_Y[i + 1] - DECK_Y[i]) * (f - i);
 }
 
+// How far the deck reaches across, west (negative) and east of the corridor's line, every so many metres along it: as far as any of
+// its roads' lanes do (tools/build-tiles.mjs). The corridor is OSM's northbound carriageway; its southbound one, the bus lane and
+// the Cahill's lane through the east pylons are east of it, on the same deck (plan 5).
+const ACROSS = GEO.deckSpan;
+/** The deck's roads across at s m along the corridor: { west, east }, m from its line, east positive */
+function deckSpanAt(s) {
+  if (!ACROSS) return { west: -HALF_WIDTH, east: HALF_WIDTH };
+  const f = Math.max(0, Math.min(ACROSS.west.length - 1, s / ACROSS.step));
+  const i = Math.min(ACROSS.west.length - 2, Math.floor(f)), t = f - i;
+  return { west: ACROSS.west[i] + (ACROSS.west[i + 1] - ACROSS.west[i]) * t, east: ACROSS.east[i] + (ACROSS.east[i + 1] - ACROSS.east[i]) * t };
+}
+
 /**
  * Nearest place on the corridor to (x, z), or null when farther than `reach` from it:
  * { s, off (metres to the right of travel north), y }
@@ -78,4 +92,23 @@ function bridgeAt(x, z, reach = HALF_WIDTH) {
   return best;
 }
 
-export { DECK_STEP, DECK_SID, HALF_WIDTH, LENGTH as BRIDGE_LENGTH, SPAN as BRIDGE_SPAN, bridgeAt, bridgePoint, deckHeight };
+/** Where the deck's easternmost lane runs apart from the rest at s, [from, to] m east of the corridor's line: the Cahill's, through
+ *  the east pylons. Null where it doesn't. */
+function deckGapAt(s) {
+  if (!ACROSS?.gap) return null;
+  const k = Math.max(0, Math.min(ACROSS.gap.length - 1, Math.round(s / ACROSS.step)));
+  const here = ACROSS.gap[k];
+  if (!here) return null;
+  // Between two bins that both have one, the nearer's
+  return here;
+}
+
+/** Whether (x, z) is over the deck's roads, `margin` m past their edges counting */
+function onDeckSpan(x, z, margin = 0) {
+  const here = bridgeAt(x, z, DECK_REACH + margin);
+  if (!here) return false;
+  const span = deckSpanAt(here.s);
+  return here.off >= span.west - margin && here.off <= span.east + margin;
+}
+
+export { DECK_REACH, DECK_STEP, DECK_SID, HALF_WIDTH, LENGTH as BRIDGE_LENGTH, SPAN as BRIDGE_SPAN, bridgeAt, bridgePoint, deckGapAt, deckHeight, deckSpanAt, onDeckSpan };

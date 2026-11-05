@@ -19,6 +19,15 @@ const CAMERA_PRESETS = [
 
 // A preset's vertical FOV alone leaves a tall phone looking through a slot, so widen it to keep this much across.
 const MIN_HORIZONTAL_FOV = 48;
+// m the chase camera aims past what it follows, from right behind it and level; and how far it has to be dragged up to look
+// down at it instead (rad of pitch past the default)
+const CHASE_LEAD = 5.2;
+const CHASE_LOOK_DOWN = 0.45;
+const DEFAULT_PITCH = 0.09;
+
+const wrapAngle = (a) => a - Math.round(a / (Math.PI * 2)) * Math.PI * 2;
+// The cameras that orbit round what they follow, and so the ones you can steer by (js/controllers.js, steerToView())
+const ORBITING = new Set(['chase', 'pov']);
 
 function fittedFov(verticalFov, aspect) {
   const radians = Math.PI / 180;
@@ -42,11 +51,12 @@ class CameraSystem {
 
     this.activePresetId = 'chase';
     this.orbitYawOffset = 0.0;
-    this.orbitPitchOffset = 0.09;
+    this.orbitPitchOffset = DEFAULT_PITCH;
     this.zoomMultiplier = 1.0;
     this.isDragging = false;
     this.userOrbitTimer = 0;
 
+    this.fixedView = null;
     this.currentPos = new THREE.Vector3(0, 10, 380);
     this.currentLookAt = new THREE.Vector3(0, 8, 440);
     this.initialized = false;
@@ -150,7 +160,7 @@ class CameraSystem {
 
   resetOrbit() {
     this.orbitYawOffset = 0;
-    this.orbitPitchOffset = 0.09;
+    this.orbitPitchOffset = DEFAULT_PITCH;
     this.zoomMultiplier = 1;
     this.userOrbitTimer = 0;
   }
@@ -159,6 +169,7 @@ class CameraSystem {
   snap() {
     this.initialized = false;
     this.followEntity = null;
+    this._turnEntity = null;
   }
 
   resetForTeleport() {
@@ -171,6 +182,7 @@ class CameraSystem {
     this.followOffset.set(0, 0, 0);
     this.followLookOffset.set(0, 0, 0);
     this.followBaseY = 0;
+    this._turnEntity = null;
     this.setCameraPreset('chase', true);
   }
 
@@ -186,6 +198,14 @@ class CameraSystem {
 
   update(dt, elapsed) {
     const entity = this.controllerManager.getActiveEntity();
+    // A view put somewhere by hand, for pictures (js/main.js, __gameDebug.view())
+    if (this.fixedView) {
+      this.currentPos.copy(this.fixedView.from);
+      this.currentLookAt.copy(this.fixedView.to);
+      this.camera.position.copy(this.currentPos);
+      this.camera.lookAt(this.lookTarget.set(this.currentLookAt.x - origin.x, this.currentLookAt.y, this.currentLookAt.z - origin.z));
+      return;
+    }
     const desiredPos = this._desiredPos;
     const desiredLook = this._desiredLook;
 
@@ -193,7 +213,15 @@ class CameraSystem {
       this.userOrbitTimer = Math.max(0, this.userOrbitTimer - dt);
     }
 
-    if (!this.isDragging && this.userOrbitTimer <= 0 && Math.abs(entity.speed) > 0.5) {
+    // Turning to where the camera looks (js/controllers.js): whatever you turned, the camera turns back, so it stays put while
+    // you come round to it
+    const turned = entity === this._turnEntity ? wrapAngle(entity.heading - this._turnHeading) : 0;
+    this._turnEntity = entity;
+    this._turnHeading = entity.heading;
+    if (entity.followingView) this.orbitYawOffset -= turned;
+    this.orbitYawOffset = wrapAngle(this.orbitYawOffset); // dragged round and round, it's still only so far round
+
+    if (!this.isDragging && !entity.followingView && this.userOrbitTimer <= 0 && Math.abs(entity.speed) > 0.5) {
       this.orbitYawOffset -= Math.round(this.orbitYawOffset / (Math.PI * 2)) * (Math.PI * 2);
       this.orbitYawOffset += (0.0 - this.orbitYawOffset) * (1 - Math.exp(-dt * 2.2));
     }
@@ -217,11 +245,18 @@ class CameraSystem {
           entity.position.z - Math.cos(totalYaw) * horizDist
         );
 
+        // It aims past you the way it looks, not the way you face: from behind and level it looks ahead down the road, and
+        // orbited round, or looking down from above, it looks at you. Aiming ahead of your heading put you off the side of the
+        // screen at 90 degrees, and behind the camera at 180 when it was nearer to you than that point (walking, cycling);
+        // aiming over your head put you below the screen when dragged up to look down.
         const lookUpBias = entity.type === 'helicopter' ? 0.2 : (entity.type === 'car' ? 0.52 : 1.55);
+        const behind = Math.max(0, Math.cos(this.orbitYawOffset));
+        const level = Math.max(0, 1 - Math.max(0, this.orbitPitchOffset - DEFAULT_PITCH) / CHASE_LOOK_DOWN);
+        const ahead = behind * level;
         desiredLook.set(
-          entity.position.x + Math.sin(entity.heading) * 5.2,
-          entity.position.y + entity.cameraTargetOffset.y + lookUpBias,
-          entity.position.z + Math.cos(entity.heading) * 5.2
+          entity.position.x + Math.sin(totalYaw) * CHASE_LEAD * ahead,
+          entity.position.y + entity.cameraTargetOffset.y + lookUpBias * ahead,
+          entity.position.z + Math.cos(totalYaw) * CHASE_LEAD * ahead
         );
         break;
       }
@@ -369,6 +404,9 @@ class CameraSystem {
       this.currentPos.lerp(desiredPos, k);
       this.currentLookAt.lerp(desiredLook, k);
     }
+
+    // How far round the camera is from the heading, for steering by it, where the camera orbits
+    this.controllerManager.viewOffset = ORBITING.has(this.activePresetId) ? wrapAngle(this.orbitYawOffset) : null;
 
     this.camera.position.copy(this.currentPos);
     // lookAt() goes by the drawn frame

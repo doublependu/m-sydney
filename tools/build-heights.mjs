@@ -159,7 +159,18 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
     return [p.x + (q.x - p.x) * t, p.z + (q.z - p.z) * t];
   };
   const DECK = 49, CROWN = 3;
-  const DECK_WIDTH = 25; // m between its barriers (js/bridge.js)
+  // m across the deck, from its west edge to its east, measured from the corridor (js/bridge.js DECK_SPAN): east is + (plan 5)
+  const DECK_WEST = -25, DECK_EAST = 28;
+  const offOf = (x, z) => {
+    let best = null;
+    for (let i = 1; i < deckPath.length; i++) {
+      const p = deckPath[i - 1], q = deckPath[i], dx = q.x - p.x, dz = q.z - p.z, L2 = dx * dx + dz * dz || 1;
+      const t = Math.max(0, Math.min(1, ((x - p.x) * dx + (z - p.z) * dz) / L2));
+      const px = p.x + dx * t, pz = p.z + dz * t, d = Math.hypot(px - x, pz - z);
+      if (!best || d < best.d) best = { d, off: (-(x - px) * dz + (z - pz) * dx) / Math.sqrt(L2) };
+    }
+    return best.off;
+  };
   const startY = grid(deckPath[0].x, deckPath[0].z), endY = grid(deckPath[deckPath.length - 1].x, deckPath[deckPath.length - 1].z);
   let south = 0, north = LENGTH;
   for (let s = 0; s < LENGTH; s += 5) if (grid(...pointAt(s)) < 2) { south = s; break; }
@@ -206,8 +217,8 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
   console.log(`[heights] ${lifted} motorway links lifted to give the deck's ramps room`);
   // A ramp stays at the deck's height across the deck's own width
   const inDeck = (x, z) => {
-    const [px, pz] = pointAt(sOf(x, z));
-    return Math.hypot(px - x, pz - z) < DECK_WIDTH / 2;
+    const off = offOf(x, z);
+    return off > DECK_WEST && off < DECK_EAST;
   };
 
   // Samples along every link but the corridor's, linked to their neighbours along it and through shared nodes
@@ -741,10 +752,22 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
       lowSegment(p.x, p.z, p.y, q.x, q.z, q.y, l.width / 2 + DECK_SHOULDER);
     }
   }
+  // Each of the deck's carriageways, and the whole deck, rail and footway too, along its middle
   for (const l of corridor) {
     for (let k = 1; k < l.pts.length; k++) {
       const [ax, az] = l.pts[k - 1], [bx, bz] = l.pts[k];
-      lowSegment(ax, az, deckHeight(sOf(ax, az)), bx, bz, deckHeight(sOf(bx, bz)), DECK_WIDTH / 2 + 1.4);
+      lowSegment(ax, az, deckHeight(sOf(ax, az)), bx, bz, deckHeight(sOf(bx, bz)), l.width / 2 + DECK_SHOULDER);
+    }
+  }
+  {
+    const mid = (DECK_WEST + DECK_EAST) / 2, half = (DECK_EAST - DECK_WEST) / 2;
+    const shifted = (i) => {
+      const p = deckPath[Math.max(0, i - 1)], q = deckPath[Math.min(deckPath.length - 1, i + 1)], L = Math.hypot(q.x - p.x, q.z - p.z) || 1;
+      return [deckPath[i].x - ((q.z - p.z) / L) * mid, deckPath[i].z + ((q.x - p.x) / L) * mid];
+    };
+    for (let i = 1; i < deckPath.length; i++) {
+      const [ax, az] = shifted(i - 1), [bx, bz] = shifted(i);
+      lowSegment(ax, az, deckHeight(deckPath[i - 1].s), bx, bz, deckHeight(deckPath[i].s), half + 1.4);
     }
   }
   fs.writeFileSync(path.join(ROOT, 'tools/data/generated/low-decks.json'), JSON.stringify(lowDecks));

@@ -88,7 +88,7 @@ function createInteriors({ reveal, standIn, lights, colliders }) {
       held.set(site, { group, walls, floor, normal });
     } catch (e) {
       console.warn('[interiors]', e);
-      failed.add(site); // the offline file doesn't hold the models
+      failed.add(site); // a model that can't be had isn't asked for again
     } finally {
       loading.delete(site);
     }

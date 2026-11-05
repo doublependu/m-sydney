@@ -60,3 +60,16 @@ test('a slow frame the page did little in is put down to the GPU or the browser'
   stats.frame(now, { label: 'traffic', ms: 12 });
   assert.match(stats.lines(now).split('\n')[1], /worst 200 ms at 0:00 \(GPU or browser\)/);
 });
+
+test('what came from the cache, of what was fetched before the game could be played', async () => {
+  const { cacheShare } = await import('../js/frame-stats.js');
+  const entries = [
+    { startTime: 10, transferSize: 0, decodedBodySize: 5000 }, // the cache
+    { startTime: 20, transferSize: 4300, decodedBodySize: 9000 }, // the network
+    { startTime: 30, transferSize: 0, decodedBodySize: 0 }, // nothing came back
+    { startTime: 900, transferSize: 0, decodedBodySize: 700 } // after it was playable
+  ];
+  assert.deepEqual(cacheShare(entries, 500), { files: 3, cached: 1, bytes: 4300, known: true });
+  // A browser that doesn't give sizes
+  assert.equal(cacheShare([{ startTime: 1 }], 500).known, false);
+});

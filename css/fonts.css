@@ -1,4 +1,4 @@
-/* Self-hosted Latin subsets, so the game makes no third-party requests and the offline file carries its own type.
+/* Self-hosted Latin subsets, so the game makes no third-party requests.
    These are the only faces the UI and canvases ask for; Inter stops at 800 as the original Google Fonts request did. */
 @font-face {
   font-family: 'Inter';

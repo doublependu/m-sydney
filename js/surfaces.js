@@ -17,7 +17,7 @@ const CUT_SLOPE = 4; // m beside a cutting's road over which the ground climbs b
 const STEP = 1.5; // m of height between surfaces that can be stepped across
 const SWITCH = 0.6; // m: the most a surface can differ by for something still on another to move onto it. More than a low deck's lift over the ground lowered under it
 const SAME_LEVEL = 3; // m: vehicles nearer than this in height are on one level and can meet
-const DECK_HALF = 12.5; // m either side of the Harbour Bridge's centre line that cars can use (js/bridge.js)
+const DECK_HALF = 12.5; // m either side of the Harbour Bridge's corridor cars could use, when it was one road (before plan 5)
 const LOW_DECK = 3; // m: a structure lower than this over the ground lowers the ground under it, so it can't show through
 const TUNNEL_COVER = 6.3; // m: a tunnel with less ground than this over its road is an open cutting (js/structures.js)
 const TUNNEL_HEIGHT = 5.6; // m from a tunnel's road up to its ceiling
@@ -53,7 +53,7 @@ function linkFromRecord(l) {
   const cut = kind === KIND.CUTTING && !!ys;
   const link = {
     id: l.id, a, b, name: RG.names[ni], width, lanes, dir, major: !!major, deck: !!deck, kind: cut ? KIND.GROUND : kind && ys ? kind : 0,
-    cut, layer, motorway: !!(flags & 1), cls: roadClass(flags), pts, sid, half: deck ? DECK_HALF : width / 2 + 0.6, openA, openB, length
+    cut, layer, motorway: !!(flags & 1), cls: roadClass(flags), pts, sid, half: width / 2 + 0.6, openA, openB, length
   };
   // A road on the ground has a shape of its own (tools/build-heights.mjs): heights and lean at even steps along it
   if (profile) {
@@ -647,6 +647,65 @@ function groundRoadAt(x, z, near = null) {
   return best;
 }
 
+// --- Roads side by side ----------------------------------------------------------------------------------------------
+// Where a ramp joins a motorway, or two carriageways run together, OSM draws each as a line of its own. Each raised road had a
+// barrier and a side wall along both its edges, so where two met side by side at one level, walls stood in the road. An edge
+// with another road beside it at its level is open: no barrier, no wall, and the gap between the two filled with deck.
+const EDGE_GAP = 2.5; // m between two roads' surfaces that's still one deck: less than a car's width
+const EDGE_LEVEL = 0.35; // m apart in height, at most, to be at one level
+
+/** Whether `other` only carries `link` on: the two of them alone at a node, one road drawn as two links */
+function carriesOn(link, other) {
+  for (const n of [link.a, link.b]) {
+    if (n !== other.a && n !== other.b) continue;
+    if ((linksAtNode.get(n)?.length ?? 0) === 2) return true;
+  }
+  return false;
+}
+/** A road's surface at (x, z) on segment `seg`, whatever kind it is */
+const surfaceOn = (seg, p, x, z) => (seg.link.kind ? seg.ay + (seg.by - seg.ay) * p.t : roadHeight(seg.link, x, z));
+
+/**
+ * Another road beside the edge of `link` at (x, z), its edge's own point, at height y, across from it in direction (nx, nz):
+ * { gap, link, y, opposite }, where gap is how far out the other road's surface begins (0 where they overlap), or null where
+ * nothing at this level is within EDGE_GAP. `opposite`: its traffic comes the other way, a divided road's other carriageway,
+ * which has a median barrier between the two rather than nothing. The Harbour Bridge's deck and what joins it are drawn by
+ * js/harbour-bridge.js. `ux, uz`: the way `link` runs at that point.
+ */
+function edgeNeighbour(link, x, z, nx, nz, y, ux, uz) {
+  let best = null;
+  for (const d of [0.3, 1, 1.75, EDGE_GAP]) {
+    const px = x + nx * d, pz = z + nz * d;
+    for (const seg of segCells.get(Math.floor(px / CELL) * 100000 + Math.floor(pz / CELL)) || []) {
+      const other = seg.link;
+      if (other === link || other.deck || carriesOn(link, other)) continue;
+      const p = project(seg, px, pz);
+      if (p.d > other.half) continue;
+      const oy = surfaceOn(seg, p, px, pz);
+      if (Math.abs(oy - y) > EDGE_LEVEL) continue;
+      // How far out its surface begins, from the edge
+      const gap = Math.max(0, project(seg, x, z).d - other.half);
+      // Traffic each way on each: one-way roads running opposite ways
+      const opposite = link.dir !== 0 && other.dir !== 0 && (seg.ux * ux + seg.uz * uz) * link.dir * other.dir < -0.5;
+      if (!best || gap < best.gap) best = { gap, link: other, y: oy, opposite };
+    }
+    if (best) return best;
+  }
+  return null;
+}
+
+/** Another road whose lanes (x, z) is in, at height y give or take `level`, other than `link` and what carries it on: or null */
+function laneAt(x, z, y, link, level = 0.5) {
+  for (const seg of segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || []) {
+    const other = seg.link;
+    if (other === link || other.deck || carriesOn(link, other)) continue;
+    const p = project(seg, x, z);
+    if (p.d > other.width / 2 || Math.abs(surfaceOn(seg, p, x, z) - y) > level) continue;
+    return other;
+  }
+  return null;
+}
+
 // --- Structures ----------------------------------------------------------------------------------------------------
 /** The nearest place on structure `sid` to (x, z), within `reach` of its edge: { y, off, d, seg, link, inside } */
 function structureAt(sid, x, z, reach = 0) {
@@ -672,7 +731,7 @@ function structuresAt(x, z, margin = 0) {
     const p = project(seg, x, z);
     if (p.d > seg.link.half - margin) continue;
     if (seg.link.sid === DECK_STRUCTURE && !seg.link.deck) {
-      onDeck ??= segs.some((other) => other.link.deck && project(other, x, z).d <= DECK_HALF - margin);
+      onDeck ??= segs.some((other) => other.link.deck && project(other, x, z).d <= other.link.half - margin);
       if (onDeck) continue;
     }
     const y = seg.ay + (seg.by - seg.ay) * p.t;
@@ -891,6 +950,6 @@ function roadRoute(waypoints, step = 8) {
 
 export {
   setFloor, clearFloor, DECK_DEPTH, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, ROAD_CLASS, ROAD_CLASSES, deriveTunnels, linkById, roadClass, SAME_LEVEL, SEGMENTS, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
-  clearOfWater, edgeHeight, floorBelow, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, roadHeight, roadRoute, roomUnderDeck, sameLevel,
+  clearOfWater, EDGE_GAP, edgeHeight, edgeNeighbour, floorBelow, laneAt, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, roadHeight, roadRoute, roomUnderDeck, sameLevel,
   structureAt, structuresAt, surfaceHeight, surfaceSlope, tunnelCovered
 };

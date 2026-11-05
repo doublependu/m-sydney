@@ -22,7 +22,7 @@ import { Progress } from './progress.js';
 import { CityAudioSystem } from './audio-system.js';
 import { PauseMenu } from './pause-menu.js';
 import { CHOICES, FrameWatcher, detectQuality, saveChoice } from './quality.js';
-import { FrameStats } from './frame-stats.js';
+import { FrameStats, cacheShare } from './frame-stats.js';
 import { createLightPools } from './light-pools.js';
 import { IDLE, WorldBuilder, activity, runToEnd } from './world-jobs.js';
 import { GEO, TILE, fetchFarFile, heldBytes, heldTiles, holdTile, holdTiles, isHeld, loadFar, releaseTile, tileExists, tileKeyAt, tilesNear } from './geodata.js';
@@ -1010,6 +1010,15 @@ async function initApp() {
     document.body.append(el);
     const backend = renderer.backend.isWebGPUBackend ? 'WebGPU' : 'WebGL2';
     const stats = new FrameStats(performance.now());
+    // Where it loaded, and how much of what it needed to get there came from the browser's cache: a first visit, or the
+    // first after a deploy that renamed the tiles, fetches it all
+    const loadedFrom = (() => {
+      const loadedAt = controllerManager.getActiveEntity().position; // shown as it becomes playable
+      const at = loadedAt ? `at ${Math.round(loadedAt.x)}, ${Math.round(loadedAt.z)}, ${getLocationLabel(loadedAt.x, loadedAt.z)}` : '';
+      const share = cacheShare(performance.getEntriesByType('resource'), interactiveAt ?? Infinity);
+      const cache = share.known ? `${share.cached} of ${share.files} files from cache, ${Math.round(share.bytes / 1024)} KB fetched` : `${share.files} files, cache not reported`;
+      return `loaded ${at}, ${cache}`;
+    })();
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) stats.pause(performance.now());
     });
@@ -1020,6 +1029,7 @@ async function initApp() {
         const held = Math.round(countMemory(now).total / 1048576);
         const { x, z } = controllerManager.getActiveEntity().position;
         el.textContent = `loaded in ${(interactiveAt / 1000).toFixed(2)} s, ${backend}, ${quality.level}\n`
+          + `${loadedFrom}\n`
           + `${stats.lines(now)}\n`
           + `city ${worldCompleteAt === null ? 'building' : `done at ${(worldCompleteAt / 1000).toFixed(1)} s`}, tiles ${[...builtTiles.values()].filter((r) => r.done).length}, heap ${heap}, holds about ${held} MB\n`
           + `at ${Math.round(x)}, ${Math.round(z)}, ${getLocationLabel(x, z)}`
@@ -1615,6 +1625,16 @@ async function initApp() {
         await window.__gameDebug.mapReady(x, z);
         return result;
       },
+      // The camera put at (x, y, z), looking at (tx, ty, tz), with the player on foot below where it looks so the city there is
+      // built; null to give the camera back
+      async view(from, to) {
+        if (!from) {
+          cameraSystem.fixedView = null;
+          return;
+        }
+        await window.__gameDebug.goto(to[0], to[2], 0, 'person');
+        cameraSystem.fixedView = { from: new THREE.Vector3(...from), to: new THREE.Vector3(...to) };
+      },
       // Waits for the map and traffic around (x, z)
       async mapReady(x, z, timeout = 90000) {
         const until = performance.now() + timeout;
@@ -1669,6 +1689,24 @@ async function initApp() {
           ground: controllerManager.getGroundHeight(x, z, mode),
           roof: controllerManager.roofHeightAt(x, z, y),
           frame: simulatedFrames, surface: entity.surface || 0, surfaceY: surfaceHeight(entity.surface || 0, x, z, entity.surfaceY ?? null), drawnY: entity.mesh?.position.y ?? null
+        };
+      },
+      // Where the player is on screen (-1..1 across and up, depth in m), how far round the camera is, and which way it
+      // looks, for the camera scenarios
+      framing() {
+        const entity = controllerManager.getActiveEntity();
+        const at = (entity.mesh ? entity.mesh.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3(entity.position.x - origin.x, entity.position.y, entity.position.z - origin.z));
+        at.y += entity.type === 'car' ? 0.7 : 1;
+        const camera = cameraSystem.camera;
+        camera.updateMatrixWorld();
+        const depth = at.clone().applyMatrix4(camera.matrixWorldInverse).z * -1;
+        const screen = at.clone().project(camera);
+        const look = cameraSystem.currentLookAt, from = cameraSystem.currentPos;
+        return {
+          x: screen.x, y: screen.y, depth, heading: entity.heading, orbit: cameraSystem.orbitYawOffset, pitch: cameraSystem.orbitPitchOffset,
+          viewYaw: Math.atan2(look.x - from.x, look.z - from.z), following: !!entity.followingView, speed: entity.speed,
+          // The rider's helmet over the bike as each is drawn
+          riderUp: entity.type === 'cyclist' && entity.helmet ? entity.helmet.position.y - entity.mesh.position.y : null
         };
       },
       // The camera as drawn, on the ground or structure under the player
@@ -1925,9 +1963,10 @@ async function initApp() {
     standOnSurfaces();
     // Following the player, the camera rides on their ground; a scenic one on its own
     const eye = cameraSystem.camera.position;
-    const follows = cameraSystem.getActivePreset().category === 'follow';
+    const follows = !cameraSystem.fixedView && cameraSystem.getActivePreset().category === 'follow';
     const followed = controllerManager.getActiveEntity();
-    const eyeGround = follows ? groundUnder(followed) : groundHeight(eye.x, eye.z);
+    // A view put somewhere by hand (__gameDebug.view()) is where it was put, in the world's own heights
+    const eyeGround = cameraSystem.fixedView ? 0 : follows ? groundUnder(followed) : groundHeight(eye.x, eye.z);
     eye.y += eyeGround;
     if (follows) {
       // Under a tunnel's roof or a deck, the camera stays under it too, over the player and where it is itself

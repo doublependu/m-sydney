@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { abs, color, float, floor, fract, max, mix, mod, normalWorld, positionWorld, smoothstep } from 'three/tsl';
 import { GroundCells, offsetLine } from './ground-geometry.js';
-import { DECK_DEPTH, DECK_STRUCTURE, KIND, LINKS, STRUCTURES, TUNNEL_HEIGHT, groundHeight, onGroundRoad, tunnelCovered } from './surfaces.js';
-import { bridgeAt } from './bridge.js';
+import { DECK_DEPTH, DECK_STRUCTURE, KIND, LINKS, STRUCTURES, TUNNEL_HEIGHT, edgeNeighbour, groundHeight, onGroundRoad, tunnelCovered } from './surfaces.js';
+import { onDeckSpan } from './bridge.js';
 import { cityUniforms } from './tsl-materials.js';
 import { patternXZ } from './world-origin.js';
 
@@ -46,6 +46,74 @@ function strip(cells, c, rowA, rowB, normalOf, flip = false) {
   }
 }
 
+// Runs of stations where `closed(i)` holds, as [first, last] index pairs, each long enough to draw
+function runs(n, closed) {
+  const out = [];
+  let from = -1;
+  for (let i = 0; i <= n; i++) {
+    const c = i < n && closed(i);
+    if (c && from < 0) from = i;
+    if (!c && from >= 0) {
+      if (i - 1 > from) out.push([from, i - 1]);
+      from = -1;
+    }
+  }
+  return out;
+}
+const slice = (row, [a, b]) => row.slice(a, b + 1);
+
+// Each side's stations with another road beside them at this road's level (js/surfaces.js, edgeNeighbour()): there's no
+// barrier or wall there, and the gap between the two is deck. One road does what's between the two: the one with the lower
+// id, or this one if the other is on the ground. Where the other carries traffic the other way, that's a median barrier.
+function openEdges(link, st, row, side, across) {
+  return row.map((p, i) => {
+    const n = across(i, side);
+    const a = st[Math.max(0, i - 1)], b = st[Math.min(st.length - 1, i + 1)], L = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+    const next = edgeNeighbour(link, p.x, p.z, n.x, n.z, st[i].y, (b.x - a.x) / L, (b.z - a.z) / L);
+    if (!next) return null;
+    const owns = !next.link.kind || link.id < next.link.id;
+    return { gap: next.gap, fills: owns && next.gap > 0.05, median: owns && next.opposite, nx: n.x, nz: n.z };
+  });
+}
+// A median barrier down the middle of the gap to a road carrying traffic the other way
+const MEDIAN = { height: 0.9, width: 0.5 };
+function medians(concrete, w, row, st, open, side) {
+  for (const run of runs(row.length, (i) => open[i]?.median)) {
+    const at = (k, out) => {
+      const p = row[run[0] + k], o = open[run[0] + k], d = Math.max(MEDIAN.width / 2, o.gap / 2) + out;
+      return { x: p.x + o.nx * d, z: p.z + o.nz * d };
+    };
+    const n = run[1] - run[0] + 1;
+    const near = Array.from({ length: n }, (_, k) => at(k, -MEDIAN.width / 2)), far = Array.from({ length: n }, (_, k) => at(k, MEDIAN.width / 2));
+    const y = (k) => st[run[0] + k].y;
+    const base = (r) => r.map((p, k) => ({ ...p, y: y(k) - 0.05 })), top = (r) => r.map((p, k) => ({ ...p, y: y(k) + MEDIAN.height }));
+    const out = (k) => ({ x: open[run[0] + k].nx, y: 0, z: open[run[0] + k].nz }), back = (k) => ({ x: -open[run[0] + k].nx, y: 0, z: -open[run[0] + k].nz });
+    // Its top, the row further left first, and its two faces, each wound to face its own way
+    strip(concrete, w, top(side > 0 ? far : near), top(side > 0 ? near : far), () => ({ x: 0, y: 1, z: 0 }));
+    strip(concrete, w, base(near), top(near), back, side > 0);
+    strip(concrete, w, base(far), top(far), out, side < 0);
+  }
+}
+// The deck across a gap to the road beside, and its underside; a tunnel's ceiling over it where it's covered
+function fillGaps(deck, concrete, c, w, row, st, open, side, covered = null) {
+  for (const run of runs(row.length, (i) => open[i]?.fills)) {
+    const edge = slice(row, run).map((p, k) => ({ x: p.x, z: p.z, y: st[run[0] + k].y }));
+    const out = edge.map((p, k) => { const o = open[run[0] + k]; return { x: p.x + o.nx * (o.gap + 0.1), z: p.z + o.nz * (o.gap + 0.1), y: p.y }; });
+    // The row further left first, as for the road, to face up
+    const [a, b] = side > 0 ? [out, edge] : [edge, out];
+    strip(deck, c, a, b, () => ({ x: 0, y: 1, z: 0 }));
+    const under = (r) => r.map((p) => ({ ...p, y: p.y - DECK_DEPTH }));
+    strip(concrete, w, under(b), under(a), () => ({ x: 0, y: -1, z: 0 }));
+    if (covered) {
+      const roofed = runs(run[1] - run[0] + 1, (k) => covered[run[0] + k]);
+      for (const r of roofed) {
+        const lift = (rw) => slice(rw, r).map((p) => ({ ...p, y: p.y + TUNNEL_HEIGHT }));
+        strip(concrete, w, lift(b), lift(a), () => ({ x: 0, y: -1, z: 0 }));
+      }
+    }
+  }
+}
+
 // Soffits and decks in concrete; the walls of viaducts, cuttings and tunnel approaches in sandstone blocks, as along the
 // Bradfield Highway and through the Warringah Freeway's cuttings. One for all the tiles.
 let concreteMat = null, lampMat = null;
@@ -78,7 +146,7 @@ function* buildStructures(group, roadMat, links = LINKS, touching = links, wante
     yield;
     let st = stations(link);
     // A ramp joining the Harbour Bridge stops just inside its edge: the bridge's own deck carries on from there
-    if (link.sid === deckSid) st = st.filter((p, i) => !bridgeAt(p.x, p.z) || (st[i - 1] && !bridgeAt(st[i - 1].x, st[i - 1].z)) || (st[i + 1] && !bridgeAt(st[i + 1].x, st[i + 1].z)));
+    if (link.sid === deckSid) st = st.filter((p, i) => !onDeckSpan(p.x, p.z) || (st[i - 1] && !onDeckSpan(st[i - 1].x, st[i - 1].z)) || (st[i + 1] && !onDeckSpan(st[i + 1].x, st[i + 1].z)));
     if (st.length < 2) continue;
     const half = link.half;
     const left = offsetLine(st, half), right = offsetLine(st, -half);
@@ -96,8 +164,11 @@ function* buildStructures(group, roadMat, links = LINKS, touching = links, wante
       // The road surface
       strip(deck, c, left, right, up);
       // Each side: a barrier where it's high enough to fall from, and below the deck either a wall down to the ground or
-      // the deck's edge over open air
+      // the deck's edge over open air. Not where another road carries on beside it at its level: there the two are one deck.
       for (const [side, row] of [[1, left], [-1, right]]) {
+        const open = openEdges(link, st, row, side, across);
+        fillGaps(deck, concrete, c, w, row, st, open, side);
+        medians(concrete, w, row, st, open, side);
         const raised = row.map((p, i) => p.y - ground(p) > 1 ? 1 : 0).map((v, i, all) => v || all[i - 1] || all[i + 1] ? 1 : 0);
         const top = row.map((p, i) => ({ x: p.x, z: p.z, y: p.y + (raised[i] ? BARRIER.height : 0.05) }));
         const inner = offsetLine(st, (half - BARRIER.width) * side).map((p, i) => ({ x: p.x, z: p.z, y: top[i].y }));
@@ -105,9 +176,13 @@ function* buildStructures(group, roadMat, links = LINKS, touching = links, wante
         const innerBase = inner.map((p, i) => ({ x: p.x, z: p.z, y: st[i].y }));
         // Barrier top (the row further out on the +n side first, as for the road), its face to the road, and the outer
         // face down to the wall's foot. A vertical strip from foot to top faces +n unflipped.
-        strip(concrete, w, side > 0 ? top : inner, side > 0 ? inner : top, up);
-        strip(concrete, w, innerBase, inner, (i) => across(i, -side), side > 0);
-        strip(concrete, w, foot, top, (i) => across(i, side), side < 0);
+        for (const run of runs(row.length, (i) => !open[i])) {
+          const n0 = run[0];
+          const out = (i) => across(n0 + i, side), back = (i) => across(n0 + i, -side);
+          strip(concrete, w, slice(side > 0 ? top : inner, run), slice(side > 0 ? inner : top, run), up);
+          strip(concrete, w, slice(innerBase, run), slice(inner, run), back, side > 0);
+          strip(concrete, w, slice(foot, run), slice(top, run), out, side < 0);
+        }
       }
       // The underside, facing down, where there is air under it
       const soffitL = left.map((p) => ({ x: p.x, z: p.z, y: p.y - DECK_DEPTH }));
@@ -130,10 +205,14 @@ function* buildStructures(group, roadMat, links = LINKS, touching = links, wante
       // The road surface, all the way
       strip(deck, c, left, right, up);
       for (const [side, row] of [[1, left], [-1, right]]) {
-        // Walls: up to the ceiling in the tube, up to the ground above in the cutting
+        // Walls: up to the ceiling in the tube, up to the ground above in the cutting. None where another road runs beside
+        // it at its level, as where a ramp joins in a cutting or two tunnels' roads merge underground.
+        const open = openEdges(link, st, row, side, across);
+        fillGaps(deck, concrete, c, w, row, st, open, side, covered);
+        medians(concrete, w, row, st, open, side);
         const wallTop = row.map((p, i) => ({ x: p.x, z: p.z, y: covered[i] ? p.y + TUNNEL_HEIGHT : Math.max(p.y + 1, groundHeight(p.x + across(i, side).x * 1.5, p.z + across(i, side).z * 1.5)) }));
         const wallFoot = row.map((p) => ({ x: p.x, z: p.z, y: p.y - 0.2 }));
-        strip(concrete, w, wallFoot, wallTop, (i) => across(i, -side), side > 0);
+        for (const run of runs(row.length, (i) => !open[i])) strip(concrete, w, slice(wallFoot, run), slice(wallTop, run), (i) => across(run[0] + i, -side), side > 0);
       }
       // The ceiling and its lights, where it's covered
       let run = [];

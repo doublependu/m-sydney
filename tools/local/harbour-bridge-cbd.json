@@ -1,0 +1,59 @@
+{
+  "name": "Harbour Bridge, CBD end: getting on and off it, and the bridge itself",
+  "box": [
+    -800,
+    -3600,
+    650,
+    -850
+  ],
+  "ways": [
+    {
+      "ids": [
+        1186155136,
+        1186155135,
+        936359078,
+        295950855,
+        1538940335,
+        1538940325,
+        1290005497
+      ],
+      "expect": {
+        "oneway": "reversible"
+      },
+      "tags": {
+        "oneway": "yes"
+      },
+      "why": "The Clarence St ramp is the bridge's tidal-flow lane: northbound except weekday mornings (OSM's note on way 870649960). The game has no morning, and the video drives up it northbound at midday (0:33-0:51). As reversible it was built two-way: traffic both ways on a 9 m ramp"
+    },
+    {
+      "ids": [
+        172774931
+      ],
+      "expect": {
+        "name": "Cahill Expressway",
+        "tunnel": null
+      },
+      "tags": {
+        "tunnel": "yes",
+        "layer": "-1"
+      },
+      "why": "The Cahill loop up to the bridge northbound runs in a cutting with sheer sandstone walls both sides (ref/details/1.png). As the open end of the tunnel it comes out of, the game draws it that way; on the ground it was a graded slope, with buildings standing over the road's edge"
+    },
+    {
+      "ids": [
+        1452495983
+      ],
+      "expect": {
+        "access": "no",
+        "psv": "designated"
+      },
+      "tags": {
+        "access": null,
+        "bus:lanes": "designated",
+        "oneway": "yes",
+        "lanes": "1"
+      },
+      "why": "The bus lane between the pylons, lane 7 (ref/details/4.png: the bus lane beside the Cahill's lane through the pylon). OSM keeps all but buses off it (access=no), and the build leaves out what cars can't drive, so the deck had a hole where it is. Taken in as a road, painted as a bus lane"
+    }
+  ]
+}

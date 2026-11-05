@@ -72,9 +72,26 @@ class FrameStats {
   }
 }
 
+/**
+ * What came from the browser's cache of what was fetched before `until` (ms since the page began), from its resource
+ * timings: a file with a body and nothing sent over the network came from the cache. `known` is false where the browser
+ * doesn't say (no transferSize), as an older Safari doesn't.
+ */
+function cacheShare(entries, until) {
+  let files = 0, cached = 0, bytes = 0, known = true;
+  for (const e of entries) {
+    if (e.startTime > until) continue;
+    files++;
+    if (typeof e.transferSize !== 'number') { known = false; continue; }
+    if (e.transferSize === 0 && e.decodedBodySize > 0) cached++;
+    bytes += e.transferSize;
+  }
+  return { files, cached, bytes, known };
+}
+
 function clockText(ms) {
   const seconds = Math.max(0, Math.round(ms / 1000));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
-export { FrameStats };
+export { FrameStats, cacheShare };

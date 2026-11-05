@@ -46,6 +46,20 @@ const { placeGrid, workersByCell } = await import('./tiles/place-grid.mjs');
   const s = separateTubes(RG);
   console.log(`[tiles] tunnels: ${s.before} m inside another tube, ${s.after} m once ${s.links} links were moved apart`);
 }
+// Every road, node and structure keeps the id the last build gave it, so a change in one place rewrites only the tiles around it
+// (tools/tiles/stable-ids.mjs). From the tiles in public/tiles, before they're replaced. --fresh-ids numbers them all afresh.
+const STABLE = await (async () => {
+  const { previousIds, stableBlockIds, stableIds } = await import('./tiles/stable-ids.mjs');
+  const prev = process.argv.includes('--fresh-ids') ? null : previousIds(OUT);
+  if (!prev) {
+    console.warn('[tiles] ids numbered afresh: no whole build in public/tiles to keep them from');
+    return null;
+  }
+  const stable = stableIds(RG, prev);
+  stable.blocks = stableBlockIds(GEO.blocks, prev);
+  console.log(`[tiles] ids: ${stable.report()}; ${stable.blocks.report}`);
+  return stable;
+})();
 
 // Structures: links off the ground, joined where they share a node (js/surfaces.js reads this table)
 function findStructures() {
@@ -55,23 +69,32 @@ function findStructures() {
     while (parent.get(r) !== r) r = parent.get(r);
     return r;
   };
-  const off = (l) => (l[9] && l[9] !== KIND_CUTTING && l[12] ? l[9] : 0);
-  for (const l of RG.links) if (off(l)) { if (!parent.has(l[0])) parent.set(l[0], l[0]); if (!parent.has(l[1])) parent.set(l[1], l[1]); }
-  for (const l of RG.links) if (off(l)) parent.set(find(l[0]), find(l[1]));
-  const ids = new Map(), table = [null], sid = new Map();
+  const off = (l) => (l && l[9] && l[9] !== KIND_CUTTING && l[12] ? l[9] : 0);
+  // Bridges join bridges and tunnels tunnels: one of each meeting at a node are two structures. Before plan 5 they were one, and a
+  // tunnel anywhere in it made all of it a tunnel: the Cahill's viaduct over Circular Quay, for its short tunnel at The Rocks.
+  const at = (l, n) => `${off(l)}:${n}`;
+  for (const l of RG.links) if (off(l)) for (const n of [at(l, l[0]), at(l, l[1])]) if (!parent.has(n)) parent.set(n, n);
+  for (const l of RG.links) if (off(l)) parent.set(find(at(l, l[0])), find(at(l, l[1])));
+  // Each structure's roads, in the order they're met; its id the one it had (STABLE), or the next
+  const members = new Map();
   RG.links.forEach((l, id) => {
     if (!off(l)) return;
-    const root = find(l[0]);
-    if (!ids.has(root)) {
-      ids.set(root, table.length);
-      table.push([off(l), 0, 0]);
-    }
-    const s = table[ids.get(root)];
-    sid.set(id, ids.get(root));
-    if (l[8]) s[1] = 1;
-    if ((l[11] || 0) & 1) s[2] = 1;
-    if (off(l) === 2) s[0] = 2;
+    const root = find(at(l, l[0]));
+    (members.get(root) || members.set(root, []).get(root)).push(id);
   });
+  const table = [null], sid = new Map();
+  for (const ids of members.values()) {
+    const s = STABLE ? STABLE.sidFor(ids) : table.length;
+    while (table.length <= s) table.push(null);
+    const entry = (table[s] = [off(RG.links[ids[0]]), 0, 0]);
+    for (const id of ids) {
+      const l = RG.links[id];
+      sid.set(id, s);
+      if (l[8]) entry[1] = 1;
+      if ((l[11] || 0) & 1) entry[2] = 1;
+      if (off(l) === 2) entry[0] = 2;
+    }
+  }
   return { table, sid };
 }
 
@@ -88,9 +111,9 @@ function cutMap(derived) {
   const at = (x, z) => tile(...tileOf(x, z));
 
   // --- Things that are in one place ----------------------------------------------------------------------------------
-  GEO.blocks.forEach((b, id) => {
+  GEO.blocks.forEach((b, i) => {
     const flat = b[0], m = (flat.length >> 2) << 1; // the middle point of its outline
-    at(flat[m], flat[m + 1]).blocks.push([...b.slice(0, 4), id]);
+    at(flat[m], flat[m + 1]).blocks.push([...b.slice(0, 4), STABLE ? STABLE.blocks.ids[i] : i]);
   });
   const ringsHome = (rings) => {
     const flat = rings[0], m = (flat.length >> 2) << 1;
@@ -388,7 +411,7 @@ function packFarFile(entries, parks, roads, derived, key) {
 // What the map screen draws, all of it: fetched when the map is first opened
 // All of the map, for drawing the map screen's images (tools/build-map-images.mjs). Not deployed.
 function packFullMap() {
-  const roads = RG.links.map((l) => {
+  const roads = RG.links.filter(Boolean).map((l) => {
     const [a, b, ni, w, lanes, dir, inner, major, , kind = 0] = l;
     return [RG.names[ni], w, lanes, dir, major ? 1 : 0, kind, [RG.nodes[a * 2], RG.nodes[a * 2 + 1], ...inner, RG.nodes[b * 2], RG.nodes[b * 2 + 1]]];
   });
@@ -399,6 +422,7 @@ function packFullMap() {
 function packStreetIndex() {
   const groups = new Map();
   for (const l of RG.links) {
+    if (!l) continue; // a road that's gone keeps its id unused (tools/tiles/stable-ids.mjs)
     const [a, b, ni, , , , inner, major, , kind = 0] = l;
     if (!RG.names[ni]) continue;
     const key = `${ni}|${major ? 1 : 0}|${kind}`;
@@ -446,9 +470,71 @@ function bridgeLinks(derived) {
     for (let k = 0; k < inner.length; k += 2) pts.push([inner[k], inner[k + 1]]);
     pts.push([RG.nodes[b * 2], RG.nodes[b * 2 + 1]]);
     if (!pts.some(([x, z]) => near(x, z))) return;
-    out.push([id, pts.flat(), width, deck ? 1 : 0, sid.get(id) === sid.get(deckSid) ? 1 : 0, l[12] || null, l[9] || 0]);
+    out.push([id, pts.flat(), width, deck ? 1 : 0, sid.get(id) === sid.get(deckSid) ? 1 : 0, l[12] || null, l[9] || 0, l[4] || 0, l[5] || 0]);
   });
   return out;
+}
+
+// How far the bridge's deck reaches across, every DECK_SPAN_STEP m along the corridor: west (negative) and east (positive) of its line,
+// as far as any of the deck's roads' lanes do (js/bridge.js). Needed from the start, by everything that asks whether it's on the deck.
+// `gap`: where the lane furthest east runs apart from the rest, the Cahill's through the east pylons, [from, to], or 0.
+const DECK_SPAN_STEP = 10;
+function deckSpan() {
+  const path = [];
+  for (let i = 0; i < GEO.bridge.length; i += 2) path.push({ x: GEO.bridge[i], z: GEO.bridge[i + 1], s: 0 });
+  for (let i = 1; i < path.length; i++) path[i].s = path[i - 1].s + Math.hypot(path[i].x - path[i - 1].x, path[i].z - path[i - 1].z);
+  const length = path[path.length - 1].s;
+  const bins = Math.ceil(length / DECK_SPAN_STEP) + 1;
+  const west = new Array(bins).fill(Infinity), east = new Array(bins).fill(-Infinity);
+  const lanes = Array.from({ length: bins }, () => []);
+  const place = (x, z) => {
+    let best = null;
+    for (let i = 1; i < path.length; i++) {
+      const p = path[i - 1], q = path[i], dx = q.x - p.x, dz = q.z - p.z, L = Math.hypot(dx, dz) || 1;
+      const t = Math.max(0, Math.min(1, ((x - p.x) * dx + (z - p.z) * dz) / (L * L)));
+      const px = p.x + dx * t, pz = p.z + dz * t, d = Math.hypot(px - x, pz - z);
+      if (!best || d < best.d) best = { d, s: p.s + t * L, off: (-(x - px) * dz + (z - pz) * dx) / L };
+    }
+    return best;
+  };
+  for (const l of RG.links) {
+    if (!l || !l[8]) continue;
+    const [a, b, , width, , , inner] = l;
+    const pts = [[RG.nodes[a * 2], RG.nodes[a * 2 + 1]]];
+    for (let k = 0; k < inner.length; k += 2) pts.push([inner[k], inner[k + 1]]);
+    pts.push([RG.nodes[b * 2], RG.nodes[b * 2 + 1]]);
+    for (let i = 1; i < pts.length; i++) {
+      const [ax, az] = pts[i - 1], [bx, bz] = pts[i], L = Math.hypot(bx - ax, bz - az);
+      for (let d = 0; d <= L; d += 2) {
+        const p = place(ax + ((bx - ax) * d) / (L || 1), az + ((bz - az) * d) / (L || 1));
+        const k = Math.round(p.s / DECK_SPAN_STEP);
+        west[k] = Math.min(west[k], p.off - width / 2);
+        east[k] = Math.max(east[k], p.off + width / 2);
+        lanes[k].push([p.off - width / 2, p.off + width / 2]);
+      }
+    }
+  }
+  // Bins no road's point fell in take their neighbours'
+  for (const side of [west, east]) {
+    for (let k = 0; k < bins; k++) {
+      if (Number.isFinite(side[k])) continue;
+      let j = 1;
+      while (j < bins && !Number.isFinite(side[k - j]) && !Number.isFinite(side[k + j])) j++;
+      side[k] = Number.isFinite(side[k - j]) ? side[k - j] : side[k + j];
+    }
+  }
+  const q = (v) => Math.round(v * 10) / 10;
+  // The last gap from west to east between the roads' lanes, 0.3 m or more
+  const gap = lanes.map((list) => {
+    list.sort((p, r) => p[0] - r[0]);
+    let reach = -Infinity, found = 0;
+    for (const [from, to] of list) {
+      if (from - reach >= 0.3 && Number.isFinite(reach)) found = [q(reach), q(from)];
+      reach = Math.max(reach, to);
+    }
+    return found;
+  });
+  return { step: DECK_SPAN_STEP, west: west.map(q), east: east.map(q), gap };
 }
 
 // How far the ground moves to meet the roads (tools/tiles/grade-ground.mjs): 5 cm steps as differences along each row
@@ -545,7 +631,7 @@ function write(derived, graded_ = null) {
   }), { level: 9 }));
   const world = {
     version: 2, tileSize: SIZE, frame: GEO.frame, heights: { margin: MARGIN, size: SAMPLES }, ground: GROUND, far: FAR, tiles: names, farFile: FAR_FILE, farFiles,
-    bridge: GEO.bridge, ferries: GEO.ferries, lightRail: GEO.lightRail, stations: GEO.stations || [],
+    bridge: GEO.bridge, deckSpan: deckSpan(), ferries: GEO.ferries, lightRail: GEO.lightRail, stations: GEO.stations || [],
     nodeCount: RG.nodes.length / 2, structures: table, landmarkBoxes: derived?.landmarkBoxes || [],
     ...(derived?.deckProfile && { deckProfile: derived.deckProfile, bridgeSpan: derived.bridgeSpan })
   };

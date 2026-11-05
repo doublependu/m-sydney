@@ -106,7 +106,7 @@ export async function screenshot(page, path) {
 
 const warmedUp = new WeakSet();
 // Fresh profile each time, so nothing is cached and no saved player position carries over.
-export async function openGame(browser, url, { profile = 'laptop', query = '', storage = null, initScript = null, setup = null, offline = false, timeout = 120000, stayThrottled = false } = {}) {
+export async function openGame(browser, url, { profile = 'laptop', query = '', storage = null, initScript = null, setup = null, timeout = 120000, stayThrottled = false } = {}) {
   const { viewport, deviceScaleFactor = 1, touch = false, cpuThrottle, mbps } = PROFILES[profile];
   const context = await browser.newContext({ viewport, deviceScaleFactor, hasTouch: touch, isMobile: touch });
   // A browser that has only just started loses any WebGL context made in the GPU process's first few hundred milliseconds
@@ -129,7 +129,6 @@ export async function openGame(browser, url, { profile = 'laptop', query = '', s
   });
   if (storage) await page.addInitScript((saved) => localStorage.setItem('sydney-player-state', saved), storage);
   if (initScript) await page.addInitScript(initScript);
-  if (offline) await context.setOffline(true);
   // Throttling goes through the Chrome DevTools Protocol, which Firefox doesn't speak: it runs unthrottled
   const cdp = browser.browserType().name() === 'chromium' ? await context.newCDPSession(page) : null;
   if (cpuThrottle && cdp) await cdp.send('Emulation.setCPUThrottlingRate', { rate: cpuThrottle });
@@ -139,7 +138,7 @@ export async function openGame(browser, url, { profile = 'laptop', query = '', s
       offline: false, latency: 40, downloadThroughput: mbps * 125000, uploadThroughput: mbps * 40000
     });
   }
-  await page.goto(`${url}?debug=1${query ? `&${query}` : ''}`, { waitUntil: offline ? 'domcontentloaded' : 'commit' });
+  await page.goto(`${url}?debug=1${query ? `&${query}` : ''}`, { waitUntil: 'commit' });
   await page.waitForFunction(() => document.getElementById('loading-overlay')?.classList.contains('hidden'), null, { timeout, polling: 100 });
   if (cpuThrottle && cdp && !stayThrottled) await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
   return { context, page, cdp, errors, warnings };

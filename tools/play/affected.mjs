@@ -6,6 +6,7 @@ const ALL_DRIVES = /^js\/(controllers|vehicle-physics|cars|cameras|surfaces|grou
 // area: [x0, x1, z0, z1] in world metres, or null for a scenario that doesn't depend on any one place
 export const COVERS = {
   'harbour-bridge': { files: /^js\/(bridge|harbour-bridge|traffic|structures)\.js$/, area: [-400, 300, -3500, -1300] },
+  'bridge-ways': { files: /^js\/(bridge|harbour-bridge|surfaces|structures|road-network)\.js$|^tools\/local\//, area: [-500, 500, -3500, -600] },
   tunnel: { files: /^js\/(tunnel-mouths|structures|lighting)\.js$/, area: [1150, 2000, -50, 200] },
   'stacked-roads': { files: /^js\/(structures|road-paint)\.js$/, area: [-750, 500, -1800, 1050] },
   motorways: { files: /^js\/(structures|traffic)\.js$/, area: [-500, 0, -2200, -350] },
@@ -32,6 +33,8 @@ export const COVERS = {
   'mode-map': { files: /^js\/(cameras|city-map|lighting|controllers|arrivals|main)\.js$/, area: null },
   'mode-switch': { files: /^js\/(controllers|arrivals|surfaces|bridge|main)\.js$/, area: null },
   touch: { files: /^js\/(touch-controls|controllers)\.js$|^css\//, area: null },
+  'orbit-follow': { files: /^js\/(cameras|controllers|pedestrians)\.js$/, area: null },
+  'orbit-follow-phone': { files: /^js\/(cameras|controllers|touch-controls)\.js$/, area: null },
   pause: { files: /^js\/(pause-menu|main)\.js$|^index\.html$/, area: null },
   'auto-steps-down': { files: /^js\/quality\.js$/, area: null },
   'graphics-menu': { files: /^js\/(quality|pause-menu)\.js$/, area: null },
@@ -40,7 +43,6 @@ export const COVERS = {
   'webgl2-fallback': { files: /^js\/(tsl-materials|main|lighting|pedestrians|tower-signs|landmarks)\.js$/, area: null },
   'device-lost': { files: /^js\/main\.js$/, area: null },
   'saved-position': { files: /^js\/(main|controllers|arrivals)\.js$/, area: [-600, -480, -3620, -3520] },
-  'offline-file': { files: /^vite\.config\.js$|^js\/(geodata|terrain|tiles\/tile-file|tree-geodata)\.js$/, area: null },
   soak: { files: /^$/, area: null }
 };
 

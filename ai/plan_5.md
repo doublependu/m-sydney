@@ -23,7 +23,7 @@ Palm Beach, at (6984, -30211), Thyra Rd & Barrenjoey Rd, with `?stats=1`:
 
 **Load was slower,** though still inside the spec. Two things could explain it, and the readout can't tell which:
 
-- **The cache.** If this was the first open after deploying Stop 2, nothing came from the phone's cache: Stop 2 renamed every tile.
+- **The cache.** If this was the first open after deploying `next_4`'s work, nothing came from the phone's cache: it renamed every tile.
 - **Where it started.** The game starts where you left off, so it may have loaded somewhere other than at Stop 1.
 
 Phase A puts both on the readout. A second open should be near 0.8 s again if it was the cache.
@@ -106,7 +106,7 @@ Phase C fixes all three before any of the bridge's data changes. **A build will 
 | Bridge issue 2: walls in the middle of the Cahill on-ramp | Cause found | B, E |
 | Bridge issue 3: a building blocking the Cahill loop | Cause found | E |
 | Bridge, North Sydney end (stretch) | Northbound references in the video. Southbound to find | G |
-| Phone test | Read, above | A, stops |
+| Phone test | Read, above | A, the end |
 
 ## Measurements
 
@@ -225,7 +225,7 @@ They meet the corridor through six structures (95, 229, 4, 688-691) inside 80 m.
 
 Say so if you want any of these changed.
 
-1. **The quick fixes come first,** then a stop for your phone. None of them changes a tile.
+1. **The quick fixes come first.** None of them changes a tile. There are no stops: you test on the phone once, at the end.
 2. **The chase camera aims at you,** leading a little in the camera's own direction, so you stay in the middle at any orbit, pitch and zoom.
 3. **Moving forward turns you towards where the camera looks,** over about a second. The camera stays where you put it.
    - **Walk, cycle and fly** turn at their own rate, all the way round if you look behind.
@@ -247,7 +247,7 @@ Say so if you want any of these changed.
     - **What stays above the walls:** the buildings inside the loop, if the references show them there.
     - **What goes:** a building the references don't show.
     - **The footbridge** in your `1.png` crosses it.
-11. **North Sydney waits** until the CBD end has passed its checks and your phone test, and has references.
+11. **North Sydney waits** until the CBD end has passed its checks, and has references.
 12. **Drives, not only pictures, prove the bridge works.** The video's route, and each way on and off, become scenarios in `npm run play`.
 
 Plan 4's decisions stand.
@@ -258,13 +258,14 @@ Plan 4's decisions stand.
 |---|---|---|
 | A | A rider on the bike, a camera that keeps you in view and steers where you look, no offline file, two lines on the readout | Small-Medium |
 | B | No walls between roads side by side, and a check for it | Medium |
-| | **Stop 1: your phone** | |
 | C | Local map changes: ids that don't shift, a repeatable build, a guard on which tiles change, the hand-edits file | Medium-Large, uncertain |
 | D | The bridge itself: its real roads, width, pylons with arches, footway, cycleway, lane numbers, the bus lane, gantries | Large |
 | E | On and off at the CBD end, and your three issues | Large |
 | F | Drives and pictures beside the video and your references | Medium |
-| | **Stop 2: your phone, `next_5.md`** | |
 | G | Stretch: the North Sydney end | Large |
+| | **At the end: `next_5.md`, and your phone** | |
+
+There are no stops on the way. You test once, when everything is done.
 
 ## Phase A: Bicycle, camera, offline file, readout
 
@@ -310,16 +311,6 @@ This changes no tile, but it changes every merge of raised roads on the map. Pic
 They show that no barrier went from where a road is higher or over air.
 
 **Done when** "walls" is 0 m in the CBD sample and no worse anywhere, pictures at your rec 1 and rec 2 spots show no walls in the road, and every scenario passes.
-
-### Stop 1: your phone
-
-I'll write a short note in `next_5.md` and tell you. You commit and deploy. Then on the phone, with `?stats=1`:
-
-1. **Open it twice,** and note both load times and the new cache line.
-2. **Ride the bike a few hundred metres.**
-3. **In each mode,** drag the camera round you, then move forward.
-4. **Drive the bridge's south end and the Cahill on-ramp.** The walls should be gone. The roads themselves change only in E.
-5. **Send the readout,** and say if the tab reloaded.
 
 ## Phase C: Local map changes
 
@@ -446,15 +437,6 @@ Pictures at your three issue spots show the road clear. `tile-diff` shows only t
 
 **Done when** every scenario passes three times with different seeds, and the pictures go in `next_5.md` for you to judge.
 
-### Stop 2: your phone
-
-`next_5.md`, then on the phone, with `?stats=1`:
-
-1. **Drive the video's route,** Clarence St to North Sydney.
-2. **Come back over the bridge,** taking each way off in turn.
-3. **Take the Cahill loop up,** and the Cahill on-ramp from Macquarie St.
-4. **Send the readout,** and say if the tab reloaded.
-
 ## Phase G: North Sydney (stretch)
 
 **References first:**
@@ -473,6 +455,21 @@ Pictures at your three issue spots show the road clear. `tile-diff` shows only t
 **Then the same work as D to F,** in `tools/local/harbour-bridge-north.json`.
 
 **Done when** the same as E and F, for the north end.
+
+## At the end: your phone
+
+Before I hand over, the whole of `npm run play -- --full`, a 10-minute soak, `npm run bench` on the phone profile, and the WebKit runs all pass. They stand in for the stops, so what the phone finds should be what only a phone can show.
+
+I'll write `next_5.md` and tell you. You commit and deploy. Then on the phone, with `?stats=1`:
+
+1. **Open it twice,** and note both load times and the new cache line.
+2. **Ride the bike a few hundred metres.**
+3. **In each mode,** drag the camera round you, then move forward.
+4. **Drive the video's route,** Clarence St to North Sydney.
+5. **Come back over the bridge,** taking each way off in turn.
+6. **Take the Cahill loop up,** and the Cahill on-ramp from Macquarie St.
+7. **If Phase G is done,** the ways on and off at the North Sydney end.
+8. **Send the readout,** and say if the tab reloaded.
 
 ## Not in this plan
 
@@ -496,24 +493,25 @@ Pictures at your three issue spots show the road clear. `tile-diff` shows only t
 | Replacing the corridor's link breaks things | The deck's height, `bridgeAt()`, the model, traffic and the `harbour-bridge` scenario all read it | The corridor stays as the deck's line and profile. Only the roads on it change, with every scenario run |
 | The bridge costs frames | It's in view from the start, on Macquarie St | Built once, instanced, counted, and measured on the phone profile |
 | B takes away a barrier that should stay | It changes every merge on the map | Only where the next road is within 0.3 m of the same level, with pictures at a dozen merges |
-| The car's turn to the view feels wrong | Most driving games swing the camera back instead | Only within 90°, and your own steering always wins. Your Stop 1 says |
+| The car's turn to the view feels wrong | Most driving games swing the camera back instead | Only within 90°, and your own steering always wins. Your phone test at the end says |
+| Something only a phone shows turns up late | There's no stop before the end | The phone profile's bench and the WebKit runs at the end of each phase, with memory and frames compared to now |
 | References | Street View pictures are Google's. The video's source wasn't found online | Kept in `ref/`, which git ignores, and only looked at |
 | OSM is wrong about the bridge, and fixing it there would take time | | Hand edits with their sources, in `tools/local/` |
 
 ## What I need from you
 
 1. **About your phone test:**
-   - Was the 1.55 s the first open after deploying Stop 2?
+   - Was the 1.55 s the first open after deploying `next_4`'s work?
    - Did the tab reload?
    - Anything about how the suburbs looked and moved, from `next_4`'s list?
-2. **The phone tests at both stops.**
+2. **The phone test at the end.**
 3. **Two choices:**
    - The afternoon layout at every time, or a morning setting too (decision 8).
    - The car turning to the view only within 90° (decision 3).
 4. **For North Sydney,** Street View pictures of what Phase G lists, when we get there.
 5. **Commits:**
-   - Stop 1 changes no tiles.
-   - Phase C may change every tile once, if the build has to be made repeatable. That's best committed on its own.
+   - Phases A and B change no tiles.
+   - Phase C may change every tile once, if the build has to be made repeatable. If it does, I'll tell you then, so you can commit it on its own. Otherwise it lands in the same commit as the bridge, and that commit holds every tile.
    - After that, the bridge's work should touch only its own tiles.
 
 ## Sources

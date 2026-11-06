@@ -134,7 +134,8 @@ function buildCells(cells, group, material, { cast = false, cullDistance = 0 } =
 const GROUND_CULL = { curbs: 1100, hedges: 900, base: 1600, bollards: 300 };
 
 // A traffic island between a motorway's carriageways is a low concrete separator with yellow-and-black bollards along it
-// (ref/details/2.png and 6.png, the Harbour Bridge's south end), never lawn or hedge (plan 5, decision 9). An island is one where
+// (Street View pictures of the Harbour Bridge's south end and the Western Distributor northbound), never lawn or hedge (plan 5,
+// decision 9). An island is one where
 // it's narrow and most of its edge is beside a motorway or its ramps.
 const SEPARATOR_WIDTH = 6; // m: its area over its length
 function isSeparator(b) {

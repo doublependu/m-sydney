@@ -25,7 +25,8 @@ function network(side) {
       './city-config.js': { BLOCKS: [], CITY_BOUNDS: { minZ: -500, maxZ: 500 }, DRIVE_SIDE: side, blockAt: () => null, landAt: () => true },
       './geodata.js': { GEO: { roadGraph: graph } },
       './building-collision.js': { polygonBoxOverlaps: () => false },
-      './surfaces.js': { linkById: new Map(graph.links.map((_, i) => [i, { sid: 0 }])) }
+      './surfaces.js': { linkById: new Map(graph.links.map((_, i) => [i, { sid: 0 }])) },
+      './bridge.js': { deckLanePoints: () => null }
     },
     globals: { console: { info() {} }, Math, Map, Set, Array, Object, Number, Infinity, Uint8Array, Float32Array }
   });

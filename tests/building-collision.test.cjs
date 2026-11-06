@@ -134,7 +134,7 @@ test('road queries preserve the open area inside concave and courtyard bounds', 
   const { buildRoadNetwork } = loadModule(readFileSync(join(__dirname, '../js/road-network.js'), 'utf8'), { imports: {
     './city-config.js': { BLOCKS: [], CITY_BOUNDS: { minZ: -100, maxZ: 100 }, DRIVE_SIDE: -1, blockAt: () => null, landAt: () => true },
     './geodata.js': { GEO: { roadGraph: { nodes: [], links: [], names: [] } } }, './building-collision.js': { polygonBoxOverlaps },
-    './surfaces.js': { LINKS: [] }
+    './surfaces.js': { LINKS: [] }, './bridge.js': { deckLanePoints: () => null }
   } });
   for (const polygon of [concave, courtyard]) {
     const network = buildRoadNetwork([{ minX: 0, maxX: 12, minZ: 0, maxZ: 12, polygon }]);

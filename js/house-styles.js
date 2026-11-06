@@ -1,5 +1,6 @@
 // Sydney's houses, by when and where they were built: the styles the generator gives a house (tools/build-buildings.mjs) and what
-// each looks like in the game (js/building-look.js). From council heritage guides and the references in ref/houses/.
+// each looks like in the game (js/building-look.js). From council heritage guides, and Wikimedia Commons pictures of each group of
+// suburbs' houses.
 //   walls: [facade, weight, from, to]: facades of js/buildings.js with their weights, and which of the facade's colours, as a range
 //          of its tone (7 house brick, red at 0 through orange to cream at 1; 8 painted render, fibro and weatherboard, white at 0 to
 //          sand at 1; 1 the inner city's Federation brick)

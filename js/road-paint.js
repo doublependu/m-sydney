@@ -2,12 +2,15 @@ import * as THREE from 'three/webgpu';
 import { CROSSWALK } from './road-network.js';
 import { createRoadPaintMaterial } from './tsl-materials.js';
 import { ROAD_CLASS, edgeHeight, linkById } from './surfaces.js';
+import { bridgeAt, deckLines } from './bridge.js';
 
 // Road markings generated from the drivable road network (js/road-network.js), so the paint matches where traffic
 // actually drives and stops: dashed lane lines, white centre lines (double on main roads), stop lines at signals and
 // dashed give-way lines elsewhere, pedestrian crossings at signals and green cycle lanes along wide one-way roads.
 // A small street has no centre line: a two-way residential or unclassified street under 11 m, unless the map gives it lanes. Where one
 // meets a main road it gets a short one up to its give-way line, and service roads get no lines at all.
+// The Harbour Bridge's deck is painted from the lanes js/bridge.js lays out across it, the same ones its traffic drives and its
+// signals stand over: a line between every two lanes side by side, whichever roads they're on, and no give-way line where roads merge.
 
 const WHITE = new THREE.Color(0xe6e2d6);
 const GREEN = new THREE.Color(0x2a8a4e);
@@ -164,6 +167,10 @@ function* buildRoadPaintSteps(scene, network, sharedBuilder = null, tags = null)
     else roads.set(key, [e]);
   }
 
+  // Where a road leads onto the deck's lanes: merging, with no line to give way at
+  const ontoDeck = new Set();
+  for (const e of network.paintEdges || network.edges) if (e.laidOut) ontoDeck.add(e.from);
+
   // Junctions a main road goes through, for the short centre lines of the small streets that meet it
   const mainRoadAt = new Set();
   for (const e of network.paintEdges || network.edges) {
@@ -172,10 +179,17 @@ function* buildRoadPaintSteps(scene, network, sharedBuilder = null, tags = null)
     mainRoadAt.add(e.to);
   }
 
+  const deckStretches = [];
   for (const [e, back] of roads.values()) {
     const firstLine = lines.length;
     const markings = markingsOf(e);
     if (markings === 'none') continue;
+    // Over the deck: its lines are painted below, along all of it at once
+    if (e.laidOut) {
+      const a = bridgeAt(e.sx, e.sz, 40), b = bridgeAt(e.sx + e.dx * e.len, e.sz + e.dz * e.len, 40);
+      if (a && b) deckStretches.push([Math.min(a.s, b.s), Math.max(a.s, b.s)]);
+      continue;
+    }
     // Lanes of both directions, measured to the right of e, left to right
     const lanes = e.lanes.map((o) => ({ o, dir: 1 }));
     if (back) for (const o of back.lanes) lanes.push({ o: -o, dir: -1 });
@@ -209,7 +223,7 @@ function* buildRoadPaintSteps(scene, network, sharedBuilder = null, tags = null)
     // Stop bars across the lanes arriving at each stop line, from the centre line (or median) to the curb (none where a
     // street merely bends: a shape node of the centreline streets)
     for (const f of back ? [e, back] : [e]) {
-      if (f.to.shape) continue;
+      if (f.to.shape || ontoDeck.has(f.to)) continue;
       const left = back ? Math.max(0, f.lanes[0] - 1.8) : -f.half;
       if (f.to.signal) across(f, f.len - 0.35, left + 0.1, f.half - 0.1, 0.45, WHITE);
       else across(f, f.len - 0.35, left + 0.1, f.half - 0.1, 0.32, WHITE, 1.2, 0.55);
@@ -297,6 +311,29 @@ function* buildRoadPaintSteps(scene, network, sharedBuilder = null, tags = null)
         stack.push(next);
       }
       onEdge(line.e, () => strip(...line.ends[0], ...line.ends[1], line.w, line.col, line.period, line.duty, line.phase, line.flow));
+    }
+  }
+
+  // The deck's lines, along each stretch of it the network has: dashed and solid as js/bridge.js deckLines() says, their dashes in step
+  // along the deck however its roads are cut into edges
+  deckStretches.sort((p, q) => p[0] - q[0]);
+  const merged = [];
+  for (const [s0, s1] of deckStretches) {
+    const last = merged[merged.length - 1];
+    if (last && s0 <= last[1] + 4) last[1] = Math.max(last[1], s1);
+    else merged.push([s0, s1]);
+  }
+  for (const [s0, s1] of merged) {
+    for (const line of deckLines(s0 - 2, s1 + 2, (id) => !!linkById.get(id)?.busOnly)) {
+      for (let i = 0; i + 1 < line.pts.length; i++) {
+        // On the road beside it there, for its height
+        const [ax, az, as, id] = line.pts[i], [bx, bz] = line.pts[i + 1];
+        if (!linkById.has(id)) continue; // its tile isn't held: nothing would know its height
+        onEdge({ link: id }, () => {
+          if (line.solid) strip(ax, az, bx, bz, 0.13, WHITE);
+          else strip(ax, az, bx, bz, 0.13, WHITE, 12, 0.25, as, 1);
+        });
+      }
     }
   }
 

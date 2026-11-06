@@ -314,7 +314,7 @@ const LEVEL_ROUTES = {
   // The Cahill Expressway over Circular Quay, and back through its tunnel under the Domain end
   cahillEast: [{ x: -250, z: -1503 }, { x: -246, z: -1365 }, { x: 405, z: -1345 }, { x: 475, z: -1215 }],
   cahillWest: [{ x: 452, z: -1200 }, { x: 405, z: -1337 }, { x: -345, z: -1382 }],
-  // Plan 5: the video's drive (ref/, "Driving across the Sydney Harbour Bridge"): up Clarence St, its tidal-flow ramp onto the bridge,
+  // Plan 5: the drive in the video "Driving across the Sydney Harbour Bridge, 2023": up Clarence St, its tidal-flow ramp onto the bridge,
   // over it and on to North Sydney
   // (The tidal-flow lane's way in from Clarence St is OSM's "Bradfield Highway", way 1186155127 and on, meeting the ramp from Grosvenor St
   // at (-339, -1133): the ramp's own start at (-338, -1083) is that other way up)

@@ -1,13 +1,15 @@
 import * as THREE from 'three/webgpu';
 import { edgeHeight, groundRoadAt, roadHeight, structureAt, structuresAt } from './surfaces.js';
 import { heldTags } from './geodata.js';
+import { deckLanePoints } from './bridge.js';
 
 // Road paint from OpenStreetMap's tags (js/road-paint.js draws the rest): red bus lanes, green cycle lanes and cycleways,
 // zebra crossings, and the words and numbers on the road.
 
 const BUS_RED = new THREE.Color(0x96302a);
 
-// Along a way, its road's edge: a lane `width` wide against the kerb on the left (side 1) or right (side 2) of travel
+// Along a way, its road's edge: a lane `width` wide against the kerb on the left (side 1) or right (side 2) of travel. Over the
+// Harbour Bridge's deck, the lane there as js/bridge.js lays them out, where its lines are painted
 // The road at (x, z): on the ground, or else the nearest on a bridge (the bus lane over the Harbour Bridge), never in a tunnel
 function roadAt(x, z) {
   const ground = groundRoadAt(x, z);
@@ -27,8 +29,12 @@ function eachKerbLane(flat, side, width, paint) {
     const road = roadAt((ax + bx) / 2, (az + bz) / 2);
     if (!road) continue;
     const ux = (bx - ax) / L, uz = (bz - az) / L;
+    const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+    const laid = road.sid ? deckLanePoints(road.id, mx, mz) : null;
+    // Left of travel is (uz, -ux): the laid-out lanes from left to right, so the kerb's is first on the left and last on the right
+    const lane = laid && (laid.map((p) => (p.x - mx) * uz - (p.z - mz) * ux).sort((p, q) => q - p))[side === 1 ? 0 : laid.length - 1];
     // A road of one lane is all that lane
-    const off = road.lanes === 1 ? 0 : (road.width / 2 - width / 2 - 0.2) * (side === 1 ? 1 : -1);
+    const off = laid ? lane : road.lanes === 1 ? 0 : (road.width / 2 - width / 2 - 0.2) * (side === 1 ? 1 : -1);
     // Left of travel is (uz, -ux)
     paint(ax + uz * off, az - ux * off, bx + uz * off, bz - ux * off, road);
   }
@@ -90,11 +96,12 @@ function addRoadWords(group) {
   const map = new THREE.CanvasTexture(canvas);
   map.anisotropy = 8;
   const positions = [], uvs = [], index = [];
-  const word = (w, x, z, ux, uz, along, across) => {
+  // `on`: the road it's painted on, where that's known: a bridge's, whose height isn't the ground's
+  const word = (w, x, z, ux, uz, along, across, on = null) => {
     const row = WORDS.indexOf(w);
     if (row < 0) return;
-    const road = groundRoadAt(x, z);
-    const y = (road ? roadHeight(road, x, z) : edgeHeight(null, x, z)) + 0.02;
+    const road = on?.sid ? null : groundRoadAt(x, z);
+    const y = (on?.sid ? edgeHeight({ link: on.id }, x, z) : road ? roadHeight(road, x, z) : edgeHeight(null, x, z)) + 0.02;
     const k = positions.length / 3;
     // The text reads from a driver's seat coming along (ux, uz): its top is further away
     for (const [a, b] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
@@ -105,9 +112,9 @@ function addRoadWords(group) {
   };
   for (const line of ROAD_TAGS.buses) {
     let carried = 30;
-    eachKerbLane(line, 1, 3.1, (ax, az, bx, bz) => {
+    eachKerbLane(line, 1, 3.1, (ax, az, bx, bz, road) => {
       const L = Math.hypot(bx - ax, bz - az);
-      for (let d = carried; d < L; d += 70) word('BUS LANE', ax + ((bx - ax) * d) / L, az + ((bz - az) * d) / L, (bx - ax) / L, (bz - az) / L, 1.6, 2.7);
+      for (let d = carried; d < L; d += 70) word('BUS LANE', ax + ((bx - ax) * d) / L, az + ((bz - az) * d) / L, (bx - ax) / L, (bz - az) / L, 1.6, 2.7, road);
       carried = Math.max(0, carried - L);
     });
   }

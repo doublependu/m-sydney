@@ -2,14 +2,14 @@ import * as THREE from 'three/webgpu';
 import { abs, color, float, floor, fract, max, mix, mod, positionWorld, smoothstep, sqrt, step, texture, uv } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { cityUniforms } from './tsl-materials.js';
-import { BRIDGE_LENGTH, BRIDGE_SPAN, DECK_REACH, DECK_SID, bridgeAt, bridgePoint, deckGapAt, deckHeight, deckSpanAt } from './bridge.js';
+import { BRIDGE_LENGTH, BRIDGE_SPAN, DECK_REACH, DECK_SID, bridgeAt, bridgePoint, deckGapAt, deckHeight, deckLanes, deckSpanAt } from './bridge.js';
 import { GEO } from './geodata.js';
 import { groundHeight } from './surfaces.js';
 
 // The Sydney Harbour Bridge: the deck along the corridor (js/bridge.js), the steel through-arch over the water with its
 // hangers, the granite pylons at each end of the arch, and the piers carrying the approaches.
 //
-// Across the deck, from west to east (plan 5, from OSM and the pictures in ref/details/):
+// Across the deck, from west to east (plan 5, from OSM, the video of the drive over and Street View pictures from the footway):
 //   the cycleway, the two railway tracks, the arch's west truss, the roadway's eight lanes: four northbound (the corridor, OSM's
 //   northbound carriageway), two southbound, the bus lane and the Cahill's lane, the arch's east truss between those last two,
 //   then the footway in its cage. Between the pylons the Cahill's lane runs apart from the rest, through an arch in each east pylon,
@@ -30,7 +30,8 @@ const BEARINGS = 503; // m between the arch's hinges
 const BARRIER = { width: 0.5, height: 0.9 };
 const KIND_CUTTING = 3; // a street on the ground sunk into a cutting (js/surfaces.js KIND)
 // The sign gantry over the lanes coming off the bridge southbound, where they run side by side on the ground before they part
-// (ref/details/3.png): across the line z = SOUTH_GANTRY.z, over the southbound roads within `reach` of x. Its boards from the left
+// (a Street View picture of it from the lanes under it): across the line z = SOUTH_GANTRY.z, over the southbound roads within `reach`
+// of x. Its boards from the left
 // as you drive under it (the east, the bus lanes to York St) to the right: [style, line, line]
 const SOUTH_GANTRY = {
   x: -290, z: -1285, reach: 25,
@@ -231,31 +232,6 @@ function rampOpenings() {
   return (s, side) => gaps.some((g) => g.side === side && s > g.from && s < g.to);
 }
 
-// The deck's lanes s m along it: [{ off (m east of the corridor's line), north }], west to east, from its roads (GEO.bridgeLinks)
-function deckLanesAt(s) {
-  const out = [];
-  for (const entry of GEO.bridgeLinks || []) {
-    const [, flat, width, deck, , , , lanes = 0, dir = 0] = entry;
-    if (!deck) continue;
-    let best = null, first = null, last = null;
-    for (let i = 0; i + 3 < flat.length; i += 2) {
-      const ax = flat[i], az = flat[i + 1], bx = flat[i + 2], bz = flat[i + 3], L = Math.hypot(bx - ax, bz - az) || 1;
-      for (let d = 0; d <= L; d += 2) {
-        const here = bridgeAt(ax + ((bx - ax) * d) / L, az + ((bz - az) * d) / L, DECK_REACH);
-        if (!here) continue;
-        first ??= here;
-        last = here;
-        if (!best || Math.abs(here.s - s) < Math.abs(best.s - s)) best = here;
-      }
-    }
-    if (!best || Math.abs(best.s - s) > 6 || !first || first === last) continue;
-    const north = (last.s > first.s) === (dir >= 0);
-    const n = Math.max(1, lanes || Math.round((width - 1.5) / 3.3));
-    for (let k = 0; k < n; k++) out.push({ off: best.off + (k - (n - 1) / 2) * 3.3 * (north ? 1 : -1), north });
-  }
-  return out.sort((a, b) => a.off - b.off);
-}
-
 // A tapering block, centred on the y axis: w across and d along at its foot, narrowing to w1 and d1. uv: metres across the
 // face from its centre, and height.
 function frustum(w0, d0, w1, d1, y0, y1) {
@@ -282,6 +258,12 @@ function frustum(w0, d0, w1, d1, y0, y1) {
   g.setIndex(index);
   return g;
 }
+
+// Where the lane gantries stand, m along the deck: where the video of the drive over has them
+const GANTRIES = [200, 490, 700, 1068, 1220, 1430, 1580].filter((g) => g > 80 && g < BRIDGE_LENGTH - 80);
+/** The lights on the gantry s m along the deck: [{ off (m east of the corridor's line), north }], one over the middle of each lane
+ *  whose direction the time of day sets */
+const gantryLights = (s) => deckLanes(s).filter((l) => l.signal).map(({ off, north }) => ({ off, north }));
 
 function buildHarbourBridge(group) {
   readStreets();
@@ -386,9 +368,9 @@ function buildHarbourBridge(group) {
     }
   }
 
-  // Lane gantries over the roadway, where the video of the drive over has them (ref/, plan 5: 1:06, 1:21, 1:33, 1:57, 2:06, 2:18, 2:27):
-  // a light over each lane, an arrow for those coming your way and a cross for those not, and the 70 sign at each end
-  const GANTRIES = [200, 490, 700, 1068, 1220, 1430, 1580].filter((g) => g > 80 && g < BRIDGE_LENGTH - 80);
+  // Lane gantries over the roadway, where the video of the drive over has them (plan 5: 1:06, 1:21, 1:33, 1:57, 2:06, 2:18, 2:27), from
+  // barrier to barrier: a light over the middle of each of the six lanes whose direction the time of day sets (js/bridge.js deckLanes()),
+  // an arrow for those coming your way and a cross for those not, and the 70 sign at each end
   const laneSigns = [];
   {
     const SIZE = 1.0;
@@ -401,13 +383,15 @@ function buildHarbourBridge(group) {
       laneSigns.push(g);
     };
     for (const s of GANTRIES) {
-      const lanes = deckLanesAt(s);
+      const lanes = deckLanes(s).filter((l) => l.deck);
       if (!lanes.length) continue;
       const y = deckHeight(s);
-      const west = Math.min(...lanes.map((l) => l.off)) - 2.6, east = Math.max(...lanes.map((l) => l.off)) + 2.6;
+      // Its posts on the barriers either side
+      const first = lanes[0], last = lanes[lanes.length - 1];
+      const west = first.off - first.width / 2 - 0.75, east = last.off + last.width / 2 + 0.75;
       for (const h of [6.2, 7.3]) strut(at(s, west, y + h), at(s, east, y + h), 0.24, 0.24);
       for (const off of [west, east]) strut(at(s, off, y), at(s, off, y + 7.6), 0.42, 0.42);
-      for (const lane of lanes) {
+      for (const lane of gantryLights(s)) {
         strut(at(s, lane.off, y + 6.2), at(s, lane.off, y + 7.3), 0.1, 0.1);
         // Facing south, seen by traffic heading north
         sign(s, lane.off, y + 6.75, -1, lane.north ? 0 : 1);
@@ -696,22 +680,25 @@ function buildHarbourBridge(group) {
     }
   }
 
-  // Lane numbers painted across the roadway before each gantry, 1 to 8 from west to east, read by those coming up to it (the video,
-  // 1:21 and 2:12), and the footway's cage between the pylons (ref/details/4.png)
+  // Lane numbers painted in the middle of each lane before each gantry, 1 to 8 from west to east, read by those coming up to it (the
+  // video, 1:21 and 2:12), and the footway's cage between the pylons (a Street View picture from the footway)
   if (typeof document !== 'undefined') {
     const numbers = [];
     for (const g of GANTRIES) {
-      deckLanesAt(g).forEach((lane, k) => {
-        if (k > 7) return;
-        const towards = lane.north ? 1 : -1, s = g - towards * 18;
-        const q = axis(s), p = at(s, lane.off, deckHeight(s) + 0.03);
-        const plane = new THREE.PlaneGeometry(1.6, 2.4);
-        const uvs = plane.attributes.uv;
-        for (let i = 0; i < uvs.count; i++) uvs.setX(i, (uvs.getX(i) + k) / 8);
-        // Flat on the deck, its top towards where the lane goes
-        plane.rotateX(-Math.PI / 2).rotateY(Math.atan2(q.ux * towards, q.uz * towards) + Math.PI).translate(p.x, p.y, p.z);
-        numbers.push(plane);
-      });
+      for (const towards of [1, -1]) {
+        const s = g - towards * 18;
+        for (const lane of deckLanes(s)) {
+          if (!lane.deck || lane.number > 8 || (lane.north ? 1 : -1) !== towards) continue;
+          const k = lane.number - 1;
+          const q = axis(s), p = at(s, lane.off, deckHeight(s) + 0.03);
+          const plane = new THREE.PlaneGeometry(1.6, 2.4);
+          const uvs = plane.attributes.uv;
+          for (let i = 0; i < uvs.count; i++) uvs.setX(i, (uvs.getX(i) + k) / 8);
+          // Flat on the deck, its top towards where the lane goes
+          plane.rotateX(-Math.PI / 2).rotateY(Math.atan2(q.ux * towards, q.uz * towards) + Math.PI).translate(p.x, p.y, p.z);
+          numbers.push(plane);
+        }
+      }
     }
     if (numbers.length) {
       const canvas = document.createElement('canvas');
@@ -861,4 +848,4 @@ function buildHarbourBridge(group) {
   return surface;
 }
 
-export { buildHarbourBridge, harbourBridgeColliders };
+export { GANTRIES, buildHarbourBridge, gantryLights, harbourBridgeColliders };

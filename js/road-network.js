@@ -1,7 +1,8 @@
 import { CITY_BOUNDS, DRIVE_SIDE, BLOCKS, blockAt, landAt } from './city-config.js';
 import { GEO } from './geodata.js';
 import { polygonBoxOverlaps } from './building-collision.js';
-import { linkById, roadClass } from './surfaces.js';
+import { ROAD_CLASS, linkById, ownLaneOffsets, roadClass } from './surfaces.js';
+import { deckLanePoints, deckLinkIds, deckRoadPoint } from './bridge.js';
 
 // How far either side of the Harbour Bridge's line a lane counts as on the bridge (its own height, nothing in its way)
 const DECK_REACH = 15;
@@ -23,6 +24,19 @@ const MAX_ON_KERB = 0.7;
 const CROSSWALK = 2.5; // depth between an intersection box and its stop lines
 const RIM = 0.85; // of an area's radius
 const MAX_STRAY = 1; // m a straight lane may leave the curve of its road
+// Where a one-way road keeps the lanes OSM gives it (ownLaneOffsets() in js/surfaces.js, 3.3 m apart as the map's widths were made),
+// not those its width alone gives (laneOffsets() below, 3.6 m apart), which leave a road OSM gives three lanes, 11.4 m wide, with two:
+// the motorways and their ramps around the Harbour Bridge, the ways on and off it, in the box its hand edits use
+// (tools/local/harbour-bridge-cbd.json). Not yet its streets: at North Sydney the Pacific Hwy's third lane turned two of them into
+// one-lane Arthur St, and traffic there queued three times as long. The rest of the map is to follow, the box going then.
+const OSM_LANES_AREA = { minX: -800, minZ: -3600, maxX: 650, maxZ: -850 };
+const OSM_LANES_CLASSES = new Set([ROAD_CLASS.motorway, ROAD_CLASS.link]);
+// m back from a bend between two edges over the Harbour Bridge's deck that each ends, for each metre its lanes move across there: they're
+// laid out across the deck (js/bridge.js deckLanes()) and ease over where its roadway widens or roads join it, and a curve 2 m long
+// that takes a lane 5 cm across is a kink traffic slows to 8 m/s for. 1 m where they carry straight on, as at any bend; 4 m at most.
+const LAID_BEND = 30;
+const inOsmLanesArea = ({ x, z }) => x >= OSM_LANES_AREA.minX && x <= OSM_LANES_AREA.maxX && z >= OSM_LANES_AREA.minZ && z <= OSM_LANES_AREA.maxZ;
+const keepsOsmLanes = (l) => l.lanes > 0 && OSM_LANES_CLASSES.has(l.cls) && (inOsmLanesArea(l.pts[0]) || inOsmLanesArea(l.pts[l.pts.length - 1]));
 
 // `area`: { x, z, radius }, the roads to take in. All those held if there's none.
 function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null) {
@@ -218,18 +232,61 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
       const half = l.w / 2;
       const axis = l.major || l.w >= 14.5 || l.lanes >= 3 ? 'ave' : 'st';
       if (l.dir !== 0) {
-        const lanes = laneOffsets(half) || [0];
+        const byWidth = laneOffsets(half) || [0];
+        const byOsm = keepsOsmLanes(l) ? ownLaneOffsets(l.w, l.lanes) : null;
+        let lanes = byOsm && byOsm.length > byWidth.length ? byOsm : byWidth;
+        // No more than the roads it leads on into take: OSM gives the Cahill Expressway four lanes at North Sydney, and the one road
+        // it leads into two, and four merging into two queue back over the Warringah Fwy
+        if (lanes === byOsm && byOsm.length > (onwardLanes.get(l) ?? Infinity)) lanes = ownLaneOffsets(l.w, Math.max(byWidth.length, onwardLanes.get(l)));
         return { half, axis, fwd: l.dir > 0 ? lanes : [], back: l.dir < 0 ? lanes : [] };
       }
       const each = half >= 10.8 || l.lanes >= 6 && half >= 9.5 ? [1.8, 5.4, 9.0] : half >= 6.6 ? [1.8, 5.4] : [1.8];
       return { half, axis, fwd: each, back: each };
     }
+    // How many lanes each one-way road leads on into, at most: those of the roads leaving where it ends, going on within 60° of its way,
+    // as lanesOf() gives them.
+    const onwardLanes = new Map();
+    {
+      const leaving = new Map(); // junction -> [{ l, ux, uz }] for each way a road leaves it
+      const way = (l, from) => {
+        const pts = from === 'a' ? l.pts : [...l.pts].reverse();
+        const ux = pts[1].x - pts[0].x, uz = pts[1].z - pts[0].z, d = Math.hypot(ux, uz) || 1;
+        return { ux: ux / d, uz: uz / d };
+      };
+      const count = (l) => {
+        const byWidth = (laneOffsets(l.w / 2) || [0]).length;
+        if (l.dir === 0) return l.w / 2 >= 10.8 || l.lanes >= 6 && l.w / 2 >= 9.5 ? 3 : l.w / 2 >= 6.6 ? 2 : 1;
+        return keepsOsmLanes(l) ? Math.max(byWidth, ownLaneOffsets(l.w, l.lanes).length) : byWidth;
+      };
+      for (const l of links) {
+        for (const end of ['a', 'b']) {
+          if (l.dir !== 0 && (end === 'a') !== (l.dir > 0)) continue; // a one-way road leaves only from its start
+          const r = find(l[end]);
+          if (!leaving.has(r)) leaving.set(r, []);
+          leaving.get(r).push({ l, ...way(l, end), n: count(l) });
+        }
+      }
+      for (const l of links) {
+        if (l.dir === 0 || !(l.lanes > 0)) continue;
+        const end = l.dir > 0 ? 'b' : 'a';
+        const into = way(l, end === 'b' ? 'b' : 'a');
+        // its way arriving at its end: the reverse of the way it leaves from there
+        const ux = -into.ux, uz = -into.uz;
+        const on = (leaving.get(find(l[end])) || []).filter((o) => o.l !== l && o.ux * ux + o.uz * uz > 0.5);
+        if (on.length) onwardLanes.set(l, on.reduce((sum, o) => sum + o.n, 0));
+      }
+    }
     const DEG = Math.PI / 180;
+    // The roads js/bridge.js lays the Harbour Bridge's deck out with: along their lines as it has them
+    const laid = GEO.bridgeLinks ? deckLinkIds() : new Set();
     for (const l of links) {
+      const onDeck = l.sid && laid.has(l.id);
       const A = junction(find(l.a));
       const B = junction(find(l.b));
       if (A === B) continue;
-      const pts = [{ x: A.x, z: A.z }, ...l.pts.slice(1, -1), { x: B.x, z: B.z }];
+      // Over the deck, along its line as the deck lays it out, OSM's wandering evened out
+      const inner = onDeck ? l.pts.slice(1, -1).map((p) => deckRoadPoint(l.id, p.x, p.z) ?? p) : l.pts.slice(1, -1);
+      const pts = [{ x: A.x, z: A.z }, ...inner, { x: B.x, z: B.z }];
       // stations along it: the ends and every bend over 12° at least 15 m from the last station and from the far end
       const stations = [A];
       let last = pts[0];
@@ -287,9 +344,18 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
     if (span < 8) return false;
     const dx = (to.x - x0) / span;
     const dz = (to.z - z0) / span;
+    const rx = -dz * DRIVE_SIDE, rz = dx * DRIVE_SIDE;
+    // Over the Harbour Bridge's deck, the lanes it lays out (js/bridge.js deckLanes()): where its lines are painted and its signals
+    // stand, and as many as OSM gives its roads. At the edge's middle: they move over gradually where a road joins or leaves. The edge
+    // runs along its road's line as the deck has it (centrelineStreets()), so each lane is as far from it as the layout says, exactly
+    // the same from one edge to the next along a stretch: a lane a few centimetres off where the next edge's starts is a kink traffic
+    // slows to 8 m/s for.
+    const mx = x0 + (dx * span) / 2, mz = z0 + (dz * span) / 2;
+    const laid = run.sid ? deckLanePoints(run.link, mx, mz) : null;
+    if (laid) lanes = laid.map((p) => (p.rel === null ? (p.x - mx) * rx + (p.z - mz) * rz : p.rel * (p.east.x * rx + p.east.z * rz)));
     const open = run.sid ? lanes.slice() : lanes.filter((o) => laneOpen(x0, z0, dx, dz, span, o, maxOnKerb));
     if (!open.length) return false;
-    edges.push({ from, to, axis, x0, z0, dx, dz, rx: -dz * DRIVE_SIDE, rz: dx * DRIVE_SIDE, span, half, lanes: open.sort((p, q) => p - q), moves: [], general: true, cand: lanes, divided: !!divided, deck: !!run.deck, sid: run.sid || 0, link: run.link, cls: run.cls || 0, busOnly: !!run.busOnly });
+    edges.push({ from, to, axis, x0, z0, dx, dz, rx, rz, span, half, lanes: open.sort((p, q) => p - q), moves: [], general: true, cand: lanes, divided: !!divided, deck: !!run.deck, laidOut: !!laid, sid: run.sid || 0, link: run.link, cls: run.cls || 0, busOnly: !!run.busOnly });
     return true;
   }
   // A divided road drawn as two one-way roadways between the same two junctions (most of the Bowery) runs both ways
@@ -346,7 +412,7 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
     // Lanes about its centreline. Not on the Harbour Bridge's deck: its roads are OSM's own carriageways side by side, the
     // southbound's line 8.8 m from the northbound's. Paired, the northbound's lanes were tested against the ground plan under
     // the deck, kerbs and buildings took them, and the bridge and all north of it fell out of the network
-    const oneWay = edges.filter((e) => e.general && !e.divided && !e.deck && e.cand[0] <= 0);
+    const oneWay = edges.filter((e) => e.general && !e.divided && !e.deck && !e.laidOut && e.cand[0] <= 0);
     const cells = new Map(); // 16 m cells -> the one-way edges passing within 4 m
     oneWay.forEach((e, i) => {
       e.oneWay = i;
@@ -526,7 +592,13 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
   // and clear of the lanes of a road merging with it or forking off it
   const goesOn = (p, q) => p.ux * q.ux + p.uz * q.uz < 0 && Math.abs(p.ux * q.uz - p.uz * q.ux) < 0.26; // q within 15° of straight on from p
   function stopBack(n, arm) {
-    if (n.shape) return 1;
+    if (n.shape) {
+      const other = n.arms.find((a) => a !== arm);
+      const into = arm.in || other?.in, onto = arm.in ? other?.out : arm.out;
+      if (!into?.laidOut || !onto?.laidOut || into.lanes.length !== onto.lanes.length) return 1;
+      const moves = Math.max(...into.lanes.map((o, i) => Math.abs(o - onto.lanes[i])));
+      return Math.min(4, 1 + LAID_BEND * moves);
+    }
     const a = arm.lead;
     let ext = 0;
     let fork = 0;
@@ -582,8 +654,8 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
   // Paint describes the physical streets, including dead ends and roads AI traffic cannot circulate through.
   // Snapshot their geometry before routing moves stop lines, drops edges and renumbers the surviving junctions.
   const paintNodes = new Map(nodes.map((n, id) => [n, { id, x: n.x, z: n.z, shape: n.shape }]));
-  const paintEdges = edges.map(({ from, to, axis, x0, z0, sx, sz, dx, dz, rx, rz, span, len, half, lanes, deck, sid, link, cls }) => ({
-    from: paintNodes.get(from), to: paintNodes.get(to), axis, x0, z0, sx, sz, dx, dz, rx, rz, span, len, half, lanes, deck, sid, link, cls
+  const paintEdges = edges.map(({ from, to, axis, x0, z0, sx, sz, dx, dz, rx, rz, span, len, half, lanes, deck, laidOut, sid, link, cls }) => ({
+    from: paintNodes.get(from), to: paintNodes.get(to), axis, x0, z0, sx, sz, dx, dz, rx, rz, span, len, half, lanes, deck, laidOut, sid, link, cls
   }));
 
   yield;

@@ -158,7 +158,7 @@ what it did.
   shop by its Mesh Block and zoning, and gives a house a style by its group of suburbs: Victorian terrace, Federation, California
   bungalow, post-war fibro, brick veneer, project home, beach house, walk-ups (`js/house-styles.js`). A style says its walls, roof
   colours, pitch, gables and eaves. The walls are two more sets of uniforms for the masonry facade, so the GPU compiles nothing more,
-  and every pitched roof is one vertex-coloured material. References are in `ref/houses/`, which git ignores.
+  and every pitched roof is one vertex-coloured material.
 - **Small streets have no centre line.** A two-way residential street under 11 m gets one only where it meets a main road, and a
   service road none at all (`markingsOf()` in `js/road-paint.js`), by each road's OSM class.
 - **The scene is drawn near zero.** The simulation and the map are in the game's own frame, however far out, but a shader only ever sees

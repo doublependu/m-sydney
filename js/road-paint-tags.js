@@ -1,19 +1,15 @@
 import * as THREE from 'three/webgpu';
 import { edgeHeight, groundRoadAt, roadHeight, structureAt, structuresAt } from './surfaces.js';
 import { heldTags } from './geodata.js';
-import { deckLanePoints } from './bridge.js';
+import { deckLanePoints, deckLinkIds } from './bridge.js';
 
 // Road paint from OpenStreetMap's tags (js/road-paint.js draws the rest): red bus lanes, green cycle lanes and cycleways,
 // zebra crossings, and the words and numbers on the road.
 
 const BUS_RED = new THREE.Color(0x96302a);
 
-// Along a way, its road's edge: a lane `width` wide against the kerb on the left (side 1) or right (side 2) of travel. Over the
-// Harbour Bridge's deck, the lane there as js/bridge.js lays them out, where its lines are painted
-// The road at (x, z): on the ground, or else the nearest on a bridge (the bus lane over the Harbour Bridge), never in a tunnel
-function roadAt(x, z) {
-  const ground = groundRoadAt(x, z);
-  if (ground) return ground;
+// The nearest road on a bridge at (x, z), or null
+function bridgeRoadAt(x, z) {
   let best = null;
   for (const { sid } of structuresAt(x, z)) {
     const here = structureAt(sid, x, z);
@@ -21,22 +17,51 @@ function roadAt(x, z) {
   }
   return best ? best.link : null;
 }
-function eachKerbLane(flat, side, width, paint) {
+// The road at (x, z): on the ground, or else the nearest on a bridge (the bus lane over the Harbour Bridge), never in a tunnel
+const roadAt = (x, z) => groundRoadAt(x, z) ?? bridgeRoadAt(x, z);
+// The deck's lanes move over gradually where its roads join or part (js/bridge.js), so along it the lane is painted in pieces this
+// long, each end where the lane is, as its lines are: one offset for a whole segment of the way left steps where the lane moves
+const DECK_PIECE = 2;
+const onDeck = (road) => !!road.sid && deckLinkIds().has(road.id);
+// The kerb's lane on `road` at (x, z), m left of travel along (ux, uz). Null on the deck where the layout doesn't have the road there
+function kerbOffset(road, side, width, x, z, ux, uz) {
+  if (onDeck(road)) {
+    const laid = deckLanePoints(road.id, x, z);
+    // Left of travel is (uz, -ux): the laid-out lanes from left to right, so the kerb's is first on the left and last on the right
+    return laid && laid.map((p) => (p.x - x) * uz - (p.z - z) * ux).sort((p, q) => q - p)[side === 1 ? 0 : laid.length - 1];
+  }
+  // A road of one lane is all that lane
+  return road.lanes === 1 ? 0 : (road.width / 2 - width / 2 - 0.2) * (side === 1 ? 1 : -1);
+}
+// Along a way, its road's edge: a lane `width` wide against the kerb on the left (side 1) or right (side 2) of travel. Over the
+// Harbour Bridge's deck, the lane there as js/bridge.js lays them out, where its lines are painted. `pieces`: on the deck, in
+// DECK_PIECE m pieces; without, one piece a segment, at the lane at its middle (for the words on the road)
+function eachKerbLane(flat, side, width, paint, pieces = true) {
   for (let i = 0; i + 3 < flat.length; i += 2) {
     const ax = flat[i], az = flat[i + 1], bx = flat[i + 2], bz = flat[i + 3];
     const L = Math.hypot(bx - ax, bz - az);
     if (L < 2) continue;
-    const road = roadAt((ax + bx) / 2, (az + bz) / 2);
+    const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+    const road = roadAt(mx, mz);
     if (!road) continue;
     const ux = (bx - ax) / L, uz = (bz - az) / L;
-    const mx = (ax + bx) / 2, mz = (az + bz) / 2;
-    const laid = road.sid ? deckLanePoints(road.id, mx, mz) : null;
-    // Left of travel is (uz, -ux): the laid-out lanes from left to right, so the kerb's is first on the left and last on the right
-    const lane = laid && (laid.map((p) => (p.x - mx) * uz - (p.z - mz) * ux).sort((p, q) => q - p))[side === 1 ? 0 : laid.length - 1];
-    // A road of one lane is all that lane
-    const off = laid ? lane : road.lanes === 1 ? 0 : (road.width / 2 - width / 2 - 0.2) * (side === 1 ? 1 : -1);
+    const off = kerbOffset(road, side, width, mx, mz, ux, uz) ?? 0;
+    const n = pieces && onDeck(road) ? Math.ceil(L / DECK_PIECE) : 1;
     // Left of travel is (uz, -ux)
-    paint(ax + uz * off, az - ux * off, bx + uz * off, bz - ux * off, road);
+    if (n === 1) {
+      paint(ax + uz * off, az - ux * off, bx + uz * off, bz - ux * off, road);
+      continue;
+    }
+    // Where the layout doesn't have the road at a piece's end, the lane carries on from the piece before
+    let last = off;
+    for (let k = 0; k < n; k++) {
+      const x0 = ax + ((bx - ax) * k) / n, z0 = az + ((bz - az) * k) / n, x1 = ax + ((bx - ax) * (k + 1)) / n, z1 = az + ((bz - az) * (k + 1)) / n;
+      // The deck's road under this piece, not a street the deck passes over
+      const under = bridgeRoadAt((x0 + x1) / 2, (z0 + z1) / 2), here = under && onDeck(under) ? under : road;
+      const o0 = kerbOffset(here, side, width, x0, z0, ux, uz) ?? last, o1 = kerbOffset(here, side, width, x1, z1, ux, uz) ?? o0;
+      last = o1;
+      paint(x0 + uz * o0, z0 - ux * o0, x1 + uz * o1, z1 - ux * o1, here);
+    }
   }
 }
 
@@ -116,7 +141,7 @@ function addRoadWords(group) {
       const L = Math.hypot(bx - ax, bz - az);
       for (let d = carried; d < L; d += 70) word('BUS LANE', ax + ((bx - ax) * d) / L, az + ((bz - az) * d) / L, (bx - ax) / L, (bz - az) / L, 1.6, 2.7, road);
       carried = Math.max(0, carried - L);
-    });
+    }, false);
   }
   for (const [speed, x, z, ux, uz, oneWay] of ROAD_TAGS.speeds) {
     const road = groundRoadAt(x, z);

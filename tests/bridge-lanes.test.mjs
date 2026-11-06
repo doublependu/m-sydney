@@ -199,3 +199,22 @@ test('the paint has the deck\'s lines and no line to give way where roads join i
   }
   assert.ok(barsChecked > 500, `${barsChecked} strips on the deck`);
 });
+
+test('the red bus lane over the deck runs down the middle of its lane, where the lanes move over too', async () => {
+  const { paintFromTags } = await import('../js/road-paint-tags.js');
+  const red = [];
+  paintFromTags((ax, az, bx, bz, w, color) => { if (color.r > color.g * 2) red.push({ ax, az, bx, bz }); }, (edge, paint) => paint(), { r: 1, g: 1 }, { r: 0, g: 1 });
+  let ends = 0;
+  for (const q of red) {
+    for (const [x, z] of [[q.ax, q.az], [q.bx, q.bz]]) {
+      const at = bridgeAt(x, z, DECK_REACH);
+      if (!at || at.s < 1 || at.s > BRIDGE_LENGTH - 1) continue;
+      const lanes = deckLanes(at.s);
+      if (!lanes.length || at.off < lanes[0].off - 2 || at.off > lanes[lanes.length - 1].off + 2) continue;
+      const nearest = Math.min(...lanes.map((l) => Math.abs(l.off - at.off)));
+      assert.ok(nearest < 0.35, `the bus lane's red at ${at.s.toFixed(0)} m is ${nearest.toFixed(2)} m from the middle of a lane`);
+      ends++;
+    }
+  }
+  assert.ok(ends > 400, `${ends} ends of red over the deck`);
+});

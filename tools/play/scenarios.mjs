@@ -759,7 +759,11 @@ export const SCENARIOS = {
           const before = speeds[speeds.length - 9];
           if (before > 8 && state.speed < before * 0.5 && !ahead.length) {
             invisibleStops++;
-            stops.push({ s: aim.s, off: aim.off, from: +before.toFixed(1), to: +state.speed.toFixed(1), near: (await page.evaluate(([x, z]) => window.__gameDebug.trafficNear(x, z, 12), [state.x, state.z])).length });
+            // Each car within 12 m: m ahead and m to the right of the player, its speed, and whether it was just hit
+            const sin = Math.sin(state.heading), cos = Math.cos(state.heading);
+            const near = (await page.evaluate(([x, z]) => window.__gameDebug.trafficNear(x, z, 12), [state.x, state.z]))
+              .map((v) => ({ ahead: +((v.x - state.x) * sin + (v.z - state.z) * cos).toFixed(1), right: +((v.x - state.x) * -cos + (v.z - state.z) * sin).toFixed(1), speed: +v.speed.toFixed(1), deck: v.deck, struck: v.struck }));
+            stops.push({ s: aim.s, off: aim.off, from: +before.toFixed(1), to: +state.speed.toFixed(1), near });
           }
           await human.wait(120);
         }

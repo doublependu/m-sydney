@@ -359,74 +359,251 @@ const UNDER_THE_DECK = {
 const ROUTE = [{ x: 289, z: 250 }, { x: 291, z: 376 }, { x: 70, z: 376 }];
 
 // Walking into the one building with a model, and out again
-function testBuildingScenario() {
+// Walks the person to (target.x, target.z) with the keys: turning towards it, then forward, in short presses at the end so they stop
+// on it rather than past it
+async function walkTo(human, target, { arrive = 0.3, timeout = 25000 } = {}) {
+  const started = human.now();
+  while (human.now() - started < timeout) {
+    const s = await human.state();
+    const distance = Math.hypot(target.x - s.x, target.z - s.z);
+    if (distance < arrive) {
+      await human.releaseAll();
+      return true;
+    }
+    const error = await human.steerTowards(s, target, 0.1);
+    const aligned = Math.abs(error) < (distance < 1 ? 0.25 : 0.5);
+    if (distance < 0.9) {
+      await human.setKey('KeyW', false);
+      if (aligned) await human.hold('KeyW', 70);
+      await human.wait(120);
+    } else {
+      await human.setKey('KeyW', aligned);
+      await human.wait(60);
+    }
+  }
+  await human.releaseAll();
+  return false;
+}
+
+// Turns the person in place to face (x, z), with the keys
+async function face(human, target) {
+  for (let k = 0; k < 80; k++) {
+    const error = await human.steerTowards(await human.state(), target, 0.06);
+    if (Math.abs(error) < 0.06) break;
+    await human.wait(40);
+  }
+  await human.releaseAll();
+}
+
+// Through 55 Lower Fort St (js/model-sites.js, lfs-west): in at the front door, up the stair, through the sitting room onto the balcony
+// to sit at its table, back down and down again to the basement, out of the back door into the courtyard and out of its gate
+function lowerFortScenario() {
   return {
     async run({ human, page, metric, expect }) {
       const debug = (fn, ...args) => page.evaluate(fn, ...args);
-      const SITE = { x: 442.5, z: -528, yaw: 0.0353 };
-      const toWorld = (x, z) => ({ x: SITE.x + x * Math.cos(SITE.yaw) + z * Math.sin(SITE.yaw), z: SITE.z - x * Math.sin(SITE.yaw) + z * Math.cos(SITE.yaw) });
+      const SITE = { x: -276.7715, z: -1771.2289, yaw: 1.0227, y: 19.75 };
+      const at = (x, z) => ({ x: SITE.x + x * Math.cos(SITE.yaw) + z * Math.sin(SITE.yaw), z: SITE.z - x * Math.sin(SITE.yaw) + z * Math.cos(SITE.yaw) });
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const level = async () => (await human.state()).surfaceY - SITE.y;
+      const fetched = () => debug(() => performance.getEntriesByType('resource').map((r) => r.name).filter((n) => /\/models\//.test(n)));
+      const walk = async (x, z, why) => expect(await walkTo(human, at(x, z)), `never got ${why}`);
+      // Opens the door at (x, z), facing it from where you are
+      const open = async (x, z, id) => {
+        await face(human, at(x, z));
+        await human.wait(300);
+        const prompt = (await interior()).prompt;
+        expect(prompt === 'Open', `at door ${id} the prompt is ${prompt}`);
+        await human.press('KeyF');
+        const done = await human.until(async () => (await interior()).doors.find((d) => d.id === id)?.angle >= 1.59, { timeout: 15000, read: interior });
+        expect(done, `door ${id} never opened`);
+      };
       await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
-      const loaded = await debug(() => performance.getEntriesByType('resource').map((r) => r.name));
-      expect(!loaded.some((name) => /GLTFLoader|\.glb/.test(name)), 'the model or its loader came with the first view');
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...at(2.8, 10.2), h: Math.PI + SITE.yaw });
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'lfs-west')?.out, null, { timeout: 60000, polling: 250 });
+      expect(!(await fetched()).some((n) => /lfs-west-i/.test(n)), 'its inside was fetched before a door was opened');
+
+      // Up the steps to the portico, in at the front door
+      await walk(2.8, 6.6, 'up the front steps');
+      expect(Math.abs(await level()) < 0.05, `on the portico, at ${(await level()).toFixed(2)} m`);
+      await open(2.8, 5.6, 'front');
+      await walk(2.8, 3.4, 'into the entrance hall');
+      expect((await interior()).room === 'entry', 'not in the entrance hall');
+      // Along the hall to the foot of the stair, and up it
+      await walk(3.2, 0.3, 'through the arch to the hall');
+      await walk(1.0, 0.3, 'to the foot of the stair');
+      await walk(-4.95, 0.3, 'up the stair');
+      let i = await interior();
+      expect(i.room === 'landing' && Math.abs((await level()) - 3.9) < 0.05, `up the stair, in ${i.room} at ${(await level()).toFixed(2)} m`);
+      // Along the landing past the stairwell, into the sitting room, out onto the balcony
+      await walk(-5.0, -0.65, 'round the top of the stair');
+      await walk(0.89, -0.65, 'along the landing');
+      await open(0.89, -1.4, 'sitting');
+      await walk(0.75, -2.2, 'into the sitting room');
+      await walk(0.15, -4.7, 'to the balcony doors');
+      await open(-0.05, -5.6, 'sitting-balcony');
+      await walk(0.0, -7.0, 'out onto the balcony');
+      i = await interior();
+      expect(i.room === 'balcony' && Math.abs((await level()) - 3.9) < 0.05, `out on the balcony, in ${i.room}`);
+      // A chair at its table
+      await walk(1.55, -7.6, 'to the table');
+      await face(human, at(2.2, -7.6));
+      await human.wait(300);
+      expect((await interior()).prompt === 'Sit', `at the table the prompt is ${(await interior()).prompt}`);
+      await human.press('KeyF');
+      await human.wait(1200);
+      expect((await interior()).seated, 'not sitting at the table');
+      metric('fpsOnBalcony', (await debug(() => window.__gameDebug.frameCost())).fps);
+      await human.hold('KeyW', 120);
+      await human.wait(400);
+      // Back in, down the stair, and down the basement's under it
+      await walk(0.0, -6.8, 'back from the table');
+      await walk(0.15, -4.7, 'back in');
+      await walk(0.75, -2.2, 'across the sitting room');
+      await walk(0.89, -0.65, 'out to the landing');
+      await walk(-5.0, -0.65, 'back along the landing');
+      await walk(-4.95, 0.3, 'to the top of the stair');
+      await walk(1.0, 0.3, 'down the stair');
+      expect(Math.abs(await level()) < 0.05, 'not back down on the ground floor');
+      await walk(1.0, -0.65, 'off the foot of the stair');
+      await walk(-5.0, -0.65, 'to the end of the hall');
+      await walk(-4.95, 0.3, 'to the head of the basement stair');
+      await walk(1.0, 0.3, 'down to the basement');
+      i = await interior();
+      expect(i.room === 'lg-hall' && Math.abs((await level()) + 3.0) < 0.05, `down the basement stair, in ${i.room} at ${(await level()).toFixed(2)} m`);
+      // Out of the back door into the courtyard, and out of the gate into Downshire St
+      await walk(0.9, -0.65, 'off the basement stair');
+      await walk(0.0, -0.65, 'along the basement hall');
+      await walk(0.0, -3.4, 'into the back hall');
+      await walk(0.0, -4.6, 'to the back door');
+      await open(0.0, -5.6, 'rear');
+      await walk(0.0, -7.2, 'out into the courtyard');
+      expect((await interior()).inside === null && Math.abs((await level()) + 3.0) < 0.05, 'not in the courtyard');
+      await walk(-0.2, -8.0, 'to the courtyard steps');
+      await walk(-0.2, -8.6, 'down the courtyard steps to the gate');
+      await face(human, at(-0.2, -9.6));
+      await human.wait(300);
+      await human.press('KeyF');
+      await human.until(async () => (await interior()).doors.find((d) => d.id === 'gate')?.angle >= 1.59, { timeout: 8000, read: interior });
+      await walk(-0.2, -10.4, 'down the steps and out of the gate');
+      expect((await level()) < -3.5, `out of the gate, at ${(await level()).toFixed(2)} m`);
+    }
+  };
+}
+
+// Into the test interior (js/model-sites.js, with ?debug=1): its door, its stair, a chair, and out again
+function walkInScenario() {
+  return {
+    query: 'debug=1',
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const SITE = { x: 440, z: -300 }; // turned by 0
+      const at = (x, z) => ({ x: SITE.x + x, z: SITE.z + z });
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const fetched = () => debug(() => performance.getEntriesByType('resource').map((r) => r.name).filter((n) => /\/models\//.test(n)));
+      const near = (a, b, d = 0.05) => Math.abs(a - b) < d;
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      // Nothing of any model, or its loader, before the game could be played; and no inside before its door
+      const early = await debug(() => {
+        const ready = window.__gameDebug.load().interactiveAt ?? Infinity;
+        return performance.getEntriesByType('resource').filter((r) => /\/models\/|GLTFLoader|meshopt/.test(r.name) && r.startTime < ready).map((r) => r.name);
+      });
+      expect(!early.length, `came with the first view: ${early.join(', ')}`);
+      expect(!(await fetched()).some((n) => /-in\.|-i\./.test(n)), 'an inside was fetched before any door was opened');
       const memoryBefore = await debug(() => window.__gameDebug.gpuMemory());
 
-      // Outside the door, facing it (heading is towards +x, into the building)
-      const door = toWorld(-11, 0);
-      await debug(({ x, z, heading }) => window.__gameDebug.goto(x, z, heading, 'person'), { ...door, heading: Math.PI / 2 + SITE.yaw });
-      await page.waitForFunction(() => window.__gameDebug.interior().held.length > 0, null, { timeout: 20000, polling: 200 });
-      await human.wait(1000);
-      const outside = await debug(() => window.__gameDebug.interior());
-      expect(outside.inside === null, 'already inside, standing outside');
+      // Outside: the house comes with its ground, and nothing behind its door
+      await debug(({ x, z }) => window.__gameDebug.goto(x, z, Math.PI, 'person'), at(-3, 6.2));
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'test-interior')?.out, null, { timeout: 30000, polling: 200 });
+      const site = (await interior()).sites.find((s) => s.id === 'test-interior');
+      await human.wait(800);
+      expect((await interior()).prompt === null, 'the door offered itself from over 2 m away');
+      expect(await walkTo(human, at(-3, 4.95)), 'never reached the door');
+      await human.wait(400);
+      expect((await interior()).prompt === 'Open', `at the door the prompt is ${(await interior()).prompt}`);
+      expect(!(await fetched()).some((n) => /test-interior-in/.test(n)), 'the inside was fetched before its door was opened');
 
-      await human.down('w');
-      const entered = await human.until(async () => (await debug(() => window.__gameDebug.interior())).inside !== null, { timeout: 15000 });
-      expect(entered, 'walked up to the door and never got in');
-      await human.wait(1800);
-      await human.up('w');
-      const inside = await human.state();
-      const room = await debug(() => window.__gameDebug.interior());
-      expect(room.inside === 'test-lobby', 'not inside by the time they stopped');
-      expect(Math.abs(inside.surfaceY - room.floor) < 0.01, `not standing on the floor: at ${inside.surfaceY}, the floor at ${room.floor}`);
+      // F: the door opens, and what's behind it comes
+      const pressed = human.now();
+      await human.press('KeyF');
+      const opened = await human.until(async () => {
+        const i = await interior();
+        return i.held.includes('test-interior') && i.doors.find((d) => d.id === 'front').angle >= 1.59;
+      }, { timeout: 20000, read: interior });
+      expect(opened, 'the door never opened, or the inside never came');
+      metric('secondsToOpen', +((human.now() - pressed) / 1000).toFixed(2));
+
+      // In, to the foot of the stair
+      expect(await walkTo(human, at(-3, 3.0)), 'never got through the door');
+      let i = await interior();
+      expect(i.inside === 'test-interior' && i.room === 'hall', `through the door, in ${i.inside} ${i.room}`);
+      let p = await human.state();
+      expect(near(p.surfaceY, site.y, 0.05), `in the hall, standing at ${p.surfaceY.toFixed(2)}, the floor at ${site.y.toFixed(2)}`);
+      expect(i.drawn.includes('hall') && !i.drawn.includes('bedroom'), `drawn from the hall: ${i.drawn}`);
       await debug(() => window.__gameDebug.frameCost());
-      await human.wait(4000);
+      await human.wait(3000);
       const frames = await debug(() => window.__gameDebug.frameCost());
       metric('fpsInside', frames.fps);
       expect(frames.fps > 20, `only ${frames.fps} FPS inside`);
 
-      // Into the far wall: it stops you, and it's only the door that lets you out
-      await human.down('w');
-      await human.wait(4500);
-      await human.up('w');
-      const atWall = await human.state();
-      const wall = toWorld(14.4 / 2 - 0.3, 0);
-      expect(atWall.x <= Math.max(wall.x, atWall.x) && (await debug(() => window.__gameDebug.interior())).inside === 'test-lobby', 'walked out through a wall');
+      // Up the stair, onto the landing
+      expect(await walkTo(human, at(-4.3, 3.6)), 'never reached the foot of the stair');
+      expect(await walkTo(human, at(-4.3, -2.1)), 'never got up the stair');
+      i = await interior();
+      p = await human.state();
+      expect(i.room === 'landing' && near(p.surfaceY, site.y + 3.3, 0.05), `up the stair, in ${i.room} at ${(p.surfaceY - site.y).toFixed(2)} m`);
 
-      // Back out of the door
-      await debug(({ x, z, heading }) => window.__gameDebug.goto(x, z, heading, 'person'), { ...toWorld(-5, 0), heading: -Math.PI / 2 + SITE.yaw });
+      // Through the arch to the study's chair, and sit
+      expect(await walkTo(human, at(-2.6, -2.5)), 'never got along the landing');
+      expect(await walkTo(human, at(0.3, -2.5)), 'never got into the study');
+      expect(await walkTo(human, at(2.0, -1.95)), 'never got to the chair');
+      await human.wait(300);
+      expect((await interior()).prompt === 'Sit', `at the chair the prompt is ${(await interior()).prompt}`);
+      await human.press('KeyF');
+      await human.wait(1500);
+      i = await interior();
+      p = await human.state();
+      expect(i.seated && Math.hypot(p.x - at(2, -2.68).x, p.z - at(2, -2.68).z) < 0.1,
+        `not sitting on the chair: at ${(p.x - SITE.x).toFixed(2)}, ${(p.z - SITE.z).toFixed(2)}, seated ${i.seated}, prompt ${i.prompt}, in ${i.room}`);
+      // Moving gets you up
+      await human.hold('KeyW', 120);
       await human.wait(500);
-      await human.down('w');
-      const left = await human.until(async () => (await debug(() => window.__gameDebug.interior())).inside === null, { timeout: 10000 });
-      await human.up('w');
-      expect(left, 'never got back out of the door');
+      expect(!(await interior()).seated, 'still sitting after moving');
 
-      // Far away, it's all let go of
-      await debug(() => window.__gameDebug.goto(397, -1000, Math.PI, 'person'));
+      // Back down and out of the front door
+      expect(await walkTo(human, at(0.0, -2.5)), 'never got out of the study');
+      expect(await walkTo(human, at(-2.6, -2.5)), 'never got back along the landing');
+      expect(await walkTo(human, at(-4.3, -2.3)), 'never got to the top of the stair');
+      expect(await walkTo(human, at(-4.3, 3.6)), 'never got down the stair');
+      p = await human.state();
+      expect((await interior()).room === 'hall' && near(p.surfaceY, site.y, 0.05), 'not back down in the hall');
+      expect(await walkTo(human, at(-3, 3.3)), 'never got back to the door');
+      expect(await walkTo(human, at(-3, 6.0)), 'never got out of the door');
+      expect((await interior()).inside === null, 'still inside after going out');
+
+      // Walls hold: into the front wall from outside, beside the door
+      expect(await walkTo(human, at(1.5, 5.2)), 'never got along the front');
+      await debug(() => window.__gameDebug.goto(440 + 1.5, -300 + 5.0, Math.PI, 'person'));
+      await human.hold('KeyW', 1500);
+      p = await human.state();
+      expect(p.z - SITE.z > 4.1, `walked into the front wall, to ${(p.z - SITE.z).toFixed(2)}`);
+
+      // Far away, the inside is let go of, and its memory with it
+      await debug(({ x, z }) => window.__gameDebug.goto(x, z, Math.PI, 'person'), at(0, -90));
       await page.waitForFunction(() => window.__gameDebug.interior().held.length === 0, null, { timeout: 15000, polling: 200 });
-      // Twice, since the first time more of the map came with it. The second has only the model to bring and let go of.
-      const settled = async () => {
-        await human.wait(4000);
-        return (await debug(() => window.__gameDebug.gpuMemory())).geometries;
-      };
-      const first = await settled();
-      await debug(({ x, z, heading }) => window.__gameDebug.goto(x, z, heading, 'person'), { ...door, heading: Math.PI / 2 + SITE.yaw });
+      await human.wait(4000);
+      const away = (await debug(() => window.__gameDebug.gpuMemory())).geometries;
+      metric('geometries', { start: memoryBefore.geometries, away });
+      // Twice: the first time, more of the map came with it
+      await debug(({ x, z }) => window.__gameDebug.goto(x, z, Math.PI, 'person'), at(-3, 5.0));
+      await human.wait(800);
+      await human.press('KeyF');
       await page.waitForFunction(() => window.__gameDebug.interior().held.length > 0, null, { timeout: 20000, polling: 200 });
-      await human.wait(1000);
-      const near = (await debug(() => window.__gameDebug.gpuMemory())).geometries;
-      await debug(() => window.__gameDebug.goto(397, -1000, Math.PI, 'person'));
+      await debug(({ x, z }) => window.__gameDebug.goto(x, z, Math.PI, 'person'), at(0, -90));
       await page.waitForFunction(() => window.__gameDebug.interior().held.length === 0, null, { timeout: 15000, polling: 200 });
-      const second = await settled();
-      metric('geometries', { start: memoryBefore.geometries, away: first, near, awayAgain: second });
-      expect(second <= first + 6, `the model's memory stayed: ${first} geometries to ${second}`);
+      await human.wait(4000);
+      const again = (await debug(() => window.__gameDebug.gpuMemory())).geometries;
+      metric('geometriesAgain', again);
+      expect(again <= away + 6, `the inside's memory stayed: ${away} geometries to ${again}`);
     }
   };
 }
@@ -931,8 +1108,9 @@ export const SCENARIOS = {
     }
   },
 
-  'test-building': testBuildingScenario(),
-  'test-building-phone': { ...testBuildingScenario(), profile: 'phone' },
+  'walk-in': walkInScenario(),
+  'walk-in-phone': { ...walkInScenario(), profile: 'phone' },
+  'lower-fort-55': lowerFortScenario(),
   'origin-move': originScenario(''),
   'origin-far': originScenario('originTest=85000'),
   'signal-wait': {

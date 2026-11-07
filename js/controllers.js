@@ -22,7 +22,7 @@ import { anchorToOrigin } from './world-origin.js';
 import { polygonContact, polygonContains } from './building-collision.js';
 import { DECK_SID } from './bridge.js';
 import { FLY, arrivalFor, holdOnFootway } from './arrivals.js';
-import { STRUCTURES, chooseSurface, clearOfWater, floorBelow, groundHeight, structureAt, surfaceHeight } from './surfaces.js';
+import { STRUCTURES, chooseSurface, clearOfWater, floorBelow, groundHeight, onFloor, structureAt, surfaceHeight } from './surfaces.js';
 
 // On the Harbour Bridge's deck: any of its roads' structures, the corridor's and those of the carriageways east of it (plan 5)
 const onDeck = (sid) => !!sid && !!STRUCTURES[sid]?.deck;
@@ -93,9 +93,12 @@ function collisionBody(mode, radius, heading, margin = 0) {
 // Colliders are flat, in metres above the ground at (x, z). A building's roof is level and the ground under it isn't, so
 // where the flat height of its roof is depends on where you are over it.
 const colliderTop = (c, x, z) => (c.baseY === undefined ? c.maxY : c.maxY + c.baseY - groundHeight(x, z));
+// ...and a wall inside a building with floors of its own (js/interiors.js) has both its heights in the world's frame, so a wall upstairs
+// is over your head downstairs
+const colliderBottom = (c, x, z) => (c.level ? c.minY - groundHeight(x, z) : c.minY ?? 0);
 
 function buildingContact(c, x, y, z, body, contact) {
-  if (y + body.top <= (c.minY ?? 0) || y + body.bottom >= colliderTop(c, x, z)) return false;
+  if (y + body.top <= colliderBottom(c, x, z) || y + body.bottom >= colliderTop(c, x, z)) return false;
   if (x + body.extX <= c.minX || x - body.extX >= c.maxX || z + body.extZ <= c.minZ || z - body.extZ >= c.maxZ) return false;
   if (c.polygon) return polygonContact(c.polygon, x, z, body, contact);
   const o = c.obb;
@@ -282,6 +285,8 @@ class ThirdPersonControllerManager {
     this._gamepadKeys = {};
 
     const onKey = (e, isDown) => {
+      // F: open the door or take the seat in front of you (js/interiors.js)
+      if (e.code === 'KeyF' && isDown && !e.repeat && !isTypingInField(e)) this.onUse?.();
       const action = actionsByCode.get(e.code);
       if (!action || (isDown && isTypingInField(e))) return;
       if (isDown) this._pressedCodes.add(e.code);
@@ -349,6 +354,7 @@ class ThirdPersonControllerManager {
     if (!this.entities[mode]) return;
     this.jumpQueued = 0; // Space does something else in the other modes
     this.activeMode = mode;
+    if (this.entities.person) this.entities.person.seat = null; // whatever you get into, you're up off the seat first
     const active = this.entities[mode];
     if (active.mesh) active.mesh.visible = true;
     if (active.helmet) active.helmet.visible = true;
@@ -468,6 +474,7 @@ class ThirdPersonControllerManager {
 
   // `surface`: the structure to arrive on (js/surfaces.js), or 0 for the ground under (x, z)
   teleportActiveTo(x, z, heading = Math.PI, savedAltitude = null, surface = 0, exact = false) {
+    if (this.entities.person) this.entities.person.seat = null;
     const ent = this.getActiveEntity();
     this.resetInput();
     if (!Number.isFinite(heading)) heading = ent.heading;
@@ -988,8 +995,32 @@ class ThirdPersonControllerManager {
   getGroundHeight(x, z, mode = 'person') {
     const active = this.getActiveEntity();
     if (mode === 'person' && active?.onFootway) return FOOTWAY_RISE;
-    if (mode === 'person' && !active?.surface) return this.isPointOnSidewalk(x, z) ? CITY_BOUNDS.sidewalkHeight : 0.0;
+    if (mode === 'person' && !active?.surface) return !onFloor(x, z) && this.isPointOnSidewalk(x, z) ? CITY_BOUNDS.sidewalkHeight : 0.0;
     return 0.0;
+  }
+
+  /** Sits the person down on a seat: { x, z, heading, seatY (over the floor), stand: { x, z } } in the world's frame */
+  sitAt(seat) {
+    const p = this.entities.person;
+    if (this.activeMode !== 'person') return false;
+    p.seat = seat;
+    p.position.set(seat.x, 0, seat.z);
+    p.position.landed = { x: seat.x, z: seat.z };
+    p.heading = seat.heading;
+    p.speed = 0;
+    p.verticalVel = 0;
+    return true;
+  }
+
+  /** Up off a seat, onto the floor in front of it */
+  standUp() {
+    const p = this.entities.person;
+    const seat = p.seat;
+    if (!seat) return false;
+    p.seat = null;
+    p.position.set(seat.stand.x, 0, seat.stand.z);
+    p.position.landed = { x: seat.stand.x, z: seat.stand.z };
+    return true;
   }
 
   // Collision arrives with each stage of the city
@@ -1237,7 +1268,8 @@ class ThirdPersonControllerManager {
         p._charHidden = false;
         if (p.mesh) p.mesh.visible = true;
         const air = p.position.y - this.getGroundHeight(p.position.x, p.position.z, 'person');
-        p.rig.update(dt, p.position.x, p.position.z, p.heading, personGround, this, air > 0.02 ? air : 0);
+        if (p.seat) p.rig.sit(p.seat.x, p.seat.z, p.seat.heading, p.seat.seatY);
+        else p.rig.update(dt, p.position.x, p.position.z, p.heading, personGround, this, air > 0.02 ? air : 0);
         p.crowd.begin();
         // On whatever it stands on: the ground, or a deck (the simulation is flat, js/surfaces.js)
         p.crowd.add(p.rig, 0, surfaceHeight(p.surface || 0, p.position.x, p.position.z, p.surfaceY ?? null));
@@ -1361,8 +1393,21 @@ class ThirdPersonControllerManager {
 
   updatePerson(dt) {
     const p = this.entities.person;
-    const maxSpeed = 8.2;
-    const turnRate = 2.6;
+    // Inside, a walk, not a run (js/interiors.js sets `indoors`)
+    const maxSpeed = this.indoors ? 3.2 : 8.2;
+    const turnRate = this.indoors ? 2.2 : 2.6;
+    if (p.seat) {
+      // Seated: where the seat is, until you move, or jump
+      const k = this.keys;
+      if (!(k.forward || k.backward || k.left || k.right || this.jumpQueued > 0)) {
+        p.speed = 0;
+        this.jumpQueued = 0;
+        return;
+      }
+      this.jumpQueued = 0;
+      this.standUp();
+      this.onStand?.();
+    }
 
     let targetSpeed = 0;
     if (this.keys.forward) targetSpeed = maxSpeed * this.keys.forward;
@@ -1378,7 +1423,8 @@ class ThirdPersonControllerManager {
 
     p.position.x += Math.sin(p.heading) * p.speed * dt;
     p.position.z += Math.cos(p.heading) * p.speed * dt;
-    this.resolveHorizontalCollision(p.position, 0.48);
+    // Through a house's doorways and up its stair: inside, or on a model's floors, the walker is narrower, as the models' own checks have it
+    this.resolveHorizontalCollision(p.position, this.indoors || onFloor(p.position.x, p.position.z) ? 0.3 : 0.48);
 
     const groundY = this.getGroundHeight(p.position.x, p.position.z, 'person');
     if ((this.keys.up || this.jumpQueued > 0) && p.position.y <= groundY + 0.02) {

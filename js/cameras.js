@@ -55,6 +55,8 @@ class CameraSystem {
     this.zoomMultiplier = 1.0;
     this.isDragging = false;
     this.userOrbitTimer = 0;
+    this.indoors = false; // set by js/main.js
+    this.indoorPull = 0;
 
     this.fixedView = null;
     this.currentPos = new THREE.Vector3(0, 10, 380);
@@ -235,8 +237,11 @@ class CameraSystem {
 
     switch (this.activePresetId) {
       case 'chase': {
-        const dist = entity.chaseDistance * this.zoomMultiplier * (1 + Math.min(0.25, this.smoothedSpeed * 0.01));
-        const height = entity.chaseHeight * this.zoomMultiplier + Math.sin(this.orbitPitchOffset) * dist * 0.85;
+        // Inside a building (js/interiors.js) it comes in closer, eased, as rooms are only a few metres across
+        this.indoorPull += ((this.indoors ? 1 : 0) - this.indoorPull) * (1 - Math.exp(-dt * 3));
+        const pull = 1 - 0.42 * this.indoorPull;
+        const dist = entity.chaseDistance * this.zoomMultiplier * (1 + Math.min(0.25, this.smoothedSpeed * 0.01)) * pull;
+        const height = (entity.chaseHeight * this.zoomMultiplier) * (1 - 0.3 * this.indoorPull) + Math.sin(this.orbitPitchOffset) * dist * 0.85;
         const horizDist = Math.cos(this.orbitPitchOffset) * dist + speedLag;
 
         desiredPos.set(

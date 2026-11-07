@@ -27,7 +27,6 @@ import { groundHeight } from './surfaces.js';
 import { createBuildingFootprintsSteps } from './building-footprints.js';
 import { wallFootAt } from './wall-foot.js';
 import { polygonContains, polygonBoxOverlaps } from './building-collision.js';
-import { siteOfBuilding } from './model-sites.js';
 import { anchorToOrigin, onOriginMove, origin } from './world-origin.js';
 import { buildingLook, mulberry32 } from './building-look.js';
 
@@ -474,7 +473,6 @@ function createCityBlocks(scene) {
     attribute.needsUpdate = true;
   }
 
-  const standIns = new Map(); // model site -> what's drawn until the model comes
   // These pools are written from the origin
   let originMoved = false;
   onOriginMove(() => { originMoved = true; });
@@ -688,24 +686,6 @@ function createCityBlocks(scene) {
     const surveyedBuckets = materials.map(() => []);
     const detailsToPlace = [];
     for (const b of buildings) {
-      // A building with a model of its own: by itself, so the model can take its place when it comes (js/interiors.js)
-      const site = siteOfBuilding(b);
-      if (site) {
-        const { mat, tone, roof, pitch, gabled, eaves } = buildingLook(b, b);
-        const top = b.height + 0.22;
-        const own = b.polygons.map((polygon) => {
-          const xs = polygon.outer.map((p) => p.x), zs = polygon.outer.map((p) => p.z);
-          return { minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs), minY: b.bottom || 0, maxY: top, baseY: b.floor, polygon };
-        });
-        const made = yield* createBuildingFootprintsSteps(materials[mat], [{ ...b, tone, roof, pitch, gabled, eaves, storefronts: false, base: b.floor }], undefined, roofMaterials, {
-          groundAt: wallFootAt, storey: { width: FACADES[mat][1].windowWidth, height: FACADES[mat][1].floorHeight }
-        });
-        const meshes = [...made.children];
-        for (const mesh of meshes) target.add(mesh);
-        colliders.push(...own);
-        standIns.set(site.id, { meshes, colliders: own, floor: b.floor, tile: tile.key });
-        continue;
-      }
       // The pieces of one building share its look and its floor
       const whole = b.group ? wholes.get(b.group) : b;
       const { mat, tone, seed, roof, pitch, gabled, eaves } = buildingLook(b, whole);
@@ -759,13 +739,12 @@ function createCityBlocks(scene) {
     if (!record) return;
     tiles.delete(tile.key);
     removeReserves(record.reserves);
-    for (const [id, standIn] of standIns) if (standIn.tile === tile.key) standIns.delete(id);
     tile.wholes = null;
     update(lastStreamX, lastStreamZ, true);
   }
 
   scene.add(storeLightGroup);
-  return { group, addBuildings, removeTile, update, updateLights, standIn: (id) => standIns.get(id) ?? null };
+  return { group, addBuildings, removeTile, update, updateLights };
 }
 
 export { FACADE_TONES, ROOF_COLOURS, createCityBlocks };

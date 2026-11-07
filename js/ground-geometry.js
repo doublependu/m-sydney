@@ -472,7 +472,7 @@ function* addRoadDeck(cells, wanted, links = LINKS, fills = heldTiles().flatMap(
 // A plain dark ground under everything on land, so a seam anywhere above it shows ground and never the harbour. Each
 // point lies BASE_DROP under the lowest ground around it, so it can't come up through the road.
 // `box`: stay within it, to save looking at the whole map
-function* addBase(cells, wanted, step = HCELL, box = null) {
+function* addBase(cells, wanted, step = HCELL, box = null, under = null) {
   const { detail } = GEO.frame;
   let work = 0;
   // Each corner once: four cells share it, and these nine samples are most of what the base costs to build
@@ -483,6 +483,7 @@ function* addBase(cells, wanted, step = HCELL, box = null) {
     if (y === undefined) {
       y = Infinity;
       for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) y = Math.min(y, groundHeight(x + a * step * 0.5, z + b * step * 0.5));
+      if (under) y = Math.min(y, under(x, z));
       y -= BASE_DROP;
       lows.set(key, y);
     }

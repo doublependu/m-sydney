@@ -1620,6 +1620,36 @@ body[data-mode='helicopter'] .gauge-alt {
   touch-action: none;
 }
 .touch-action > [aria-hidden] { font-size: 23px; line-height: 1; }
+/* At a door or a seat: what F does (js/interiors.js). On touch, the hand button says it instead. */
+.use-prompt {
+  position: fixed;
+  z-index: 12;
+  left: 50%;
+  bottom: calc(max(var(--edge), env(safe-area-inset-bottom)) + 96px);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 5px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: var(--glass-strong);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 13px;
+  pointer-events: none;
+}
+.use-prompt[hidden], body.touch-enabled .use-prompt { display: none; }
+.use-prompt kbd {
+  min-width: 24px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  font: inherit;
+  font-weight: 600;
+}
 .touch-action.is-pressed { color: var(--taxi-ink); background: var(--taxi); border-color: var(--taxi); }
 
 body.touch-enabled .controls-hint,

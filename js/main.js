@@ -203,11 +203,14 @@ async function initApp() {
   // ?debug=1&cars=0: the streets to yourself, for the scenarios that need to know nobody else is there
   const debugCars = new URLSearchParams(location.search).get('debug') === '1' && new URLSearchParams(location.search).has('cars') ? Number(new URLSearchParams(location.search).get('cars')) : null;
 
+  let interiorReturn = null; // js/interiors.js returnSpot(), once there are interiors
   function savePlayerState() {
     try {
-      const entities = Object.fromEntries(Object.entries(controllerManager.entities).map(([mode, entity]) => [mode, {
-        x: entity.position.x, y: entity.position.y, z: entity.position.z, heading: entity.heading, surface: entity.surface || 0
-      }]));
+      // Inside a building, what's inside it won't be there on a reload: back outside the door you came in by
+      const outside = controllerManager.activeMode === 'person' ? interiorReturn?.() ?? null : null;
+      const entities = Object.fromEntries(Object.entries(controllerManager.entities).map(([mode, entity]) => [mode, outside && mode === 'person'
+        ? { x: outside.x, y: 0, z: outside.z, heading: outside.heading, surface: 0 }
+        : { x: entity.position.x, y: entity.position.y, z: entity.position.z, heading: entity.heading, surface: entity.surface || 0 }]));
       localStorage.setItem('sydney-player-state', JSON.stringify({ version: 1, activeMode: controllerManager.activeMode, entities }));
     } catch { /* Storage may be disabled or full. */ }
   }
@@ -343,7 +346,8 @@ async function initApp() {
       if (!pauseMenu.isOpen) mapSystem.toggleFullMap(!mapSystem.isFullMapOpen);
     },
     onCloseMap: () => mapSystem.toggleFullMap(false),
-    onTogglePause: () => pauseMenu.toggle()
+    onTogglePause: () => pauseMenu.toggle(),
+    onUse: () => controllerManager.onUse?.()
   });
 
   const pauseMenu = new PauseMenu({
@@ -1061,18 +1065,46 @@ async function initApp() {
   const shadowOf = () => [lightingSystem.sunLight.shadow, renderer.backend.isWebGPUBackend === true];
   const interiors = createInteriors({
     reveal: (group) => revealStage(group),
-    standIn: (id) => cityBlocks.standIn(id),
     lights: lightPools.interiorLights,
-    colliders: { add: (list) => controllerManager.addColliders(list), remove: (list) => controllerManager.removeColliders(list) }
+    colliders: { add: (list) => controllerManager.addColliders(list), remove: (list) => controllerManager.removeColliders(list) },
+    // Not in the first view: a model comes once the city round you has
+    tileBuilt: (x, z) => worldCompleteAt !== null && builtTiles.get(tileKeyAt(x, z))?.done === true,
+    debug: new URLSearchParams(location.search).get('debug') === '1'
   });
   let indoors = false;
-  // Inside, with nothing to see of it, traffic and what's far away stop being drawn
+  // Inside a house the city stays drawn, for the view from its windows: only the walk slows, and the sky's light dims
   function setIndoors(on) {
     if (on === indoors) return;
     indoors = on;
-    if (trafficSystem) trafficSystem.group.visible = !on;
-    if (farStage) farStage.visible = !on;
-    if (paintStage) paintStage.visible = !on;
+    controllerManager.indoors = on;
+    cameraSystem.indoors = on;
+  }
+  interiorReturn = () => interiors.returnSpot();
+  const lookDirection = new THREE.Vector3();
+  const useActions = { sit: (seat) => controllerManager.sitAt(seat), stand: () => controllerManager.standUp() };
+  const useInterior = () => interiors.use(useActions);
+  controllerManager.onUse = useInterior;
+  controllerManager.onStand = () => interiors.stood();
+  const usePrompt = document.getElementById('use-prompt');
+  const usePromptLabel = document.getElementById('use-prompt-label');
+  const touchUse = document.getElementById('touch-use');
+  const touchUseLabel = document.getElementById('touch-use-label');
+  touchUse?.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    useInterior();
+  });
+  let shownPrompt = null;
+  function showPrompt(label) {
+    if (label === shownPrompt) return;
+    shownPrompt = label;
+    if (usePrompt) usePrompt.hidden = !label;
+    if (touchUse) touchUse.hidden = !label;
+    if (label) {
+      if (usePromptLabel) usePromptLabel.textContent = label;
+      if (touchUseLabel) touchUseLabel.textContent = label;
+      touchUse?.setAttribute('aria-label', label);
+    }
   }
   let farLevel = null;
   let farStage = null;
@@ -1534,6 +1566,8 @@ async function initApp() {
       mapImage: (x0, z0, size, px, buildings) => mapSystem.renderImage(x0, z0, size, px, buildings),
       farBuildings: async (key) => (await fetchFarFile(key)).buildings,
       interior: () => interiors.state(),
+      // F, as a scenario presses it
+      use: () => useInterior(),
       seaShown: () => seaSheet?.visible ?? null,
       farReach: () => farReach,
       streaming: () => streaming && { full: streaming.full, total: streaming.total, arrival: streaming.arrival, tasks: streaming.tasks.map((t) => ({ ...t.task })) },
@@ -1936,10 +1970,6 @@ async function initApp() {
       }
     }
     cameraSystem.update(dt, elapsed);
-    {
-      const { x, z } = controllerManager.getActiveEntity().position;
-      setIndoors(interiors.update(x, z));
-    }
     if (streetDetails) {
       streetDetails.signalClock.value = elapsed;
       streetDetails.updateSignals(elapsed, dt, trafficSystem);
@@ -1974,19 +2004,27 @@ async function initApp() {
     // A view put somewhere by hand (__gameDebug.view()) is where it was put, in the world's own heights
     const eyeGround = cameraSystem.fixedView ? 0 : follows ? groundUnder(followed) : groundHeight(eye.x, eye.z);
     eye.y += eyeGround;
+    {
+      // Doors, seats and the rooms seen from the camera, now it's where it'll be drawn from
+      const here = interiors.update(dt, followed, controllerManager.activeMode, eye, cameraSystem.camera.getWorldDirection(lookDirection));
+      setIndoors(here.indoors);
+      showPrompt(here.prompt);
+    }
     if (follows) {
       // Under a tunnel's roof or a deck, the camera stays under it too, over the player and where it is itself
       const sid = followed.surface || 0, { x, z } = followed.position;
       const bodyY = eyeGround + Math.max(0, followed.position.y);
       const top = Math.min(ceilingOver(sid, bodyY, x, z), ceilingOver(sid, bodyY, eye.x, eye.z));
       if (eye.y > top - 0.6) eye.y = Math.max(bodyY + 0.8, top - 0.6);
-      // Inside a tunnel the sky's light fades out, and back in at the far portal
-      if (indoors && interiors.keepEyeInside(eye)) {
-        // Kept in the room, it has to look at you again
-        cameraSystem.camera.lookAt(x - origin.x, bodyY + 1.2, z - origin.z);
+      // Inside a building, the camera stays in it with you
+      if (indoors && interiors.keepEyeInside(eye, { x, y: bodyY + 1.5, z })) {
+        // Kept in the room, it looks past you, the way you face: close behind you, looking at you would be looking down at your head
+        const h = followed.heading;
+        cameraSystem.camera.lookAt(x + Math.sin(h) * 3 - origin.x, bodyY + 1.3, z + Math.cos(h) * 3 - origin.z);
       }
+      // Inside a tunnel the sky's light fades out, and back in at the far portal. Inside a house, some comes in through its windows.
       const eyeInTube = inTunnel(sid, eye.x, eye.z);
-      const shelterGoal = indoors || (inTunnel(sid, x, z) && eyeInTube) ? 1 : 0;
+      const shelterGoal = indoors ? 0.85 : inTunnel(sid, x, z) && eyeInTube ? 1 : 0;
       lightingSystem.setShelter(lightingSystem.shelter + (shelterGoal - lightingSystem.shelter) * Math.min(1, dt * 2.5));
       // A tunnel that goes below sea level has the sea's sheet running through it. From inside a closed tube nothing outside
       // shows anyway, so the sea isn't drawn while the camera's in one.

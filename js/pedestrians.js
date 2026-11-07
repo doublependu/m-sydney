@@ -1794,6 +1794,44 @@ class PersonRig {
   }
 
   /**
+   * Sitting at (x, z) facing `yaw`, on a seat `seatY` over the floor (the crowd stands it on the floor, as a walker): pelvis on the
+   * seat, back upright, thighs forward, feet flat in front, hands on the thighs. Getting up, the feet start again where they stand.
+   */
+  sit(x, z, yaw, seatY) {
+    const s = this.s;
+    this.gait = this.run = this.speed = 0;
+    this.vx = this.vz = this.tvx = this.tvz = 0;
+    this.x = x;
+    this.z = z;
+    this.yaw = yaw;
+    this.placed = false;
+    qY(_qRoot, yaw);
+    _fwd.set(Math.sin(yaw), 0, Math.cos(yaw));
+    qX(_qPelvis, -0.1).premultiply(_qRoot);
+    _pelvis.set(x - _fwd.x * 0.06, seatY + 0.1 * s, z - _fwd.z * 0.06);
+    this.writeBone(BONE.PELVIS, _qPelvis, _pelvis);
+    _qChest.copy(_qPelvis).multiply(qX(_q, 0.12));
+    this.writeBone(BONE.CHEST, _qChest, this.jointFrom(BONE.PELVIS, BONE.CHEST, _qPelvis, _pelvis, _chest));
+    _qa.copy(_qRoot).multiply(qX(_q, 0.06));
+    this.jointFrom(BONE.CHEST, BONE.HEAD, _qChest, _chest, _v);
+    this.writeBone(BONE.HEAD, _qa, _v);
+    for (let i = 0; i < 2; i++) {
+      const side = SIDES[i];
+      const rx = Math.cos(yaw) * side, rz = -Math.sin(yaw) * side; // to that side
+      // a hand on each thigh, the elbows back and out
+      this.jointFrom(BONE.CHEST, LIMB.upperArm[i], _qChest, _chest, _shoulder);
+      _target.set(x + _fwd.x * 0.24 + rx * 0.13, seatY + 0.2 * s, z + _fwd.z * 0.24 + rz * 0.13);
+      _pole.set(side * 0.6, -1, -0.5).applyQuaternion(_qRoot);
+      this.limb(LIMB.upperArm[i], LIMB.forearm[i], _shoulder, _target, UPPER_ARM * s, (FOREARM + 0.07) * s, _pole, _fwd, side * ARM_BIND_ABDUCTION);
+      // the feet flat on the floor in front, a little apart
+      this.jointFrom(BONE.PELVIS, LIMB.thigh[i], _qPelvis, _pelvis, _hip);
+      _target.set(x + _fwd.x * 0.42 + rx * 0.06, ANKLE_H * s, z + _fwd.z * 0.42 + rz * 0.06);
+      const ankle = this.solveLeg(i, _hip, _target, yaw);
+      this.writeFoot(i, ankle, _qa.copy(_qRoot), 0);
+    }
+  }
+
+  /**
    * Riding a bicycle: `root` (Object3D) is the bike frame (pose in its parent's space, e.g. the scene), `crank` the
    * pedal crank angle. Seat, bars and bottom bracket in the frame's space (metres, +Z forward).
    */

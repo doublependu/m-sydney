@@ -13,6 +13,7 @@ import {
 } from './tsl-materials.js';
 import { groundHeight, groundRoadAt, linkById } from './surfaces.js';
 import { GroundCells, SIDEWALK_TOP, addBase, addCurb, addRoadDeck, addSurface, denseRing, pointInPolygonXZ } from './ground-geometry.js';
+import { SITE_CUTS } from './model-sites.js';
 import { buildStructures } from './structures.js';
 import { outsideTunnelMouths } from './tunnel-mouths.js';
 
@@ -261,6 +262,19 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
 
   yield* addRoadDeck(road, wanted, links, tile.fills);
   const midOf = (rings) => rings[0][rings[0].length >> 1];
+  // Under a building drawn from a model with rooms below the street (js/model-sites.js), the paving or lawn it stands in has a hole: the
+  // model has its own floors there, down to its basement's
+  const cuts = SITE_CUTS.filter((c) => c.maxX > box.x0 && c.minX < box.x1 && c.maxZ > box.z0 && c.minZ < box.z1);
+  const withCuts = (rings) => {
+    let out = rings;
+    for (const c of cuts) {
+      if (!c.poly.every((q) => pointInPolygonXZ(rings[0], q.x, q.z))) continue;
+      if (rings.slice(1).some((h) => c.poly.some((q) => pointInPolygonXZ(h, q.x, q.z)))) continue;
+      if (out === rings) out = rings.slice();
+      out.push(c.poly);
+    }
+    return out;
+  };
   for (const [i, b] of tile.placedBlocks.entries()) {
     const mid = midOf([b.poly]);
     if (!part(mid.x, mid.z)) continue;
@@ -277,7 +291,7 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
   }
   for (const [i, rings] of tile.placedPavements.entries()) {
     const mid = midOf(rings);
-    if (part(mid.x, mid.z)) addSurface(paving, rings, SIDEWALK_TOP);
+    if (part(mid.x, mid.z)) addSurface(paving, cuts.length ? withCuts(rings) : rings, SIDEWALK_TOP);
     if (i % 2 === 0) yield;
   }
   // Concrete where a separator's lawn would be
@@ -288,7 +302,7 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
   };
   for (const [i, rings] of tile.placedLawns.entries()) {
     const mid = midOf(rings);
-    if (part(mid.x, mid.z)) addSurface(onSeparator(rings) ? paving : lawns, rings, SIDEWALK_TOP + 0.02);
+    if (part(mid.x, mid.z)) addSurface(onSeparator(rings) ? paving : lawns, cuts.length ? withCuts(rings) : rings, SIDEWALK_TOP + 0.02);
     if (i % 8 === 0) yield;
   }
   yield;
@@ -304,7 +318,13 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
   if (!last) return [];
 
   // The base only backs up the surfaces' seams, so it comes last: on the phone it costs too much of the 4 s to load
-  yield* addBase(base, inTile, undefined, box);
+  // ...and the base under everything goes under its basement too
+  const under = cuts.length ? (x, z) => {
+    let y = Infinity;
+    for (const c of cuts) if (x > c.minX - 20 && x < c.maxX + 20 && z > c.minZ - 20 && z < c.maxZ + 20) y = Math.min(y, c.y);
+    return y;
+  } : null;
+  yield* addBase(base, inTile, undefined, box, under);
   buildCells(base, target, mats.base, { cullDistance: GROUND_CULL.base });
   yield;
 

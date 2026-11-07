@@ -118,7 +118,7 @@ class GamepadControls {
     // Capture edges before callbacks: changing mode or opening the map may synchronously call reset().
     const toggleMap = edge(9), closeMap = edge(1), togglePause = edge(8);
     const cycleMode = Number(Boolean(edge(5))) - Number(Boolean(edge(4)));
-    const cycleCamera = edge(3), recenter = edge(11);
+    const cycleCamera = edge(3), recenter = edge(11), use = edge(2);
     this.previousButtons = pressed;
 
     const target = document.activeElement;
@@ -151,6 +151,8 @@ class GamepadControls {
     if (cycleCamera) this.callbacks.onCycleCamera?.(1);
     if (revision !== this.revision) return;
     if (recenter) this.camera.resetOrbit();
+    // X: open the door, or take the seat, in front of you (js/interiors.js)
+    if (use) this.callbacks.onUse?.();
 
     const mode = this.controller.activeMode;
     const driving = mode === 'car' || mode === 'cyclist';

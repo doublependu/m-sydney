@@ -34,6 +34,28 @@ REAL_BUILDINGS.forEach((b, i) => {
     && b.polygons.some((p) => polygonBoxOverlaps(p, (c.minX + c.maxX) / 2, (c.minZ + c.maxZ) / 2, (c.maxX - c.minX) / 2, (c.maxZ - c.minZ) / 2)))) underLandmarks.push(i);
 });
 
+// ...and the buildings a model of its own is drawn in place of (js/model-sites.js), each found by a point inside it
+{
+  const { MODEL_SITES, toWorldOf } = await import('../../js/model-sites.js');
+  const inOutline = (b, x, z) => x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ && b.polygons.some((p) => inRingXZ(p.outer, x, z));
+  for (const site of MODEL_SITES) {
+    for (const [lx, lz] of site.replaces || []) {
+      const { x, z } = toWorldOf(site, lx, lz);
+      const i = REAL_BUILDINGS.findIndex((b) => inOutline(b, x, z));
+      if (i < 0) throw new Error(`[derive] model site ${site.id}: no building at (${lx}, ${lz}) in its frame to draw in place of`);
+      if (!underLandmarks.includes(i)) underLandmarks.push(i);
+    }
+  }
+}
+function inRingXZ(ring, x, z) {
+  let c = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i], b = ring[j];
+    if ((a.z > z) !== (b.z > z) && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) c = !c;
+  }
+  return c;
+}
+
 // Floors in 0.1 m. The pieces of a building share one, over all of them
 const skip = new Set(underLandmarks);
 const wholes = new Map();

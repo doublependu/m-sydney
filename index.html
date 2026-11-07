@@ -260,8 +260,13 @@
       <button class="touch-action" data-touch-action="down" type="button" aria-label="Descend" aria-pressed="false" hidden>
         <span aria-hidden="true">↓</span><span data-touch-label="down">Descend</span>
       </button>
+      <!-- Shown only at a door or a seat (js/interiors.js) -->
+      <button id="touch-use" class="touch-action" type="button" aria-label="Open" hidden>
+        <span aria-hidden="true">✋</span><span id="touch-use-label">Open</span>
+      </button>
     </div>
   </section>
+  <div id="use-prompt" class="use-prompt" aria-live="polite" hidden><kbd>F</kbd><span id="use-prompt-label">Open</span></div>
 
   <!-- All Cameras: 3 Follow Cameras + 7 Sydney Vantage Cameras + Auto-Director Drone -->
   <div id="camera-popover" class="popover" popover data-side="above" data-anchor="hud-cluster" data-align="hud-cluster" aria-label="Multiple Camera Angles">

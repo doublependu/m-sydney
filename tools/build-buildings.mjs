@@ -11,6 +11,7 @@ import zlib from 'node:zlib';
 import { dataPath, jsonLines, Raster, DETAIL_BOUNDS as B, inDetail, load, rdpRing, ringArea, toWorld } from './geo-common.mjs';
 import { USE, ZONE, loadPlaces } from './population/places.mjs';
 import { HOUSE_STYLES, STOREY, STYLE, pick } from '../js/house-styles.js';
+import { localAreas } from './local-edits.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const OUT = process.argv[2] || path.join(ROOT, 'tools/data/generated/building-geodata.js');
@@ -198,6 +199,36 @@ if (places) {
       r.style = S['Shop-top terrace'];
     }
     if (r.style) placeStats.styled[HOUSE_STYLES[r.style].name] = (placeStats.styled[HOUSE_STYLES[r.style].name] || 0) + 1;
+  }
+}
+
+// Hand edits (tools/local/): a style of house given to the buildings of an area, of the kinds and no taller than it says. The style then
+// says how many storeys a building of no measured height has, and its roof.
+{
+  const inArea = (poly, x, z) => {
+    let c = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [ax, az] = poly[i], [bx, bz] = poly[j];
+      if ((az > z) !== (bz > z) && x < ((bx - ax) * (z - az)) / (bz - az) + ax) c = !c;
+    }
+    return c;
+  };
+  const kindName = Object.fromEntries(Object.entries(KIND).map(([name, k]) => [k, name]));
+  for (const area of localAreas()) {
+    for (const edit of area.buildings || []) {
+      if (!edit.style) continue;
+      const style = STYLE[edit.style];
+      if (!style) throw new Error(`tools/local/${area.file}: no house style called ${edit.style} (js/house-styles.js)`);
+      let n = 0;
+      for (const r of buildings) {
+        if (r.part || !inArea(edit.area, r.cx, r.cz) || !edit.kinds.includes(kindName[r.kind])) continue;
+        if ((r.b.height ?? 0) > edit.maxHeight || (r.b.num_floors ?? 0) > 4) continue;
+        r.kind = KIND.house;
+        r.style = style;
+        n++;
+      }
+      console.log(`[buildings] tools/local/${area.file}: ${n} buildings given the ${edit.style} style`);
+    }
   }
 }
 

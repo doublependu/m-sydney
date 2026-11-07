@@ -2,7 +2,9 @@
 // later step sees them as if they were OSM's own. tools/data/ isn't in git and OSM changes under us: these are.
 //
 // An area's file: { name, box: [x0, z0, x1, z1] (the game's frame: where its edits may change tiles, tools/tile-diff.mjs),
-//   ways: [{ ids: [OSM way id, ...], expect: { tag: value }, tags: { tag: value | null }, remove: true, why }] }
+//   ways: [{ ids: [OSM way id, ...], expect: { tag: value }, tags: { tag: value | null }, remove: true, why }],
+//   buildings: [{ area: [[x, z], ...], kinds: [...], maxHeight, style, why }]: a style of house (js/house-styles.js) for the buildings in
+//   an area of those kinds (tools/build-buildings.mjs KIND) and no taller (tools/build-buildings.mjs) }
 // `expect` is what the ways' tags were when the edit was made: if OSM has changed them since, the build stops and says so, as the
 // edit may no longer be right. A tag set to null is taken away. Each way an edit names is marked `local` (its area's file): the
 // build takes in some ways only where an area has been looked at by hand, as bus-only roads (tools/build-geodata.mjs).

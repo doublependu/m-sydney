@@ -106,6 +106,12 @@ npm run data:build                                     # about 30 min. Leave 16 
 npm run data:map                                       # the map screen's images: 2 min
 ```
 
+Hand edits to the map are in `tools/local/`, a file for each area (`tools/local-edits.mjs` says what one holds): OSM ways' tags, as the
+Harbour Bridge's ramps, and a style of house for an area's buildings, as Millers Point's terraces. Each names what it expects to find, so
+the build stops when the data under it has changed. A change to buildings alone needs only the build's later steps, about 3.5 minutes on
+the last build's data: `tools/build-buildings.mjs`, `build-trees.mjs`, `build-awnings.mjs`, then `build-tiles.mjs`; `tools/tile-diff.mjs`
+checks that only tiles in the area's box changed.
+
 The generators write the whole map to `tools/data/generated/`, and `tools/build-tiles.mjs` cuts it up. What needs a 1 m raster is done a region at a
 time, each 7.2 km square with a margin, in worker threads (`tools/geodata/`), since one raster of it all wouldn't fit in memory. `tools/geo-common.mjs`
 sets the world frame and the play area; `SYDNEY_AREA=inner` makes Inner Sydney instead, or `today` the old CBD map, for checking a generator still makes
@@ -202,17 +208,37 @@ Graphics levels live in `js/quality.js`. Auto picks one from the device and step
 
 ## Building models
 
-A building can have a real model in place of the normal one. For now there's one, a plain test hall in `public/models/test-lobby.glb`, from
-`tools/build-test-building.mjs`. To add one:
+A building can be drawn from a model of its own, and have an inside you can walk into. The models' sources aren't in this repo: they're
+built by scripts kept elsewhere, and what they build is committed in `public/models/`, so this repo builds, tests and deploys without them.
+What a model has to be:
 
-- **Format:** binary glTF (`.glb`), metres, y up, the middle of the building at (0, 0) and its ground floor at y = 0. The site's `yaw` in
-  `js/model-sites.js` turns it to fit.
-- **Matching:** by location for now. Whichever normal building's outline holds the site's (x, z) is the one it replaces. That building is
-  built by itself, and comes back when you leave.
-- **Budgets:** one model at a time is fetched, within 200 m, and let go of past 260 m. On a phone aim for under 2 MB, 20,000 triangles,
-  under 10 materials and textures of 1,024 px or less. None of it counts towards the first view, which doesn't even hold the loader.
-- **Inside:** walls are colliders you list in `js/interiors.js`, and a door is a gap in them. The floor is a surface. Sky light fades as in
-  tunnels, up to three placed lights take over, and traffic and far detail stop being drawn.
+- **Where it goes:** `js/model-sites.js` lists each site: its file, where its middle stands, how it's turned, its ground floor's height
+  (or none, to stand it on the ground), and points in the map's buildings it replaces. The tile build leaves those buildings out
+  (`tools/tiles/derive.mjs`), and the model is drawn with its tile.
+- **Two files a part:** a binary glTF (`.glb`, compressed with meshopt) and a JSON beside it. Metres, y up, the model's middle at (0, 0)
+  and its ground floor at y = 0. Colour is in the vertices, with ambient occlusion baked into it; materials are named (`plaster`,
+  `timber`, `glass` and so on) and the game makes its own from the names (`js/interiors.js`).
+- **The outside** (`<file>.glb`, `<file>.json`): what you see from the street, the leaves of its outer doors as nodes turning about their
+  hinges (`door_<id>`), and in the JSON its outer walls, its doors and the floors outside them (a step). A door that leads somewhere names
+  the inside's file. Its glass faces out only: from the street it's lit at night like the neighbours' windows; from inside you see through.
+- **The inside** (`<file>-in.glb`, `.json`), fetched when one of its doors is opened and let go of 60 m after you leave. Each room is a
+  node (`room_<id>`) and only those you can see are drawn: the one you're in and those through open doorways from it. The JSON has its
+  floors (shapes at heights, a stair as a slope, holes where a stair comes through), walls (2D segments with a bottom and a top), inner
+  doors, seats, rooms, the links between rooms, and where its lamps are.
+- **Walking in it** (`js/interior-data.js`): you stand on the highest floor under you no more than 0.45 m above your feet, so a stair
+  climbs and the floor upstairs doesn't take you. Walls hold you at their own heights, so a wall upstairs is over your head downstairs. A
+  shut door is a wall. F opens the door or takes the seat in front of you (the hand button on touch, X on a gamepad); its prompt shows
+  only within 1.5 m, facing it. Inside you walk rather than run, and the camera stays in your room.
+- **Budgets:** an outside under 150 KB; an inside under 2 MB and 40,000 triangles on a phone. Nothing of either is in the first view, which
+  doesn't hold the loader.
+- **Glass:** each pane's vertex colour isn't its colour but two numbers: whether it's lit at night (red, under 0.5) and how warm (green),
+  the same over the pane. About half are lit, as the city's windows are.
+- **Under the street:** a site's `cut` leaves a hole in the paving or lawn it stands in, and lowers the base under it, for rooms below the
+  street; the model draws its own ground there.
+- **The test interior** (`test-interior`), a plain two-storey house on Hyde Park's lawn, is drawn only with `?debug=1`. The `walk-in`
+  scenario walks into it, up its stair, sits and comes out again; `tests/interiors.test.mjs` reads its JSON.
+- **Lower Fort St, west side** (`lfs-west`): a row of eight houses in Millers Point as one model, one of them with its inside. The
+  `lower-fort-55` scenario walks through it.
 
 ## License and data
 

@@ -59,7 +59,8 @@ class CityAcoustics {
     this.buildings.length = 0;
     // Obstructions near the listener dominate street-level sound; distant geometry need not join this cache.
     for (const c of this.controllers.nearColliders(this.x, this.z, 200)) {
-      if (c.maxY > 3 && c.maxX - c.minX > 2 && c.maxZ - c.minZ > 2) this.buildings.push(c);
+      // Not the walls inside a building with floors of its own: their heights aren't over the ground (js/interiors.js)
+      if (!c.level && c.maxY > 3 && c.maxX - c.minX > 2 && c.maxZ - c.minZ > 2) this.buildings.push(c);
     }
 
     // Eight rising probes estimate nearby reflective walls, including their height. Reuse the bounds cache

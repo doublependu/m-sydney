@@ -41,7 +41,7 @@ function keyboardHarness(nyc = {}) {
       './vehicle-lights.js': {},
       './bridge.js': { DECK_SID: 0 },
       './arrivals.js': { FLY: { AREA: 200 }, arrivalFor: () => null, holdOnFootway: () => null },
-      './surfaces.js': { clearOfWater: (x, z) => [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].every(([u, v]) => config.landAt(x + u * 2.5, z + v * 2.5)), edgeHeight: () => 0, groundHeight: () => 0, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), structureAt: () => null, structuresAt: () => [], LINKS: [] },
+      './surfaces.js': { clearOfWater: (x, z) => [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].every(([u, v]) => config.landAt(x + u * 2.5, z + v * 2.5)), edgeHeight: () => 0, groundHeight: () => 0, onFloor: () => false, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), structureAt: () => null, structuresAt: () => [], LINKS: [] },
       './building-collision.js': polygonCollision
     }
   });

@@ -88,10 +88,21 @@ const cutCells = new Map(); // segments of streets sunk into cuttings
 const SEGMENTS = [];
 let onCutRoad = false, cutRoad = null; // set by cutGround()
 
-// The floors of the buildings with a model that are here at the moment (js/interiors.js): the ground, inside their walls
+// The floors of the buildings with models of their own that are here at the moment (js/interiors.js): { minX, maxX, minZ, maxZ, at(x, z) },
+// `at` the floor's height there, or null where it has none. Inside its box, that's the ground.
 const floors = new Map();
 const setFloor = (id, floor) => floors.set(id, floor);
 const clearFloor = (id) => floors.delete(id);
+function modelFloor(x, z) {
+  for (const f of floors.values()) {
+    if (x < f.minX || x > f.maxX || z < f.minZ || z > f.maxZ) continue;
+    const y = f.at(x, z);
+    if (y !== null) return y;
+  }
+  return null;
+}
+/** Whether (x, z) is on a model's floor: no kerb to stand on there */
+const onFloor = (x, z) => floors.size > 0 && modelFloor(x, z) !== null;
 const addToCells = (cells, seg, pad, added) => {
   for (let ix = Math.floor((Math.min(seg.ax, seg.bx) - pad) / CELL); ix <= Math.floor((Math.max(seg.ax, seg.bx) + pad) / CELL); ix++) {
     for (let iz = Math.floor((Math.min(seg.az, seg.bz) - pad) / CELL); iz <= Math.floor((Math.max(seg.az, seg.bz) + pad) / CELL); iz++) {
@@ -374,10 +385,8 @@ function cutGround(x, z) {
  */
 function groundHeight(x, z) {
   if (floors.size) {
-    for (const f of floors.values()) {
-      const dx = x - f.x, dz = z - f.z;
-      if (Math.abs(dx * f.cos - dz * f.sin) < f.halfW && Math.abs(dx * f.sin + dz * f.cos) < f.halfL) return f.y;
-    }
+    const y = modelFloor(x, z);
+    if (y !== null) return y;
   }
   // The road here: one whose carriageway this is before one whose margin reaches it, then the nearest centre line
   let nearest = null, nd = Infinity, nearestInside = false;
@@ -975,7 +984,7 @@ function roadRoute(waypoints, step = 8) {
 }
 
 export {
-  setFloor, clearFloor, DECK_DEPTH, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, ROAD_CLASS, ROAD_CLASSES, deriveTunnels, linkById, roadClass, SAME_LEVEL, SEGMENTS, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
+  setFloor, clearFloor, onFloor, DECK_DEPTH, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, ROAD_CLASS, ROAD_CLASSES, deriveTunnels, linkById, roadClass, SAME_LEVEL, SEGMENTS, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
   clearOfWater, EDGE_GAP, edgeHeight, edgeNeighbour, floorBelow, laneAt, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, ownLaneOffsets, roadHeight, roadRoute, roomUnderDeck, sameLevel,
   structureAt, structuresAt, surfaceHeight, surfaceSlope, tunnelCovered
 };

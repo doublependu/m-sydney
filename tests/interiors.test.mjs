@@ -5,8 +5,8 @@ import test from 'node:test';
 // Walking into buildings (js/interiors.js) stands on js/interior-data.js and on the JSON each model comes with. These read the committed
 // test interior (public/models/test-interior*.json): a hall with a stair up to a landing, three doors, two arches and some chairs.
 const {
-  clearOf, doorCollider, doorInReach, floorAt, leafAt, lineInRoom, lineToWalls, roomAt, seatInReach, segmentCollider, standSpot, toLocal,
-  toWorld, visibleRooms, wallCollider
+  clearOf, doorCollider, doorInReach, doorway, eyeReach, floorAt, leafAt, lineToWalls, roomAt, seatInReach, segmentCollider, standSpot,
+  toLocal, toWorld, visibleRooms, wallCollider
 } = await import('../js/interior-data.js');
 const { MODEL_SITES } = await import('../js/model-sites.js');
 
@@ -120,6 +120,28 @@ test('a wall upstairs is over your head downstairs', () => {
   assert.deepEqual(segmentCollider(site, [0, 0], [1, 0], 0.2, 0, 1).polygon.outer.length, 4);
 });
 
+test('a shut door fills its doorway through the wall, flush with both its faces, so nothing catches in it', () => {
+  for (const site of MODEL_SITES) {
+    const name = site.file.replace('models/', '');
+    const out = read(name);
+    const insides = [...new Set(out.doors.map((d) => d.inside).filter(Boolean))].map(read);
+    const walls = [...out.walls, ...insides.flatMap((i) => i.walls)];
+    for (const d of [...out.doors, ...insides.flatMap((i) => i.doors)]) {
+      const box = doorway(d, walls);
+      assert.ok(box, `${name}: no wall found for door ${d.id}`);
+      // as thick as the wall beside it, and on its line: a jamb wall ends where the box does
+      const jamb = walls.find((w) => w.t === box.t && [w.a, w.b].some((p) => Math.hypot(p[0] - box.a[0], p[1] - box.a[1]) < 0.02 || Math.hypot(p[0] - box.b[0], p[1] - box.b[1]) < 0.02));
+      assert.ok(jamb, `${name}: door ${d.id}'s box isn't on its wall's line`);
+      // the leaf, shut, inside the box
+      const w = Math.hypot(d.latch[0] - d.hinge[0], d.latch[1] - d.hinge[1]);
+      assert.ok(Math.abs(Math.hypot(box.b[0] - box.a[0], box.b[1] - box.a[1]) - w) < 1e-9);
+    }
+  }
+  // the test house's front door: 0.15 m in from the middle of a 0.4 m wall, filled across all of it
+  const front = doorway(doors.get('front'), walls);
+  assert.ok(front.t > 0.3 && Math.abs(front.a[1] - 4) < 1e-9, JSON.stringify(front));
+});
+
 test('each door swings into its room, clear of every wall but those beside it', () => {
   for (const d of doors.values()) {
     const open = leafAt(d, Math.abs(d.turn) * Math.sign(d.turn));
@@ -151,20 +173,54 @@ test('only the rooms you can see are drawn: through open doorways, two rooms dee
   assert.ok(visibleRooms(inside.links, 'out', (id) => id === 'front').has('hall'));
 });
 
-test('the camera stays in your room, short of its walls', () => {
+test('the camera stays a ball\'s width short of the walls, and of a wall it starts near, comes no nearer', () => {
   // at the back of the hall, past the foot of the stair
   const x = -3, z = -3;
-  assert.equal(lineToWalls(walls, x, z, x + 0.5, z + 1, 1.6), 1, 'across the hall, something in the way');
-  // out through the west wall: stopped 0.2 m short of its face, 1.6 m along
-  const t = lineToWalls(walls, x, z, x - 4, z, 1.6);
-  assert.ok(Math.abs(t - 0.4) < 0.01, `t ${t}`);
+  assert.equal(lineToWalls(walls, x, z, x + 0.5, z + 1, 1.5, 2.1), 1, 'across the hall, something in the way');
+  // out through the west wall: stopped 0.25 m short of its face, 1.8 m along
+  const t = lineToWalls(walls, x, z, x - 4, z, 1.5, 2.1);
+  assert.ok(Math.abs(t - 0.3875) < 0.01, `t ${t}`);
   // the stair's balustrade holds it too
-  assert.ok(lineToWalls(walls, -3, 0, -6, 0, 1.6) < 0.25);
-  // out through the front doorway behind you: kept in the room
+  assert.ok(lineToWalls(walls, -3, 0, -6, 0, 1.5, 2.1) < 0.25);
+  // a wall that stops at 1 m doesn't hold a camera over it
+  const low = [{ a: [0, -1], b: [0, 1], t: 0.2, y0: 0, y1: 1 }];
+  assert.equal(lineToWalls(low, -1, 0, 1, 0, 1.5, 2.1), 1);
+  // 0.15 m from a wall's face: along it, or away from it, it isn't held; into it, it is, at once
+  const wall = [{ a: [0, 0], b: [10, 0], t: 0.2, y0: 0, y1: 3 }];
+  assert.equal(lineToWalls(wall, 5, 0.25, 8, 0.25, 1.5, 2.1), 1);
+  assert.equal(lineToWalls(wall, 5, 0.25, 5, 2, 1.5, 2.1), 1);
+  assert.ok(lineToWalls(wall, 5, 0.25, 5, -1, 1.5, 2.1) < 0.01);
+});
+
+test('the camera comes no nearer a ceiling or a floor than it can see from, and not under a stair', () => {
+  // up behind you in the hall: lowered to 0.7 m under the landing's floor
+  const up = eyeReach(walls, floors, { x: -3, y: 1.8, z: -3 }, { x: -3, y: 3.5, z: -1.5 });
+  assert.equal(up.t, 1);
+  assert.ok(Math.abs(up.y - 2.6) < 1e-9, `y ${up.y}`);
+  // back towards the stair from the middle of the hall: its balustrade keeps it out from under it
+  const under = eyeReach(walls, floors, { x: -3, y: 1.8, z: 0 }, { x: -4.6, y: 1.9, z: 0 });
+  assert.ok(-3 + (-4.6 + 3) * under.t > -3.85, `t ${under.t}`);
+  // half way up a stair, just past the edge of the floor over its foot (55's): back down it, ducking under that floor
+  const flight = [
+    { poly: [[0.5, -0.175], [0.5, 0.775], [-4.6, 0.775], [-4.6, -0.175]], plane: [0.38235, -0.76471, 0], holes: [] },
+    { poly: [[-5.6, -1.19], [3.3, -1.19], [3.3, 0.88], [-5.6, 0.88]], y: 3.9, holes: [[[-1.591, -0.175], [-1.591, 0.775], [-4.6, 0.775], [-4.6, -0.175]]] }
+  ];
+  const stairUp = eyeReach([], flight, { x: -1.73, y: 3.51, z: 0.32 }, { x: 0.77, y: 3.85, z: 0.32 }, 6.9);
+  assert.equal(stairUp.t, 1);
+  assert.ok(Math.abs(stairUp.y - 3.2) < 1e-9, `y ${stairUp.y}`);
+  // ...but not when your head's up in that floor: the line to it would go through its edge
+  assert.ok(eyeReach([], flight, { x: -1.73, y: 3.8, z: 0.32 }, { x: 0.77, y: 3.85, z: 0.32 }, 6.9).t < 0.1);
+  // on the landing, down towards the hall: not through the floor
+  const down = eyeReach(walls, floors, { x: -2, y: 5.1, z: -3 }, { x: -2, y: 2.4, z: -1 });
+  assert.ok(5.1 + (2.4 - 5.1) * down.t >= 3.3 + 0.25 - 1e-9, `t ${down.t}`);
+  // out of the front doorway behind you: held by the shut door, and through it once it's open
   const front = doors.get('front');
-  const dx = (front.hinge[0] + front.latch[0]) / 2, dz = (front.hinge[1] + front.latch[1]) / 2;
-  const u = lineInRoom(room('hall').poly, dx, dz - 1.2, dx, dz + 2);
-  assert.ok(u > 0 && u < 0.5, `u ${u}`);
+  const from = { x: -3, y: 1.8, z: 2.5 }, to = { x: -3, y: 1.9, z: 6.5 };
+  const shut = eyeReach([...walls, { a: front.hinge, b: front.latch, t: 0.06, y0: front.y0, y1: front.y1 }], floors, from, to);
+  assert.ok(shut.t < 0.3, `shut ${shut.t}`);
+  const leaf = leafAt(front, front.turn);
+  const open = eyeReach([...walls, { a: leaf.hinge, b: leaf.latch, t: 0.06, y0: front.y0, y1: front.y1 }], floors, from, to);
+  assert.equal(open.t, 1);
 });
 
 test('a door is offered within reach, in front of you, and a seat at its height', () => {

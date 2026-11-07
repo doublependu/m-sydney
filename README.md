@@ -222,13 +222,19 @@ What a model has to be:
   hinges (`door_<id>`), and in the JSON its outer walls, its doors and the floors outside them (a step). A door that leads somewhere names
   the inside's file. Its glass faces out only: from the street it's lit at night like the neighbours' windows; from inside you see through.
 - **The inside** (`<file>-in.glb`, `.json`), fetched when one of its doors is opened and let go of 60 m after you leave. Each room is a
-  node (`room_<id>`) and only those you can see are drawn: the one you're in and those through open doorways from it. The JSON has its
+  node (`room_<id>`) and only those you can see are drawn: the one the camera's in and those through open doorways from it, three
+  deep, and the one you're in and those next to it. The JSON has its
   floors (shapes at heights, a stair as a slope, holes where a stair comes through), walls (2D segments with a bottom and a top), inner
   doors, seats, rooms, the links between rooms, and where its lamps are.
 - **Walking in it** (`js/interior-data.js`): you stand on the highest floor under you no more than 0.45 m above your feet, so a stair
   climbs and the floor upstairs doesn't take you. Walls hold you at their own heights, so a wall upstairs is over your head downstairs. A
-  shut door is a wall. F opens the door or takes the seat in front of you (the hand button on touch, X on a gamepad); its prompt shows
-  only within 1.5 m, facing it. Inside you walk rather than run, and the camera stays in your room.
+  shut door is a wall, filling its doorway through the wall's thickness, so nothing catches in the recess its leaf leaves. F opens the
+  door or takes the seat in front of you (the hand button on touch, X on a gamepad); its prompt shows only within 1.5 m, facing it.
+  Inside you walk rather than run, at 2.6 m/s, turning in 1 m, and you're 0.22 m round (the models' checks use 0.3).
+- **The camera in it, or beside it:** it comes in closer and looks ahead level. Looking on from over your head, it's kept 0.25 m clear of
+  every wall and door leaf, 0.7 m under a ceiling and 0.25 m over a floor, and the line it sees you along goes through no floor or stair.
+  It comes in at once and eases back out. Its near plane is 0.1 m there (0.35 m elsewhere), so it never cuts into a wall. Nearer than
+  0.7 m to your head, you aren't drawn.
 - **Budgets:** an outside under 150 KB; an inside under 2 MB and 40,000 triangles on a phone. Nothing of either is in the first view, which
   doesn't hold the loader.
 - **Glass:** each pane's vertex colour isn't its colour but two numbers: whether it's lit at night (red, under 0.5) and how warm (green),

@@ -23,6 +23,7 @@ import { polygonContact, polygonContains } from './building-collision.js';
 import { DECK_SID } from './bridge.js';
 import { FLY, arrivalFor, holdOnFootway } from './arrivals.js';
 import { STRUCTURES, chooseSurface, clearOfWater, floorBelow, groundHeight, onFloor, structureAt, surfaceHeight } from './surfaces.js';
+import { WALKER } from './interior-data.js';
 
 // On the Harbour Bridge's deck: any of its roads' structures, the corridor's and those of the carriageways east of it (plan 5)
 const onDeck = (sid) => !!sid && !!STRUCTURES[sid]?.deck;
@@ -1393,9 +1394,10 @@ class ThirdPersonControllerManager {
 
   updatePerson(dt) {
     const p = this.entities.person;
-    // Inside, a walk, not a run (js/interiors.js sets `indoors`)
-    const maxSpeed = this.indoors ? 3.2 : 8.2;
-    const turnRate = this.indoors ? 2.2 : 2.6;
+    // Inside, a walk, not a run (js/interiors.js sets `indoors`): rooms are a few steps across, and at a walk you can turn in 1 m, from
+    // a hall through a door at its side
+    const maxSpeed = this.indoors ? 2.6 : 8.2;
+    const turnRate = 2.6;
     if (p.seat) {
       // Seated: where the seat is, until you move, or jump
       const k = this.keys;
@@ -1423,8 +1425,8 @@ class ThirdPersonControllerManager {
 
     p.position.x += Math.sin(p.heading) * p.speed * dt;
     p.position.z += Math.cos(p.heading) * p.speed * dt;
-    // Through a house's doorways and up its stair: inside, or on a model's floors, the walker is narrower, as the models' own checks have it
-    this.resolveHorizontalCollision(p.position, this.indoors || onFloor(p.position.x, p.position.z) ? 0.3 : 0.48);
+    // Through a house's doorways, between its furniture and up its stair: inside, or on a model's floors, the walker is narrower
+    this.resolveHorizontalCollision(p.position, this.indoors || onFloor(p.position.x, p.position.z) ? WALKER : 0.48);
 
     const groundY = this.getGroundHeight(p.position.x, p.position.z, 'person');
     if ((this.keys.up || this.jumpQueued > 0) && p.position.y <= groundY + 0.02) {

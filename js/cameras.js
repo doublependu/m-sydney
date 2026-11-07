@@ -241,7 +241,7 @@ class CameraSystem {
         this.indoorPull += ((this.indoors ? 1 : 0) - this.indoorPull) * (1 - Math.exp(-dt * 3));
         const pull = 1 - 0.42 * this.indoorPull;
         const dist = entity.chaseDistance * this.zoomMultiplier * (1 + Math.min(0.25, this.smoothedSpeed * 0.01)) * pull;
-        const height = (entity.chaseHeight * this.zoomMultiplier) * (1 - 0.3 * this.indoorPull) + Math.sin(this.orbitPitchOffset) * dist * 0.85;
+        const height = entity.chaseHeight * this.zoomMultiplier + Math.sin(this.orbitPitchOffset) * dist * 0.85;
         const horizDist = Math.cos(this.orbitPitchOffset) * dist + speedLag;
 
         desiredPos.set(
@@ -254,7 +254,8 @@ class CameraSystem {
         // orbited round, or looking down from above, it looks at you. Aiming ahead of your heading put you off the side of the
         // screen at 90 degrees, and behind the camera at 180 when it was nearer to you than that point (walking, cycling);
         // aiming over your head put you below the screen when dragged up to look down.
-        const lookUpBias = entity.type === 'helicopter' ? 0.2 : (entity.type === 'car' ? 0.52 : 1.55);
+        // Inside, it looks ahead level, at about its own height, over your head into the room, rather than up at the ceiling
+        const lookUpBias = (entity.type === 'helicopter' ? 0.2 : (entity.type === 'car' ? 0.52 : 1.55)) * (1 - this.indoorPull) + 0.55 * this.indoorPull;
         const behind = Math.max(0, Math.cos(this.orbitYawOffset));
         const level = Math.max(0, 1 - Math.max(0, this.orbitPitchOffset - DEFAULT_PITCH) / CHASE_LOOK_DOWN);
         const ahead = behind * level;

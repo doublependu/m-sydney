@@ -5,7 +5,8 @@ import { MODEL_SITES } from './model-sites.js';
 import { clearFloor, groundHeight, setFloor } from './surfaces.js';
 import { cityUniforms } from './tsl-materials.js';
 import {
-  DOOR_TIME, doorCollider, doorInReach, floorAt, lineInRoom, lineToWalls, roomAt, seatInReach, standSpot, toLocal, toWorld, visibleRooms, wallCollider
+  DOOR_TIME, doorCollider, doorInReach, eyeReach, floorAt, leafAt, roomAt, seatInReach, standSpot, toLocal, toWorld, visibleRooms,
+  wallCollider
 } from './interior-data.js';
 
 // Buildings drawn from models of their own (js/model-sites.js), and the insides of those that have one.
@@ -14,12 +15,16 @@ import {
 // - At a door, within reach and facing it, F opens it (a hand button on touch, X on a gamepad). If there's an inside, that's when it's
 //   fetched: the door swings to a little open while it comes, then all the way. It's let go of RELEASE metres after you leave.
 // - Inside, only the rooms you can see are drawn: the one you're in, and those through open doorways from it (interior-data.js).
+// - In it or beside it, the camera behind you is kept clear of its walls, floors and ceilings, so it never looks through one.
 // Every site's model is in its own frame (x across, z along, y up from its ground floor), placed at (x, y, z) and turned by yaw.
 
 const RELEASE = 60; // m from a building that its inside is let go of
 const DEBUG_RANGE = 700; // m: a debug site is drawn within this, having no tile of its own
 const AJAR = 0.3; // of a door's swing, while what's behind it is fetched
 const LIGHTS_REACH = 9; // m: a room's lamp lights you within this
+const EYE_EASE = 2.5; // m/s the camera goes back out once a wall's no longer in its way; it comes in at once
+const EYE_CLOSE = 0.7; // m from over your head: nearer than this, you aren't drawn, or you'd fill the view
+const SEEN_DEPTH = 3; // rooms deep, through open doorways, that the camera sees
 
 // One material of each kind for every model: they compile once. Their colour is in the vertices; inside, a little of it glows, the
 // light the model's lamps and windows give, baked into its vertices; three lights are moved round as well.
@@ -50,6 +55,12 @@ function materialFor(name, inside) {
   m.name = key;
   materials.set(key, m);
   return m;
+}
+
+/** One leaf of a pair of doors: the first from the hinge, the second from the latch side, turning the other way, each half the doorway */
+function half(d, sign) {
+  const mid = [(d.hinge[0] + d.latch[0]) / 2, (d.hinge[1] + d.latch[1]) / 2];
+  return sign > 0 ? { ...d, latch: mid } : { ...d, hinge: d.latch, latch: mid, turn: -d.turn };
 }
 
 let loader = null;
@@ -89,6 +100,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
   let here = null; // { site, room } the player is in
   let prompt = null; // { kind: 'door' | 'seat', site, door | seat, label }
   let seated = null;
+  let held = Infinity; // m from over your head the camera can be, eased back out (holdEye())
   const lightsOn = [];
 
   // --- Floors and walls ------------------------------------------------------------------------------------------------------
@@ -98,6 +110,19 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
   function allWalls(site) {
     const walls = [...(site.out?.data.walls ?? []), ...(site.inside?.data?.walls ?? [])];
     for (const door of doorsOf(site)) if (door.angle < 0.05) walls.push({ a: door.d.hinge, b: door.d.latch, t: 0.08, y0: door.d.y0, y1: door.d.y1 });
+    return walls;
+  }
+  /** What the camera keeps clear of: the walls, and every door's leaf where it's swung to */
+  function eyeWalls(site) {
+    const walls = [...(site.out?.data.walls ?? []), ...(site.inside?.data?.walls ?? [])];
+    for (const door of doorsOf(site)) {
+      for (const sign of door.d.leaves === 2 ? [1, -1] : [1]) {
+        // a pair: two leaves, each half the doorway, the second hung from the latch side and turning the other way
+        const d = door.d.leaves === 2 ? half(door.d, sign) : door.d;
+        const leaf = leafAt(d, door.angle * Math.sign(d.turn));
+        walls.push({ a: leaf.hinge, b: leaf.latch, t: 0.06, y0: d.y0, y1: d.y1 });
+      }
+    }
     return walls;
   }
   function placeFloors(site) {
@@ -122,11 +147,11 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
   function doorsOf(site) {
     return [...(site.out?.doors.values() ?? []), ...(site.inside?.doors?.values() ?? [])];
   }
-  function addDoors(site, list, group, part) {
+  function addDoors(site, list, group, part, walls) {
     const doors = new Map();
     for (const d of list) {
       // a pair of doors is two leaves, the second hung from the other jamb (`<node>_b`), turning the other way
-      const door = { d, site, part, angle: 0, target: 0, node: group.getObjectByName(d.node) ?? null, collider: doorCollider(site, d),
+      const door = { d, site, part, angle: 0, target: 0, node: group.getObjectByName(d.node) ?? null, collider: doorCollider(site, d, walls),
         pair: d.leaves === 2 ? group.getObjectByName(`${d.node}_b`) ?? null : null };
       colliders.add([door.collider]);
       doors.set(d.id, door);
@@ -198,7 +223,11 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
       await reveal(group);
       const walls = data.walls.map((w) => wallCollider(site, w));
       colliders.add(walls);
-      site.out = { group, data, walls, doors: addDoors(site, data.doors, scene, 'out') };
+      // Where the camera's kept clear of its walls: over it, and a little round it (holdEye())
+      const ends = data.walls.flatMap((w) => [w.a, w.b]);
+      const xs = ends.map((p) => p[0]), zs = ends.map((p) => p[1]);
+      const bounds = { minX: Math.min(...xs) - 1, maxX: Math.max(...xs) + 1, minZ: Math.min(...zs) - 1, maxZ: Math.max(...zs) + 1 };
+      site.out = { group, data, walls, bounds, doors: addDoors(site, data.doors, scene, 'out', data.walls) };
       placeFloors(site);
     } catch (e) {
       console.warn('[interiors]', site.id, e);
@@ -239,7 +268,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
       record.data = data;
       record.walls = data.walls.map((w) => wallCollider(site, w));
       colliders.add(record.walls);
-      record.doors = addDoors(site, data.doors, scene, 'in');
+      record.doors = addDoors(site, data.doors, scene, 'in', [...data.walls, ...site.out.data.walls]);
       record.rooms = new Map(data.rooms.map((r) => [r.id, scene.getObjectByName(r.node)]));
       record.state = 'ready';
       placeFloors(site);
@@ -275,9 +304,11 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
   // --- Each frame --------------------------------------------------------------------------------------------------------------
   /**
    * `player`: the active entity, `mode` the controllers' mode, `eye` the camera's position and `look` its direction (the game's
-   * frame). Returns whether the player's inside a building, and what F would do.
+   * frame), and `head` the point over the player's head a following camera looks on from, or null for one that doesn't follow. The eye
+   * is moved in, if a wall's in its way. Returns whether the player's inside a building, what F would do, whether the camera was kept
+   * clear of a building (`kept`), and whether that brought it so near that the player shouldn't be drawn (`close`).
    */
-  function update(dt, player, mode, eye, look) {
+  function update(dt, player, mode, eye, look, head = null) {
     const { x, z } = player.position;
     for (const site of sites) {
       const wanted = site.debug ? tileBuilt(x, z) && Math.hypot(site.x - x, site.z - z) < DEBUG_RANGE : tileBuilt(site.x, site.z);
@@ -301,7 +332,9 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
       }
     }
 
-    // What's drawn of each inside: the rooms seen from the camera, and from the player
+    const kept = head ? holdEye(dt, player, eye, head) : (held = Infinity, false);
+
+    // What's drawn of each inside: the rooms seen from the camera, where it's been kept to, and from the player
     for (const site of sites) {
       const inside = site.inside;
       if (inside?.state !== 'ready') continue;
@@ -311,7 +344,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
       };
       const e = toLocal(site, eye.x, eye.z);
       const eyeRoom = roomAt(inside.data.rooms, e.x, eye.y - site.y, e.z)?.id ?? 'out';
-      const seen = visibleRooms(inside.data.links, eyeRoom, open);
+      const seen = visibleRooms(inside.data.links, eyeRoom, open, SEEN_DEPTH);
       if (here?.site === site) for (const r of visibleRooms(inside.data.links, here.room.id, open, 1)) seen.add(r);
       for (const [id, node] of inside.rooms) if (node) node.visible = seen.has(id);
       for (const door of inside.doors.values()) {
@@ -323,7 +356,40 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
 
     placeLights(x, z);
     findPrompt(player, mode, look);
-    return { indoors: here !== null, prompt: prompt && prompt.label };
+    return { indoors: here !== null, prompt: prompt && prompt.label, kept, close: kept && held < EYE_CLOSE };
+  }
+
+  /**
+   * The camera stays clear of the building you're in or beside: moved in along the line from over your head to it, short of the first
+   * wall, door leaf, floor or ceiling, as if it were a ball EYE_PAD round. In at once, back out at EYE_EASE. True if it's beside one.
+   */
+  function holdEye(dt, player, eye, head) {
+    const { x, z } = player.position;
+    let site = here?.site ?? null;
+    if (!site) {
+      for (const s of sites) {
+        if (!s.out) continue;
+        const p = toLocal(s, x, z), b = s.out.bounds;
+        if (p.x > b.minX && p.x < b.maxX && p.z > b.minZ && p.z < b.maxZ) site = s;
+      }
+    }
+    if (!site) {
+      held = Infinity;
+      return false;
+    }
+    const a = toLocal(site, head.x, head.z), b = toLocal(site, eye.x, eye.z);
+    const from = { x: a.x, y: head.y - site.y, z: a.z }, to = { x: b.x, y: eye.y - site.y, z: b.z };
+    // where there's no floor over it, no higher than the top floor's ceiling: over a stairwell too, which is open up to that
+    const roof = here ? Math.max(...site.inside.data.rooms.map((r) => r.y1)) - 0.7 : Infinity;
+    const reach = eyeReach(eyeWalls(site), allFloors(site), from, to, roof);
+    const length = Math.hypot(to.x - from.x, reach.y - from.y, to.z - from.z);
+    const want = reach.t * length;
+    held = want < held ? want : Math.min(want, held + EYE_EASE * dt);
+    const k = length > 1e-6 ? held / length : 0;
+    eye.x = head.x + (eye.x - head.x) * k;
+    eye.z = head.z + (eye.z - head.z) * k;
+    eye.y = head.y + (site.y + reach.y - head.y) * k;
+    return true;
   }
 
   function placeLights(x, z) {
@@ -421,22 +487,6 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
     seated = null;
   }
 
-  /** The camera stays in the building with you: pulled in along the line from your head to it, short of the first wall. True if moved. */
-  function keepEyeInside(eye, head) {
-    if (!here) return false;
-    const { site, room } = here;
-    const a = toLocal(site, head.x, head.z), b = toLocal(site, eye.x, eye.z);
-    // short of the first wall, and in your room: not out through a doorway behind you
-    const t = Math.min(lineToWalls(allWalls(site), a.x, a.z, b.x, b.z, eye.y - site.y), lineInRoom(room.poly, a.x, a.z, b.x, b.z));
-    const top = site.y + room.y1 - 0.75;
-    if (t >= 1 && eye.y <= top) return false;
-    // pulled in, it comes down towards your head too, to look past it rather than down on it
-    eye.x = head.x + (eye.x - head.x) * t;
-    eye.z = head.z + (eye.z - head.z) * t;
-    eye.y = Math.min(top, head.y + 0.3 + (eye.y - head.y - 0.3) * t);
-    return true;
-  }
-
   /** Where to put the player back on a reload, if they were inside: outside the door they'd have come in by */
   function returnSpot() {
     if (!here) return null;
@@ -466,13 +516,14 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
       floor: here ? here.site.ref : null,
       seated: !!seated,
       prompt: prompt?.label ?? null,
+      eye: Number.isFinite(held) ? +held.toFixed(2) : null, // m from over your head the camera's kept to, beside a building
       doors: sites.flatMap((s) => doorsOf(s).map((dd) => ({ site: s.id, id: dd.d.id, angle: +dd.angle.toFixed(3), target: +dd.target.toFixed(3) }))),
       drawn: sites.flatMap((s) => (s.inside?.state === 'ready' ? [...s.inside.rooms].filter(([, n]) => n?.visible).map(([id]) => id) : [])),
       lights: lightsOn.length
     };
   }
 
-  return { update, use, stood, keepEyeInside, returnSpot, state, indoorLight };
+  return { update, use, stood, returnSpot, state, indoorLight };
 }
 
 export { createInteriors };

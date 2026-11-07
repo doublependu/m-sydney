@@ -1566,6 +1566,11 @@ async function initApp() {
       mapImage: (x0, z0, size, px, buildings) => mapSystem.renderImage(x0, z0, size, px, buildings),
       farBuildings: async (key) => (await fetchFarFile(key)).buildings,
       interior: () => interiors.state(),
+      // What the walker can bump into within r of (x, z): each collider's bounds and heights, and whether it's a model's (`level`)
+      collidersNear: (x, z, r) => controllerManager.nearColliders(x, z, r)
+        .filter((c) => c.maxX > x - r && c.minX < x + r && c.maxZ > z - r && c.minZ < z + r)
+        .map((c) => ({ minX: c.minX, maxX: c.maxX, minZ: c.minZ, maxZ: c.maxZ, minY: c.minY ?? 0, maxY: c.maxY, baseY: c.baseY, level: !!c.level,
+          outer: c.polygon?.outer?.map((p) => [p.x, p.z]) ?? null, obb: !!c.obb })),
       // F, as a scenario presses it
       use: () => useInterior(),
       seaShown: () => seaSheet?.visible ?? null,
@@ -2004,24 +2009,27 @@ async function initApp() {
     // A view put somewhere by hand (__gameDebug.view()) is where it was put, in the world's own heights
     const eyeGround = cameraSystem.fixedView ? 0 : follows ? groundUnder(followed) : groundHeight(eye.x, eye.z);
     eye.y += eyeGround;
+    const bodyY = eyeGround + Math.max(0, followed.position.y);
     {
-      // Doors, seats and the rooms seen from the camera, now it's where it'll be drawn from
-      const here = interiors.update(dt, followed, controllerManager.activeMode, eye, cameraSystem.camera.getWorldDirection(lookDirection));
+      // Doors, seats and the rooms seen from the camera, now it's where it'll be drawn from. In a building or beside one, a following
+      // camera is kept clear of its walls, floors and ceilings, looking on from over your head, and comes in as near as 0.1 m to them.
+      const head = follows ? { x: followed.position.x, y: bodyY + 1.8, z: followed.position.z } : null;
+      const here = interiors.update(dt, followed, controllerManager.activeMode, eye, cameraSystem.camera.getWorldDirection(lookDirection), head);
       setIndoors(here.indoors);
       showPrompt(here.prompt);
+      const near = here.kept ? 0.1 : 0.35;
+      if (cameraSystem.camera.near !== near) {
+        cameraSystem.camera.near = near;
+        cameraSystem.camera.updateProjectionMatrix();
+      }
+      // Right over your head, you'd fill the view: you aren't drawn (your crowd of one shows you again next frame, js/pedestrians.js)
+      if (here.close && controllerManager.activeMode === 'person') for (const m of followed.crowd?.meshes ?? []) m.visible = false;
     }
     if (follows) {
       // Under a tunnel's roof or a deck, the camera stays under it too, over the player and where it is itself
       const sid = followed.surface || 0, { x, z } = followed.position;
-      const bodyY = eyeGround + Math.max(0, followed.position.y);
       const top = Math.min(ceilingOver(sid, bodyY, x, z), ceilingOver(sid, bodyY, eye.x, eye.z));
       if (eye.y > top - 0.6) eye.y = Math.max(bodyY + 0.8, top - 0.6);
-      // Inside a building, the camera stays in it with you
-      if (indoors && interiors.keepEyeInside(eye, { x, y: bodyY + 1.5, z })) {
-        // Kept in the room, it looks past you, the way you face: close behind you, looking at you would be looking down at your head
-        const h = followed.heading;
-        cameraSystem.camera.lookAt(x + Math.sin(h) * 3 - origin.x, bodyY + 1.3, z + Math.cos(h) * 3 - origin.z);
-      }
       // Inside a tunnel the sky's light fades out, and back in at the far portal. Inside a house, some comes in through its windows.
       const eyeInTube = inTunnel(sid, eye.x, eye.z);
       const shelterGoal = indoors ? 0.85 : inTunnel(sid, x, z) && eyeInTube ? 1 : 0;

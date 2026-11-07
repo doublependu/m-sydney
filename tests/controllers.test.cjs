@@ -42,7 +42,8 @@ function keyboardHarness(nyc = {}) {
       './bridge.js': { DECK_SID: 0 },
       './arrivals.js': { FLY: { AREA: 200 }, arrivalFor: () => null, holdOnFootway: () => null },
       './surfaces.js': { clearOfWater: (x, z) => [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].every(([u, v]) => config.landAt(x + u * 2.5, z + v * 2.5)), edgeHeight: () => 0, groundHeight: () => 0, onFloor: () => false, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), structureAt: () => null, structuresAt: () => [], LINKS: [] },
-      './building-collision.js': polygonCollision
+      './building-collision.js': polygonCollision,
+      './interior-data.js': { WALKER: 0.22 }
     }
   });
   // Exercise the production event handlers without constructing the scene's 3D models.

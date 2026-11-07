@@ -1598,10 +1598,12 @@ async function initApp() {
         if (!here) return null;
         const along = (m) => bridgePoint(Math.max(0, Math.min(BRIDGE_LENGTH, here.s + m * direction)));
         const ahead = along(22), at = along(0), next = along(2);
-        // west, east: the deck's roads' outer edges here, m east of the corridor's line (js/bridge.js deckSpanAt)
-        const span = deckSpanAt(here.s);
+        // west, east: the deck's roads' outer edges here, m east of the corridor's line (js/bridge.js deckSpanAt). aheadWest, aheadEast:
+        // where they are at the point ahead, for steering along an edge that comes in or goes out
+        const span = deckSpanAt(here.s), far = deckSpanAt(Math.max(0, Math.min(BRIDGE_LENGTH, here.s + 22 * direction)));
         return { h: Math.atan2(ahead.x - x, ahead.z - z), tangent: Math.atan2(next.x - at.x, next.z - at.z),
-          aheadX: ahead.x, aheadZ: ahead.z, s: Math.round(here.s), off: +here.off.toFixed(1), y: +here.y.toFixed(1), west: span.west, east: span.east };
+          aheadX: ahead.x, aheadZ: ahead.z, s: Math.round(here.s), off: +here.off.toFixed(1), y: +here.y.toFixed(1), west: span.west, east: span.east,
+          aheadWest: far.west, aheadEast: far.east };
       },
       // A place on the bridge's corridor s metres from its south end: its centre, the normal to the east and the heading north
       bridgePlace(s) {

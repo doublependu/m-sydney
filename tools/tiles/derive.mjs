@@ -11,7 +11,8 @@ const { blockAt } = await import('../../js/city-config.js');
 const { MAX_POINTS, TALL, TALL_POINTS, outlineOf } = await import('../../js/building-outlines.js');
 const { buildingLook } = await import('../../js/building-look.js');
 const { roofFrame } = await import('../../js/building-footprints.js');
-const { DECK_DEPTH, KIND, LINKS, deriveTunnels, groundHeight, roomUnderDeck } = await import('../../js/surfaces.js');
+const { DECK_DEPTH, KIND, LINKS, STRUCTURES, deriveTunnels, groundHeight, groundRoadAt, roadHeight, roomUnderDeck, structuresAt } = await import('../../js/surfaces.js');
+const { CLEAR_OVER_ROAD } = await import('../../js/wall-foot.js');
 const { buildingFloor } = await import('../../js/building-floor.js');
 const { polygonBoxOverlaps } = await import('../../js/building-collision.js');
 const { landmarkColliders } = await import('../../js/landmarks.js');
@@ -78,29 +79,71 @@ const inRing = (ring, x, z) => {
   }
   return c;
 };
-// Buildings: the lowest underside of a deck over any part of the outline, every 2 m. A guessed height is cut to leave a metre under
-// it, and a building with less than 2.5 m left goes. One with a measured height is listed, not changed: the deck may be wrong.
-const caps = {}, dropped = [], tooTall = [];
+// Buildings and the raised roads through their outlines, every 2 m: decks, tunnels where they're open to the sky, and streets sunk into
+// cuttings. A road well over a building's floor is over it: its height is cut to leave a metre under the deck. A road under its floor,
+// or a deck too near it to go under, is under it: its floor is raised to leave a lane's height over the road (js/wall-foot.js stops
+// its walls there). A building that can be neither, less than 2.5 m tall under a deck or raised more than RAISE_MOST, goes. That's so
+// whether its height is a guess or measured: a road through a building is worse than a building a little short or on a higher floor,
+// and where a road runs through one with a measured height, its outline or the road is wrong. Those with measured heights are listed.
+const RAISE_MOST = 6; // m
+const raisedCells = new Set(deckCells);
+for (const l of LINKS) {
+  if (!(l.kind === KIND.TUNNEL || l.cut)) continue;
+  for (let i = 1; i < l.pts.length; i++) {
+    const a = l.pts[i - 1], b = l.pts[i], pad = l.half + 2;
+    for (let x = Math.floor((Math.min(a.x, b.x) - pad) / DECK_CELL); x <= Math.floor((Math.max(a.x, b.x) + pad) / DECK_CELL); x++) {
+      for (let z = Math.floor((Math.min(a.z, b.z) - pad) / DECK_CELL); z <= Math.floor((Math.max(a.z, b.z) + pad) / DECK_CELL); z++) raisedCells.add(x * 100000 + z);
+    }
+  }
+}
+const nearRaised = (minX, minZ, maxX, maxZ) => {
+  for (let x = Math.floor(minX / DECK_CELL); x <= Math.floor(maxX / DECK_CELL); x++) {
+    for (let z = Math.floor(minZ / DECK_CELL); z <= Math.floor(maxZ / DECK_CELL); z++) if (raisedCells.has(x * 100000 + z)) return true;
+  }
+  return false;
+};
+// The raised roads' surfaces at (x, z): [{ y, deck }]
+const raisedRoadsAt = (x, z) => {
+  const out = [];
+  for (const s of structuresAt(x, z)) {
+    const kind = STRUCTURES[s.sid]?.kind;
+    if (kind === KIND.BRIDGE || kind === KIND.TUNNEL) out.push({ y: s.y, deck: kind === KIND.BRIDGE });
+  }
+  const road = groundRoadAt(x, z);
+  if (road?.cut) out.push({ y: roadHeight(road, x, z), deck: false });
+  return out;
+};
+const caps = {}, raised = {}, dropped = [], measured = [];
 REAL_BUILDINGS.forEach((b, i) => {
-  if (skip.has(i) || (b.bottom || 0) > 0 || !nearDeck(b.minX, b.minZ, b.maxX, b.maxZ)) return;
+  if (skip.has(i) || (b.bottom || 0) > 0 || !nearRaised(b.minX, b.minZ, b.maxX, b.maxZ)) return;
   const floor = floors[i][0] / 10;
-  let underside = Infinity;
+  let underside = Infinity, over = -Infinity;
   for (let x = b.minX + 1; x < b.maxX; x += 2) {
     for (let z = b.minZ + 1; z < b.maxZ; z += 2) {
       if (!b.polygons.some((p) => inRing(p.outer, x, z) && !p.holes.some((h) => inRing(h, x, z)))) continue;
-      const room = roomUnderDeck(x, z);
-      if (room < Infinity) underside = Math.min(underside, groundHeight(x, z) + room);
+      for (const road of raisedRoadsAt(x, z)) {
+        const below = road.y - (road.deck ? DECK_DEPTH : 0); // the road's underside
+        if (below >= floor + b.height || road.y + CLEAR_OVER_ROAD <= floor) continue; // over its roof, or under its floor with room
+        if (road.deck && below - 1 - floor >= 2.5) underside = Math.min(underside, below);
+        else over = Math.max(over, road.y + CLEAR_OVER_ROAD);
+      }
     }
   }
-  if (underside === Infinity || floor + b.height <= underside) return;
-  if (!b.guess) { tooTall.push(`${Math.round(b.cx)},${Math.round(b.cz)} ${b.height} m by ${(floor + b.height - underside).toFixed(1)} m`); return; }
-  const fits = Math.floor(underside - 1 - floor);
-  if (fits < 2.5) dropped.push(i);
-  else caps[i] = fits;
+  if (underside === Infinity && over === -Infinity) return;
+  const where = `${Math.round(b.cx)},${Math.round(b.cz)} ${b.height} m`;
+  // Raised over a road, it has to stay under any deck over it
+  if (over > -Infinity && (over - floor > RAISE_MOST || over + 2.5 > underside - 1)) { dropped.push(i); if (!b.guess) measured.push(`${where} left out`); return; }
+  if (over > -Infinity) { raised[i] = over; if (!b.guess) measured.push(`${where} on a floor ${(over - floor).toFixed(1)} m higher`); }
+  if (underside < Infinity) {
+    const base = raised[i] ?? floor, fits = Math.floor(underside - 1 - base);
+    if (fits < 2.5) { dropped.push(i); delete raised[i]; if (!b.guess) measured.push(`${where} left out`); return; }
+    if (base + b.height > underside - 1) { caps[i] = fits; if (!b.guess) measured.push(`${where} cut to ${fits} m`); }
+  }
 });
 for (const [i, h] of Object.entries(caps)) REAL_BUILDINGS[i].height = h;
+for (const [i, y] of Object.entries(raised)) floors[i][0] = Math.ceil(y * 10);
 for (const i of dropped) skip.add(i);
-console.log(`[derive] under decks: ${Object.keys(caps).length} buildings cut to fit, ${dropped.length} left out, ${tooTall.length} with a measured height in the way${tooTall.length ? `: ${tooTall.slice(0, 8).join('; ')}` : ''}`);
+console.log(`[derive] roads through buildings: ${Object.keys(caps).length} cut to fit under a deck, ${Object.keys(raised).length} raised over a road, ${dropped.length} left out; with measured heights: ${measured.length ? measured.join('; ') : 'none'}`);
 // Trees: one taller than the room under a deck is left out. A tree with no height on record counts as 8 m.
 const treesUnder = [];
 for (let i = 0; i < TREE_HEIGHTS.length; i++) {

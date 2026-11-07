@@ -168,7 +168,8 @@ const NO_SHOP_ABOVE = 1; // a wall this far above the ground beside it has no sh
 // WALL_KINDS.below + (metres of it clear of the ground), which is how the facade knows whether a storey of windows fits.
 function addWallFoot(cell, a, b, width, height, base, seed, reverse, groundAt, storey) {
   const nx = -(b.y - a.y) / width, nz = (b.x - a.x) / width;
-  const depthAt = (t) => base - groundAt(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+  // Never above the floor: where the wall stops over a road (js/wall-foot.js) that's under the floor by less than a lane's height
+  const depthAt = (t) => Math.max(0, base - groundAt(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, base));
   // A wall with room for a storey under its floor is split at whole window bays, so a bay either has its window or doesn't
   let pieces = Math.max(1, Math.ceil(width / STRIP));
   if (storey && depthAt(0.5) + 1 > storey.height || storey && Math.max(depthAt(0), depthAt(1)) > storey.height) {
@@ -196,7 +197,7 @@ function addWallFoot(cell, a, b, width, height, base, seed, reverse, groundAt, s
   }
 }
 
-// groundAt: the ground's height under a wall, to stand it on. storey: { width, height } of the facade's window bays.
+// groundAt(x, z, floor): the ground's height under a wall, to stand it on. storey: { width, height } of the facade's window bays.
 function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMaterials = null, { groundAt = null, storey = null } = {}) {
   const cells = new Map();
   for (const [index, record] of records.entries()) {

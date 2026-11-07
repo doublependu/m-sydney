@@ -328,24 +328,33 @@ function cutGround(x, z) {
     for (const seg of segCells.get(key) || []) {
       if (seg.link.kind) continue;
       const p = project(seg, x, z);
-      // A cutting's road runs a metre past its carriageway, so the kerbs along it stand in it, not on its slope
+      // A cutting's road runs a metre past its carriageway, so the kerbs along it stand in it, not on its slope. But a road's own
+      // carriageway is its own: where two at different heights run side by side, one's margin doesn't take the other's lanes
       const reach = seg.link.half + (seg.link.cut ? 1 : 0);
-      if (p.d <= reach && (!on || p.d < on.d)) on = { d: p.d, seg, t: p.t };
+      if (p.d > reach) continue;
+      const inside = p.d <= seg.link.width / 2;
+      if (!on || (inside && !on.inside) || (inside === on.inside && p.d < on.d)) on = { d: p.d, seg, t: p.t, inside };
     }
     const joins = (a, b) => a.a === b.a || a.a === b.b || a.b === b.a || a.b === b.b;
     if (on?.seg.link.cut) {
       // ...unless a street that doesn't meet it crosses over this spot: that street is the top of the cutting's portal, and
-      // the ground here is the street. One alongside only overlaps it, and the nearer centre line says which you're on.
-      const over = (segCells.get(key) || []).some((seg) => {
-        if (seg.link.kind || seg.link.cut || joins(seg.link, on.seg.link)) return false;
+      // the ground here is the street. That's so of a street sunk into a cutting of its own too, if it's still higher than this
+      // one (Falcon St over the Warringah Fwy): else the ground was the lower one, and the street over it had nothing under it.
+      // One alongside only overlaps it, and the nearer centre line says which you're on.
+      const onY = on.seg.ay + (on.seg.by - on.seg.ay) * on.t;
+      const over = (segCells.get(key) || []).find((seg) => {
+        if (seg.link.kind || seg.link === on.seg.link || joins(seg.link, on.seg.link)) return false;
         const d = project(seg, x, z).d;
         if (d > seg.link.width / 2 + 0.6) return false;
-        return Math.abs(seg.ux * on.seg.ux + seg.uz * on.seg.uz) < 0.87 || d < on.d;
+        if (seg.link.cut && ownRoadHeight(seg.link, x, z) <= onY + CUT_SAME) return false;
+        // Across it, a street is its portal's top; alongside, only where the street's carriageway is here and the cutting's isn't
+        if (Math.abs(seg.ux * on.seg.ux + seg.uz * on.seg.uz) < 0.87) return true;
+        return d <= seg.link.width / 2 && (!on.inside || d < on.d);
       });
-      if (over) return y;
+      if (over && !over.link.cut) return y;
       onCutRoad = true;
-      cutRoad = on.seg.link;
-      return Math.min(y, on.seg.ay + (on.seg.by - on.seg.ay) * on.t);
+      cutRoad = over ? over.link : on.seg.link;
+      return over ? ownRoadHeight(over.link, x, z) : Math.min(y, onY);
     }
     const ground = y;
     for (const seg of cuts) {
@@ -370,14 +379,17 @@ function groundHeight(x, z) {
       if (Math.abs(dx * f.cos - dz * f.sin) < f.halfW && Math.abs(dx * f.sin + dz * f.cos) < f.halfL) return f.y;
     }
   }
-  let nearest = null, nd = Infinity;
+  // The road here: one whose carriageway this is before one whose margin reaches it, then the nearest centre line
+  let nearest = null, nd = Infinity, nearestInside = false;
   const list = segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL));
   if (list) {
     for (let k = 0; k < list.length; k++) {
       const seg = list[k];
       if (seg.link.kind) continue;
       const d = segmentDistance(seg, x, z);
-      if (d <= seg.link.half && d < nd) { nd = d; nearest = seg.link; }
+      if (d > seg.link.half) continue;
+      const inside = d <= seg.link.width / 2;
+      if ((inside && !nearestInside) || (inside === nearestInside && d < nd)) { nd = d; nearest = seg.link; nearestInside = inside; }
     }
   }
   if (nearest?.profile) return sharedSurface(nearest, x, z);

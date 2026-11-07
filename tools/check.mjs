@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const started = Date.now();
-const SHOW_OUTPUT = new Set(['ground', 'roads', 'traffic', 'deploy size']);
+const SHOW_OUTPUT = new Set(['ground', 'roads', 'layers', 'traffic', 'deploy size']);
 const FULL = process.argv.includes('--full');
 
 function run([name, command, args]) {
@@ -40,6 +40,7 @@ report(await Promise.all([
   ...(process.argv.includes('--no-build') ? [] : [['build', 'npm', ['run', '--silent', 'build', '--', '--logLevel', 'warn']]]),
   ['ground', 'node', ['--max-old-space-size=12000', 'tools/check-ground.mjs', ...(FULL ? [] : ['--strict'])]],
   FULL ? ['roads', 'node', ['tools/check-map.mjs']] : ['roads', 'node', ['--max-old-space-size=12000', 'tools/check-roads.mjs', '--strict']],
+  ['layers', 'node', ['--max-old-space-size=12000', 'tools/check-layers.mjs', ...(FULL ? [] : ['--strict'])]],
   ['traffic', 'node', ['--max-old-space-size=4096', 'tools/check-traffic.mjs', '--strict', '--seconds=120', '--warm=60']]
 ].map(run)));
 report(await Promise.all([['deploy size', 'node', ['tools/check-dist.mjs']]].map(run)));

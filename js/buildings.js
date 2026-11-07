@@ -25,6 +25,7 @@ import {
 import { GEO, TILE } from './geodata.js';
 import { groundHeight } from './surfaces.js';
 import { createBuildingFootprintsSteps } from './building-footprints.js';
+import { wallFootAt } from './wall-foot.js';
 import { polygonContains, polygonBoxOverlaps } from './building-collision.js';
 import { siteOfBuilding } from './model-sites.js';
 import { anchorToOrigin, onOriginMove, origin } from './world-origin.js';
@@ -697,7 +698,7 @@ function createCityBlocks(scene) {
           return { minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs), minY: b.bottom || 0, maxY: top, baseY: b.floor, polygon };
         });
         const made = yield* createBuildingFootprintsSteps(materials[mat], [{ ...b, tone, roof, pitch, gabled, eaves, storefronts: false, base: b.floor }], undefined, roofMaterials, {
-          groundAt: groundHeight, storey: { width: FACADES[mat][1].windowWidth, height: FACADES[mat][1].floorHeight }
+          groundAt: wallFootAt, storey: { width: FACADES[mat][1].windowWidth, height: FACADES[mat][1].floorHeight }
         });
         const meshes = [...made.children];
         for (const mesh of meshes) target.add(mesh);
@@ -742,7 +743,7 @@ function createCityBlocks(scene) {
     for (const [i, items] of surveyedBuckets.entries()) {
       if (!items.length) continue;
       const made = yield* createBuildingFootprintsSteps(materials[i], items, i < 2 || i > 4 ? (b) => nearbyReserves(b, 2) : undefined, roofMaterials, {
-        groundAt: groundHeight,
+        groundAt: wallFootAt,
         storey: { width: FACADES[i][1].windowWidth, height: FACADES[i][1].floorHeight }
       });
       for (const mesh of [...made.children]) target.add(mesh);

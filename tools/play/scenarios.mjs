@@ -721,11 +721,14 @@ export const SCENARIOS = {
     async run({ human, page, metric, expect }) {
       await expectCityCompletes(human, page, expect);
       // Along the deck's outer barriers (plan 5: the deck is its roads side by side, from the corridor's west edge to the Cahill's lane,
-      // the outermost east), keeping this far in from the edge of the outermost lane
-      const IN = 1.3;
+      // the outermost east), keeping this far in from the edge of the outermost lane: at 1.3 m the car's side was on the barrier where
+      // its steering ran wide, and it lost half its speed scraping along it
+      const IN = 1.6;
       const legs = [
         { from: 640, to: 1360, direction: 1 }, // northbound along the west barrier
-        { from: 1360, to: 640, direction: -1 } // southbound along the east barrier
+        // Southbound along the east barrier, from past where the Cahill's lane joins at 1,356 m: started in the merge, the car ran into
+        // the Cahill's traffic slowing to join, and where it queued, the car stood with the throttle held
+        { from: 1330, to: 640, direction: -1 }
       ];
       // m left of the corridor's line, travelling the leg's way, hard against its barrier
       const leftOf = (span, d) => (d > 0 ? -span.west - IN : span.east - IN);
@@ -746,9 +749,10 @@ export const SCENARIOS = {
           const aim = await page.evaluate(([x, z, d]) => window.__gameDebug.bridgeAim(x, z, d), [state.x, state.z, leg.direction]);
           expect(aim && await page.evaluate(() => window.__gameDebug.onDeck()), `left the deck at ${Math.round(state.x)}, ${Math.round(state.z)}`);
           if (!aim || (leg.direction > 0 ? aim.s > leg.to : aim.s < leg.to) || human.now() - started > 100000) break;
-          // Keep hard against the barrier (the tangent points the way we're going)
+          // Keep hard against the barrier (the tangent points the way we're going), where it is at the point aimed for: where the deck's
+          // edge comes in, the barrier where the car is now is in the way 22 m on, and the car scraped along it
           const fx = Math.sin(aim.tangent), fz = Math.cos(aim.tangent);
-          const lx = fz, lz = -fx, left = leftOf(aim, leg.direction);
+          const lx = fz, lz = -fx, left = leftOf({ west: aim.aheadWest, east: aim.aheadEast }, leg.direction);
           await human.steerTowards(state, { x: aim.aheadX + lx * left, z: aim.aheadZ + lz * left }, 0.02);
           // From the outermost lane's edge; the barrier's face is half a metre past it (js/harbour-bridge.js layout)
           closest = Math.min(closest, leg.direction > 0 ? aim.off - aim.west : aim.east - aim.off);

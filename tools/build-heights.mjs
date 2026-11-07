@@ -194,7 +194,17 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
   for (const l of links) for (const n of [l.a, l.b]) (linksAt.get(n) || linksAt.set(n, []).get(n)).push(l);
   let lifted = 0;
   for (const ramp of links) {
-    if (ramp.deck || ramp.kind !== 1 || fixed.has(ramp.a) === fixed.has(ramp.b)) continue;
+    if (ramp.deck || fixed.has(ramp.a) === fixed.has(ramp.b)) continue;
+    // A motorway on the ground that leaves the deck itself is a ramp too, lifted where it has to be: the southbound's and the Cahill's
+    // ways down from the deck's south end, which OSM draws on the ground from where the deck's roads end
+    if (ramp.kind === 0 && (ramp.raw[11] || 0) & 1) {
+      const n = fixed.has(ramp.a) ? ramp.a : ramp.b;
+      if (fixed.get(n) - grid(N[n * 2], N[n * 2 + 1]) < 1) continue; // the deck's down at the ground there: a road on, not a ramp
+      ramp.kind = 1;
+      ramp.lifted = true;
+      lifted++;
+    }
+    if (ramp.kind !== 1) continue;
     const top = fixed.get(fixed.has(ramp.a) ? ramp.a : ramp.b);
     ramp.ramp = true;
     const open = [[fixed.has(ramp.a) ? ramp.b : ramp.a, lengthOfLink(ramp)]];
@@ -386,6 +396,71 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
       }
     }
   }
+  // Roads one over the other that don't cross: OSM draws a double-deck tunnel's two carriageways, or a street under a viaduct that runs
+  // along it, as lines on top of each other, so the crossings above miss them. Every SAMPLE m along a road, the nearest point of each
+  // other road whose carriageway the one's centre line runs over, or the other's this one's: in bound(), where the two are more than
+  // LEVEL apart in height and the upper is a bridge, it rises to the room a crossing has. Not two roads side by side whose edges only
+  // overlap: forced 6.8 m apart,
+  // ramps beside each other at a little more than LEVEL became cliffs. Nor two that meet within NEAR m along the network: a ramp
+  // parting from its road, or joining it, overlaps it on its way, at its level.
+  const OVERLAP = 0.5; // m: one road's centre line at least this far inside the other's carriageway
+  const LEVEL = 1.5; // m: nearer than this in height, two roads side by side are at one level (js/surfaces.js STEP)
+  const NEAR = 80; // m along the network
+  const linkLength = new Map();
+  const nearCache = new Map();
+  const nearTo = (l) => {
+    let seen = nearCache.get(l);
+    if (seen) return seen;
+    seen = new Set([l]);
+    const best = new Map([[l.a, 0], [l.b, 0]]), queue = [l.a, l.b];
+    for (let head = 0; head < queue.length; head++) {
+      const n = queue[head], d = best.get(n);
+      for (const m of linksAt.get(n) || []) {
+        seen.add(m);
+        if (!linkLength.has(m)) linkLength.set(m, lengthOfLink(m));
+        const other = m.a === n ? m.b : m.a, far = d + linkLength.get(m);
+        if (far <= NEAR && far < (best.get(other) ?? Infinity)) { best.set(other, far); queue.push(other); }
+      }
+    }
+    nearCache.set(l, seen);
+    return seen;
+  };
+  const stacks = [], fixedStacks = [];
+  for (const l of others) {
+    for (const idx of l.chain) {
+      const p = samples[idx];
+      const nearest = new Map(); // other road -> its nearest point to this one
+      const cx = Math.floor(p.x / CELLS), cz = Math.floor(p.z / CELLS);
+      for (let ix = cx - 1; ix <= cx + 1; ix++) {
+        for (let iz = cz - 1; iz <= cz + 1; iz++) {
+          for (const sh of segCells.get(ix * 100000 + iz) || []) {
+            if (sh.l === l || sh.l.id < l.id || shares(sh.l, l)) continue; // each pair from one side only
+            const r = samples[sh.i], t = samples[sh.j], dx = t.x - r.x, dz = t.z - r.z, L2 = dx * dx + dz * dz || 1;
+            const v = Math.max(0, Math.min(1, ((p.x - r.x) * dx + (p.z - r.z) * dz) / L2));
+            const d = Math.hypot(r.x + dx * v - p.x, r.z + dz * v - p.z);
+            if (d > Math.max(l.width, sh.l.width) / 2 - OVERLAP) continue;
+            const known = nearest.get(sh.l);
+            if (!known || d < known.d) nearest.set(sh.l, { d, sh, v });
+          }
+          for (const o of fixedCells.get(ix * 100000 + iz) || []) {
+            if (!o.deck) continue;
+            const dx = o.b[0] - o.a[0], dz = o.b[1] - o.a[1], L2 = dx * dx + dz * dz || 1;
+            const v = Math.max(0, Math.min(1, ((p.x - o.a[0]) * dx + (p.z - o.a[1]) * dz) / L2));
+            const d = Math.hypot(o.a[0] + dx * v - p.x, o.a[1] + dz * v - p.z);
+            if (d > Math.max(l.width, o.l.width) / 2 - OVERLAP) continue;
+            const known = nearest.get(o.l);
+            if (!known || d < known.d) nearest.set(o.l, { d, o, v });
+          }
+        }
+      }
+      for (const [m, { sh, o, v }] of nearest) {
+        if (nearTo(l).has(m)) continue;
+        if (o) fixedStacks.push({ a: { l, i: idx, j: idx }, o, v });
+        else stacks.push({ a: { l, i: idx, j: idx }, b: sh, u: 0, v });
+      }
+    }
+  }
+  console.log(`[heights] ${pairs.length} crossings, ${stacks.length + fixedStacks.length} points where roads overlap without crossing`);
   const heightAlong = (sg, u) => samples[sg.i].y + (samples[sg.j].y - samples[sg.i].y) * u;
   const fixedHeight = (o, v) => {
     const x = o.a[0] + (o.b[0] - o.a[0]) * v, z = o.a[1] + (o.b[1] - o.a[1]) * v;
@@ -412,19 +487,36 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
         if (!landMask(smp.x, smp.z)) smp.hi = Math.min(smp.hi, Math.max(UNDER_WATER, -2.2 - near * MAX_GRADE));
       }
     });
-    for (const { a, b, u, v } of pairs) {
+    const keepApart = (a, b, u, v) => {
       const ya = heightAlong(a, u), yb = heightAlong(b, v);
       const [top, bottom, yTop, yBottom] = onTop(a.l, b.l, ya, yb) ? [a, b, ya, yb] : [b, a, yb, ya];
-      if (order(levelOf(top.l)) === 1 && order(levelOf(bottom.l)) === 1) continue; // two roads on the ground cross at a junction
+      if (order(levelOf(top.l)) === 1 && order(levelOf(bottom.l)) === 1) return; // two roads on the ground cross at a junction
       // The upper rises clear if it's a bridge; the lower sinks clear if it's a tunnel, or a street that's still too
       // close once the bridge over it has risen all it can
       if (levelOf(top.l) === 1) { raise(top.i, yBottom + STACK_CLEARANCE); raise(top.j, yBottom + STACK_CLEARANCE); }
       if (bottom.l.kind === 2 || (sinkGround && levelOf(bottom.l) === 0)) { lower(bottom.i, yTop - STACK_CLEARANCE); lower(bottom.j, yTop - STACK_CLEARANCE); }
+    };
+    for (const { a, b, u, v } of pairs) keepApart(a, b, u, v);
+    // A stack: a bridge over a road it runs along rises clear of it, as far as it can climb from where it meets the ground at MAX_GRADE.
+    // Nothing sinks for one: a tunnel sunk for a stack took the roads crossing under it down too, and near their mouths they dived
+    // steeper than anyone could drive, or met where they cross (the Eastern Distributor's double deck and its ramps at Woolloomooloo)
+    const fits = (idx, y) => Math.abs(y - samples[idx].grid) <= MAX_GRADE * toAnchor[idx] + 1;
+    for (const { a, b, u, v } of stacks) {
+      const ya = heightAlong(a, u), yb = heightAlong(b, v);
+      if (Math.abs(ya - yb) <= LEVEL) continue;
+      const [top, yBottom] = onTop(a.l, b.l, ya, yb) ? [a, yb] : [b, ya];
+      const up = yBottom + STACK_CLEARANCE;
+      if (levelOf(top.l) === 1 && fits(top.i, up)) { raise(top.i, up); raise(top.j, up); }
     }
-    for (const { a, o, v } of fixedPairs) {
+    const keepClear = (a, o, v) => {
       const other = fixedHeight(o, v);
       if (a.l.kind === 1) { raise(a.i, other + STACK_CLEARANCE); raise(a.j, other + STACK_CLEARANCE); }
       else if (a.l.kind === 2 || (sinkGround && o.deck)) { lower(a.i, other - STACK_CLEARANCE); lower(a.j, other - STACK_CLEARANCE); }
+    };
+    for (const { a, o, v } of fixedPairs) keepClear(a, o, v);
+    for (const { a, o, v } of fixedStacks) {
+      const other = fixedHeight(o, v), up = other + STACK_CLEARANCE;
+      if (a.l.kind === 1 && heightAlong(a, 0) - other > LEVEL && fits(a.i, up)) { raise(a.i, up); raise(a.j, up); }
     }
     // A bridge climbs from where it meets the ground no steeper than MAX_GRADE: a short one can't rise far, and what it
     // can't clear, the street under it has to (sinkGround above)
@@ -512,7 +604,14 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
   // Report what couldn't be met
   bound(true);
   let short = 0;
-  for (const smp of samples) if (!smp.fixed && (smp.y < smp.lo - 0.3 || smp.y > smp.hi + 0.3)) short++;
+  const shortAt = new Map(); // 100 m cell -> the most short there, and where
+  for (const smp of samples) {
+    if (smp.fixed || !(smp.y < smp.lo - 0.3 || smp.y > smp.hi + 0.3)) continue;
+    short++;
+    const by = Math.max(smp.lo - smp.y, smp.y - smp.hi), k = `${Math.floor(smp.x / 100)},${Math.floor(smp.z / 100)}`;
+    if (!shortAt.has(k) || shortAt.get(k).by < by) shortAt.set(k, { by, x: Math.round(smp.x), z: Math.round(smp.z) });
+  }
+  const worstShort = [...shortAt.values()].sort((a, b) => b.by - a.by).slice(0, 10).map((w) => `(${w.x}, ${w.z}) ${w.by.toFixed(1)} m`);
 
   // Leaving a structure, a road eases away from it: the land under the end of a ramp can fall away far quicker than anyone could drive
   const easeFromStructures = (movable, field) => {
@@ -563,7 +662,7 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
     l.raw[12] = l.chain.map((idx) => q10(samples[idx].y));
     cuttings++;
   }
-  console.log(`[heights] roads: ${structures.length} structure links, ${cuttings} streets sunk into cuttings, ${samples.length} samples, ${short} short of their clearance`);
+  console.log(`[heights] roads: ${structures.length} structure links, ${cuttings} streets sunk into cuttings, ${samples.length} samples, ${short} short of their clearance${short ? `, most at ${worstShort.join(', ')}` : ''}`);
 
   // Every other road on the ground gets a shape of its own: its height smoothed along it, with the bumps of the lattice gone but its
   // grade true to the hill, and no more than a little lean across it. The ground then follows the road, not the other way round
@@ -602,6 +701,11 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
       };
       for (const { a, b } of pairs) if (!isPlain.has(a.l) || !isPlain.has(b.l)) { heldClear(a); heldClear(b); }
       for (const { a } of fixedPairs) heldClear(a);
+      // ...and where one passes along over or under another, kept apart in bound()
+      for (const { a, b, u, v } of stacks) {
+        if ((!isPlain.has(a.l) || !isPlain.has(b.l)) && Math.abs(heightAlong(a, u) - heightAlong(b, v)) > LEVEL) { heldClear(a); heldClear(b); }
+      }
+      for (const { a, o, v } of fixedStacks) if (Math.abs(heightAlong(a, 0) - fixedHeight(o, v)) > LEVEL) heldClear(a);
       const OCELL = 30;
       const cells = new Map();
       for (const idx of ownerOf.keys()) {

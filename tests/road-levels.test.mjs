@@ -248,11 +248,14 @@ test('a ramp leaving the Harbour Bridge keeps its own level, and the deck keeps 
 
 test('wheels stay on the level the car is on, where sunk roads overlap at different heights', async () => {
   const { wheelContacts } = await import('../js/ground-geometry.js');
-  // Between the Cahill's cutting at 17 m and the Harbour Tunnel's approach at 14 m, on the ground at 17 m
-  const x = 452, z = -1286, y = groundHeight(x, z);
-  assert.ok(Math.abs(y - 17.25) < 0.5, `the ground here is at ${y}`);
+  // Between the Cahill's cutting at 17 m and the Harbour Tunnel's approach at 14 m, on the ground at 17 m: inside the Cahill's own
+  // carriageway, a metre past the approach's. Each road's carriageway is its own level, whichever centre line is nearer (js/surfaces.js)
+  const x = 450.7, z = -1285.8, y = groundHeight(x, z);
+  assert.ok(Math.abs(y - 17.4) < 0.5, `the ground here is at ${y}`);
   const rest = wheelContacts(x, z, 3.1, 0, y);
   assert.ok(Math.abs(rest.y - y) < 0.6, `a car on the ground at ${y.toFixed(2)} is drawn at ${rest.y.toFixed(2)}`);
+  // ...and 4 cm inside the approach's, where the Cahill's centre line is nearer: the approach's level
+  assert.ok(Math.abs(groundHeight(452, -1286) - 13.55) < 0.5, `the ground on the approach's edge is at ${groundHeight(452, -1286)}`);
 });
 
 test('a road over a creek with no bridge on the map doesn\'t stop you, and the water beside it still does', async () => {

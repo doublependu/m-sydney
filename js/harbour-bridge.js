@@ -4,7 +4,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { cityUniforms } from './tsl-materials.js';
 import { BRIDGE_LENGTH, BRIDGE_SPAN, DECK_REACH, DECK_SID, bridgeAt, bridgePoint, deckGapAt, deckHeight, deckLanes, deckSpanAt } from './bridge.js';
 import { GEO } from './geodata.js';
-import { groundHeight } from './surfaces.js';
+import { DECK_DEPTH, groundHeight } from './surfaces.js';
 
 // The Sydney Harbour Bridge: the deck along the corridor (js/bridge.js), the steel through-arch over the water with its
 // hangers, the granite pylons at each end of the arch, and the piers carrying the approaches.
@@ -48,6 +48,13 @@ function layout(s) {
   const footFrom = roadEast + BARRIER.width, footTo = footFrom + FOOT_WIDTH;
   const gap = deckGapAt(s);
   return { roadWest, roadEast, gap, railFrom, railTo, tracks: [railTo - 2.8, railTo - 7.6], cycleFrom, cycleTo, footFrom, footTo, edgeWest: cycleFrom - 0.3, edgeEast: footTo + 0.3 };
+}
+// The deck's outer edges s m along it, where its steel sides hang: past the railway and the footway between the ends, past the
+// barriers near them, where the deck is its roads alone
+function deckEdges(s) {
+  const lay = layout(s);
+  if (s >= 60 && s <= BRIDGE_LENGTH - 60) return { west: lay.edgeWest, east: lay.edgeEast };
+  return { west: lay.roadWest - BARRIER.width, east: lay.roadEast + BARRIER.width };
 }
 // The arch's trusses: the west one beside the roadway, the east one between the bus lane and the Cahill's lane, where its hangers
 // stand, at the middle of the span
@@ -136,6 +143,14 @@ const sandstoneArches = new THREE.MeshStandardNodeMaterial({ roughness: 0.92 });
 const lanternGlass = new THREE.MeshBasicNodeMaterial();
 lanternGlass.colorNode = mix(color(0xb5b3a8), color(0xffe9c0).mul(2.4), smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow));
 const deckSide = new THREE.MeshStandardNodeMaterial({ color: 0x5a6066, roughness: 0.7, metalness: 0.3 });
+// The deck's underside: grey steel plate, darker along the stringers that carry it, every 2.2 m across. Its uv's x is metres across
+// the deck over 10 (geometry() in buildHarbourBridge)
+function deckUnderside() {
+  const material = new THREE.MeshStandardNodeMaterial({ roughness: 0.75, metalness: 0.35 });
+  const stringer = smoothstep(0.38, 0.46, abs(fract(uv().x.mul(10 / 2.2)).sub(0.5)));
+  material.colorNode = mix(color(0x555b60), color(0x33373b), stringer);
+  return material;
+}
 
 // Struts: a unit box stretched between two points
 const X = new THREE.Vector3(0, 0, 1);
@@ -368,6 +383,18 @@ function buildHarbourBridge(group) {
     }
   }
 
+  // From below: a steel cross girder from one side of the deck to the other at each hanger over the water and at each bay of the
+  // approaches' trusses, under the plate that closes the deck's underside (with the deck's strips, below). Not where the deck is too
+  // near the ground for anyone to be under it.
+  const girder = (s) => {
+    const { west, east } = deckEdges(s), y = deckHeight(s) - DECK_DEPTH;
+    const p = axis(s);
+    if (y - Math.max(WATER, groundHeight(p.x, p.z)) < 4) return;
+    strut(at(s, west + 0.3, y - 0.8), at(s, east - 0.3, y - 0.8), 0.7, 1.6);
+  };
+  for (let i = 0; i <= PANELS; i++) girder(middle + (i / PANELS * 2 - 1) * halfSpan);
+  for (let s = 40; s < BRIDGE_LENGTH - 40; s += TRUSS_BAY) if (s < middle - halfSpan - 6 || s > middle + halfSpan + 6) girder(s);
+
   // Lane gantries over the roadway, where the video of the drive over has them (plan 5: 1:06, 1:21, 1:33, 1:57, 2:06, 2:18, 2:27), from
   // barrier to barrier: a light over the middle of each of the six lanes whose direction the time of day sets (js/bridge.js deckLanes()),
   // an arrow for those coming your way and a cross for those not, and the 70 sign at each end
@@ -568,7 +595,7 @@ function buildHarbourBridge(group) {
   };
   // One row of vertex pairs per station, for each strip
   const opening = rampOpenings();
-  const strips = ['road', 'footway', 'rail', 'cycleway', 'barrierWest', 'barrierEast', 'separator', 'flankWest', 'flankEast'];
+  const strips = ['road', 'footway', 'rail', 'cycleway', 'barrierWest', 'barrierEast', 'separator', 'flankWest', 'flankEast', 'underside'];
   const rows = Object.fromEntries(strips.map((k) => [k, []]));
   for (const s of stations) {
     const y = deckHeight(s) - 0.04;
@@ -595,6 +622,9 @@ function buildHarbourBridge(group) {
       ribbon(r.separator, s, mid - half, mid - half, top, y, -1, 0, 0);
       ribbon(r.separator, s, mid + half, mid + half, y, top, 1, 0, 0);
     }
+    // The underside, from one steel side to the other, facing down: the pairs run east to west, so it faces down as the road faces up
+    const edges = deckEdges(s), under = y + 0.04 - DECK_DEPTH;
+    ribbon(r.underside, s, edges.east, edges.west, under, under, 0, -1, 0);
     if (full) {
       if (!opening(s, 1)) ribbon(r.footway, s, lay.footFrom, lay.edgeEast, y + 0.18, y + 0.18);
       if (!opening(s, -1)) {
@@ -621,12 +651,13 @@ function buildHarbourBridge(group) {
     footway: new THREE.MeshStandardNodeMaterial({ color: 0x9a948a, roughness: 0.9 }),
     rail: new THREE.MeshStandardNodeMaterial({ color: 0x4e4a46, roughness: 0.95 }),
     cycleway: new THREE.MeshStandardNodeMaterial({ color: 0x7d7a72, roughness: 0.9 }),
-    barrierWest: barrierMat, barrierEast: barrierMat, separator: barrierMat, flankWest: flankMat, flankEast: flankMat
+    barrierWest: barrierMat, barrierEast: barrierMat, separator: barrierMat, flankWest: flankMat, flankEast: flankMat,
+    underside: deckUnderside()
   };
   for (const key of Object.keys(materials)) {
     for (const run of runs(rows[key])) {
       const mesh = new THREE.Mesh(geometry(run), materials[key]);
-      mesh.castShadow = key.startsWith('flank') || key.startsWith('barrier');
+      mesh.castShadow = key.startsWith('flank') || key.startsWith('barrier') || key === 'underside';
       mesh.receiveShadow = true;
       mesh.userData.lifted = true;
       bridge.add(mesh);

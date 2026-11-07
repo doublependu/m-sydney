@@ -7,7 +7,7 @@ import test from 'node:test';
 // two of them over the lines, and nothing was painted where two of the deck's roads met.
 globalThis.fetch = async (url) => new Response(fs.readFileSync(new URL(url)));
 console.info = () => {};
-const { BRIDGE_LENGTH, DECK_REACH, bridgeAt, bridgePoint, deckHeight, deckLanes, deckLines, deckRoadPoint } = await import('../js/bridge.js');
+const { BRIDGE_LENGTH, DECK_REACH, bridgeAt, bridgePoint, deckHeight, deckLanes, deckLines, deckRoadPoint, deckSpanAt } = await import('../js/bridge.js');
 const { edgeHeight, linkById } = await import('../js/surfaces.js');
 const { buildRoadNetworkSteps } = await import('../js/road-network.js');
 const { buildRoadPaintSteps } = await import('../js/road-paint.js');
@@ -105,6 +105,19 @@ test('each gantry has a light over the middle of each of lanes 1-6 and no others
     });
     for (let i = 0; i + 1 < lights.length; i++) assert.ok(lights[i + 1].off - lights[i].off >= 3, `lights ${i + 1} and ${i + 2} at ${g} m`);
   }
+});
+
+// At the south end, from where the southbound's and the Cahill's ramps meet the deck at 170 m, those roads were beside the deck, not on it:
+// the deck stopped at the northbound's edge, its east barrier stood in the southbound's lanes, and the gantry at 200 m had lights over the
+// four lanes north only
+test('the deck takes in every lane at its south end, the barrier clear of them and a light over each of lanes 1-6 at 200 m', () => {
+  for (let s = 176; s <= 240; s += 2) {
+    const lanes = deckLanes(s), span = deckSpanAt(s);
+    assert.ok(lanes.length === 8 && lanes.every((l) => l.deck), `${lanes.length} lanes at ${s} m, ${lanes.filter((l) => l.deck).length} the deck's`);
+    const east = Math.max(...lanes.map((l) => l.off + l.width / 2));
+    assert.ok(span.east + 0.5 - east >= 0.5, `the east barrier ${(span.east + 0.5 - east).toFixed(2)} m from the outermost lane at ${s} m`);
+  }
+  assert.equal(gantryLights(200).length, 6);
 });
 
 test('a line between every two lanes side by side on the deck, solid between the directions and beside the bus lane', () => {

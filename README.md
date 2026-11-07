@@ -28,7 +28,7 @@ Which test when:
 
 | Command | Time | When |
 |---|---|---|
-| `npm run check` | About 40 s | Every change: unit tests, build, ground, how the roads drive, how traffic moves, deploy size, on the 80 km² around the CBD |
+| `npm run check` | About 40 s | Every change: unit tests, build, ground, how the roads drive, roads on two levels, how traffic moves, deploy size, on the 80 km² around the CBD |
 | `npm run check -- --full` | About 10 min | When the map changes: the same over the whole map, and how many tiles pass |
 | `npm run play` | About 5 min | Before saying something works: the key scenarios, no video |
 | `npm run play -- --changed` | Varies | After a larger change: the scenarios `git diff` says it can affect |
@@ -47,9 +47,12 @@ Play options: `--only=first-minute,harbour-bridge --video --fast --realtime --re
 times quicker on the long drives; scenarios that measure frames stay in real time. Those, and the ones that need a clean GPU,
 run one at a time after the rest (`ALONE` in `tools/play/run.mjs`).
 
-Two checks need no browser. `node tools/check-roads.mjs [--list] [--tiles=0_-2,1_-2]` walks every lane of every road by the
+Three checks need no browser. `node tools/check-roads.mjs [--list] [--tiles=0_-2,1_-2]` walks every lane of every road by the
 game's own rules and says what would slant, jolt or stop a car: lean, change of grade, steps, roll, dead stops, buildings and
-kerbs in lanes, paving over roads. `node tools/check-traffic.mjs [--seeds=3] [--at=northSydney,townHall,bridgeDeck]` runs the
+kerbs in lanes, paving over roads. `node tools/check-layers.mjs [--list] [--tiles=0_-2,1_-2]` looks at roads on more than one
+level: a road under another with too little room, two roads sunk to different heights sharing the ground, buildings, trees and
+piers in the lanes of bridges, tunnels and cuttings, and tunnels and bridges drawn higher or lower than cars drive on them, or not
+at all. `node tools/check-traffic.mjs [--seeds=3] [--at=northSydney,townHall,bridgeDeck]` runs the
 real traffic about 50 times faster than real time with a seeded random number generator, and says how much is stopped, how
 fast the rest moves, what's holding each queue up, how long a car waits at a red and how often nobody is using the green. It
 also says how many cars and people a place wants, by who lives and works there, and how many cars it got: `--at=cronullaHouses,
@@ -126,9 +129,12 @@ what it did.
   are drawn, so ground meshes are built on the hills and moving things are lifted as their transforms are written. Keep
   any new code on the flat side of that line.
 - **Every road has a height.** `tools/build-heights.mjs` solves bridges, viaducts, tunnels, cuttings and motorways so that
-  stacked roads clear each other, and writes the profiles into the generated map. `js/structures.js` draws what's off the
+  stacked roads clear each other, and writes the profiles into the generated map: where they cross, and where OSM draws one on
+  top of the other without crossing, as a double-deck tunnel's two carriageways. `js/structures.js` draws what's off the
   ground. A surface changes only across a step of 1.5 m or less: anything bigger is a parapet or a tunnel wall, so cars at
-  the same (x, z) on different levels never meet. Something on a structure stays on it until it ends.
+  the same (x, z) on different levels never meet. Something on a structure stays on it until it ends. On the ground, a road's own
+  carriageway is its level: where two roads at different heights run side by side, the ground is each one's across its own
+  lanes (`groundHeight()` in `js/surfaces.js`).
 - **Every road on the ground has a shape.** Draped over the land, a road across a hillside leans with it. Instead each road's
   height is solved along it, smooth and near the land, shared at junctions and with any road overlapping it, with no more than
   4% of lean across it. A junction is a flat tilted plate where one fits. `roadHeight()` in `js/surfaces.js` is the one
@@ -142,9 +148,10 @@ what it did.
   `tools/tiles/separate-tubes.mjs` moves them apart inside, leaving the mouths where they are. A tunnel's walls hold: nothing
   moves sideways from one tunnel into another (`chooseSurface()`). The sea is one sheet at sea level, so it runs through any tunnel
   that dips below it: it isn't drawn while the camera's in a tube.
-- **What stands under a deck fits under it.** `roomUnderDeck()` in `js/surfaces.js` says how much room there is. A building whose
-  height is a guess is cut down to fit when the tiles are made (`tools/tiles/derive.mjs`), and trees, street lights and signs
-  aren't put where they wouldn't fit.
+- **What stands under a deck fits under it.** `roomUnderDeck()` in `js/surfaces.js` says how much room there is. A building a deck
+  runs through is cut down to fit when the tiles are made, and one over a road in a cutting or a tunnel's open cutting stands on a
+  floor raised to leave a lane's height over it, its walls stopping there (`js/wall-foot.js`). One that can be neither is left out
+  (`tools/tiles/derive.mjs` lists those whose height was measured). Trees, street lights and signs aren't put where they wouldn't fit.
 - **Who lives and works where.** `tools/build-population.mjs` reads the ABS 2021 Census's Mesh Blocks, 30-60 homes each with their
   residents, dwellings and land use, and NSW's land zoning, into a 10 m raster. Each tile gets a 100 m grid of it, with workers judged
   from the floor area of the buildings that aren't homes (`tools/tiles/place-grid.mjs`), and `js/places.js` reads it. Add `?places=1`

@@ -202,7 +202,10 @@ function onBridge(x, z) {
 }
 // The deck east of the corridor: its southbound lanes, the bus lane and the Cahill's lane, from where they leave the approaches'
 // ramps to where they reach them again. A way all on it is part of the deck (its height is the deck's, tools/build-heights.mjs).
-const DECK_EAST = { from: 4.5, to: 28, s0: 170, s1: 1800 };
+// s here is along OSM's northbound ways (bridgeRaw), which start 24 m north of the game's corridor (js/bridge.js). The southbound's
+// and the Cahill's pieces from where their ramps meet the deck (170 m along the corridor, 146 m here) to 228 m (204 m here) are on
+// it: from 170 they weren't, so the deck stopped at the northbound's edge and its east barrier stood in the southbound's lanes.
+const DECK_EAST = { from: 4.5, to: 28, s0: 140, s1: 1800 };
 const onDeckEast = (x, z) => {
   const b = onBridge(x, z);
   return b.off >= DECK_EAST.from && b.off <= DECK_EAST.to && b.s >= DECK_EAST.s0 && b.s <= DECK_EAST.s1;

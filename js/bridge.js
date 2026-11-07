@@ -159,8 +159,8 @@ function deckLayout() {
   if (layoutCache) return layoutCache;
   const bins = Math.ceil(LENGTH / LANE_STEP) + 1;
   // Each road over the deck: the deck's own, and those that carry one of them on beyond where the map calls them the deck's, at its
-  // level and alongside it (the southbound and the Cahill's run on beside the northbound for 60 m at the south end). Where it is across
-  // the deck at each place along it, and which way it runs.
+  // level and alongside it, where a road the map ends short of the deck's ends runs on beside it. Where it is across the deck at each
+  // place along it, and which way it runs.
   const travel = ([, flat, , , , , , , dir]) => {
     const a = [flat[0], flat[1]], b = [flat[flat.length - 2], flat[flat.length - 1]];
     return dir > 0 ? [a, b] : [b, a];

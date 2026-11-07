@@ -213,9 +213,10 @@ function drawnRoad(x, z, near = Infinity, below = 1) {
         const X = cross(p, q, r, s);
         if (!X) continue;
         seen.add(key);
-        // A road on the ground stands on the ground there; a structure has its own height
-        const ya = A.kind ? p.y + (q.y - p.y) * X.t : groundHeight(X.x, X.z);
-        const yb = B.kind ? r.y + (s.y - r.y) * X.u : groundHeight(X.x, X.z);
+        // A road on the ground stands on the ground there; a structure has its own height, and so does a street sunk into a cutting:
+        // read from the ground, two cuttings crossing were always 0 m apart, however far apart they were
+        const ya = A.kind || A.cut ? p.y + (q.y - p.y) * X.t : groundHeight(X.x, X.z);
+        const yb = B.kind || B.cut ? r.y + (s.y - r.y) * X.u : groundHeight(X.x, X.z);
         found.push({ a: A.name || '-', b: B.name || '-', kinds: `${A.kind}${B.kind}`, x: Math.round(X.x), z: Math.round(X.z), apart: +Math.abs(ya - yb).toFixed(1) });
       }
     }

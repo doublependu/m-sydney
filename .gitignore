@@ -157,3 +157,17 @@ tools/data/
 
 
 ref/
+
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Blender's backup saves
+*.blend1
+*.blend2

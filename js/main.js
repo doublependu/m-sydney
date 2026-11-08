@@ -1063,8 +1063,12 @@ async function initApp() {
 
   // --- Tiles around the player -----------------------------------------------------------------------------------------
   const shadowOf = () => [lightingSystem.sunLight.shadow, renderer.backend.isWebGPUBackend === true];
+  let operaPlain = []; // js/opera-house.js: what the Opera House's model takes the place of near it
   const interiors = createInteriors({
     reveal: (group) => revealStage(group),
+    shown: (id, on) => {
+      if (id === 'opera-house') for (const mesh of operaPlain) mesh.visible = !on;
+    },
     lights: lightPools.interiorLights,
     colliders: { add: (list) => controllerManager.addColliders(list), remove: (list) => controllerManager.removeColliders(list) },
     // Not in the first view: a model comes once the city round you has
@@ -1072,6 +1076,7 @@ async function initApp() {
     debug: new URLSearchParams(location.search).get('debug') === '1'
   });
   let indoors = false;
+  let indoorShelter = 0.85; // how far the room you're in shuts out the sky (js/interiors.js): a glazed foyer less, a concert hall all of it
   // Inside a house the city stays drawn, for the view from its windows: only the walk slows, and the sky's light dims
   function setIndoors(on) {
     if (on === indoors) return;
@@ -1318,7 +1323,8 @@ async function initApp() {
     const heldForLandmarks = landmarkTiles.filter((key) => !isHeld(key));
     yield holdTiles(landmarkTiles);
     const landmarkStage = new THREE.Group();
-    const { colliders: landmarkColliders, group: landmarks } = buildLandmarks(landmarkStage);
+    const { colliders: landmarkColliders, group: landmarks, operaPlain: plain } = buildLandmarks(landmarkStage);
+    operaPlain = plain;
     controllerManager.addColliders(landmarkColliders);
     yield;
     addHarbourBridge(landmarks);
@@ -2016,6 +2022,7 @@ async function initApp() {
       const head = follows ? { x: followed.position.x, y: bodyY + 1.8, z: followed.position.z } : null;
       const here = interiors.update(dt, followed, controllerManager.activeMode, eye, cameraSystem.camera.getWorldDirection(lookDirection), head);
       setIndoors(here.indoors);
+      indoorShelter = here.shelter ?? 0.85;
       showPrompt(here.prompt);
       const near = here.kept ? 0.1 : 0.35;
       if (cameraSystem.camera.near !== near) {
@@ -2032,7 +2039,7 @@ async function initApp() {
       if (eye.y > top - 0.6) eye.y = Math.max(bodyY + 0.8, top - 0.6);
       // Inside a tunnel the sky's light fades out, and back in at the far portal. Inside a house, some comes in through its windows.
       const eyeInTube = inTunnel(sid, eye.x, eye.z);
-      const shelterGoal = indoors ? 0.85 : inTunnel(sid, x, z) && eyeInTube ? 1 : 0;
+      const shelterGoal = indoors ? indoorShelter : inTunnel(sid, x, z) && eyeInTube ? 1 : 0;
       lightingSystem.setShelter(lightingSystem.shelter + (shelterGoal - lightingSystem.shelter) * Math.min(1, dt * 2.5));
       // A tunnel that goes below sea level has the sea's sheet running through it. From inside a closed tube nothing outside
       // shows anyway, so the sea isn't drawn while the camera's in one.

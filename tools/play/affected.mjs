@@ -22,6 +22,8 @@ export const COVERS = {
   'long-drive': { files: /^js\/(main|surfaces)\.js$/, area: null },
   'walk-in': { files: /^(js\/(interiors|interior-data|model-sites|buildings|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/.*)$/, area: null },
   'lower-fort-55': { files: /^(js\/(interiors|interior-data|model-sites|surfaces|controllers|cameras|pedestrians|city-grid|ground-geometry)\.js|public\/models\/lfs-.*)$/, area: null },
+  'opera-house': { files: /^(js\/(interiors|interior-data|model-sites|opera-house|landmarks|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/opera-.*)$/, area: [440, 600, -1960, -1740] },
+  'opera-house-phone': { files: /^(js\/(interiors|interior-data|model-sites|opera-house|landmarks|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/opera-.*)$/, area: [440, 600, -1960, -1740] },
   'walk-in-phone': { files: /^(js\/(interiors|interior-data|model-sites|buildings|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/.*)$/, area: null },
   'origin-move': { files: /^js\/(world-origin|main|scene-culling|traffic|pedestrians|buildings|trees)\.js$/, area: null },
   'origin-far': { files: /^js\/(world-origin|main|scene-culling|traffic|pedestrians|buildings|trees)\.js$/, area: null },

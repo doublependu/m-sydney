@@ -490,6 +490,103 @@ function lowerFortScenario() {
   };
 }
 
+// The Opera House (js/model-sites.js, opera-house): up the Monumental Steps and the flight to the upper podium, in at the Concert Hall's
+// south doors, up its grand stair and round to the hall, a seat in the stalls, up the side aisle to the top of the circle, and down the
+// red stair to the northern foyer, to sit and look out over the harbour
+function operaHouseScenario() {
+  return {
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      // The Concert Hall's own frame (js/opera-house.js): s north along it from the foot of its south glass, v across it, east
+      const HALL = { x: 495.9, z: -1822.5, yaw: -0.083 };
+      const at = (s, v) => {
+        const ux = Math.sin(HALL.yaw), uz = -Math.cos(HALL.yaw);
+        return { x: HALL.x + ux * s - uz * v, z: HALL.z + uz * s + ux * v };
+      };
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const level = async () => (await human.state()).surfaceY;
+      const fetched = () => debug(() => performance.getEntriesByType('resource').map((r) => r.name).filter((n) => /\/models\//.test(n)));
+      const walk = async (p, why, opts) => expect(await walkTo(human, p, opts), `never got ${why}`);
+      const near = (a, b, d = 0.1) => Math.abs(a - b) < d;
+      const open = async (p, id) => {
+        await face(human, p);
+        await human.wait(300);
+        const prompt = (await interior()).prompt;
+        expect(prompt === 'Open', `at door ${id} the prompt is ${prompt}`);
+        await human.press('KeyF');
+        const done = await human.until(async () => (await interior()).doors.find((d) => d.id === id)?.angle >= 1.59, { timeout: 20000, read: interior });
+        expect(done, `door ${id} never opened`);
+      };
+      const sit = async (seat, why) => {
+        await face(human, seat);
+        await human.wait(300);
+        expect((await interior()).prompt === 'Sit', `${why}: the prompt is ${(await interior()).prompt}`);
+        await human.press('KeyF');
+        await human.wait(1200);
+        expect((await interior()).seated, `not sitting ${why}`);
+      };
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      // At the foot of the Monumental Steps, on the forecourt
+      await debug(() => window.__gameDebug.goto(497, -1752, Math.PI + 0.09, 'person'));
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'opera-house')?.out, null, { timeout: 60000, polling: 250 });
+      expect(!(await fetched()).some((n) => /opera-house-ch/.test(n)), 'the Concert Hall was fetched before its door was opened');
+
+      // Up the steps, across the lower podium, up the flight to the upper podium
+      await walk({ x: 497.5, z: -1790 }, 'up the Monumental Steps', { timeout: 40000 });
+      expect(near(await level(), 9.2), `on the lower podium at ${(await level()).toFixed(2)} m`);
+      await walk({ x: 495.5, z: -1806 }, 'to the flight up to the upper podium');
+      await walk({ x: 495.8, z: -1819.5 }, 'up the flight');
+      expect(near(await level(), 12.6), `on the upper podium at ${(await level()).toFixed(2)} m`);
+      // In at the west of the two south doors
+      // the door's in the glass running south-west from its point: in front of its middle, then through it
+      await walk(at(0.9, -3.6), 'to the south doors');
+      await open(at(1.95, -2.85), 'south0');
+      await walk(at(3.2, -2.0), 'through the south doors');
+      await walk(at(8, -3), 'into the south foyer');
+      expect((await interior()).room === 'south-foyer', `not in the south foyer but ${(await interior()).room}`);
+      // Up the grand stair to the landing round the hall's south end, along its west side to the hall's door
+      await walk(at(21, 0), 'to the grand stair');
+      await walk(at(34, 0), 'up the grand stair', { timeout: 40000 });
+      expect(near(await level(), 16.6) && (await interior()).room === 'landing', `up the grand stair, in ${(await interior()).room} at ${(await level()).toFixed(2)} m`);
+      await walk(at(39, -6.5), 'round the head of the stair');
+      await walk(at(42.8, -9.9), 'to the corner of the hall');
+      await walk(at(47.5, -14.2), 'into the west corridor');
+      await walk(at(60.7, -15.2), 'along the west corridor');
+      await walk(at(62.3, -15.1), 'to the hall\'s door');
+      await open(at(62.3, -14.0), 'hall-w');
+      await walk(at(62.4, -13.3), 'into the hall');
+      expect((await interior()).room === 'hall', `not in the hall but ${(await interior()).room}`);
+      metric('fpsInHall', (await debug(() => window.__gameDebug.frameCost())).fps);
+      // Along the fourth row of the stalls to a seat
+      await walk(at(64.65, -13.3), 'up the side aisle to the fourth row');
+      await walk(at(64.65, -10.0), 'along the fourth row');
+      await sit(at(65.2, -10.0), 'in the stalls');
+      metric('fpsSeated', (await debug(() => window.__gameDebug.frameCost())).fps);
+      await human.hold('KeyS', 150);
+      await human.wait(500);
+      expect(!(await interior()).seated, 'still sitting after moving');
+      // Up the side aisle, across the back of the stalls, up the circle to its top, out of its door
+      await walk(at(64.65, -13.3), 'back to the side aisle');
+      await walk(at(83.1, -13.3), 'up the side aisle to the back of the stalls', { timeout: 40000 });
+      await walk(at(85, -12.4), 'into the circle');
+      await walk(at(103.3, -12.3), 'up the circle', { timeout: 40000 });
+      expect(near(await level(), 24.25), `at the top of the circle at ${(await level()).toFixed(2)} m`);
+      await walk(at(103.3, -9.5), 'to the circle\'s door');
+      await open(at(104.0, -9.5), 'circle-n');
+      await walk(at(105.6, -9.3), 'out onto the stair\'s landing');
+      expect((await interior()).room === 'north-foyer', `not at the head of the stair but in ${(await interior()).room}`);
+      // Down the red stair, and to an ottoman by the glass
+      await walk(at(107.2, -9.3), 'onto the red stair');
+      await walk(at(117.3, -9.3), 'down the red stair', { timeout: 40000 });
+      expect(near(await level(), 18.6), `at the foot of the red stair at ${(await level()).toFixed(2)} m`);
+      await walk(at(118.2, -6.0), 'clear of the foot of the stair');
+      await walk(at(114.8, -1.0), 'to the ottomans by the glass');
+      await sit(at(113.95, -1.0), 'on an ottoman');
+      metric('fpsNorthFoyer', (await debug(() => window.__gameDebug.frameCost())).fps);
+    }
+  };
+}
+
 // Into the test interior (js/model-sites.js, with ?debug=1): its door, its stair, a chair, and out again
 function walkInScenario() {
   return {
@@ -1111,6 +1208,8 @@ export const SCENARIOS = {
   'walk-in': walkInScenario(),
   'walk-in-phone': { ...walkInScenario(), profile: 'phone' },
   'lower-fort-55': lowerFortScenario(),
+  'opera-house': operaHouseScenario(),
+  'opera-house-phone': { ...operaHouseScenario(), profile: 'phone' },
   'origin-move': originScenario(''),
   'origin-far': originScenario('originTest=85000'),
   'signal-wait': {

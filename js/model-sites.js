@@ -6,6 +6,7 @@
 //   replaces: points in the buildings the tile build leaves out for it, in its own frame (tools/tiles/derive.mjs)
 //   cut: where the ground under it is left undrawn, for what it has below the street, in its own frame, and how deep (js/city-grid.js)
 //   debug: drawn only with ?debug=1
+//   reach: m from its middle that it's walked in and round, its doors open, and its inside is kept (60 unless it says)
 const MODEL_SITES = [
   // A plain two-storey house on Hyde Park's lawn, for the walk-in scenario and the unit tests
   { id: 'test-interior', file: 'models/test-interior', x: 440, z: -300, yaw: 0, y: null, debug: true, replaces: [] },
@@ -15,7 +16,10 @@ const MODEL_SITES = [
     id: 'lfs-west', file: 'models/lfs-west', x: -276.7715, z: -1771.2289, yaw: 1.0227, y: 19.75,
     replaces: [[0, -1], [-9.0, -0.4], [-15.8, -0.6], [-21.8, -0.7], [9.6, -1.1], [15.2, -2.0], [21.1, -1.4], [26.8, -1.7]],
     cut: { poly: [[-5.83, -5.96], [6.53, -5.96], [4.86, 8.26], [-5.83, 8.26]], y: -3.3 }
-  }
+  },
+  // The Sydney Opera House near it: its podium, steps and glass, which the game's own (js/opera-house.js) stand in for further off; and
+  // the Concert Hall, through its south doors. Unturned, its heights the world's.
+  { id: 'opera-house', file: 'models/opera-house', x: 505, z: -1862, yaw: 0, y: 0, reach: 160, replaces: [] }
 ];
 
 const toWorldOf = (site, x, z) => {

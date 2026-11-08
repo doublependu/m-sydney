@@ -1,0 +1,30 @@
+{
+  "name": "Bennelong Point and East Circular Quay: the buildings round the Opera House",
+  "box": [300, -2000, 650, -1400],
+  "buildings": [
+    {
+      "at": [360, -1609],
+      "expect": [8, 18],
+      "height": 42,
+      "why": "Bennelong Apartments, East Circular Quay's northern block ('the Toaster'): fifteen storeys in OpenStreetMap, and as high as the Opera House's shells are half way up from the bridge and Circular Quay West (dan-freeman, angus-waters). The map had 13 m."
+    },
+    {
+      "at": [360, -1572],
+      "expect": [8, 18],
+      "height": 40,
+      "why": "East Circular Quay's block between Bennelong Apartments and Opera Quays, a storey under them in the same photos. The map had 12 m."
+    },
+    {
+      "at": [360, -1513],
+      "expect": [3, 10],
+      "height": 36,
+      "why": "Opera Quays, East Circular Quay's southern block over its colonnade: twelve storeys in OpenStreetMap (dan-freeman, angus-waters). The map had 6 m."
+    },
+    {
+      "at": [538, -1556],
+      "expect": [3, 10],
+      "height": 13,
+      "why": "Government House in the garden, two storeys of sandstone under its battlements (dan-freeman, nico-smit-8Rk1DqL_Lkc). The map had 6 m."
+    }
+  ]
+}

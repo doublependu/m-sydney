@@ -167,6 +167,10 @@ what it did.
   (`roadShare()` in `js/traffic.js`). People out walking are one for every 200 residents and workers within 350 m, and a crowd at each
   station. The graphics level's numbers are the most there are. Cars are parked along the kerbs of streets of homes, as many as
   the homes there, drawn as the far cars are and simulating nothing; the player hits them.
+- **The Opera House's shells are cut from spheres,** all of one radius, as Utzon's were (`js/opera-house.js`). Each shell is two
+  mirrored halves with four corners: its tip and the end of its ridge on the hall's centre line, the foot of its valley at the side, and
+  the pedestal its arch comes down to. The ridge is where a half's sphere meets its mirror's, and the valley where two shells back to back
+  meet. Their places come from OpenStreetMap's podium and halls, their heights from the long section and the side photos.
 - **Houses look like Sydney's.** Most outlines in the suburbs come with no use. `tools/build-buildings.mjs` makes one a house, flats or a
   shop by its Mesh Block and zoning, and gives a house a style by its group of suburbs: Victorian terrace, Federation, California
   bungalow, post-war fibro, brick veneer, project home, beach house, walk-ups (`js/house-styles.js`). A style says its walls, roof
@@ -245,6 +249,21 @@ What a model has to be:
   scenario walks into it, up its stair, sits and comes out again; `tests/interiors.test.mjs` reads its JSON.
 - **Lower Fort St, west side** (`lfs-west`): a row of eight houses in Millers Point as one model, one of them with its inside. The
   `lower-fort-55` scenario walks through it.
+- **The Opera House** (`opera-house`): its shells are the game's own, drawn near and far (`js/opera-house.js`). Near it a model takes the
+  place of the game's plain podium, steps and glass: the granite podium, the Monumental Steps and the flights to the upper podium, which
+  you can climb, the glass walls on their mullions and the louvres, the parapets, and round it the Broadwalk's lamps, the Opera Bar's
+  umbrellas and the gate into the garden. Its site stands unturned with the world's heights (`y: 0`), and walks a `reach` of 160 m. Its
+  script asks `operaGeometry()` for the shells, arches and glass, so its glass meets them, and writes the arches it was built on into the
+  JSON (`builtOn`): `tests/opera-house.test.mjs` fails if the shells have moved since, and the models must be built again. The Concert Hall
+  and its foyers (`opera-house-ch`) are fetched at its south doors: up the grand stair, round to the doors at the front of the stalls, up
+  to the top of the circle and down the red stair to the northern foyer. The `opera-house` scenario walks that, and sits in the stalls
+  and by the glass.
+- **What a big inside adds:** `instances` in its JSON draw a node many times from one (the hall's seats: a node, the room it's in, and
+  `[x, y, z, yaw]` for each), as one InstancedMesh for each of its materials; each seat to sit in is in `seats` as well. A room can say
+  how far it shuts out the sky (`shelter`, 0.85 unless it says: a glazed foyer less, a concert hall all of it) and how much its own colours
+  light it (`glow`, 0.1 unless it or its inside says). The material `bronze` is glass you see through both ways, tinted, lit warm at night.
+- **Budgets for the Opera House:** its outside under 2 MB, loaded with its tile; the Concert Hall under 4 MB and 100,000 triangles drawn on
+  a phone, its seats included.
 
 ## License and data
 

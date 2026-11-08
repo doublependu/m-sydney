@@ -18,7 +18,7 @@ import {
 // - In it or beside it, the camera behind you is kept clear of its walls, floors and ceilings, so it never looks through one.
 // Every site's model is in its own frame (x across, z along, y up from its ground floor), placed at (x, y, z) and turned by yaw.
 
-const RELEASE = 60; // m from a building that its inside is let go of
+const RELEASE = 60; // m from a building that its inside is let go of, unless its site says (`reach`)
 const DEBUG_RANGE = 700; // m: a debug site is drawn within this, having no tile of its own
 const AJAR = 0.3; // of a door's swing, while what's behind it is fetched
 const LIGHTS_REACH = 9; // m: a room's lamp lights you within this
@@ -36,7 +36,12 @@ function materialFor(name, inside) {
   const key = `${inside ? 'in' : 'out'}:${name}`;
   let m = materials.get(key);
   if (m) return m;
-  if (name === 'glass') {
+  if (name === 'bronze') {
+    // The Opera House's glass walls: bronze-tinted, seen through both ways, and lit warm from inside at night
+    m = new THREE.MeshStandardNodeMaterial({ color: 0x4a3c2e, roughness: 0.06, metalness: 0.35, transparent: true, opacity: 0.32, depthWrite: false,
+      flatShading: true });
+    m.emissiveNode = color(0xffc27a).mul(smoothstep(0.55, 1.2, cityUniforms.uInteriorGlow).mul(0.25));
+  } else if (name === 'glass') {
     // From the street a window like the neighbours': dark by day, lit at night. It faces out only, so from inside you see through it.
     m = new THREE.MeshStandardNodeMaterial({ color: 0x232b30, roughness: 0.06, metalness: 0.1, flatShading: true });
     // About half of them lit, as the city's are, each a little warmer or cooler: each pane's vertex colour is two numbers, the same over
@@ -84,18 +89,50 @@ function dispose(group) {
   group.removeFromParent();
   group.traverse((o) => {
     if (!o.isMesh) return;
+    if (o.isInstancedMesh) o.dispose();
     o.dispatchEvent({ type: 'dispose' });
     o.geometry.dispose();
   });
 }
 
 /**
- * `reveal(group)` puts a group in the scene with its shaders ready. `colliders` is { add, remove }. `lights` are PointLights kept for
- * this. `tileBuilt(x, z)` says whether the tile at (x, z) is drawn, so a site can be. `debug`: the debug sites too.
+ * The things an inside draws many of from one (a hall's seats): each `instances` entry names a node of the model, the room it's in and
+ * where each copy stands, [x, y, z, yaw]. The node is drawn as one InstancedMesh for each of its materials, in its room's node, so it's
+ * drawn when the room is; the node itself goes.
  */
-function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }) {
+function instance(scene, list = []) {
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), at = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
+  for (const entry of list) {
+    const proto = scene.getObjectByName(entry.node);
+    const room = scene.getObjectByName(`room_${entry.room}`) ?? scene;
+    if (!proto || !entry.at.length) continue;
+    const parts = [];
+    proto.traverse((o) => { if (o.isMesh) parts.push(o); });
+    for (const part of parts) {
+      part.updateMatrix();
+      const mesh = new THREE.InstancedMesh(part.geometry, part.material, entry.at.length);
+      entry.at.forEach(([x, y, z, yaw], i) => {
+        m.compose(at.set(x, y, z), q.setFromAxisAngle(up, yaw), one).multiply(part.matrix);
+        mesh.setMatrixAt(i, m);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      mesh.name = `${entry.node}_${part.material.name}`;
+      mesh.userData.lifted = true;
+      room.add(mesh);
+    }
+    proto.removeFromParent();
+  }
+}
+
+/**
+ * `reveal(group)` puts a group in the scene with its shaders ready. `colliders` is { add, remove }. `lights` are PointLights kept for
+ * this. `tileBuilt(x, z)` says whether the tile at (x, z) is drawn, so a site can be. `shown(id, on)` hears when a site's outside is drawn
+ * or let go of, for what it takes the place of. `debug`: the debug sites too.
+ */
+function createInteriors({ reveal, colliders, lights, tileBuilt, shown = () => {}, debug = false }) {
   const sites = MODEL_SITES.filter((s) => debug || !s.debug).map((s) => ({
-    ...s, y: s.y ?? null, out: null, inside: null, loading: false, failed: false, ref: null
+    ...s, y: s.y ?? null, reach: s.reach ?? RELEASE, out: null, inside: null, loading: false, failed: false, ref: null
   }));
   let here = null; // { site, room } the player is in
   let prompt = null; // { kind: 'door' | 'seat', site, door | seat, label }
@@ -229,6 +266,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
       const bounds = { minX: Math.min(...xs) - 1, maxX: Math.max(...xs) + 1, minZ: Math.min(...zs) - 1, maxZ: Math.max(...zs) + 1 };
       site.out = { group, data, walls, bounds, doors: addDoors(site, data.doors, scene, 'out', data.walls) };
       placeFloors(site);
+      shown(site.id, true);
     } catch (e) {
       console.warn('[interiors]', site.id, e);
       site.failed = true; // what can't be had isn't asked for again
@@ -245,6 +283,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
     removeDoors(out.doors);
     dispose(out.group);
     clearFloor(site.id);
+    shown(site.id, false);
   }
 
   async function fetchInside(site, file) {
@@ -254,6 +293,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
       const { scene, data } = await loadModel(file);
       if (site.inside !== record) return;
       prepare(scene, true);
+      instance(scene, data.instances);
       const group = groupFor(site, scene, `Inside_${site.id}`);
       for (const r of data.rooms) {
         const node = scene.getObjectByName(r.node);
@@ -316,8 +356,9 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
       else if (!wanted && site.out) dropOutside(site);
       if (!site.out) continue;
       // Which floor counts, where there are floors over floors: the one under the player's feet now
-      if (mode === 'person' && !player.surface && Math.hypot(site.x - x, site.z - z) < 60) site.ref = player.surfaceY ?? site.ref;
-      if (site.inside && Math.hypot(site.x - x, site.z - z) > RELEASE && here?.site !== site) letGoInside(site);
+      const away = Math.hypot(site.x - x, site.z - z);
+      if (mode === 'person' && !player.surface && away < site.reach) site.ref = player.surfaceY ?? site.ref;
+      if (site.inside && away > site.reach && here?.site !== site) letGoInside(site);
       for (const door of doorsOf(site)) swing(door, dt);
     }
 
@@ -356,7 +397,10 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
 
     placeLights(x, z);
     findPrompt(player, mode, look);
-    return { indoors: here !== null, prompt: prompt && prompt.label, kept, close: kept && held < EYE_CLOSE };
+    // How much the inside's own colours glow (its room's `glow`, or its own, a house's 0.1 unless they say), and how sheltered from the
+    // sky its room is
+    indoorLight.value = here?.room.glow ?? here?.site.inside.data.glow ?? 0.1;
+    return { indoors: here !== null, prompt: prompt && prompt.label, kept, close: kept && held < EYE_CLOSE, shelter: here?.room.shelter ?? null };
   }
 
   /**
@@ -431,7 +475,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, debug = false }
     const { x, z } = player.position;
     let best = null;
     for (const site of sites) {
-      if (!site.out || Math.hypot(site.x - x, site.z - z) > 40) continue;
+      if (!site.out || Math.hypot(site.x - x, site.z - z) > site.reach) continue;
       const p = toLocal(site, x, z);
       const feet = (player.surfaceY ?? site.y) - site.y;
       const heading = player.heading - site.yaw;

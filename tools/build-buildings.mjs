@@ -203,7 +203,7 @@ if (places) {
 }
 
 // Hand edits (tools/local/): a style of house given to the buildings of an area, of the kinds and no taller than it says. The style then
-// says how many storeys a building of no measured height has, and its roof.
+// says how many storeys a building of no measured height has, and its roof. (Edits of one building, by a point in it, come later.)
 {
   const inArea = (poly, x, z) => {
     let c = false;
@@ -303,12 +303,43 @@ for (const r of buildings) {
   stats.storeys = (stats.storeys || 0) + 1;
 }
 
+// Hand edits (tools/local/), one building each: found by a point inside it, given the height the photos show, where the build has the
+// height the edit expects there. If it hasn't, or there's no building there, the build stops: the data has changed under the edit.
+{
+  const inRing = (ring, x, z) => {
+    let c = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [ax, az] = ring[i], [bx, bz] = ring[j];
+      if ((az > z) !== (bz > z) && x < ((bx - ax) * (z - az)) / (bz - az) + ax) c = !c;
+    }
+    return c;
+  };
+  for (const area of localAreas()) {
+    for (const edit of area.buildings || []) {
+      if (!edit.at) continue;
+      const [x, z] = edit.at;
+      const r = buildings.find((b) => !b.part && b.polygons.some(([outer]) => inRing(outer.map(([px, pz]) => [px * PRECISION, pz * PRECISION]), x, z)));
+      if (!r) throw new Error(`tools/local/${area.file}: no building at (${x}, ${z}) (${edit.why})`);
+      const [lo, hi] = edit.expect;
+      if (r.height < lo || r.height > hi) {
+        throw new Error(`tools/local/${area.file}: the building at (${x}, ${z}) is ${r.height.toFixed(1)} m, not ${lo}-${hi}: check the edit (${edit.why})`);
+      }
+      console.log(`[buildings] tools/local/${area.file}: (${x}, ${z}) from ${r.height.toFixed(1)} m to ${edit.height} m`);
+      // A building that had parts over it keeps its group number though they're under it now, so no other building's changes
+      if ((partsOf.get(r.b.id) || []).some((q) => q.top > r.height + 1)) r.keepGroup = true;
+      r.height = edit.height;
+      r.guess = false;
+    }
+  }
+}
+
 // Each part taller than its building stands on top of it, starting where the building's own walls stop, so no two walls
 // share a plane. Parts of a building share its floor and its group number.
 const pieces = [];
 let groups = 0;
 for (const r of buildings) {
   const parts = (partsOf.get(r.b.id) || []).filter((p) => p.top > r.height + 1);
+  if (!parts.length && r.keepGroup) groups++;
   if (parts.length) {
     r.group = ++groups;
     stats.withParts++;

@@ -5,7 +5,7 @@ import test from 'node:test';
 // Walking into buildings (js/interiors.js) stands on js/interior-data.js and on the JSON each model comes with. These read the committed
 // test interior (public/models/test-interior*.json): a hall with a stair up to a landing, three doors, two arches and some chairs.
 const {
-  clearOf, doorCollider, doorInReach, doorway, eyeReach, floorAt, leafAt, lineToWalls, roomAt, seatInReach, segmentCollider, standSpot,
+  clearOf, doorCollider, doorInReach, doorway, eyeReach, floorAt, floorHeight, inPoly, leafAt, lineToWalls, roomAt, seatInReach, segmentCollider, standSpot,
   toLocal, toWorld, visibleRooms, wallCollider
 } = await import('../js/interior-data.js');
 const { MODEL_SITES } = await import('../js/model-sites.js');
@@ -18,6 +18,18 @@ const walls = [...outside.walls, ...inside.walls];
 const doors = new Map([...outside.doors, ...inside.doors].map((d) => [d.id, d]));
 const room = (id) => inside.rooms.find((r) => r.id === id);
 const centre = (poly) => [poly.reduce((s, p) => s + p[0], 0) / poly.length, poly.reduce((s, p) => s + p[1], 0) / poly.length];
+/** A point in a room's plan: its middle, or the nearest point to that, on a 0.25 m grid, that's in it */
+function pointIn(poly) {
+  const [cx, cz] = centre(poly);
+  const xs = poly.map((p) => p[0]), zs = poly.map((p) => p[1]);
+  let best = null;
+  for (let x = Math.min(...xs); x <= Math.max(...xs); x += 0.25) {
+    for (let z = Math.min(...zs); z <= Math.max(...zs); z += 0.25) {
+      if (inPoly(poly, x, z) && (!best || Math.hypot(x - cx, z - cz) < Math.hypot(best[0] - cx, best[1] - cz))) best = [x, z];
+    }
+  }
+  return best ?? [cx, cz];
+}
 const stair = inside.floors.find((f) => f.plane);
 
 /** The node names in a binary glTF */
@@ -57,12 +69,13 @@ test('every model\'s JSON names only nodes it has, and every door that leads in 
       const inner = read(file), innerNodes = nodeNames(file);
       for (const d of inner.doors) assert.ok(innerNodes.has(d.node) && (d.leaves !== 2 || innerNodes.has(`${d.node}_b`)), `${file}: ${d.node}`);
       for (const r of inner.rooms) assert.ok(innerNodes.has(r.node) || out.walls.length, `${file}: ${r.node}`);
-      // and a floor under the middle of every room, at its level
+      // and a floor under the middle of every room, within its heights (a raked hall's rises through them): its middle, or for a room
+      // round a corner, a point in it near that
       const floors = [...out.floors, ...inner.floors];
       for (const r of inner.rooms) {
-        const [x, z] = centre(r.poly);
-        const y = floorAt(floors, x, z, r.y0);
-        assert.ok(y !== null && y >= r.y0 - 0.01, `${file}: no floor under ${r.id}`);
+        const [x, z] = pointIn(r.poly);
+        const ys = floors.map((f) => floorHeight(f, x, z)).filter((y) => y !== null && y >= r.y0 - 0.01 && y < r.y1);
+        assert.ok(ys.length, `${file}: no floor under ${r.id}`);
       }
     }
   }

@@ -547,6 +547,14 @@ function sameSurface(a, b, x, z) {
 }
 
 const JUNCTION_FAR = 40; // m: no junction reaches further than this
+/** Whether (x, z) is near enough an end of `link` where three roads or more meet to be in that junction */
+function inJunction(link, x, z) {
+  for (let e = 0; e < 2; e++) {
+    const end = e ? link.pts[link.pts.length - 1] : link.pts[0];
+    if (Math.hypot(x - end.x, z - end.z) < JUNCTION_FAR && (linksAtNode.get(e ? link.b : link.a)?.length ?? 0) >= 3) return true;
+  }
+  return false;
+}
 const nearLinks = [];
 const nearNodes = [];
 function sharedSurface(link, x, z) {
@@ -876,10 +884,18 @@ function chooseSurface(current, y, x, z, margin = 0) {
   // On a structure the ground beside it is only a way off at its ends, where the two meet
   for (const s of structuresAt(x, z, margin)) consider(s.sid, s.y, s.d);
   const roadDistance = groundRoadDistance(x, z);
-  consider(0, groundHeight(x, z), roadDistance);
-  // ...and on the ground, the road at this height, where another passes over it with nothing but its own surface
+  const ground = groundHeight(x, z);
+  consider(0, ground, roadDistance);
+  // ...and on the ground, the road at this height, where another passes over it with nothing but its own surface. Past its
+  // carriageway's edge only while the ground there is still at its level: where the ground beside it is another road's, at
+  // another height (a cutting beside a deeper one, the Harbour Tunnel's approach beside the Cahill), its edge is a wall, or a
+  // car held at its own road's height would be drawn under that other road. Not in a junction, where a turn's curve cuts
+  // across the corner between two roads and a wall would stop it
   const road = groundRoadAt(x, z, y);
-  if (road) consider(0, roadHeight(road, x, z), roadDistance);
+  if (road) {
+    const own = roadHeight(road, x, z);
+    if (Math.abs(ground - own) < STEP || linkDistance(road, x, z) <= road.width / 2 || inJunction(road, x, z)) consider(0, own, roadDistance);
+  }
   // A tunnel's walls hold: nothing moves sideways from one tunnel into another, even where the two run so close their roads touch.
   // Two tunnels never share a node, or they'd be one structure, so there's no way from one to the other but through a wall.
   if (current && STRUCTURES[current]?.kind === KIND.TUNNEL) {

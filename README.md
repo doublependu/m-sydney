@@ -160,8 +160,9 @@ what it did.
 - **The Harbour Bridge is one of those structures,** with its heights from a table of the real deck (`js/bridge.js`).
 - **Tunnels side by side have room for a wall.** OSM often draws a tunnel's two tubes closer than their roads are wide, so
   `tools/tiles/separate-tubes.mjs` moves them apart inside, leaving the mouths where they are. A tunnel's walls hold: nothing
-  moves sideways from one tunnel into another (`chooseSurface()`). The sea is one sheet at sea level, so it runs through any tunnel
-  that dips below it: it isn't drawn while the camera's in a tube.
+  moves sideways from one tunnel into another (`chooseSurface()`). The same goes for two cuttings side by side at different heights:
+  past a road's edge, where the ground is the other road's a step or more away, the edge is a wall (except in a junction). The sea
+  is one sheet at sea level, so it runs through any tunnel that dips below it: it isn't drawn while the camera's in a tube.
 - **What stands under a deck fits under it.** `roomUnderDeck()` in `js/surfaces.js` says how much room there is. A building a deck
   runs through is cut down to fit when the tiles are made, and one over a road in a cutting or a tunnel's open cutting stands on a
   floor raised to leave a lane's height over it, its walls stopping there (`js/wall-foot.js`). One that can be neither is left out

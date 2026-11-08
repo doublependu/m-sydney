@@ -13,6 +13,7 @@ import { groundMoved } from './terrain.js';
 // centimetres at most, where one sampled every 20 m strayed by up to half a metre on a hill.
 
 const SIDEWALK_TOP = 0.22;
+const CAR_FLOOR = 0.2; // m a car's floor stands over the plane its wheels touch
 // Surface to surface where one road crosses over another: 5.3 m of headroom and 1.5 m of deck
 const STACK_CLEARANCE = 6.8;
 const ROAD_STEP = 6; // m between stations down a road
@@ -535,8 +536,12 @@ function wheelContacts(x, z, heading, sid = 0, near = null, track = 0.8, axle = 
     contacts.push({ x: px, z: pz, y: near !== null && Math.abs(y - near) >= STEP ? near : y });
   }
   const [fl, fr, rl, rr] = contacts.map((c) => c.y);
-  // The body rests on the plane through the four, as near as a rigid car can: its middle at their mean
-  const y = (fl + fr + rl + rr) / 4;
+  // The body rests on the plane through the four, as near as a rigid car can: its middle at their mean. But not through the ground
+  // under its middle: over a crest too sharp for its wheels (the top of a cutting's bank, where a tunnel's mouth meets it) it rests
+  // on its floor there, beached, a wheel or two in the air. On a road's steepest change of grade the middle stands 0.14 m over the mean
+  let y = (fl + fr + rl + rr) / 4;
+  const middle = wheelGround(sid, x, z, road, near);
+  if (middle - y > CAR_FLOOR && (near === null || Math.abs(middle - near) < STEP)) y = middle - CAR_FLOOR;
   const pitch = Math.atan2((fl + fr - rl - rr) / 2, axle * 2);
   const roll = Math.atan2((fr + rr - fl - rl) / 2, track * 2);
   return { contacts, y, pitch, roll };

@@ -258,6 +258,26 @@ test('wheels stay on the level the car is on, where sunk roads overlap at differ
   assert.ok(Math.abs(groundHeight(452, -1286) - 13.55) < 0.5, `the ground on the approach's edge is at ${groundHeight(452, -1286)}`);
 });
 
+test('a car over the crest of a cutting\'s bank rests on it, not drawn into the ground', async () => {
+  const { wheelContacts } = await import('../js/ground-geometry.js');
+  // The bank between the Cahill and the Harbour Tunnel's approach, where the tunnel's mouth meets it: the wheels' mean was 0.73 m under the
+  // ground at the car's middle, and the soak's check is 0.6
+  const x = 446.5, z = -1308.5, y = groundHeight(x, z);
+  for (let k = 0; k < 16; k++) {
+    const rest = wheelContacts(x, z, (k / 16) * Math.PI * 2, 0, y);
+    assert.ok(rest.y >= y - 0.21, `heading ${k}/16: drawn at ${rest.y.toFixed(2)} on ground at ${y.toFixed(2)}`);
+  }
+});
+
+test('a car down a cutting stops at its edge where the ground beside it is another road\'s, at another height', () => {
+  // 0.2 m past the Harbour Tunnel's approach's west edge, at 13 m, where the ground is the Cahill's at 17.5 m. A car held there at its
+  // own road's height was drawn 4 m under the ground, in the soak
+  assert.equal(chooseSurface(0, 13.07, 451, -1292, 1.0), null, 'a car on the approach drives out over its edge');
+  // ...and on its lanes it drives on
+  const on = chooseSurface(0, 13.6, 456, -1285, 1.0);
+  assert.ok(on && Math.abs(on.y - 13.64) < 0.3, `on the approach's lanes: ${JSON.stringify(on)}`);
+});
+
 test('a road over a creek with no bridge on the map doesn\'t stop you, and the water beside it still does', async () => {
   const { landAt } = await import('../js/city-config.js');
   const { clearOfWater } = await import('../js/surfaces.js');

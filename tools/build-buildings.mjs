@@ -216,7 +216,7 @@ if (places) {
   const kindName = Object.fromEntries(Object.entries(KIND).map(([name, k]) => [k, name]));
   for (const area of localAreas()) {
     for (const edit of area.buildings || []) {
-      if (!edit.style) continue;
+      if (!edit.style || !edit.area) continue;
       const style = STYLE[edit.style];
       if (!style) throw new Error(`tools/local/${area.file}: no house style called ${edit.style} (js/house-styles.js)`);
       let n = 0;
@@ -324,7 +324,13 @@ for (const r of buildings) {
       if (r.height < lo || r.height > hi) {
         throw new Error(`tools/local/${area.file}: the building at (${x}, ${z}) is ${r.height.toFixed(1)} m, not ${lo}-${hi}: check the edit (${edit.why})`);
       }
-      console.log(`[buildings] tools/local/${area.file}: (${x}, ${z}) from ${r.height.toFixed(1)} m to ${edit.height} m`);
+      console.log(`[buildings] tools/local/${area.file}: (${x}, ${z}) from ${r.height.toFixed(1)} m to ${edit.height} m${edit.style ? `, ${edit.style}` : ''}`);
+      // ...and a house style (js/house-styles.js) for its walls and roof, if it says
+      if (edit.style) {
+        if (STYLE[edit.style] === undefined) throw new Error(`tools/local/${area.file}: no house style called ${edit.style} (js/house-styles.js)`);
+        r.style = STYLE[edit.style];
+        r.styledByHand = true;
+      }
       // A building that had parts over it keeps its group number though they're under it now, so no other building's changes
       if ((partsOf.get(r.b.id) || []).some((q) => q.top > r.height + 1)) r.keepGroup = true;
       r.height = edit.height;
@@ -481,7 +487,8 @@ uint(meta, buildings.length);
 for (const r of buildings) {
   const shape = r.b.roof_shape;
   const style = HOUSE_STYLES[r.style || 0];
-  const pitched = !r.group && (shape ? /gabled|hipped|pyramidal|mansard|gambrel|half/.test(shape)
+  // A style given by hand says its roof, whatever the data does
+  const pitched = !r.group && (r.styledByHand ? !!style?.roofs : shape ? /gabled|hipped|pyramidal|mansard|gambrel|half/.test(shape)
     : style ? !!style.roofs : (r.kind === KIND.house && r.height < 13) || (r.kind === KIND.shed && r.area > 30) || (r.height < 10 && r.kind === KIND.civic));
   uint(meta, Math.max(1, Math.round(r.height)));
   uint(meta, r.kind | (pitched ? 8 : 0) | (r.group ? 16 : 0) | (!r.part && frontsAwning(r) ? 32 : 0) | (r.guess ? 64 : 0) | ((r.part ? 0 : r.style || 0) << 7));

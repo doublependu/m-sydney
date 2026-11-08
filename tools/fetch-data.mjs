@@ -23,6 +23,7 @@ const OVERPASS = {
   harbour: '[out:json][timeout:170];relation(id:15522136,1252425);out body geom;',
   coast: `[out:json][timeout:170];(way[natural=coastline](${WIDE}););out body geom;`,
   cycleways: `[out:json][timeout:170][bbox:${BOX}];(way[highway=cycleway];);out body geom;`,
+  paths: `[out:json][timeout:170][bbox:${BOX}];(way[highway~"^(footway|path|steps|cycleway|track|bridleway)$"];way[landuse=flowerbed];way[barrier=hedge];way[natural~"^(scrub|tree_row)$"];node[barrier~"^(gate|swing_gate|wicket_gate|entrance)$"];);out body geom;`,
   rail: `[out:json][timeout:170][bbox:${BOX}];(way[railway~"^(light_rail|rail|subway|tram)$"];node[railway=station];node[railway=stop];way[route=ferry];);out body geom;`,
   wide_land: `[out:json][timeout:170];(way[landuse~"^(residential|commercial|industrial)$"](${WIDE});way[leisure~"^(park|nature_reserve)$"](${WIDE});relation[leisure~"^(park|nature_reserve)$"](${WIDE});relation[boundary=national_park](${WIDE});way[natural~"^(wood|scrub)$"](${WIDE}););out geom tags;`
 };

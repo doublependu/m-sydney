@@ -1,0 +1,62 @@
+{
+  "name": "Circular Quay West: the Park Hyatt, the passenger terminal, Campbell's Stores and the ASN Co building",
+  "box": [
+    -120,
+    -1990,
+    120,
+    -1440
+  ],
+  "buildings": [
+    {
+      "at": [
+        -20,
+        -1942
+      ],
+      "expect": [
+        13,
+        19
+      ],
+      "height": 16,
+      "style": "Quayside render",
+      "why": "The Park Hyatt at Campbells Cove: four storeys in pale render curving round the cove under a flat grey roof (dominic-kurniawan-suryaputra, caleb). The map had it in red brick."
+    },
+    {
+      "at": [
+        52,
+        -1689
+      ],
+      "expect": [
+        2,
+        8
+      ],
+      "height": 14,
+      "why": "The Overseas Passenger Terminal on its wharf: two tall storeys over the wharf, its roof about level with the Park Hyatt's (dominic-kurniawan-suryaputra, caleb, dan-freeman). The map had 4 m."
+    },
+    {
+      "at": [
+        -38,
+        -1791
+      ],
+      "expect": [
+        4,
+        10
+      ],
+      "height": 11,
+      "style": "Rocks warehouse",
+      "why": "Campbell's Stores on Campbells Cove: three storeys of red-brick bond stores under a row of slate gables along the water (dominic-kurniawan-suryaputra). The map had a flat roof at 7 m."
+    },
+    {
+      "at": [
+        -3,
+        -1705
+      ],
+      "expect": [
+        12,
+        20
+      ],
+      "height": 18,
+      "style": "Rocks warehouse",
+      "why": "The ASN Co building on Hickson Rd: red brick under gables, five storeys from the quay with its clock tower over them (dominic-kurniawan-suryaputra). The map had a flat roof."
+    }
+  ]
+}

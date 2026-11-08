@@ -1301,6 +1301,8 @@ async function initApp() {
         .then((modules) => { city = Object.assign({}, ...modules); })
     ]).then(() => download.done());
     cityCode = city;
+    // A garden's small plants are drawn as far as the graphics level has things drawn (js/trees.js)
+    city.setPlantDistance(quality.drawDistance);
     const { buildHorizon, createFarLevel } = city;
 
     settled(cityBlocks.group); // streamed around the player, on each building's own base
@@ -1635,6 +1637,10 @@ async function initApp() {
           else if (lateral > 0.3) sides.right++;
         }
         return sides;
+      },
+      // The people out within r of (x, z), each as [x, z, on a garden's path (js/pedestrian-routes.js)]
+      walkers(x, z, r = 300) {
+        return (trafficSystem?.peds ?? []).filter((p) => p.placed && Math.hypot(p.x - x, p.z - z) <= r).map((p) => [p.x, p.z, p.path ? 1 : 0]);
       },
       // Where the corridor heads from (x, z), for steering across the bridge
       bridgeAim(x, z, direction = 1) {

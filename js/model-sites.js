@@ -5,6 +5,7 @@
 //   y: its ground floor's height, or null to stand it on the ground under its walls
 //   replaces: points in the buildings the tile build leaves out for it, in its own frame (tools/tiles/derive.mjs)
 //   cut: where the ground under it is left undrawn, for what it has below the street, in its own frame, and how deep (js/city-grid.js)
+//   far: the building it replaces stays in the far level, which draws no models: for one seen from kilometres off
 //   debug: drawn only with ?debug=1
 //   reach: m from its middle that it's walked in and round, its doors open, and its inside is kept (60 unless it says)
 const MODEL_SITES = [
@@ -19,7 +20,10 @@ const MODEL_SITES = [
   },
   // The Sydney Opera House near it: its podium, steps and glass, which the game's own (js/opera-house.js) stand in for further off; and
   // the Concert Hall, through its south doors. Unturned, its heights the world's.
-  { id: 'opera-house', file: 'models/opera-house', x: 505, z: -1862, yaw: 0, y: 0, reach: 160, replaces: [] }
+  { id: 'opera-house', file: 'models/opera-house', x: 505, z: -1862, yaw: 0, y: 0, reach: 160, replaces: [] },
+  // The Ribbon, Darling Harbour: a curved glass slab between the Western Distributor and its on-ramp, in place of the map's box of its
+  // outline. The world's frame, moved to its middle.
+  { id: 'ribbon', file: 'models/ribbon', x: -472, z: 115, yaw: 0, y: null, reach: 90, replaces: [[0, 0]], far: true }
 ];
 
 const toWorldOf = (site, x, z) => {

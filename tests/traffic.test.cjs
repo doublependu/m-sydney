@@ -109,7 +109,9 @@ function populationContext() {
     atCurb: () => {}, laneClear: () => true,
     place: (v, e, lane, s) => Object.assign(v, { edge: e, lane, s }),
     // No grid of who lives where: every road full, as before js/places.js
-    roadShare: () => 1, peopleAround: () => Infinity
+    roadShare: () => 1, peopleAround: () => Infinity,
+    // No garden paths (js/pedestrian-routes.js)
+    pedRoutes: { paths: [] }, gardenShare: () => 0, pathTrack: () => false, pathMetresNear: () => 0, PATH_METRES_A_PERSON: 40
   };
   context.nearView = trafficFunction('nearView', context);
   return context;

@@ -27,6 +27,7 @@ import {
   cameraViewMatrix,
   screenSize,
   uv,
+  vertexColor,
   time,
   sin,
   cos,
@@ -1322,8 +1323,11 @@ function createTreeMaterial(leafAtlas) {
 
   mat.colorNode = Fn(() => {
     // Leaves: per-tree tint x atlas brightness, a share of sun-yellowed and of cooler leaves, brown twigs & stalks,
-    // darker deep in the crown
-    const tint = aData.xyz;
+    // darker deep in the crown. A garden's flowers and roses (species 14 and 15, js/trees.js) are in flower on half their cards, in
+    // leaf on the rest.
+    const flowering = step(13.5, species).mul(step(species, 15.5));
+    const inLeaf = flowering.mul(float(1.0).sub(step(0.5, fract(aTree.w.mul(7.31)))));
+    const tint = mix(aData.xyz, color(0x3b5a28), inLeaf);
     const base = tint.mul(leaf.r.mul(1.4));
     const warm = smoothstep(0.62, 1.0, leaf.g).mul(0.55);
     const cool = smoothstep(0.38, 0.0, leaf.g).mul(0.45);
@@ -2223,6 +2227,34 @@ function createParkLawnMaterial(isMeadow = false) {
 }
 
 /**
+ * A garden's beds (js/garden.js): mulch or gravel, speckled with what's planted in them, so they read as planted from further off than
+ * their plants are drawn. Up to four kinds of bed, `beds` as [{ soil, speckles (three colours), cover (how much of it they cover) }]; a
+ * vertex's colour says which (its red, the kind over 3), so one material draws them all.
+ */
+function createGardenBedMaterial(beds) {
+  const mat = new THREE.MeshStandardNodeMaterial({ metalness: 0.0, roughness: 0.95 });
+  const kinds = [0, 1, 2, 3].map((i) => beds[Math.min(i, beds.length - 1)]);
+  mat.colorNode = Fn(() => {
+    const k = vertexColor().r.mul(3.0).add(0.5).floor();
+    const pick = (values) => mix(mix(values[0], values[1], step(0.5, k)), mix(values[2], values[3], step(2.5, k)), step(1.5, k));
+    const soil = pick(kinds.map((b) => color(b.soil)));
+    const [c0, c1, c2] = [0, 1, 2].map((i) => pick(kinds.map((b) => color(b.speckles[i]))));
+    const cover = pick(kinds.map((b) => float(b.cover)));
+    const wp = patternXZ;
+    // Clumps about a metre across, each in one of the colours
+    const clump = noise2D(wp.mul(1.1));
+    const which = noise2D(wp.mul(0.45).add(vec2(17.0, 3.0)));
+    const plant = mix(mix(c0, c1, step(0.36, which)), c2, step(0.66, which));
+    const grain = noise2D(wp.mul(6.0)).mul(0.25).add(0.85);
+    return mix(soil, plant, step(float(1.0).sub(cover), clump)).mul(grain);
+  })();
+  mat.polygonOffset = true;
+  mat.polygonOffsetFactor = -2;
+  mat.polygonOffsetUnits = -2;
+  return mat;
+}
+
+/**
  * ConEd Iconic Street Steam Stack Volumetric Billowing SpriteNodeMaterial
  * Modelled after `three.js/examples/webgpu_particles.html`:
  * - Uses `THREE.SpriteNodeMaterial` on an instanced `PlaneGeometry(1, 1)` so every puff is a
@@ -2286,5 +2318,6 @@ export {
   createCurbMaterial,
   createWaterMaterial,
   createParkLawnMaterial,
+  createGardenBedMaterial,
   createContactShadowMaterial
 };

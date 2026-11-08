@@ -96,7 +96,7 @@ in players' caches. They go in a folder for each 8 km square, 64 at most, as Git
 npm run data:fetch                                     # the original snapshots, from Overpass and open data sites
 curl -L -o tools/data/osm/australia-latest.osm.pbf https://download.geofabrik.de/australia-oceania/australia-latest.osm.pbf   # 972 MB
 BOX=150.8743,-34.1571,151.4826,-33.4732                # the map and a margin: west, south, east, north
-node tools/extract-osm.mjs $BOX tools/data/east        # cuts the roads, land, rail and coast out of it, in seconds
+node tools/extract-osm.mjs $BOX tools/data/east        # cuts the roads, land, rail, coast and footpaths out of it, in seconds
 SYDNEY_DATA=tools/data/east SYDNEY_BOX='-34.1571,150.8743,-33.4732,151.4826' node tools/fetch-data.mjs overture_syd,overture_parts   # 3 min
 node tools/fetch-data.mjs overture_density             # for the horizon: 90 s
 node tools/fetch-elevation.mjs --cell=100              # for the horizon: 4 min
@@ -107,10 +107,18 @@ npm run data:map                                       # the map screen's images
 ```
 
 Hand edits to the map are in `tools/local/`, a file for each area (`tools/local-edits.mjs` says what one holds): OSM ways' tags, as the
-Harbour Bridge's ramps, and a style of house for an area's buildings, as Millers Point's terraces. Each names what it expects to find, so
-the build stops when the data under it has changed. A change to buildings alone needs only the build's later steps, about 3.5 minutes on
-the last build's data: `tools/build-buildings.mjs`, `build-trees.mjs`, `build-awnings.mjs`, then `build-tiles.mjs`; `tools/tile-diff.mjs`
-checks that only tiles in the area's box changed.
+Harbour Bridge's ramps, a style of house for an area's buildings, as Millers Point's terraces, and one building's height and style, as
+Circular Quay West's. Each names what it expects to find, so the build stops when the data under it has changed. A change to buildings
+alone needs only the build's later steps, about 3.5 minutes on the last build's data: `tools/build-buildings.mjs`, `build-garden.mjs`,
+`build-trees.mjs`, `build-awnings.mjs`, then `build-tiles.mjs`; a change to the gardens only `build-garden.mjs`, `build-trees.mjs` and
+`build-tiles.mjs`. `tools/tile-diff.mjs` checks that only tiles in the areas edited by hand, the gardens and the model sites changed.
+
+The gardens (`tools/build-garden.mjs`): in the Royal Botanic Garden, the Domain, round the Opera House and along Circular Quay, OSM's
+footpaths, steps and cycleways off the roads, the gates on them, its hedges, ponds and beds, and every plant. Its trees come from OSM,
+by what it says they are or what grows round them; each garden OSM names, and those on the garden's own map that OSM hasn't (placed on
+the world from the ones it has, to about 20 m), is planted by its kind: roses, herbs, succulents, natives, palms, rainforest, beds. It's
+a list of areas at the top of the script, so more can be added; the rest of the map's footpaths wait, as they'd change where everyone
+walks.
 
 The generators write the whole map to `tools/data/generated/`, and `tools/build-tiles.mjs` cuts it up. What needs a 1 m raster is done a region at a
 time, each 7.2 km square with a margin, in worker threads (`tools/geodata/`), since one raster of it all wouldn't fit in memory. `tools/geo-common.mjs`
@@ -176,6 +184,13 @@ what it did.
   bungalow, post-war fibro, brick veneer, project home, beach house, walk-ups (`js/house-styles.js`). A style says its walls, roof
   colours, pitch, gables and eaves. The walls are two more sets of uniforms for the masonry facade, so the GPU compiles nothing more,
   and every pitched roof is one vertex-coloured material.
+- **A garden is drawn over its lawn** (`js/garden.js`): its paths as strips in their surfaces' colours, its beds speckled with what's
+  planted in them, so they read as planted from further off than the plants are drawn, its hedges, ponds and gates. People out walking
+  take its paths (`js/pedestrian-routes.js`), joined where they meet and onto the street's footpath where one ends beside it, through
+  the gates; a garden's paths bring more people out, one for each 40 m. Its plants are the trees' kinds and more (`js/trees.js`): palms,
+  araucarias, the Wollemi pine, tree ferns, cycads, and small ones, shrubs, natives, flowers, roses, succulents and grasses, grown as
+  bushes and drawn small, near only (as far as the graphics level draws things), in cells of their own. They come in the tiles as the
+  trees do.
 - **Small streets have no centre line.** A two-way residential street under 11 m gets one only where it meets a main road, and a
   service road none at all (`markingsOf()` in `js/road-paint.js`), by each road's OSM class.
 - **The scene is drawn near zero.** The simulation and the map are in the game's own frame, however far out, but a shader only ever sees
@@ -218,7 +233,8 @@ What a model has to be:
 
 - **Where it goes:** `js/model-sites.js` lists each site: its file, where its middle stands, how it's turned, its ground floor's height
   (or none, to stand it on the ground), and points in the map's buildings it replaces. The tile build leaves those buildings out
-  (`tools/tiles/derive.mjs`), and the model is drawn with its tile.
+  (`tools/tiles/derive.mjs`), and the model is drawn with its tile. A site that says `far` leaves them in the far level, for a building
+  seen from kilometres off.
 - **Two files a part:** a binary glTF (`.glb`, compressed with meshopt) and a JSON beside it. Metres, y up, the model's middle at (0, 0)
   and its ground floor at y = 0. Colour is in the vertices, with ambient occlusion baked into it; materials are named (`plaster`,
   `timber`, `glass` and so on) and the game makes its own from the names (`js/interiors.js`).
@@ -249,6 +265,9 @@ What a model has to be:
   scenario walks into it, up its stair, sits and comes out again; `tests/interiors.test.mjs` reads its JSON.
 - **Lower Fort St, west side** (`lfs-west`): a row of eight houses in Millers Point as one model, one of them with its inside. The
   `lower-fort-55` scenario walks through it.
+- **The Ribbon** (`ribbon`), Darling Harbour: a curved glass slab between the Western Distributor and its on-ramp, in place of the map's
+  box of its outline. Its site says `far`, so the far level, which draws no models, keeps the map's building. Its glass is `curtain`: a
+  curtain wall's, bluer and less of a mirror than a window's, lit at night pane by pane.
 - **The Opera House** (`opera-house`): its shells are the game's own, drawn near and far (`js/opera-house.js`). Near it a model takes the
   place of the game's plain podium, steps and glass: the granite podium, the Monumental Steps and the flights to the upper podium, which
   you can climb, the glass walls on their mullions and the louvres, the parapets, and round it the Broadwalk's lamps, the Opera Bar's

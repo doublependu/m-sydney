@@ -5,7 +5,13 @@ function hashPos(x, y, z) {
   return s - Math.floor(s);
 }
 
-// Fit surveyed street trees to the modeled curbs, preserving nearby park and plaza trees.
+// The gardens' kinds (tools/build-garden.mjs): how tall each is drawn at scale 1 (`size` in js/trees.js), and which are small, whose
+// heights come in tenths of a metre
+const GARDEN_KINDS = { 6: 14, 7: 10, 8: 30, 9: 12, 10: 2, 11: 4, 12: 3, 13: 3, 14: 3, 15: 3, 16: 3, 17: 3 };
+const SMALL_KINDS = new Set([10, 12, 13, 14, 15, 16, 17]);
+const LAWN_Y = 0.24; // a park's lawn (js/city-grid.js)
+
+// Fit surveyed street trees to the modeled curbs, preserving nearby park and plaza trees. A garden's plants stand where they were planted.
 function* placeStreetTreesSteps(points, kinds, heights, existingSites, isClear) {
   const cells = new Map();
   const insert = (site) => {
@@ -30,8 +36,20 @@ function* placeStreetTreesSteps(points, kinds, heights, existingSites, isClear) 
   for (let i = 0; i < points.length; i += 2) {
     if ((i & 510) === 0) yield;
     const sourceX = points[i], sourceZ = points[i + 1];
-    const originalBlock = blockAt(sourceX, sourceZ);
     const kind = kinds[i / 2];
+    if (GARDEN_KINDS[kind]) {
+      const small = SMALL_KINDS.has(kind);
+      const metres = small ? heights[i / 2] / 10 : heights[i / 2];
+      if (!isClear(sourceX, sourceZ, small)) continue;
+      // Trees keep clear of each other as the park's do; small plants are planted close
+      if (!small && occupied(sourceX, sourceZ)) continue;
+      const site = { x: sourceX, y: LAWN_Y - 0.02, z: sourceZ, species: kind, tier: 0,
+        scale: Math.max(0.15, Math.min(1.6, (metres || GARDEN_KINDS[kind] * 0.8) / GARDEN_KINDS[kind])) };
+      sites.push(site);
+      if (!small) insert(site);
+      continue;
+    }
+    const originalBlock = blockAt(sourceX, sourceZ);
     const tall = heights[i / 2] || 8 + hashPos(sourceX, 2.2, sourceZ) * 7;
     if (originalBlock?.median) continue;
     // Park trees stand where they were surveyed; street trees are fitted to the modelled curbs

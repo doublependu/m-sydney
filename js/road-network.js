@@ -1,5 +1,5 @@
 import { CITY_BOUNDS, DRIVE_SIDE, BLOCKS, blockAt, landAt } from './city-config.js';
-import { GEO } from './geodata.js';
+import { GEO, heldTiles } from './geodata.js';
 import { polygonBoxOverlaps } from './building-collision.js';
 import { ROAD_CLASS, linkById, ownLaneOffsets, roadClass } from './surfaces.js';
 import { deckLanePoints, deckLinkIds, deckRoadPoint } from './bridge.js';
@@ -1001,7 +1001,22 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
   }
 
   const isRoadClear = (x, z, clear = 0.15) => !blockedOnStreet(x, z, clear);
-  return { nodes, edges, paintEdges, connector, curvePoint, walkable, onSidewalk, isRoadClear };
+  // The gardens' footpaths in the area, for people out walking (js/pedestrian-routes.js)
+  const paths = gardenPaths().filter((p) => !area || p.pts.some((q) => (q.x - area.x) ** 2 + (q.z - area.z) ** 2 < area.radius ** 2));
+  return { nodes, edges, paintEdges, connector, curvePoint, walkable, onSidewalk, isRoadClear, paths };
+}
+
+/** The garden paths in the tiles held (tools/build-garden.mjs), as { kind, surface, width, pts }: a path's cut where it crosses a tile's edge */
+function gardenPaths() {
+  const out = [];
+  for (const t of heldTiles()) {
+    for (const [kind, surface, width, ...line] of t.garden?.paths || []) {
+      const pts = [];
+      for (let i = 0; i + 1 < line.length; i += 2) pts.push({ x: line[i], z: line[i + 1] });
+      out.push({ kind, surface, width, pts });
+    }
+  }
+  return out;
 }
 
 function buildRoadNetwork(obstacles, signalIntersections = []) {

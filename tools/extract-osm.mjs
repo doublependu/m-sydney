@@ -29,6 +29,11 @@ const CATEGORIES = {
     relations: `${isIn('man_made', ['pier'])} OR ${isIn('leisure', ['park', 'garden'])} OR ${isIn('natural', ['water'])}`
   },
   coast: { ways: isIn('natural', ['coastline']) },
+  // Footpaths and what a garden's drawn with: its beds, hedges and scrub, and the gates on its paths (tools/build-garden.mjs)
+  paths: {
+    ways: `${isIn('highway', ['footway', 'path', 'steps', 'cycleway', 'track', 'bridleway'])} OR ${isIn('landuse', ['flowerbed'])} OR ${isIn('barrier', ['hedge'])} OR ${isIn('natural', ['scrub', 'tree_row'])}`,
+    nodes: isIn('barrier', ['gate', 'swing_gate', 'wicket_gate', 'entrance'])
+  },
   rail: {
     ways: `${isIn('railway', ['light_rail', 'rail', 'subway', 'tram'])} OR ${isIn('route', ['ferry'])}`,
     nodes: isIn('railway', ['station', 'stop'])

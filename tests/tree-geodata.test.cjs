@@ -13,7 +13,11 @@ test('surveyed trees are quantized to 0.5 m and carry a species class and a heig
   assert.equal(TREE_KINDS.length, count);
   assert.equal(TREE_HEIGHTS.length, count);
   for (let i = 0; i < REAL_TREES.length; i++) assert.ok(Number.isInteger(REAL_TREES[i] * 2));
-  for (const kind of TREE_KINDS) assert.ok(kind <= 5);
-  for (const height of TREE_HEIGHTS) assert.ok(height <= 40);
-  assert.ok(new Set(TREE_KINDS).size === 6, 'every species class is in use');
+  // Six classes of street and park tree, then the gardens' own (tools/build-garden.mjs), whose small ones' heights are in tenths of a metre
+  const SMALL = new Set([10, 12, 13, 14, 15, 16, 17]);
+  for (let i = 0; i < TREE_KINDS.length; i++) {
+    assert.ok(TREE_KINDS[i] <= 17);
+    assert.ok(TREE_HEIGHTS[i] <= (SMALL.has(TREE_KINDS[i]) ? 30 : 40), `kind ${TREE_KINDS[i]} ${TREE_HEIGHTS[i]} high`);
+  }
+  for (let k = 0; k <= 5; k++) assert.ok(TREE_KINDS.includes(k), `no trees of class ${k}`);
 });

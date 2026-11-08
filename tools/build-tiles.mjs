@@ -32,6 +32,10 @@ const { AWNINGS } = await import(path.join(SRC, 'awning-geodata.js'));
 const { ROAD_TAGS } = await import(path.join(SRC, 'road-tags.js'));
 const { REAL_BUILDINGS } = await import(path.join(SRC, 'building-geodata.js'));
 const { REAL_TREES, TREE_KINDS, TREE_HEIGHTS } = await import(path.join(SRC, 'tree-geodata.js'));
+// The paths, beds, hedges, ponds and gates of a few gardens (tools/build-garden.mjs)
+const GARDEN_FILE = path.join(SRC, 'garden.json');
+const GARDEN = fs.existsSync(GARDEN_FILE) ? JSON.parse(fs.readFileSync(GARDEN_FILE, 'utf8')) : null;
+if (!GARDEN) console.warn('[tiles] no garden.json: no garden paths (node tools/build-garden.mjs)');
 
 const RG = GEO.roadGraph;
 const KIND_CUTTING = 3;
@@ -104,7 +108,8 @@ function cutMap(derived) {
     const key = KEY(ix, iz);
     if (!tiles.has(key)) {
       tiles.set(key, { ix, iz, blocks: [], lawns: [], pavements: [], fills: [], signals: [], postBoxes: [], busShelters: [], nodes: new Map(), links: [], home: [],
-        scenery: [], awnings: [], tags: { buses: [], cycles: [], cycleways: [], speeds: [], oneways: [], zebras: [], directions: [] }, buildings: [], trees: [] });
+        scenery: [], awnings: [], tags: { buses: [], cycles: [], cycleways: [], speeds: [], oneways: [], zebras: [], directions: [] }, buildings: [], trees: [],
+        garden: { paths: [], gates: [], hedges: [], ponds: [], beds: [] } });
     }
     return tiles.get(key);
   };
@@ -150,6 +155,14 @@ function cutMap(derived) {
   for (let i = 0; i + 3 < ROAD_TAGS.oneways.length; i += 4) at(ROAD_TAGS.oneways[i], ROAD_TAGS.oneways[i + 1]).tags.oneways.push(...ROAD_TAGS.oneways.slice(i, i + 4));
   for (let i = 0; i + 1 < ROAD_TAGS.zebras.length; i += 2) at(ROAD_TAGS.zebras[i], ROAD_TAGS.zebras[i + 1]).tags.zebras.push(ROAD_TAGS.zebras[i], ROAD_TAGS.zebras[i + 1]);
   for (const d of ROAD_TAGS.directions) at(d[1], d[2]).tags.directions.push(d);
+  if (GARDEN) {
+    for (const [kind, surface, width, ...line] of GARDEN.paths) cut(line, (t, run) => t.garden.paths.push([kind, surface, width, ...run]));
+    for (const [height, width, ...line] of GARDEN.hedges) cut(line, (t, run) => t.garden.hedges.push([height, width, ...run]));
+    for (const g of GARDEN.gates) at(g[0], g[1]).garden.gates.push(g);
+    const middle = (ring) => { const m = (ring.length >> 2) << 1; return at(ring[m], ring[m + 1]); };
+    for (const ring of GARDEN.ponds) middle(ring).garden.ponds.push(ring);
+    for (const [kind, ...ring] of GARDEN.beds) middle(ring).garden.beds.push([kind, ...ring]);
+  }
 
   // --- Roads: a link is in every tile within reach of it, with its id --------------------------------------------------
   const REACH = 40; // m: wide enough for a cutting's slope and a junction's disc beside the road
@@ -195,8 +208,9 @@ function cutMap(derived) {
   // The pieces of one building stay together, in the tile of its lowest piece: they share a look and a floor
   const pieceHome = new Map();
   for (const b of REAL_BUILDINGS) if (b.group && !b.bottom) pieceHome.set(b.group, [b.cx, b.cz]);
-  // Left out: under a landmark's own model, or under a deck with no room (tools/tiles/derive.mjs)
-  const skip = new Set([...(derived?.underLandmarks || []), ...(derived?.dropped || [])]);
+  // Left out: under a landmark's own model, or under a deck with no room (tools/tiles/derive.mjs); and one a model's drawn in place of
+  // near, which the far level still has
+  const skip = new Set([...(derived?.underLandmarks || []), ...(derived?.dropped || []), ...(derived?.farOnly || [])]);
   REAL_BUILDINGS.forEach((b, i) => {
     if (skip.has(i)) return;
     const [hx, hz] = (b.group && pieceHome.get(b.group)) || [b.cx, b.cz];
@@ -576,7 +590,8 @@ function write(derived, graded_ = null) {
       nodes: [...t.nodes].flatMap(([id, [x, z]]) => [id, x, z]), links: t.links, home: t.home, scenery: t.scenery, awnings: t.awnings, tags: t.tags,
       land: landOfTile(t.ix, t.iz), shore: shores.get(KEY(t.ix, t.iz)) || [],
       portals: (derived?.portals || []).filter((p) => KEY(...tileOf(p.x, p.z)) === KEY(t.ix, t.iz)),
-      ...(place && { place })
+      ...(place && { place }),
+      ...(Object.values(t.garden).some((list) => list.length) && { garden: t.garden })
     }));
     const buildings = packBuildings(t.buildings, derived?.floors), trees = packTrees(t.trees), heights = packHeights(t.ix, t.iz);
     const graded = packGround(graded_?.[KEY(t.ix, t.iz)]);
@@ -604,6 +619,10 @@ function write(derived, graded_ = null) {
     if (!farGroups.has(key)) farGroups.set(key, { entries: [], roads: [] });
     const group = farGroups.get(key);
     for (const { b, i } of t.buildings) group.entries.push({ b, i, ix: t.ix, iz: t.iz });
+  }
+  for (const i of derived?.farOnly || []) {
+    const b = REAL_BUILDINGS[i], [ix, iz] = tileOf(b.cx, b.cz);
+    farGroups.get(farKeyOfTile(ix, iz))?.entries.push({ b, i, ix, iz });
   }
   const seenRoads = new Set();
   for (const t of tiles.values()) {

@@ -41,15 +41,20 @@ function materialFor(name, inside) {
     m = new THREE.MeshStandardNodeMaterial({ color: 0x4a3c2e, roughness: 0.06, metalness: 0.35, transparent: true, opacity: 0.32, depthWrite: false,
       flatShading: true });
     m.emissiveNode = color(0xffc27a).mul(smoothstep(0.55, 1.2, cityUniforms.uInteriorGlow).mul(0.25));
-  } else if (name === 'glass') {
+  } else if (name === 'glass' || name === 'curtain') {
     // From the street a window like the neighbours': dark by day, lit at night. It faces out only, so from inside you see through it.
-    m = new THREE.MeshStandardNodeMaterial({ color: 0x232b30, roughness: 0.06, metalness: 0.1, flatShading: true });
+    // A curtain wall's (`curtain`, The Ribbon's) is bluer and less of a mirror: its flat panes round a curve would each catch the sky
+    // differently.
+    m = name === 'glass' ? new THREE.MeshStandardNodeMaterial({ color: 0x232b30, roughness: 0.06, metalness: 0.1, flatShading: true })
+      : new THREE.MeshStandardNodeMaterial({ color: 0x35525a, roughness: 0.3, metalness: 0.45, flatShading: true });
     // About half of them lit, as the city's are, each a little warmer or cooler: each pane's vertex colour is two numbers, the same over
     // the pane, that say which (the model scripts' glass_roll); glass has a colour of its own
     const roll = vertexColor();
-    const lit = step(roll.r, 0.5);
+    // A curtain wall's panes are a storey high and wide open: fewer lit, and dimmer, or it's a lit chequerboard at night
+    const curtain = name === 'curtain';
+    const lit = step(roll.r, curtain ? 0.3 : 0.5);
     const tint = mix(color(0xffc98a), color(0xfff1d6), roll.g);
-    m.emissiveNode = tint.mul(smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow)).mul(lit.mul(0.6).add(0.03));
+    m.emissiveNode = tint.mul(smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow)).mul(lit.mul(curtain ? 0.22 : 0.6).add(0.03));
   } else {
     const [roughness, metalness] = ROUGH[name] ?? [0.8, 0];
     // flat: the models carry no normals, every face is flat

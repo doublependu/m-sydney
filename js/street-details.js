@@ -4,7 +4,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { blockAt, BLOCKS, nearestRoads, signalPhase, walkSignal } from './city-config.js';
 import { heldList, heldTrees } from './geodata.js';
 import { cityUniforms, createTreeGrateMaterial } from './tsl-materials.js';
-import { createTreeFieldSteps } from './trees.js';
+import { createTreeFieldSteps, setPlantDistance } from './trees.js';
 import { placeStreetTreesSteps } from './tree-placements.js';
 import { groundHeight, groundRoadAt, groundRoadDistance, roomUnderDeck } from './surfaces.js';
 import { polygonContains } from './building-collision.js';
@@ -815,8 +815,9 @@ function* buildStreetDetails(scene, allColliders = [], lightPools) {
   // Surveyed street trees; parks keep their authored terrain, clearings and tree layouts.
   const realTrees = heldTrees();
   const TREE_ROOM = 12; // m: a street tree's crown, and its trunk under it
+  // A garden's small plants want a metre or so clear, and room for themselves under a deck
   let sidewalkTreePositions = yield* placeStreetTreesSteps(realTrees.points, realTrees.kinds, realTrees.heights, treePositions,
-    (x, z) => isClearOfPoles(x, z, 2.2) && roomUnderDeck(x, z, 3) >= TREE_ROOM);
+    (x, z, small = false) => isClearOfPoles(x, z, small ? 0.8 : 2.2) && roomUnderDeck(x, z, small ? 1 : 3) >= (small ? 3 : TREE_ROOM));
   for (const tree of sidewalkTreePositions) treePositions.push(tree);
   sidewalkTreePositions = sidewalkTreePositions.filter((t) => t.tier > 0);
   for (const t of treePositions) t.y = (t.y || 0) + groundHeight(t.x, t.z);
@@ -1028,4 +1029,4 @@ function updateSignalHeads(junctions, elapsed, dt, traffic) {
   if (changed) board.needsUpdate = true;
 }
 
-export { buildStreetDetails };
+export { buildStreetDetails, setPlantDistance };

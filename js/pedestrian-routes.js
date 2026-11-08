@@ -1,15 +1,145 @@
 // Lazily connected sidewalk tracks; junctions stay on the same curb island. Crosswalk tracks are separate,
-// and pedestrian-system.js checks traffic permissions before entering them.
+// and pedestrian-system.js checks traffic permissions before entering them. A garden's footpaths (the network's `paths`, from
+// tools/build-garden.mjs) are tracks too, joined where they meet, and to the footpath along a street where one ends beside it.
 const CROSSWALK = 2.5; // depth between a junction and its stop lines (road-network.js)
+const PATH_SNAP = 1.5; // m: a path's end this close to another path joins it there
+const PATH_REACH = 9; // m past a road's edge a path's loose end may be and still join the footpath along it
+const JOIN_MARGIN = 3; // m from either end of a footpath's track that no path joins it
 
-function createPedestrianRoutes({ walkable, onSidewalk }, blockAt) {
+function createPedestrianRoutes({ walkable, onSidewalk, edges = [], paths = [] }, blockAt) {
   const sidewalks = new Map(), crossings = new Map(), junctions = new Map(), connections = new WeakMap(), edgeCells = new WeakMap();
   const point = (track, end) => ({ x: track.ax + track.ux * track.len * end, z: track.az + track.uz * track.len * end });
+  // Every track says whether it's a garden path's: a walker takes on its track's fields as it goes
   const segment = (a, b, extra = {}) => {
     const len = Math.hypot(b.x - a.x, b.z - a.z);
     return { ax: a.x, az: a.z, ux: (b.x - a.x) / len, uz: (b.z - a.z) / len,
-      len, node: null, side: 0, line: 0, ...extra };
+      len, node: null, side: 0, line: 0, path: false, ...extra };
   };
+  const pathTracks = [], pathLinks = [], joinsByEdge = new Map();
+  buildPaths();
+
+  // The paths as tracks, each piece between two places where paths meet a chain of straight ones, `before` and `after` each other
+  function buildPaths() {
+    const lines = paths.filter((p) => p.pts.length > 1).map((p) => p.pts.map((q) => ({ x: q.x, z: q.z })));
+    if (!lines.length) return;
+    const G = 8;
+    const key = (x, z) => Math.floor(x / G) * 100000 + Math.floor(z / G);
+    const grid = new Map();
+    lines.forEach((pts, li) => {
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], b = pts[i];
+        for (let gx = Math.floor((Math.min(a.x, b.x) - PATH_SNAP) / G); gx <= Math.floor((Math.max(a.x, b.x) + PATH_SNAP) / G); gx++) {
+          for (let gz = Math.floor((Math.min(a.z, b.z) - PATH_SNAP) / G); gz <= Math.floor((Math.max(a.z, b.z) + PATH_SNAP) / G); gz++) {
+            const k = gx * 100000 + gz;
+            (grid.get(k) || grid.set(k, []).get(k)).push([li, i]);
+          }
+        }
+      }
+    });
+    // Each line's ends onto the nearest point of another line within reach, which is split there
+    const splits = lines.map(() => []);
+    lines.forEach((pts, li) => {
+      for (const end of [0, pts.length - 1]) {
+        const e = pts[end];
+        let best = null;
+        for (const [lj, j] of grid.get(key(e.x, e.z)) || []) {
+          if (lj === li) continue;
+          const a = lines[lj][j - 1], b = lines[lj][j];
+          const dx = b.x - a.x, dz = b.z - a.z, L2 = dx * dx + dz * dz || 1e-9;
+          const t = Math.max(0, Math.min(1, ((e.x - a.x) * dx + (e.z - a.z) * dz) / L2));
+          const x = a.x + dx * t, z = a.z + dz * t, d = Math.hypot(x - e.x, z - e.z);
+          if (d < PATH_SNAP && (!best || d < best.d)) best = { lj, j, t, x, z, d };
+        }
+        if (!best) continue;
+        e.x = best.x;
+        e.z = best.z;
+        splits[best.lj].push(best);
+      }
+    });
+    // Where paths meet: their ends and the splits, as one place within half a metre
+    const places = new Map();
+    const placeAt = (x, z) => {
+      const ix = Math.floor(x), iz = Math.floor(z);
+      for (let a = ix - 1; a <= ix + 1; a++) {
+        for (let b = iz - 1; b <= iz + 1; b++) {
+          for (const n of places.get(a * 100000 + b) || []) if (Math.hypot(n.x - x, n.z - z) < 0.5) return n;
+        }
+      }
+      const n = { x, z, pathNode: true, ends: [], edges: [], walks: [] };
+      (places.get(ix * 100000 + iz) || places.set(ix * 100000 + iz, []).get(ix * 100000 + iz)).push(n);
+      return n;
+    };
+    const nodes = new Set();
+    lines.forEach((pts, li) => {
+      // Its points in order, the splits among them marked as places
+      const seq = pts.map((p, i) => ({ x: p.x, z: p.z, place: i === 0 || i === pts.length - 1, i, t: 0 }));
+      for (const sp of splits[li]) seq.push({ x: sp.x, z: sp.z, place: true, i: sp.j - 1, t: sp.t || 1e-6 });
+      seq.sort((p, q) => p.i - q.i || p.t - q.t);
+      let from = null, previous = null;
+      for (let k = 0; k < seq.length; k++) {
+        const q = seq[k];
+        if (k === 0) { from = placeAt(q.x, q.z); nodes.add(from); continue; }
+        const p = seq[k - 1];
+        if (Math.hypot(q.x - p.x, q.z - p.z) < 0.05) {
+          if (q.place && previous) { const to = placeAt(q.x, q.z); nodes.add(to); previous.to = to; to.ends.push({ track: previous, end: 1 }); previous = null; from = to; }
+          continue;
+        }
+        const track = segment(p, q, { path: true, block: blockAt(p.x, p.z) });
+        if (previous) { previous.after = track; track.before = previous; } else { track.from = from; from.ends.push({ track, end: 0 }); }
+        pathTracks.push(track);
+        previous = track;
+        if (q.place) {
+          const to = placeAt(q.x, q.z);
+          nodes.add(to);
+          track.to = to;
+          to.ends.push({ track, end: 1 });
+          previous = null;
+          from = to;
+        }
+      }
+    });
+    // A loose end beside a street joins the footpath along it, on its side
+    const E = 64;
+    const edgeGrid = new Map();
+    for (const e of edges) {
+      if (e.deck) continue;
+      const x0 = Math.min(e.sx, e.sx + e.dx * e.len), x1 = Math.max(e.sx, e.sx + e.dx * e.len);
+      const z0 = Math.min(e.sz, e.sz + e.dz * e.len), z1 = Math.max(e.sz, e.sz + e.dz * e.len);
+      for (let gx = Math.floor((x0 - 20) / E); gx <= Math.floor((x1 + 20) / E); gx++) {
+        for (let gz = Math.floor((z0 - 20) / E); gz <= Math.floor((z1 + 20) / E); gz++) {
+          const k = gx * 100000 + gz;
+          (edgeGrid.get(k) || edgeGrid.set(k, []).get(k)).push(e);
+        }
+      }
+    }
+    for (const n of nodes) {
+      if (n.ends.length !== 1) continue;
+      let best = null;
+      for (const e of edgeGrid.get(Math.floor(n.x / E) * 100000 + Math.floor(n.z / E)) || []) {
+        const t = (n.x - e.sx) * e.dx + (n.z - e.sz) * e.dz;
+        if (t < JOIN_MARGIN || t > e.len - JOIN_MARGIN) continue;
+        const lateral = (n.x - e.sx) * e.rx + (n.z - e.sz) * e.rz;
+        const out = Math.abs(lateral) - e.half;
+        if (out < -0.5 || out > PATH_REACH || (best && out >= best.out)) continue;
+        best = { e, t, sign: Math.sign(lateral) || 1, out };
+      }
+      if (!best) continue;
+      if (!joinsByEdge.has(best.e)) joinsByEdge.set(best.e, []);
+      joinsByEdge.get(best.e).push({ node: n, t: best.t, sign: best.sign });
+      n.edges.push(best.e);
+    }
+  }
+
+  // The routes from a footpath's point `p` onto the path at `join`, and from the path back onto that footpath's tracks either side of it
+  function joinPath(join, p, before, after) {
+    const n = join.node, end = n.ends[0];
+    const link = segment(p, n, { path: true, block: blockAt(n.x, n.z), connector: true });
+    pathLinks.push(link);
+    const onto = [[{ track: link, dir: 1 }, { track: end.track, dir: end.end ? -1 : 1 }]];
+    if (before) n.walks.push([{ track: link, dir: -1 }, { track: before, dir: -1 }]);
+    if (after) n.walks.push([{ track: link, dir: -1 }, { track: after, dir: 1 }]);
+    return onto;
+  }
 
   function clear(a, b, block = null) {
     const steps = Math.ceil(Math.hypot(b.x - a.x, b.z - a.z));
@@ -38,11 +168,25 @@ function createPedestrianRoutes({ walkable, onSidewalk }, blockAt) {
         if (!block || blockAt(b.x, b.z) !== block) continue;
         if (!e.general && (!onSidewalk(a.x, a.z) || !onSidewalk(b.x, b.z))) continue;
         const points = clear(a, b, block) ? [a, b] : detour(a, b, block);
+        // Where a garden's path ends beside it, the track's split, and the path joins it there
+        const joins = points.length === 2 ? (joinsByEdge.get(e) || []).filter((j) => j.sign === sign) : [];
+        if (joins.length) {
+          for (const j of [...joins].sort((p, q) => p.t - q.t)) {
+            const at = { x: a.x + e.dx * j.t, z: a.z + e.dz * j.t, join: j };
+            if (blockAt(at.x, at.z) === block && clear(at, j.node)) points.splice(points.length - 1, 0, at);
+          }
+        }
         for (let i = 1, previous = null; i < points.length; i++) {
           const track = segment(points[i - 1], points[i], { edge: e, from: e.from, to: e.to, block });
           if (previous) { previous.after = track; track.before = previous; }
           result.push(track);
           previous = track;
+        }
+        for (let i = 1; i < points.length - 1; i++) {
+          const p = points[i];
+          if (!p.join) continue;
+          const before = result[result.length - points.length + i], after = result[result.length - points.length + i + 1];
+          before.joinAfter = after.joinBefore = joinPath(p.join, p, before, after);
         }
       }
     }
@@ -194,9 +338,21 @@ function createPedestrianRoutes({ walkable, onSidewalk }, blockAt) {
     if (ends[end]) return ends[end];
     const result = ends[end] = [];
     const continuation = end ? track.after : track.before;
-    if (continuation) { result.push([{ track: continuation, dir }]); return result; }
+    const joins = end ? track.joinAfter : track.joinBefore;
+    if (continuation) {
+      result.push([{ track: continuation, dir }]);
+      if (joins) result.push(...joins);
+      return result;
+    }
     const n = end ? track.to : track.from;
     if (!n) return result;
+    if (n.pathNode) {
+      // Where paths meet, or one meets a street's footpath: the footpath's tracks are made, with their joins, when first asked for
+      for (const e of n.edges) along(e);
+      for (const { track: t, end: e } of n.ends) if (t !== track) result.push([{ track: t, dir: e ? -1 : 1 }]);
+      result.push(...n.walks);
+      return result;
+    }
     const a = point(track, end), block = blockAt(a.x, a.z);
     if (!block) return result;
     for (const port of ports(n)) {
@@ -247,7 +403,7 @@ function createPedestrianRoutes({ walkable, onSidewalk }, blockAt) {
     return !!block && onSidewalk(target.x, target.z) && cornerClear(p, target, block);
   }
 
-  return { along, across, next, canDodge };
+  return { along, across, next, canDodge, paths: pathTracks, pathLinks };
 }
 
 export { createPedestrianRoutes };

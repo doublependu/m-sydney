@@ -15,6 +15,7 @@ import { groundHeight, groundRoadAt, linkById } from './surfaces.js';
 import { GroundCells, SIDEWALK_TOP, addBase, addCurb, addRoadDeck, addSurface, denseRing, pointInPolygonXZ } from './ground-geometry.js';
 import { SITE_CUTS } from './model-sites.js';
 import { buildStructures } from './structures.js';
+import { buildTileGarden } from './garden.js';
 import { outsideTunnelMouths } from './tunnel-mouths.js';
 
 // The harbour, the seawalls, the road deck, and every curb island: footpaths, traffic islands and park lawns, all laid
@@ -120,6 +121,7 @@ function buildCells(cells, group, material, { cast = false, cullDistance = 0 } =
     g.setAttribute('position', new THREE.Float32BufferAttribute(c.position, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(c.normal, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(c.uv, 2));
+    if (c.color?.length) g.setAttribute('color', new THREE.Float32BufferAttribute(c.color, 3));
     g.setIndex(c.index);
     g.computeBoundingSphere();
     const mesh = new THREE.Mesh(g, material);
@@ -315,7 +317,9 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
   buildCells(yellow, target, mats.bollardYellow, { cullDistance: GROUND_CULL.bollards });
   buildCells(black, target, mats.bollardBlack, { cullDistance: GROUND_CULL.bollards });
   yield;
+  // A garden's paths, beds, hedges, ponds and gates (js/garden.js): not in the first view
   if (!last) return [];
+  const garden = yield* buildTileGarden(tile, target, buildCells, inTile);
 
   // The base only backs up the surfaces' seams, so it comes last: on the phone it costs too much of the 4 s to load
   // ...and the base under everything goes under its basement too
@@ -347,7 +351,7 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
   // Every road off the ground whose middle is here: bridges, viaducts and tunnels (js/structures.js)
   const home = new Set(tile.home);
   const { colliders } = yield* buildStructures(target, mats.road, links.filter((l) => home.has(l.id)), links, inTile);
-  return colliders;
+  return [...colliders, ...garden];
 }
 
 export { buildTileGround, buildWater, groundMaterials, getStreetGroundHeight, batchStaticGroupMeshes };

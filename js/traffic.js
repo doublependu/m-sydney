@@ -78,6 +78,8 @@ const STREET_LEAST = 0.05;
 const PEOPLE_PER_RESIDENT = 1 / 200;
 const PEOPLE_AT_STATION = 30;
 const PEOPLE_LEAST = 4;
+// ...and in a garden, one for each 40 m of its paths there (tools/build-garden.mjs): the Botanic Garden and the Domain are busy
+const PATH_METRES_A_PERSON = 40;
 const STUCK_OUT_OF_VIEW = 45, STUCK_IN_VIEW = 180; // s without moving
 const VEHICLE_SPAWN_DISTANCE = 250;
 
@@ -733,11 +735,23 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
         nearLaneMetres += Math.min(e.len, NEAR_RADIUS * 2) * e.lanes.length * e.share;
       }
     }
-    peopleWanted = peopleAround(focusX, focusZ);
+    peopleWanted = peopleAround(focusX, focusZ) + Math.round(pathMetresNear(focusX, focusZ) / PATH_METRES_A_PERSON);
     for (const n of nodes) {
       const dx = n.x - focusX, dz = n.z - focusZ;
       if (n.signal && dx * dx + dz * dz < NEAR_RADIUS * NEAR_RADIUS) nearSignals.push(n);
     }
+  }
+
+  /** How many metres of a garden's paths there are within NEAR_RADIUS of (x, z) */
+  function pathMetresNear(x, z) {
+    let metres = 0;
+    for (const p of network.paths || []) {
+      for (let i = 1; i < p.pts.length; i++) {
+        const a = p.pts[i - 1], b = p.pts[i];
+        if ((a.x - x) ** 2 + (a.z - z) ** 2 < NEAR_RADIUS * NEAR_RADIUS) metres += Math.hypot(b.x - a.x, b.z - a.z);
+      }
+    }
+    return metres;
   }
 
   /** How full of traffic a road is, of the most it can hold (see MAIN_ROAD_LEAST) */

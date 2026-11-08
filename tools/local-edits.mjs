@@ -5,7 +5,8 @@
 //   ways: [{ ids: [OSM way id, ...], expect: { tag: value }, tags: { tag: value | null }, remove: true, why }],
 //   buildings: [{ area: [[x, z], ...], kinds: [...], maxHeight, style, why }]: a style of house (js/house-styles.js) for the buildings in
 //   an area of those kinds (tools/build-buildings.mjs KIND) and no taller (tools/build-buildings.mjs); or [{ at: [x, z], expect: [lo, hi],
-//   height, why }]: the one building with that point inside it, which the build has between lo and hi m tall, made `height` m }
+//   height, style, why }]: the one building with that point inside it, which the build has between lo and hi m tall, made `height` m,
+//   and given that house style if it says }
 // `expect` is what the ways' tags were when the edit was made: if OSM has changed them since, the build stops and says so, as the
 // edit may no longer be right. A tag set to null is taken away. Each way an edit names is marked `local` (its area's file): the
 // build takes in some ways only where an area has been looked at by hand, as bus-only roads (tools/build-geodata.mjs).

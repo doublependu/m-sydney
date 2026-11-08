@@ -103,6 +103,27 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
     return true;
   }
 
+  // A garden's path near (focusX, focusZ), each about as likely as any other
+  function pathTrack() {
+    const list = pedRoutes.paths;
+    if (!list.length) return false;
+    const route = list[Math.floor(Math.random() * list.length)];
+    Object.assign(track, route, { route });
+    return true;
+  }
+  // What share of those out walking are on a garden's paths: as much as the paths' length near the focus is of all the footpaths'
+  let pathShare = 0, shareAt = { x: Infinity, z: Infinity, edges: -1 };
+  function gardenShare() {
+    if (Math.hypot(focusX - shareAt.x, focusZ - shareAt.z) < 40 && shareAt.edges === nearEdges.length) return pathShare;
+    shareAt = { x: focusX, z: focusZ, edges: nearEdges.length };
+    let onPaths = 0, onStreets = 0;
+    const r2 = NEAR_RADIUS * NEAR_RADIUS;
+    for (const t of pedRoutes.paths) if ((t.ax - focusX) ** 2 + (t.az - focusZ) ** 2 < r2) onPaths += t.len;
+    for (const e of nearEdges) onStreets += e.deck ? 0 : e.len * 2;
+    pathShare = onPaths / (onPaths + onStreets || 1);
+    return pathShare;
+  }
+
   function crosswalkTrack(n) {
     const choices = pedRoutes.across(n);
     if (!choices.length) return false;
@@ -148,9 +169,11 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
     const rMinSq = rMin * rMin, rMaxSq = rMax * rMax, gapSq = QUEUE_GAP * QUEUE_GAP;
     for (let attempt = 0; attempt < 10; attempt++) {
       const crosswalk = p.crossesStreets && nearSignals.length > 0 && attempt < 5;
+      const onPath = !crosswalk && pedRoutes.paths.length > 0 && Math.random() < gardenShare();
       const ok = crosswalk
         ? crosswalkTrack(nearSignals[Math.floor(Math.random() * nearSignals.length)])
-        : nearEdges.length > 0 && sidewalkTrack(nearEdges[Math.floor(Math.random() * nearEdges.length)]);
+        : onPath ? pathTrack()
+          : nearEdges.length > 0 && sidewalkTrack(nearEdges[Math.floor(Math.random() * nearEdges.length)]);
       if (!ok) continue;
       const along = (focusX - track.ax) * track.ux + (focusZ - track.az) * track.uz;
       const minT = Math.max(0, along - rMax), maxT = Math.min(track.len, along + rMax);
@@ -394,9 +417,12 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
     const ahead = p.dir > 0 ? p.len - p.t : p.t;
     const gdx = p.x - p.goalX, gdz = p.z - p.goalZ;
     if (clock >= p.goalTime || gdx * gdx + gdz * gdz < 625) {
-      const destination = nearEdges[Math.floor(Math.random() * nearEdges.length)];
-      p.goalX = destination ? destination.sx + destination.dx * destination.len * 0.5 : p.x;
-      p.goalZ = destination ? destination.sz + destination.dz * destination.len * 0.5 : p.z;
+      // Someone in a garden mostly makes for somewhere else in it
+      const stroll = p.route?.path && pedRoutes.paths.length && Math.random() < 0.75;
+      const destination = stroll ? null : nearEdges[Math.floor(Math.random() * nearEdges.length)];
+      const spot = stroll ? pedRoutes.paths[Math.floor(Math.random() * pedRoutes.paths.length)] : null;
+      p.goalX = spot ? spot.ax : destination ? destination.sx + destination.dx * destination.len * 0.5 : p.x;
+      p.goalZ = spot ? spot.az : destination ? destination.sz + destination.dz * destination.len * 0.5 : p.z;
       p.goalTime = clock + 120 + Math.random() * 180;
     }
     if (!p.nextRoute && p.route && ahead < 4) {
@@ -404,7 +430,7 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
       p.nextLeg = 0;
       if (!p.node && p.nextRoute) atCurb(p);
     }
-    if (!p.node && p.route?.edge && p.t > 6 && p.t < p.len - 6 && clock >= p.restTime) {
+    if (!p.node && (p.route?.edge || p.route?.path) && p.t > 6 && p.t < p.len - 6 && clock >= p.restTime) {
       p.pause = 1.5 + Math.random() * 3;
       p.restTime = clock + 35 + Math.random() * 55;
     }
@@ -547,7 +573,7 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
     meetingCells.clear();
     for (let i = 0; i < peds.length; i++) {
       const p = peds[i];
-      if (!p.placed || p.node || !p.route?.edge || p.conversation || clock < p.socialTime || p.t < 6 || p.t > p.len - 6) continue;
+      if (!p.placed || p.node || !(p.route?.edge || p.route?.path) || p.conversation || clock < p.socialTime || p.t < 6 || p.t > p.len - 6) continue;
       const ix = Math.floor(p.x * 0.5), iz = Math.floor(p.z * 0.5);
       let partner = null;
       for (let dx = -1; dx <= 1 && !partner; dx++) {
@@ -585,7 +611,9 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
   // with 2 m of sidewalk (the rig steps down and up the curbs)
   const SIDEWALK_Y = 0.22;
   const CROSSWALK_Y = 0.012;
+  const PATH_Y = 0.29; // a garden's path lies over its lawn (PATH_TOP, js/garden.js)
   function pedGround(p, x, z) {
+    if (p.path) return PATH_Y;
     if (!p.node) return SIDEWALK_Y;
     const t = (x - p.ax) * p.ux + (z - p.az) * p.uz;
     return t > 2 && t < p.len - 2 ? CROSSWALK_Y : SIDEWALK_Y;
@@ -713,6 +741,8 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
       if (old?.edge) {
         const e = edgeByKey.get(keyOf(old.edge));
         found = e ? pedRoutes.along(e).find((t) => same(t, old)) : null;
+      } else if (old?.path) {
+        found = (old.connector ? pedRoutes.pathLinks : pedRoutes.paths).find((t) => same(t, old)) || null;
       } else if (old?.node) {
         const n = nodeByKey.get(nodeKey(old.node));
         found = n ? pedRoutes.across(n).find((t) => same(t, old)) : null;

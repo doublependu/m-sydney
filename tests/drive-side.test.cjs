@@ -23,7 +23,7 @@ function network(side) {
   const { buildRoadNetwork } = loadModule(readFileSync(join(__dirname, '../js/road-network.js'), 'utf8'), {
     imports: {
       './city-config.js': { BLOCKS: [], CITY_BOUNDS: { minZ: -500, maxZ: 500 }, DRIVE_SIDE: side, blockAt: () => null, landAt: () => true },
-      './geodata.js': { GEO: { roadGraph: graph } },
+      './geodata.js': { GEO: { roadGraph: graph }, heldTiles: () => [] },
       './building-collision.js': { polygonBoxOverlaps: () => false },
       './surfaces.js': { linkById: new Map(graph.links.map((_, i) => [i, { sid: 0 }])) },
       './bridge.js': { deckLanePoints: () => null }

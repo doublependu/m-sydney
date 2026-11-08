@@ -437,14 +437,93 @@ SPECIES.push({ ...SPECIES[0], name: 'fig',
   limbs: { ...SPECIES[0].limbs, n: 8, y: [2.4, 4.8], tilt: [1.3, 0.75], len: [8.4, 5.6] },
   cards: { ...SPECIES[0].cards, perTwig: 3 },
   tints: [0x2d4a25, 0x365429, 0x274221] });
+// A frond: leaflets all along it, each a short branch square off it with a card or two
+const FROND = { n: 9, t: [0.15, 1.0], angle: [1.05, 1.35], len: [0.3, 0.18], up: 0, out: 0, droop: 0.15, jitter: 0.06, segs: 1 };
+const LEAFLET = { n: 1, t: [0.5, 1.0], angle: [0.3, 0.6], len: [0.35, 0.25], up: 0, out: 0, droop: 0.2, jitter: 0.08, segs: 1 };
 // A palm: a bare stem with a burst of drooping fronds at the top
-SPECIES.push({ ...SPECIES[1], name: 'palm',
+SPECIES.push({ ...SPECIES[1], name: 'palm', branches: FROND, twigs: LEAFLET, cards: { perTwig: 2, scale: [0.75, 0.95], droop: 0.3 },
   trunk: { ...SPECIES[1].trunk, r: 0.17, top: 8.2, lean: 0.03 },
   limbs: { ...SPECIES[1].limbs, n: 9, y: [7.9, 8.2], tilt: [1.05, 0.5], len: [3.8, 3.2], r: 0.2, droop: 0.3 },
-  branches: { ...SPECIES[1].branches, n: 2 },
   tints: [0x4c6b2c, 0x587a33, 0x426226] });
 // A jacaranda, in flower
 SPECIES.push({ ...SPECIES[1], name: 'jacaranda', tints: [0x7d66c6, 0x8d76d4, 0x6c58b2] });
+
+// The gardens' own (tools/build-garden.mjs), from the same parts. `size`: how tall one is at scale 1, in metres (js/tree-placements.js
+// scales it to its height). `small`: a plant under a few metres, drawn only near (SMALL_LOD), and in cells of its own.
+const twigs = (n, len, droop = 0.04) => ({ n, t: [0.3, 1.0], angle: [0.5, 0.95], len, up: 0.02, out: 0, droop, jitter: 0.12, segs: 1 });
+// 6: a bangalow or cabbage-tree palm: a tall slim stem and a crown of arching fronds
+SPECIES.push({ ...SPECIES[4], name: 'bangalow', size: 14,
+  trunk: { r: 0.14, top: 12.4, lean: 0.03, segs: 8 },
+  limbs: { ...SPECIES[4].limbs, n: 11, y: [12.0, 12.4], tilt: [1.2, 0.35], len: [3.4, 2.8], droop: 0.38 },
+  tints: [0x4f7a2e, 0x5c8a34, 0x47702a] });
+// 7: a Canary Island date palm: a stout stem and a great round crown
+SPECIES.push({ ...SPECIES[4], name: 'date palm', size: 10,
+  trunk: { r: 0.42, top: 7, lean: 0.02, segs: 7 },
+  limbs: { ...SPECIES[4].limbs, n: 18, y: [6.6, 7.0], tilt: [1.45, 0.3], len: [5.0, 3.8], r: 0.18, droop: 0.22 },
+  tints: [0x5b6e34, 0x667a3b, 0x51632e] });
+// 8: an araucaria (the Norfolk Island and bunya pines): a straight stem, level tiers of branches shorter towards the top
+SPECIES.push({ ...SPECIES[1], name: 'araucaria', size: 30,
+  trunk: { r: 0.35, top: 27, lean: 0.01, segs: 10 },
+  limbs: { n: 22, y: [5, 27], tilt: [1.5, 1.05], len: [6.0, 1.2], r: 0.25, up: 0.03, out: 0, droop: 0.04, jitter: 0.04, segs: 4 },
+  branches: { n: 3, t: [0.3, 1.0], angle: [0.5, 0.9], len: [0.45, 0.3], up: 0.04, out: 0, droop: 0.05, jitter: 0.08, segs: 3 },
+  twigs: { ...SPECIES[1].twigs, n: 2, len: [0.8, 0.6] },
+  cards: { perTwig: 2, scale: [0.6, 0.8], droop: 0 },
+  tints: [0x2e4a28, 0x355530, 0x283f22] });
+// 9: a Wollemi pine: narrow and dark, branching from low down
+SPECIES.push({ ...SPECIES[1], name: 'wollemi', size: 12,
+  trunk: { r: 0.22, top: 13, lean: 0.02, segs: 8 },
+  limbs: { n: 26, y: [1.5, 13], tilt: [1.25, 0.7], len: [2.2, 0.9], r: 0.3, up: 0.06, out: 0, droop: 0.08, jitter: 0.06, segs: 3 },
+  branches: { n: 2, t: [0.4, 1.0], angle: [0.5, 0.8], len: [0.5, 0.35], up: 0.03, out: 0, droop: 0.06, jitter: 0.1, segs: 2 },
+  twigs: { ...SPECIES[1].twigs, n: 2, len: [0.7, 0.5] },
+  cards: { perTwig: 2, scale: [0.6, 0.8], droop: 0.2 },
+  tints: [0x2b4430, 0x324c36, 0x26402b] });
+// 10: a cycad: a short stem and a ring of stiff fronds
+SPECIES.push({ ...SPECIES[1], name: 'cycad', size: 2, small: true,
+  trunk: { r: 0.22, top: 0.9, lean: 0.05, segs: 3 },
+  limbs: { n: 14, y: [0.8, 0.9], tilt: [1.3, 0.35], len: [1.6, 1.2], r: 0.15, up: 0.05, out: 0, droop: 0.25, jitter: 0.06, segs: 3 },
+  branches: { ...FROND, n: 6 }, twigs: LEAFLET,
+  cards: { perTwig: 1, scale: [0.45, 0.6], droop: 0.1 },
+  tints: [0x2f5426, 0x386030, 0x2a4a22] });
+// 11: a tree fern: a fibrous stem and a parasol of lacy fronds
+SPECIES.push({ ...SPECIES[1], name: 'tree fern', size: 4,
+  trunk: { r: 0.13, top: 3.6, lean: 0.06, segs: 5 },
+  limbs: { n: 13, y: [3.5, 3.6], tilt: [1.15, 0.45], len: [2.4, 2.0], r: 0.12, up: 0.05, out: 0, droop: 0.42, jitter: 0.08, segs: 4 },
+  branches: FROND, twigs: LEAFLET,
+  cards: { perTwig: 2, scale: [0.6, 0.8], droop: 0.3 },
+  tints: [0x557f2c, 0x62902f, 0x4b7228] });
+// The small ones are grown as bushes a few metres across, and drawn smaller (`size`), so their leaves are small too
+const bush = (name, tile, tints, shape = {}) => ({ ...SPECIES[0], name, tile, tints, size: 3, small: true,
+  trunk: { r: 0.08, top: 0.5, lean: 0.06, segs: 2 },
+  limbs: { n: 6, y: [0.2, 0.6], tilt: [1.15, 0.35], len: [2.0, 1.6], r: 0.6, up: 0.1, out: 0.05, droop: 0, jitter: 0.12, segs: 3 },
+  branches: { n: 2, t: [0.3, 1.0], angle: [0.5, 0.9], len: [0.6, 0.4], up: 0.05, out: 0.02, droop: 0, jitter: 0.12, segs: 2 },
+  twigs: twigs(2, [0.9, 0.6]),
+  cards: { perTwig: 1, scale: [0.85, 1.1], droop: 0.05 },
+  ...shape });
+// 12: a shrub, clipped or not
+SPECIES.push(bush('shrub', 0, [0x3d5f2a, 0x47692f, 0x355425]));
+// 13: an Australian native shrub (grevillea, banksia, bottlebrush, saltbush): grey-olive and finer
+SPECIES.push(bush('native shrub', 2, [0x5f6e48, 0x6b7a52, 0x56653f]));
+// 14: flowers in a bed: low mounds, each in one colour
+SPECIES.push(bush('flowers', 0, [0xc23a5a, 0xe0b030, 0x8a4fc0], {
+  trunk: { r: 0.05, top: 0.2, lean: 0.05, segs: 2 },
+  limbs: { n: 7, y: [0.1, 0.3], tilt: [1.3, 0.6], len: [1.4, 1.0], r: 0.6, up: 0.08, out: 0.04, droop: 0, jitter: 0.12, segs: 2 } }));
+// 15: roses: red, pink and white bushes, upright and narrower
+SPECIES.push(bush('roses', 0, [0xb0283a, 0xd8708a, 0xe6dccc], {
+  limbs: { n: 6, y: [0.2, 0.6], tilt: [0.9, 0.25], len: [1.8, 1.5], r: 0.6, up: 0.12, out: 0.02, droop: 0, jitter: 0.12, segs: 3 } }));
+// 16: succulents (agaves, aloes): a rosette of thick blue-grey leaves
+SPECIES.push(bush('succulent', 1, [0x7d9a8a, 0x8aa596, 0x6f8b7c], {
+  trunk: { r: 0.06, top: 0.1, lean: 0.02, segs: 1 },
+  limbs: { n: 12, y: [0.05, 0.1], tilt: [1.2, 0.3], len: [1.4, 1.0], r: 0.6, up: 0.25, out: 0, droop: 0, jitter: 0.05, segs: 2 },
+  branches: { n: 1, t: [0.5, 1.0], angle: [0.3, 0.5], len: [0.4, 0.3], up: 0.1, out: 0, droop: 0, jitter: 0.05, segs: 1 },
+  twigs: twigs(1, [0.4, 0.3], 0),
+  cards: { perTwig: 1, scale: [0.6, 0.8], droop: 0 } }));
+// 17: grasses, lilies and strappy plants: a fountain of blades
+SPECIES.push(bush('grass', 1, [0x6f8a3a, 0x7c9444, 0x5f7a32], {
+  trunk: { r: 0.04, top: 0.05, lean: 0.02, segs: 1 },
+  limbs: { n: 10, y: [0.02, 0.05], tilt: [0.5, 0.15], len: [1.6, 1.4], r: 0.6, up: 0, out: 0.08, droop: 0.25, jitter: 0.1, segs: 2 },
+  branches: { n: 1, t: [0.5, 1.0], angle: [0.3, 0.5], len: [0.4, 0.3], up: 0, out: 0, droop: 0.2, jitter: 0.1, segs: 1 },
+  twigs: twigs(1, [0.5, 0.4], 0.2),
+  cards: { perTwig: 1, scale: [0.7, 0.9], droop: 0.3 } }));
 
 // =====================================================================================================================
 // 3. SKELETON
@@ -838,10 +917,21 @@ const TREE_CELL_SIZE = 200;
 const LOD_NEAR = 105; // full detail within (m)
 const LOD_MID = 420; // coarse cards & branches within; whole-crown cards beyond
 const LOD_HYSTERESIS = 6;
-// Draw distance per tier (0 park & plaza, 1 avenue & esplanade, 2 cross-street); at street level everything beyond
-// LOW_CUTOFF is behind the buildings anyway
-const MAX_DIST = [3000, 1600, 950];
+// Draw distance per tier (0 park & plaza, 1 avenue & esplanade, 2 cross-street, 3 a garden's small plants); at street level
+// everything beyond LOW_CUTOFF is behind the buildings anyway
+const MAX_DIST = [3000, 1600, 950, 240];
 const LOW_CUTOFF = 1150;
+// A small plant's levels: full detail within 14 m, coarse cards within 50 m, gone past MAX_DIST[3] (160 m from the ground). Each tier's
+// levels, as [near, mid].
+const SMALL_TIER = 3;
+const SMALL_LOD = [14, 50];
+const SMALL_LOW = 160;
+// ...all of them times the graphics level's draw distance (js/quality.js), for the fields built after it's set
+let smallScale = 1;
+/** How far small plants are drawn, as a share of their full distances */
+function setPlantDistance(scale) {
+  smallScale = scale;
+}
 
 function hashPos(x, y, z) {
   const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
@@ -891,25 +981,28 @@ function createTreeClearance(colliders) {
  * `update(cameraPosition)` from the frame loop to keep each tree's level of detail up to date. Returns
  * { group, material, atlas, sites (accepted placements), update(cameraPosition) }.
  */
-// Kept when the trees are rebuilt for a new stretch of the map
+// Kept when the trees are rebuilt for a new stretch of the map. A species' geometries are grown the first time a site needs it: the
+// gardens' kinds only near a garden.
 let treeParts = null;
-function* sharedTreeParts() {
+// The gardens' kinds (6 on) have one variant: a cell draws each kind's variants once, and the garden has many kinds
+const variantsOf = (s) => (s >= 6 ? 1 : 2);
+function* sharedTreeParts(wanted = SPECIES.map((_, s) => s)) {
   if (!treeParts) {
     const atlas = yield* createLeafAtlasSteps();
     const material = createTreeMaterial(atlas.texture);
     yield;
     // Geometries: [species][variant][lod]
-    const geos = [];
-    for (let s = 0; s < SPECIES.length; s++) {
-      const variants = [];
-      for (const v of [0, 1]) {
-        variants.push(buildTreeGeometries(s, v, atlas.tileMeters));
-        yield;
-      }
-      geos.push(variants);
+    treeParts = { atlas, material, geos: [] };
+  }
+  for (const s of wanted) {
+    if (treeParts.geos[s]) continue;
+    const variants = [];
+    for (let v = 0; v < variantsOf(s); v++) {
+      variants.push(buildTreeGeometries(s, v, treeParts.atlas.tileMeters));
+      yield;
     }
-    for (const variants of geos) for (const levels of variants) for (const g of levels) if (g) g.userData.shared = true;
-    treeParts = { atlas, material, geos };
+    for (const levels of variants) for (const g of levels) if (g) g.userData.shared = true;
+    treeParts.geos[s] = variants;
   }
   return treeParts;
 }
@@ -917,9 +1010,16 @@ function* sharedTreeParts() {
 function* createTreeFieldSteps(_scene, sites, colliders = []) {
   const group = new THREE.Group();
   group.name = 'Trees';
-  const { atlas, material, geos } = yield* sharedTreeParts();
+  // Each tier's levels, [near, mid], and how far it's drawn: a small plant's as far as the graphics level has them (setPlantDistance())
+  const smallLod = SMALL_LOD.map((d) => d * smallScale), smallLow = SMALL_LOW * smallScale;
+  const maxDist = MAX_DIST.map((d, t) => (t === SMALL_TIER ? d * smallScale : d));
+  const tierLod = [[LOD_NEAR, LOD_MID], [LOD_NEAR, LOD_MID], [LOD_NEAR, LOD_MID], smallLod];
+  // The street trees' six always, so the first view compiles them; the gardens' only where they grow
+  const wanted = new Set([0, 1, 2, 3, 4, 5]);
+  for (const t of sites) wanted.add(Math.min(SPECIES.length - 1, Math.max(0, t.species || 0)));
+  const { atlas, material, geos } = yield* sharedTreeParts([...wanted].sort((a, b) => a - b));
   const clearOfBuildings = createTreeClearance(colliders);
-  const treeBounds = geos.map((variants) => variants.map((levels) => {
+  const treeBounds = geos.map((variants) => variants && variants.map((levels) => {
     const bounds = new THREE.Box3();
     for (const g of levels) bounds.union(g.boundingBox);
     const height = Math.max(Math.abs(bounds.min.y), Math.abs(bounds.max.y));
@@ -948,14 +1048,14 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
     const height = Math.max(Math.abs(geo.boundingBox.min.y), Math.abs(geo.boundingBox.max.y));
     // The material adds wind after the instance transform: height-squared lean/rock, plus bob and flutter.
     const windPadding = Math.hypot(0.2, 0.06) * Math.hypot(0.86, 0.51) * (height / 11) ** 2 + 2;
-    const type = { geo, name, windPadding, meshes: [] };
+    const type = { geo, name, windPadding, meshes: [], small: !!SPECIES[SPECIES.findIndex((sp) => sp.name === geo.userData.species)]?.small, lod: geo.userData.lod };
     types.push(type);
     return type;
   };
-  const meshIndex = SPECIES.map((sp, s) => ({
-    l0: [0, 1].map((v) => makeType(geos[s][v][0], `Trees_${sp.name}_v${v}_lod0`)),
-    l1: [0, 1].map((v) => makeType(geos[s][v][1], `Trees_${sp.name}_v${v}_lod1`)),
-    l2: [0, 1].map((v) => makeType(geos[s][v][2], `Trees_${sp.name}_v${v}_lod2`))
+  const meshIndex = SPECIES.map((sp, s) => geos[s] && wanted.has(s) && ({
+    l0: geos[s].map((levels, v) => makeType(levels[0], `Trees_${sp.name}_v${v}_lod0`)),
+    l1: geos[s].map((levels, v) => makeType(levels[1], `Trees_${sp.name}_v${v}_lod1`)),
+    l2: geos[s].map((levels, v) => makeType(levels[2], `Trees_${sp.name}_v${v}_lod2`))
   }));
   const cells = new Map();
   const meshes = [];
@@ -973,7 +1073,7 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
     const r1 = hashPos(t.x, 1.3, t.z);
     const r2 = hashPos(t.z, 7.1, t.x);
     const r3 = hashPos(t.x + t.z, 3.3, 0.7);
-    const variant = hashPos(t.x, 5.9, t.z) < 0.5 ? 0 : 1;
+    const variant = variantsOf(sp) > 1 && hashPos(t.x, 5.9, t.z) >= 0.5 ? 1 : 0;
     const s = t.scale * (0.9 + r1 * 0.2);
     dummy.position.set(t.x, t.y || 0, t.z);
     dummy.rotation.set(0, t.yaw ?? r2 * Math.PI * 2, 0);
@@ -992,18 +1092,21 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
     px[i] = t.x;
     py[i] = (t.y || 0) + 6 * s;
     pz[i] = t.z;
-    tier[i] = Math.min(2, t.tier || 0);
+    tier[i] = SPECIES[sp].small ? SMALL_TIER : Math.min(2, t.tier || 0);
+    // Small plants in cells of their own, with their own levels
+    const small = tier[i] === SMALL_TIER ? 1 : 0;
     const cellX = Math.floor(t.x / TREE_CELL_SIZE);
     const cellZ = Math.floor(t.z / TREE_CELL_SIZE);
-    const cellKey = (cellX + 32768) * 65536 + (cellZ + 32768);
+    const cellKey = ((cellX + 32768) * 65536 + (cellZ + 32768)) * 2 + small;
     let cell = cells.get(cellKey);
     if (!cell) {
-      const label = `${cellX},${cellZ}`;
+      const label = `${cellX},${cellZ}${small ? 's' : ''}`;
       const cellGroup = new THREE.Group();
       cellGroup.name = `TreeCell_${label}`;
       cellGroup.visible = false;
       group.add(cellGroup);
-      cell = { group: cellGroup, label, trees: [], meshes: new Map() };
+      const [near, mid] = small ? smallLod : [LOD_NEAR, LOD_MID];
+      cell = { group: cellGroup, label, trees: [], meshes: new Map(), near, mid };
       cells.set(cellKey, cell);
     }
     cell.trees.push(i);
@@ -1038,7 +1141,7 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
       if (y > maxY) maxY = y;
       if (z < minZ) minZ = z;
       if (z > maxZ) maxZ = z;
-      const td = MAX_DIST[tier[i]];
+      const td = maxDist[tier[i]];
       if (td > maxCutoffAloft) maxCutoffAloft = td;
       if (td < minCutoffAloft) minCutoffAloft = td;
     }
@@ -1059,9 +1162,10 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
     cell.cz = cz;
     cell.radius = Math.sqrt(maxR2) + 1e-3;
     cell.maxCutoffAloft = maxCutoffAloft;
-    cell.maxCutoffLow = Math.min(maxCutoffAloft, LOW_CUTOFF);
+    const lowCutoff = cell.near === LOD_NEAR ? LOW_CUTOFF : smallLow;
+    cell.maxCutoffLow = Math.min(maxCutoffAloft, lowCutoff);
     cell.minCutoffAloft = minCutoffAloft;
-    cell.minCutoffLow = Math.min(minCutoffAloft, LOW_CUTOFF);
+    cell.minCutoffLow = Math.min(minCutoffAloft, lowCutoff);
     cell.uniformLod = 255;
     return cell;
   });
@@ -1082,7 +1186,8 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
     mesh.name = m.name;
     mesh.count = 0;
     mesh.visible = false;
-    mesh.castShadow = true;
+    // A small plant's shadow only near, where it's seen
+    mesh.castShadow = !m.type.small || m.type.lod === 0;
     mesh.receiveShadow = true;
     m.cell.group.add(mesh);
     m.type.meshes.push(mesh);
@@ -1152,17 +1257,19 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
     dirtyCells.clear();
   }
 
-  // Squared LOD and hysteresis thresholds eliminate per-tree Math.sqrt and temporary array allocations.
-  const NEAR_SQ = LOD_NEAR * LOD_NEAR;
-  const NEAR_LO_SQ = (LOD_NEAR - LOD_HYSTERESIS) * (LOD_NEAR - LOD_HYSTERESIS);
-  const NEAR_HI_SQ = (LOD_NEAR + LOD_HYSTERESIS) * (LOD_NEAR + LOD_HYSTERESIS);
-  const MID_SQ = LOD_MID * LOD_MID;
-  const MID_LO_SQ = (LOD_MID - LOD_HYSTERESIS) * (LOD_MID - LOD_HYSTERESIS);
-  const MID_HI_SQ = (LOD_MID + LOD_HYSTERESIS) * (LOD_MID + LOD_HYSTERESIS);
-  const MAX_DIST_LOW = MAX_DIST.map((d) => Math.min(d, LOW_CUTOFF));
-  const MAX_SQ_ALOFT = MAX_DIST.map((d) => d * d);
-  const MAX_LO_SQ_ALOFT = MAX_DIST.map((d) => (d - LOD_HYSTERESIS) * (d - LOD_HYSTERESIS));
-  const MAX_HI_SQ_ALOFT = MAX_DIST.map((d) => (d + LOD_HYSTERESIS) * (d + LOD_HYSTERESIS));
+  // Squared LOD and hysteresis thresholds eliminate per-tree Math.sqrt and temporary array allocations. A small plant's (tier 3) are
+  // its own, and its hysteresis a quarter of a tree's.
+  const HYST = tierLod.map((_, t) => (t === SMALL_TIER ? LOD_HYSTERESIS / 4 : LOD_HYSTERESIS));
+  const NEAR_SQ = tierLod.map(([n]) => n * n);
+  const NEAR_LO_SQ = tierLod.map(([n], t) => (n - HYST[t]) ** 2);
+  const NEAR_HI_SQ = tierLod.map(([n], t) => (n + HYST[t]) ** 2);
+  const MID_SQ = tierLod.map(([, m]) => m * m);
+  const MID_LO_SQ = tierLod.map(([, m], t) => (m - HYST[t]) ** 2);
+  const MID_HI_SQ = tierLod.map(([, m], t) => (m + HYST[t]) ** 2);
+  const MAX_DIST_LOW = maxDist.map((d, t) => Math.min(d, t === SMALL_TIER ? smallLow : LOW_CUTOFF));
+  const MAX_SQ_ALOFT = maxDist.map((d) => d * d);
+  const MAX_LO_SQ_ALOFT = maxDist.map((d) => (d - LOD_HYSTERESIS) * (d - LOD_HYSTERESIS));
+  const MAX_HI_SQ_ALOFT = maxDist.map((d) => (d + LOD_HYSTERESIS) * (d + LOD_HYSTERESIS));
   const MAX_SQ_LOW = MAX_DIST_LOW.map((d) => d * d);
   const MAX_LO_SQ_LOW = MAX_DIST_LOW.map((d) => (d - LOD_HYSTERESIS) * (d - LOD_HYSTERESIS));
   const MAX_HI_SQ_LOW = MAX_DIST_LOW.map((d) => (d + LOD_HYSTERESIS) * (d + LOD_HYSTERESIS));
@@ -1212,16 +1319,16 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
         if (setCellUniformLod(cell, 255)) changed = true;
         continue;
       }
-      if (maxDCell < LOD_NEAR - LOD_HYSTERESIS) {
+      if (maxDCell < cell.near - LOD_HYSTERESIS) {
         if (setCellUniformLod(cell, 0)) changed = true;
         continue;
       }
-      if (minD >= LOD_NEAR + LOD_HYSTERESIS && maxDCell < LOD_MID - LOD_HYSTERESIS) {
+      if (minD >= cell.near + LOD_HYSTERESIS && maxDCell < cell.mid - LOD_HYSTERESIS) {
         if (setCellUniformLod(cell, 1)) changed = true;
         continue;
       }
       const cellMinCutoff = low ? cell.minCutoffLow : cell.minCutoffAloft;
-      if (minD >= LOD_MID + LOD_HYSTERESIS && maxDCell < cellMinCutoff - LOD_HYSTERESIS) {
+      if (minD >= cell.mid + LOD_HYSTERESIS && maxDCell < cellMinCutoff - LOD_HYSTERESIS) {
         if (setCellUniformLod(cell, 2)) changed = true;
         continue;
       }
@@ -1240,12 +1347,12 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
         const t = tier[i];
         const cur = lod[i];
         const curL = cur === 255 ? 3 : cur;
-        let nextL = d2 < NEAR_SQ ? 0 : d2 < MID_SQ ? 1 : d2 < maxSq[t] ? 2 : 3;
+        let nextL = d2 < NEAR_SQ[t] ? 0 : d2 < MID_SQ[t] ? 1 : d2 < maxSq[t] ? 2 : 3;
         if (nextL - curL === 1) {
-          const hiSq = curL === 0 ? NEAR_HI_SQ : curL === 1 ? MID_HI_SQ : maxHiSq[t];
+          const hiSq = curL === 0 ? NEAR_HI_SQ[t] : curL === 1 ? MID_HI_SQ[t] : maxHiSq[t];
           if (d2 < hiSq) nextL = curL;
         } else if (curL - nextL === 1) {
-          const loSq = nextL === 0 ? NEAR_LO_SQ : nextL === 1 ? MID_LO_SQ : maxLoSq[t];
+          const loSq = nextL === 0 ? NEAR_LO_SQ[t] : nextL === 1 ? MID_LO_SQ[t] : maxLoSq[t];
           if (d2 > loSq) nextL = curL;
         }
         const next = nextL === 3 ? 255 : nextL;
@@ -1301,4 +1408,4 @@ function createTreeField(_scene, sites, colliders = []) {
   return step.value;
 }
 
-export { createTreeField, createTreeFieldSteps, createLeafAtlas, buildTreeGeometries, SPECIES as TREE_SPECIES };
+export { createTreeField, createTreeFieldSteps, createLeafAtlas, buildTreeGeometries, setPlantDistance, SPECIES as TREE_SPECIES };

@@ -8,6 +8,7 @@ import {
   createRoadSurfaceMaterial,
   createSidewalkMaterial,
   createCurbMaterial,
+  createSandstoneWallMaterial,
   createWaterMaterial,
   createParkLawnMaterial
 } from './tsl-materials.js';
@@ -222,7 +223,8 @@ function groundMaterials() {
     bollardBlack: new THREE.MeshStandardNodeMaterial({ color: 0x1c1c1c, roughness: 0.6 }),
     // Under all of it, a plain dark ground: a seam anywhere shows that, never the harbour
     base: new THREE.MeshStandardNodeMaterial({ color: 0x2c2b29, roughness: 1 }),
-    seawall: new THREE.MeshStandardNodeMaterial({ color: 0x8d7a5e, roughness: 0.85, metalness: 0.02 })
+    // Both sides: a few shores' rings are wound the other way round, and their walls would face the land
+    seawall: Object.assign(createSandstoneWallMaterial({ waterLevel: CITY_BOUNDS.waterLevel }), { side: THREE.DoubleSide })
   };
   // ...and none of it closing a tunnel's mouth (js/tunnel-mouths.js)
   for (const mat of [shared.curb, shared.sidewalk, shared.lawn, shared.hedge, shared.base]) mat.maskNode = outsideTunnelMouths();
@@ -319,7 +321,8 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
   yield;
   // A garden's paths, beds, hedges, ponds and gates (js/garden.js): not in the first view
   if (!last) return [];
-  const garden = yield* buildTileGarden(tile, target, buildCells, inTile);
+  // Each of its pieces is this tile's alone (tools/build-tiles.mjs), though a path or a bed can start a little over its edge
+  const garden = yield* buildTileGarden(tile, target, buildCells);
 
   // The base only backs up the surfaces' seams, so it comes last: on the phone it costs too much of the 4 s to load
   // ...and the base under everything goes under its basement too
@@ -342,8 +345,9 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
     const v1 = seawalls.vertex(c, b.x, CITY_BOUNDS.waterLevel - 0.6, b.z, nx, 0, nz);
     const v2 = seawalls.vertex(c, a.x, groundHeight(a.x, a.z) + 0.1, a.z, nx, 0, nz);
     const v3 = seawalls.vertex(c, b.x, groundHeight(b.x, b.z) + 0.1, b.z, nx, 0, nz);
-    if (side > 0) c.index.push(v0, v1, v2, v1, v3, v2);
-    else c.index.push(v0, v2, v1, v1, v2, v3);
+    // Facing (nx, nz), out over the water, where it's seen from
+    if (side > 0) c.index.push(v0, v2, v1, v1, v2, v3);
+    else c.index.push(v0, v1, v2, v1, v3, v2);
   }
   buildCells(seawalls, target, mats.seawall);
   yield;

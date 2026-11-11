@@ -162,7 +162,19 @@ function ringsCross(rings) {
   return false;
 }
 
-export function rdpRing(ring, eps) {
+export function rdpRing(ring, eps, keep = null) {
+  // Points that must stay (on a square's edge, where a neighbour's ring meets this one): simplified a stretch at a time between them
+  const kept = keep ? ring.map((p, i) => (keep(p[0], p[1]) ? i : -1)).filter((i) => i >= 0) : [];
+  if (kept.length) {
+    const out = [];
+    for (let k = 0; k < kept.length; k++) {
+      const a = kept[k], b = kept[(k + 1) % kept.length];
+      const run = b > a ? ring.slice(a, b + 1) : [...ring.slice(a), ...ring.slice(0, b + 1)];
+      out.push(...rdp(run, eps).slice(0, -1));
+    }
+    if (eps > 0.1 && out.length < 2000 && crossesItself(out)) return rdpRing(ring, eps / 2, keep);
+    return out;
+  }
   let far = 0, i1 = 0;
   for (let i = 0; i < ring.length; i++) {
     const d = Math.hypot(ring[i][0] - ring[0][0], ring[i][1] - ring[0][1]);
@@ -342,7 +354,7 @@ export class Raster {
   }
   // Boundary rings of one labelled component, world coordinates: stairs turned into runs and midpoints, ready to simplify.
   // Directed cell edges keep the component on the right, so outer rings and holes wind opposite ways.
-  traceRings(labels, c) {
+  traceRings(labels, c, keep = null) {
     const { w, h, res, x0, z0 } = this;
     const at = (i, j) => (i >= 0 && j >= 0 && i < w && j < h && labels[j * w + i] === c.id ? 1 : 0);
     const W = w + 2;
@@ -401,7 +413,8 @@ export class Raster {
       const out = [];
       for (let i = 0; i < m; i++) {
         const p = corners[(i + m - 1) % m], q = corners[i], n = corners[(i + 1) % m];
-        if (Math.min(Math.abs(q[0] - p[0]) + Math.abs(q[1] - p[1]), Math.abs(n[0] - q[0]) + Math.abs(n[1] - q[1])) >= LONG) {
+        // ...and so does one `keep` says must, on the edge of a square a neighbour meets
+        if (keep?.(x0 + q[0] * res, z0 + q[1] * res) || Math.min(Math.abs(q[0] - p[0]) + Math.abs(q[1] - p[1]), Math.abs(n[0] - q[0]) + Math.abs(n[1] - q[1])) >= LONG) {
           out.push([x0 + q[0] * res, z0 + q[1] * res]);
         }
         out.push([x0 + ((q[0] + n[0]) / 2) * res, z0 + ((q[1] + n[1]) / 2) * res]);
@@ -500,9 +513,11 @@ export class BitRaster {
   }
 }
 
-// The non-zero cells of a raster as polygons no wider than `size`: tiles overlap by a cell, so neighbours can't part.
-// Keeps every polygon cheap to triangulate, and lets the game build only those near the player. Returns [[outer, ...holes]].
-const TILE_OVERLAP = 3; // cells
+// The non-zero cells of a raster as polygons no wider than `size`, a square at a time: each traced to its square's edges and no further,
+// with every point on those edges kept through smoothing and simplifying, so its neighbours meet it on the same points, with no gap and
+// nothing drawn twice (two pieces over each other, triangulated apart, fought for every pixel). Smoothing used to cut the corner where
+// an outline met a square's edge, a wedge along the seam, and each square was traced 3 m into the next to hide it. Keeps every polygon
+// cheap to triangulate, and lets the game build only those near the player. Returns [[outer, ...holes]].
 export function tiledPolygons(raster, size, eps, minCells = 6, minHole = 6, within = null) {
   const out = [];
   const step = Math.round(size / raster.res);
@@ -513,9 +528,7 @@ export function tiledPolygons(raster, size, eps, minCells = 6, minHole = 6, with
         const sx = raster.x0 + ti * raster.res, sz = raster.z0 + tj * raster.res;
         if (sx < within.x0 || sx >= within.x1 || sz < within.z0 || sz >= within.z1) continue;
       }
-      // A little past its own square: tracing a raster's edge takes half a cell off it, and simplifying can take more, which would leave
-      // a gap along the seam for the ground under it to show through
-      const w = Math.min(step + TILE_OVERLAP, raster.w - ti), h = Math.min(step + TILE_OVERLAP, raster.h - tj);
+      const w = Math.min(step, raster.w - ti), h = Math.min(step, raster.h - tj);
       const tile = new Raster(raster.x0 + ti * raster.res, raster.z0 + tj * raster.res, raster.x0 + (ti + w) * raster.res, raster.z0 + (tj + h) * raster.res, raster.res);
       let any = false;
       for (let j = 0; j < h && j < tile.h; j++) {
@@ -527,10 +540,12 @@ export function tiledPolygons(raster, size, eps, minCells = 6, minHole = 6, with
       const { labels, comps } = tile.label();
       for (const c of comps) {
         if (c.n < minCells) continue;
-        const traced = tile.traceRings(labels, c);
-        let rings = traced.map((r) => rdpRing(r, eps)).filter((r) => r.length >= 3);
+        const sx = raster.x0 + ti * raster.res, sz = raster.z0 + tj * raster.res, ex = sx + w * raster.res, ez = sz + h * raster.res;
+        const onEdge = (x, z) => Math.abs(x - sx) < 1e-6 || Math.abs(x - ex) < 1e-6 || Math.abs(z - sz) < 1e-6 || Math.abs(z - ez) < 1e-6;
+        const traced = tile.traceRings(labels, c, onEdge);
+        let rings = traced.map((r) => rdpRing(r, eps, onEdge)).filter((r) => r.length >= 3);
         // Simplified apart, a hole can come to cross the outline around it
-        for (let tighter = eps / 2; tighter > 0.1 && ringsCross(rings); tighter /= 2) rings = traced.map((r) => rdpRing(r, tighter)).filter((r) => r.length >= 3);
+        for (let tighter = eps / 2; tighter > 0.1 && ringsCross(rings); tighter /= 2) rings = traced.map((r) => rdpRing(r, tighter, onEdge)).filter((r) => r.length >= 3);
         if (!rings.length) continue;
         rings.sort((p, q) => Math.abs(ringArea(q)) - Math.abs(ringArea(p)));
         out.push(rings.filter((r, i) => !i || Math.abs(ringArea(r)) > minHole));

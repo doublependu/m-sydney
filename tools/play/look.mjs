@@ -1,6 +1,7 @@
 // Boots the build and saves what the game shows from a list of places, for checking the city by eye.
 // usage: node tools/play/look.mjs out-dir [--query=...] [--browser=firefox] [--time=midday|golden|twilight|midnight] [--spots[=a,b]]
-//        [name:x,z,heading[,mode[,climbSeconds]] ...] [name@x,y,z>tx,ty,tz ...]
+//        [name:x,z,heading[,mode[,climbSeconds]] ...] [name@x,y,z>tx,ty,tz ...] [--dist=dir]
+//   --dist=dir: another build to look at, for pictures from before a change
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { serveDist, launchBrowser, openGame } from './lib.mjs';
 import { SPOTS } from './spots.mjs';
@@ -30,7 +31,8 @@ if (spots) {
   }
 }
 mkdirSync(out, { recursive: true });
-const server = await serveDist();
+const dist = args.find((a) => a.startsWith('--dist='))?.slice(7);
+const server = await serveDist(0, ...(dist ? [dist] : []));
 const browser = await launchBrowser({ browser: browserName });
 const game = await openGame(browser, server.url, { profile: 'laptop', query });
 const { page } = game;

@@ -7,6 +7,7 @@ import {
   ringArea, tiledPolygons, toWorld
 } from './geo-common.mjs';
 import { heightSampler } from './fetch-elevation.mjs';
+import { gardenAreas, inGardenArea } from './garden-areas.mjs';
 import { MARGIN, REGION, regionsOver, runJobs } from './geodata/regions.mjs';
 import { editWays } from './local-edits.mjs';
 
@@ -48,6 +49,13 @@ const riversAndPiers = () => {
   // Rivers, canals and lagoons at the level of the sea, like the Cooks River. A pond in a park or a reservoir up a hill stays out of it: the water
   // here is one sheet at sea level, and those would need one of their own.
   const seaLevel = heightSampler(5);
+  // Still water in a garden is the garden's: it draws its ponds at their own level (js/garden.js), untagged as one may be in OSM, like
+  // the Royal Botanic Garden's Main Pond, low by Farm Cove. As sea, it was a hole down to the harbour with its waves.
+  const gardens = gardenAreas(osmLand);
+  const inGarden = (ring) => {
+    const x = ring.reduce((t, p) => t + p[0], 0) / ring.length, z = ring.reduce((t, p) => t + p[1], 0) / ring.length;
+    return inGardenArea(gardens, x, z);
+  };
   const rivers = [];
   const piers = [];
   for (const e of osmLand) {
@@ -65,7 +73,7 @@ const riversAndPiers = () => {
     if (e.tags?.natural !== 'water' || /^(pond|basin|wastewater|reservoir|reflecting_pool|pool|stream_pool|fountain)$/.test(e.tags.water || '')) continue;
     const { outer, inner } = elementRings(e);
     const low = outer.filter((ring) => {
-      if (ring.length < 4 || Math.abs(ringArea(ring)) < 1500 || !ring.some(([x, z]) => inDetail(x, z))) return false;
+      if (ring.length < 4 || Math.abs(ringArea(ring)) < 1500 || !ring.some(([x, z]) => inDetail(x, z)) || inGarden(ring)) return false;
       const heights = ring.map(([x, z]) => seaLevel(...fromWorld(x, z))).filter((y) => y !== null);
       return !heights.length || heights.reduce((t, y) => t + y, 0) / heights.length <= 3;
     });

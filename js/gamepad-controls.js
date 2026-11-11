@@ -12,6 +12,8 @@ function steeringAxis(value) {
   return Math.sign(v) * Math.max(0, (Math.abs(v) - DEAD_ZONE) / (1 - DEAD_ZONE));
 }
 
+const RUN_REACH = 0.85; // of the stick's travel past which you run, on foot
+
 function stick(pad, offset) {
   const x = axis(pad.axes?.[offset]), y = axis(pad.axes?.[offset + 1]);
   const distance = Math.hypot(x, y);
@@ -171,6 +173,8 @@ class GamepadControls {
     this.controller.setGamepadInput('right', Math.max(0, movement.x));
     this.controller.setGamepadInput('up', mode === 'person' ? Number(Boolean(held(0))) : Math.max(0, vertical));
     this.controller.setGamepadInput('down', Math.max(0, -vertical));
+    // On foot, the stick pushed nearly all the way out runs
+    this.controller.setGamepadInput('run', !driving && Math.hypot(movement.x, movement.y) >= RUN_REACH);
     const zoom = Number(Boolean(held(13))) - Number(Boolean(held(12)));
     this.camera.applyGamepadInput(look.x, look.y, zoom, Number.isFinite(dt) ? Math.max(0, Math.min(0.1, dt)) : 0);
   }

@@ -190,6 +190,13 @@ for (const mode of ['Person', 'Car', 'Cyclist', 'Helicopter']) {
     for (const reverse of [false, true]) {
       const full = advanceWithTouch(mode, 1, reverse);
       const partial = advanceWithTouch(mode, 0.4, reverse);
+      // On foot, a stick walks slower short of most of its travel and at a walking pace past it: slower, not in proportion
+      if (mode === 'Person') {
+        assert.equal(Math.sign(partial.speed), Math.sign(full.speed));
+        assert.ok(Math.abs(partial.speed) > 0 && Math.abs(partial.speed) < Math.abs(full.speed), 'a stick part way out walks more slowly');
+        assert.ok(Math.abs(partial.heading - full.heading * 0.4) < 1e-10, 'turning should scale with joystick strength');
+        continue;
+      }
       if (mode === 'Car') {
         assert.equal(Math.sign(partial.speed), Math.sign(full.speed));
         assert.ok(Math.abs(partial.speed) > 0 && Math.abs(partial.speed) < Math.abs(full.speed), 'partial throttle moves more slowly');
@@ -205,6 +212,23 @@ for (const mode of ['Person', 'Car', 'Cyclist', 'Helicopter']) {
     }
   });
 }
+
+test('on foot, W walks at the pace of the people in the street, and with Shift it runs; slower inside', () => {
+  const pace = (keys, indoors = false) => {
+    const { controller } = keyboardHarness();
+    const person = { position: { x: 0, y: 0, z: 0 }, heading: 0, speed: 0, verticalVel: 0 };
+    controller.entities = { person };
+    controller.getGroundHeight = () => 0;
+    controller.resolveHorizontalCollision = () => {};
+    controller.indoors = indoors;
+    Object.assign(controller.keys, keys);
+    for (let i = 0; i < 180; i++) controller.updatePerson(1 / 60);
+    return person.speed;
+  };
+  assert.ok(Math.abs(pace({ forward: true }) - 1.5) < 1e-6, `walks at ${pace({ forward: true })} m/s`);
+  assert.ok(Math.abs(pace({ forward: true, run: true }) - 6) < 1e-6, `runs at ${pace({ forward: true, run: true })} m/s`);
+  assert.ok(pace({ forward: true }, true) < pace({ forward: true }) && pace({ forward: true, run: true }, true) < pace({ forward: true }) * 2, 'slower inside');
+});
 
 function carDynamicsHarness(motion = {}) {
   const { controller } = keyboardHarness();

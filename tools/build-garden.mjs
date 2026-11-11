@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BitRaster, bbox, elementRings, flat, load, pointInRing, q1, rdp, ringArea, rdpRing, toWorld } from './geo-common.mjs';
+import { gardenAreas } from './garden-areas.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const GENERATED = path.join(ROOT, 'tools/data/generated');
@@ -14,30 +15,11 @@ const OUT = path.join(GENERATED, 'garden.json');
 const log = (...args) => console.log('[garden]', ...args);
 const started = Date.now();
 
-// --- The areas: parks by their name in OSM, and boxes (x0, z0, x1, z1) with any boxes left out -----------------------------------
-const AREAS = [
-  { name: 'Royal Botanic Garden', osm: 'Royal Botanic Garden' },
-  { name: 'The Domain', osm: 'The Domain' },
-  { name: 'Domain Crescent Precinct', osm: 'Domain Crescent Precinct' },
-  { name: 'Mrs Macquaries Point', osm: 'Domain Yurong Precinct' },
-  { name: 'Tarpeian Precinct', osm: 'Domain Tarpeian Precinct' },
-  // Round the Opera House: not on its podium, which its own model draws (js/model-sites.js)
-  { name: 'Bennelong Point', box: [330, -2060, 730, -1640], except: [[448, -1955, 574, -1752]] },
-  { name: 'Circular Quay', box: [-40, -1720, 470, -1330] }
-];
+// --- The areas (tools/garden-areas.mjs) -----------------------------------------------------------------------------------------
 const REACH = 4; // m past an area's edge a path still counts, so those through its gates meet the footpaths outside
 
 const land = load('land.json').elements;
-const areas = AREAS.map((a) => {
-  if (a.box) {
-    const [x0, z0, x1, z1] = a.box;
-    return { ...a, rings: [[[x0, z0], [x1, z0], [x1, z1], [x0, z1]]], except: (a.except || []).map(([ex0, ez0, ex1, ez1]) => ({ x0: ex0, z0: ez0, x1: ex1, z1: ez1 })) };
-  }
-  const e = land.find((el) => el.tags?.name === a.osm && /^(park|garden)$/.test(el.tags.leisure || ''));
-  if (!e) throw new Error(`No park named ${a.osm} in OSM: has it been renamed?`);
-  return { ...a, rings: elementRings(e).outer.filter((r) => r.length > 3), except: [] };
-});
-for (const a of areas) a.box = bbox(a.rings.flat());
+const areas = gardenAreas(land);
 const distToRing = (ring, x, z) => {
   let best = Infinity;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) best = Math.min(best, segDist(x, z, ring[j], ring[i]));
@@ -245,6 +227,68 @@ for (const e of land) {
 const inPond = (x, z, margin = 0) => pondRings.some((r) => pointInRing(r, x, z) || (margin && distToRing(r, x, z) < margin));
 log(`${hedges.length} hedges, ${ponds.length} ponds and pools`);
 
+// --- Sea walls: the shore round the parks themselves, where a sandstone parapet keeps people out of the water (js/garden.js) ------------
+// Not the boxes round the Opera House, whose model has its own sea wall, or the Quay's, where the ferries tie up. Each is
+// [side, x, z, x, z, ...] along the shore, the land on the side `side` gives, as tools/build-tiles.mjs reckons a shore's (by its ring's
+// winding). Open where steps or a jetty reach the water.
+const WALL_REACH = 8; // m past a park's outline the shore can lie: its outline is often drawn along the top of the wall
+const OPENING = 2.5; // m either side of where steps or a pier meet the shore
+const parks = areas.filter((a) => a.osm);
+const parkBox = bbox(parks.flatMap((a) => a.rings.flat()));
+const inPark = (x, z) => parks.some((a) => x >= a.box.x0 - WALL_REACH && x <= a.box.x1 + WALL_REACH && z >= a.box.z0 - WALL_REACH && z <= a.box.z1 + WALL_REACH
+  && a.rings.some((r) => pointInRing(r, x, z) || distToRing(r, x, z) <= WALL_REACH));
+const openings = [];
+for (const [kind, , , ...line] of paths) {
+  if (kind !== 1) continue;
+  openings.push([[line[0], line[1]], [line[2], line[3]]], [[line[line.length - 4], line[line.length - 3]], [line[line.length - 2], line[line.length - 1]]]);
+}
+for (const e of land) {
+  if (e.tags?.man_made !== 'pier' || !e.geometry) continue;
+  const pts = e.geometry.map((g) => toWorld(g.lon, g.lat));
+  for (let i = 1; i < pts.length; i++) openings.push([pts[i - 1], pts[i]]);
+}
+const isOpen = (x, z) => openings.some(([a, b]) => segDist(x, z, a, b) < OPENING);
+const seawalls = [];
+let wallMetres = 0;
+for (const rings of GEO.shores) {
+  for (const flatRing of rings) {
+    const ring = [];
+    for (let k = 0; k < flatRing.length; k += 2) ring.push([flatRing[k], flatRing[k + 1]]);
+    let area = 0;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) area += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+    const side = area > 0 ? 1 : -1;
+    let run = [];
+    const flush = () => {
+      if (run.length > 1) {
+        const line = rdp(run, 0.1);
+        let L = 0;
+        for (let i = 1; i < line.length; i++) L += Math.hypot(line[i][0] - line[i - 1][0], line[i][1] - line[i - 1][1]);
+        if (L >= 3) {
+          seawalls.push([side, ...flat(line)]);
+          wallMetres += L;
+        }
+      }
+      run = [];
+    };
+    for (let i = 0; i < ring.length; i++) {
+      const [ax, az] = ring[i], [bx, bz] = ring[(i + 1) % ring.length];
+      if (Math.max(ax, bx) < parkBox.x0 - WALL_REACH || Math.min(ax, bx) > parkBox.x1 + WALL_REACH
+        || Math.max(az, bz) < parkBox.z0 - WALL_REACH || Math.min(az, bz) > parkBox.z1 + WALL_REACH) {
+        flush();
+        continue;
+      }
+      const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 2));
+      for (let k = 0; k < n; k++) {
+        const x = ax + ((bx - ax) * k) / n, z = az + ((bz - az) * k) / n;
+        if (inPark(x, z) && !isOpen(x, z)) run.push([x, z]);
+        else flush();
+      }
+    }
+    flush();
+  }
+}
+log(`${seawalls.length} sea walls, ${(wallMetres / 1000).toFixed(2)} km, round the parks' shores`);
+
 // --- Plants ----------------------------------------------------------------------------------------------------------------------------
 // The tree system's kinds (js/trees.js): what each garden is planted with. Heights in metres for trees; for the small ones (SMALL) in
 // tenths of a metre, as js/tree-placements.js reads them.
@@ -432,6 +476,6 @@ log(`by kind: ${Object.entries(counts).map(([k, v]) => `${names[k]} ${v}`).join(
 
 fs.writeFileSync(OUT, JSON.stringify({
   areas: areas.map((a) => ({ name: a.name, rings: a.rings.map((r) => flat(rdpRing(r, 0.5))), except: a.except })),
-  paths, gates, hedges, ponds, beds, plants, small: [...SMALL]
+  paths, gates, hedges, ponds, beds, seawalls, plants, small: [...SMALL]
 }));
 log(`wrote ${path.relative(ROOT, OUT)} (${(fs.statSync(OUT).size / 1024).toFixed(0)} KB) in ${((Date.now() - started) / 1000).toFixed(1)} s`);

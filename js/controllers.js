@@ -31,6 +31,14 @@ const onDeck = (sid) => !!sid && !!STRUCTURES[sid]?.deck;
 // Player models, animation and movement for walking, driving, cycling and flying.
 
 const groundCollider = { type: 'ground' };
+// On foot: a walk at the pace of the people in the street (js/pedestrian-system.js), or a run with Shift or a stick pushed nearly all
+// the way out. Inside (js/interiors.js sets `indoors`) slower, and turning slower: rooms are a few steps across, and at a walk you
+// turn in under a metre, from a hall through a door at its side.
+const ON_FOOT = {
+  outside: { walk: 1.5, run: 6, turn: 2.6 },
+  inside: { walk: 1.2, run: 2.4, turn: 1.6 }
+};
+const STICK_WALK = 0.6; // of a stick's travel that gives a full walk
 
 const CAR_DRIVE = {
   speed: 36, reverseSpeed: 10.5, acceleration: 4.5,
@@ -226,7 +234,8 @@ class ThirdPersonControllerManager {
       left: false,
       right: false,
       up: false,
-      down: false
+      down: false,
+      run: false
     };
 
     this.entities = {
@@ -277,7 +286,8 @@ class ThirdPersonControllerManager {
       left: ['KeyA', 'ArrowLeft'],
       right: ['KeyD', 'ArrowRight'],
       up: ['Space', 'KeyE'],
-      down: ['KeyQ', 'KeyC']
+      down: ['KeyQ', 'KeyC'],
+      run: ['ShiftLeft', 'ShiftRight']
     };
     const actionsByCode = new Map(Object.entries(bindings).flatMap(([action, codes]) => codes.map((code) => [code, action])));
     this._pressedCodes = new Set();
@@ -1394,10 +1404,8 @@ class ThirdPersonControllerManager {
 
   updatePerson(dt) {
     const p = this.entities.person;
-    // Inside, a walk, not a run (js/interiors.js sets `indoors`): rooms are a few steps across, and at a walk you can turn in 1 m, from
-    // a hall through a door at its side
-    const maxSpeed = this.indoors ? 2.6 : 8.2;
-    const turnRate = 2.6;
+    const pace = this.indoors ? ON_FOOT.inside : ON_FOOT.outside;
+    const turnRate = pace.turn;
     if (p.seat) {
       // Seated: where the seat is, until you move, or jump
       const k = this.keys;
@@ -1411,16 +1419,19 @@ class ThirdPersonControllerManager {
       this.onStand?.();
     }
 
+    // A key held is a walk, or a run with Shift; a stick walks slower short of STICK_WALK, and runs pushed nearly all the way out
+    const paceOf = (held) => (this.keys.run ? pace.run : pace.walk * (held === true ? 1 : Math.min(1, held / STICK_WALK)));
     let targetSpeed = 0;
-    if (this.keys.forward) targetSpeed = maxSpeed * this.keys.forward;
-    else if (this.keys.backward) targetSpeed = -maxSpeed * 0.65 * this.keys.backward;
+    if (this.keys.forward) targetSpeed = paceOf(this.keys.forward);
+    else if (this.keys.backward) targetSpeed = -paceOf(this.keys.backward) * 0.65;
 
     if (this.keys.left) p.heading += turnRate * dt * this.keys.left;
     if (this.keys.right) p.heading -= turnRate * dt * this.keys.right;
     p.heading += turnRate * dt * this.steerToView(p);
 
+    // Up to a walk in about half a second, to a run in a second
     const accelerating = Math.abs(targetSpeed) > Math.abs(p.speed) && p.speed * targetSpeed >= 0;
-    const acceleration = accelerating ? 5.5 * Math.abs(targetSpeed) / maxSpeed : 12;
+    const acceleration = accelerating ? 2 + 3.5 * Math.abs(targetSpeed) / pace.run : 12;
     p.speed += Math.max(-acceleration * dt, Math.min(acceleration * dt, targetSpeed - p.speed));
 
     p.position.x += Math.sin(p.heading) * p.speed * dt;

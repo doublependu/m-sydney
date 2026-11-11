@@ -400,13 +400,13 @@ async function initApp() {
 
   // Keyboard guide for each mode: [keys, action]
   const controlHints = {
-    person: [[['W', 'S'], 'Walk / Run'], [['A', 'D'], 'Turn'], [['Space'], 'Jump'], [['Drag'], 'Orbit']],
+    person: [[['W', 'S'], 'Walk'], [['Shift'], 'Run'], [['A', 'D'], 'Turn'], [['Space'], 'Jump'], [['Drag'], 'Orbit']],
     car: [[['W', 'S'], 'Drive / Reverse'], [['A', 'D'], 'Steer'], [['B'], 'Horn'], [['Drag'], 'Orbit']],
     cyclist: [[['W', 'S'], 'Pedal / Brake'], [['A', 'D'], 'Lean & Turn'], [['Drag'], 'Orbit']],
     helicopter: [[['W', 'S'], 'Pitch'], [['A', 'D'], 'Yaw'], [['Space', 'E'], 'Ascend'], [['Q', 'C'], 'Descend']]
   };
-  // Top speeds in km/h (controllers.js caps them at 8.2, 36, 19 & 52 m/s): full scale of the speed meter
-  const topSpeedKmh = { person: 30, car: 130, cyclist: 68, helicopter: 187 };
+  // Top speeds in km/h (controllers.js caps them at 6, 36, 19 & 52 m/s): full scale of the speed meter
+  const topSpeedKmh = { person: 22, car: 130, cyclist: 68, helicopter: 187 };
 
   function renderControlHints(mode) {
     if (!elControlsHint) return;
@@ -1764,6 +1764,31 @@ async function initApp() {
           viewYaw: Math.atan2(look.x - from.x, look.z - from.z), following: !!entity.followingView, speed: entity.speed,
           // The rider's helmet over the bike as each is drawn
           riderUp: entity.type === 'cyclist' && entity.helmet ? entity.helmet.position.y - entity.mesh.position.y : null
+        };
+      },
+      // Where the walker's head and pelvis are drawn, in the world and on the screen (-1..1), with the camera, for measuring how
+      // smoothly each moves from frame to frame (tools/play/walk-trace.mjs)
+      personPose() {
+        const p = controllerManager.entities.person;
+        const rig = p?.rig;
+        if (!rig?.placed) return null;
+        const a = rig.pose;
+        const base = surfaceHeight(p.surface || 0, p.position.x, p.position.z, p.surfaceY ?? null);
+        const camera = cameraSystem.camera;
+        camera.updateMatrixWorld();
+        // Each bone's joint, as PersonRig.writeBone() stored it, and as PersonCrowd.add() stands it on the ground
+        const joint = (b) => {
+          const o = b * 8;
+          const v = rig.bind[b].clone().applyQuaternion(new THREE.Quaternion(a[o], a[o + 1], a[o + 2], a[o + 3])).multiplyScalar(a[o + 7]);
+          const world = [a[o + 4] + v.x + rig.poseOriginX, a[o + 5] + v.y + base, a[o + 6] + v.z + rig.poseOriginZ];
+          const screen = new THREE.Vector3(world[0] - origin.x, world[1], world[2] - origin.z).project(camera);
+          return { world, screen: [screen.x, screen.y] };
+        };
+        return {
+          t: performance.now(), frame: simulatedFrames, x: p.position.x, z: p.position.z, heading: p.heading, speed: p.speed,
+          gait: rig.gait, run: rig.run, phase: rig.phase, swing: rig.feet.map((f) => f.swing), pelvisY: rig.pelvisY, standY: rig.standY,
+          head: joint(2), pelvis: joint(0),
+          camera: [camera.position.x + origin.x, camera.position.y, camera.position.z + origin.z]
         };
       },
       // The camera as drawn, on the ground or structure under the player

@@ -109,7 +109,7 @@ function cutMap(derived) {
     if (!tiles.has(key)) {
       tiles.set(key, { ix, iz, blocks: [], lawns: [], pavements: [], fills: [], signals: [], postBoxes: [], busShelters: [], nodes: new Map(), links: [], home: [],
         scenery: [], awnings: [], tags: { buses: [], cycles: [], cycleways: [], speeds: [], oneways: [], zebras: [], directions: [] }, buildings: [], trees: [],
-        garden: { paths: [], gates: [], hedges: [], ponds: [], beds: [] } });
+        garden: { paths: [], gates: [], hedges: [], ponds: [], beds: [], seawalls: [] } });
     }
     return tiles.get(key);
   };
@@ -158,6 +158,7 @@ function cutMap(derived) {
   if (GARDEN) {
     for (const [kind, surface, width, ...line] of GARDEN.paths) cut(line, (t, run) => t.garden.paths.push([kind, surface, width, ...run]));
     for (const [height, width, ...line] of GARDEN.hedges) cut(line, (t, run) => t.garden.hedges.push([height, width, ...run]));
+    for (const [side, ...line] of GARDEN.seawalls || []) cut(line, (t, run) => t.garden.seawalls.push([side, ...run]));
     for (const g of GARDEN.gates) at(g[0], g[1]).garden.gates.push(g);
     const middle = (ring) => { const m = (ring.length >> 2) << 1; return at(ring[m], ring[m + 1]); };
     for (const ring of GARDEN.ponds) middle(ring).garden.ponds.push(ring);

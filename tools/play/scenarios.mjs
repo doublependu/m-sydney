@@ -359,8 +359,9 @@ const UNDER_THE_DECK = {
 const ROUTE = [{ x: 289, z: 250 }, { x: 291, z: 376 }, { x: 70, z: 376 }];
 
 // Walking into the one building with a model, and out again
-// Walks the person to (target.x, target.z) with the keys: turning towards it, then forward, in short presses at the end so they stop
-// on it rather than past it
+// Walks the person to (target.x, target.z) with the keys: turning towards it, then forward, looking more often as it nears so they let
+// go on it: a walker stops within 10 cm of letting go. Running with Shift while it's more than a few steps off, as someone in a hurry
+// would.
 async function walkTo(human, target, { arrive = 0.3, timeout = 25000 } = {}) {
   const started = human.now();
   while (human.now() - started < timeout) {
@@ -370,16 +371,10 @@ async function walkTo(human, target, { arrive = 0.3, timeout = 25000 } = {}) {
       await human.releaseAll();
       return true;
     }
+    await human.setKey('ShiftLeft', distance > 3);
     const error = await human.steerTowards(s, target, 0.1);
-    const aligned = Math.abs(error) < (distance < 1 ? 0.25 : 0.5);
-    if (distance < 0.9) {
-      await human.setKey('KeyW', false);
-      if (aligned) await human.hold('KeyW', 70);
-      await human.wait(120);
-    } else {
-      await human.setKey('KeyW', aligned);
-      await human.wait(60);
-    }
+    await human.setKey('KeyW', Math.abs(error) < (distance < 1 ? 0.25 : 0.5));
+    await human.wait(distance < 1 ? 20 : 60);
   }
   await human.releaseAll();
   return false;
@@ -437,7 +432,7 @@ function lowerFortScenario() {
       // Along the landing past the stairwell, into the sitting room, out onto the balcony
       await walk(-5.0, -0.65, 'round the top of the stair');
       await walk(0.89, -0.65, 'along the landing');
-      await open(0.89, -1.4, 'sitting');
+      expect((await interior()).doors.find((d) => d.id === 'sitting')?.angle >= 1.59, 'the sitting room door isn\'t open from the start');
       await walk(0.75, -2.2, 'into the sitting room');
       await walk(0.15, -4.7, 'to the balcony doors');
       await open(-0.05, -5.6, 'sitting-balcony');
@@ -553,7 +548,7 @@ function operaHouseScenario() {
       await walk(at(47.5, -14.2), 'into the west corridor');
       await walk(at(60.7, -15.2), 'along the west corridor');
       await walk(at(62.3, -15.1), 'to the hall\'s door');
-      await open(at(62.3, -14.0), 'hall-w');
+      expect((await interior()).doors.find((d) => d.id === 'hall-w')?.angle >= 1.59, 'the hall\'s west door isn\'t open from the start');
       await walk(at(62.4, -13.3), 'into the hall');
       expect((await interior()).room === 'hall', `not in the hall but ${(await interior()).room}`);
       metric('fpsInHall', (await debug(() => window.__gameDebug.frameCost())).fps);
@@ -572,7 +567,7 @@ function operaHouseScenario() {
       await walk(at(103.3, -12.3), 'up the circle', { timeout: 40000 });
       expect(near(await level(), 24.25), `at the top of the circle at ${(await level()).toFixed(2)} m`);
       await walk(at(103.3, -9.5), 'to the circle\'s door');
-      await open(at(104.0, -9.5), 'circle-n');
+      expect((await interior()).doors.find((d) => d.id === 'circle-n')?.angle >= 1.59, 'the circle\'s door isn\'t open from the start');
       await walk(at(105.6, -9.3), 'out onto the stair\'s landing');
       expect((await interior()).room === 'north-foyer', `not at the head of the stair but in ${(await interior()).room}`);
       // Down the red stair, and to an ottoman by the glass
@@ -635,7 +630,9 @@ function walkInScenario() {
       expect(i.inside === 'test-interior' && i.room === 'hall', `through the door, in ${i.inside} ${i.room}`);
       let p = await human.state();
       expect(near(p.surfaceY, site.y, 0.05), `in the hall, standing at ${p.surfaceY.toFixed(2)}, the floor at ${site.y.toFixed(2)}`);
-      expect(i.drawn.includes('hall') && !i.drawn.includes('bedroom'), `drawn from the hall: ${i.drawn}`);
+      // Its own doors are open from the start, so the bedroom upstairs is drawn through its doorway, two rooms off
+      for (const id of ['living', 'bedroom']) expect(i.doors.find((d) => d.id === id)?.angle >= 1.59, `the ${id} door isn't open from the start`);
+      expect(i.drawn.includes('hall') && i.drawn.includes('bedroom'), `drawn from the hall: ${i.drawn}`);
       await debug(() => window.__gameDebug.frameCost());
       await human.wait(3000);
       const frames = await debug(() => window.__gameDebug.frameCost());
@@ -1102,7 +1099,9 @@ export const SCENARIOS = {
       await human.releaseAll();
       await page.evaluate(([a, b, c]) => window.__gameDebug.goto(a, b, c, 'person'), [x, z, heading]);
       await human.wait(500);
+      await human.down('ShiftLeft');
       await human.hold('KeyW', 2500);
+      await human.up('ShiftLeft');
       const walked = await human.state();
       expect(walked.mode === 'person' && walked.y < 1.5, `walking under the deck reached y ${walked.y.toFixed(1)}`);
       expect(Math.hypot(walked.x - x, walked.z - z) > 5, 'could not walk through under the deck');
@@ -1390,11 +1389,18 @@ export const SCENARIOS = {
     async run({ human, page, metric, expect }) {
       await human.wait(800);
       await teleportAndSettle(human, 'townHall', 'person');
+      // W walks, at the pace of the people in the street; with Shift it runs
       await human.down('KeyW');
-      await human.wait(2500);
+      await human.wait(1500);
+      const strolling = await human.state();
+      expect(Math.abs(strolling.speed) > 1.2 && Math.abs(strolling.speed) < 1.8, `walking went at ${strolling.speed.toFixed(1)} m/s`);
+      metric('walkSpeedMph', Number((Math.abs(strolling.speed) * 2.237).toFixed(1)));
+      await human.down('ShiftLeft');
+      await human.wait(2000);
       const walking = await human.state();
-      expect(Math.abs(walking.speed) > 3, `walking stayed at ${walking.speed.toFixed(1)} m/s`);
+      expect(Math.abs(walking.speed) > 3, `running stayed at ${walking.speed.toFixed(1)} m/s`);
       metric('runSpeedMph', Math.round(Math.abs(walking.speed) * 2.237));
+      await human.up('ShiftLeft');
 
       const ground = walking.y;
       await human.down('Space');
@@ -1618,7 +1624,9 @@ export const SCENARIOS = {
       const footway = await go('person');
       expect(footway.onFootway && footway.surface === onDeck.surface, `no footway: ${JSON.stringify(footway).slice(0, 180)}`);
       expect(Math.abs(footway.surfaceY - onDeck.surfaceY) < 3, 'got out of the car and fell off the bridge');
+      await human.down('ShiftLeft');
       await human.hold('KeyW', 2500);
+      await human.up('ShiftLeft');
       const walked = await human.state();
       expect(at(walked, footway) > 3 && walked.onFootway, `walking the footway went ${at(walked, footway).toFixed(1)} m`);
       // From the footway the nearest of the deck's roads is the Cahill's lane, on its own structure (plan 5): on the deck, all the same

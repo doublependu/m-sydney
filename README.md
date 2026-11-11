@@ -69,7 +69,9 @@ the map, for scenarios about the roads rather than about fetching them.
 `node tools/check-ground.mjs [--tiles=0_-2,1_-2]` measures the ground, `node tools/play/look.mjs out-dir
 name:x,z,heading,mode,climbSeconds` saves what the game shows from any place (`--spots` for the stacks, tunnels and bridge
 ends in `tools/play/spots.mjs`), `node tools/play/flicker.mjs out-dir` holds views still and maps the pixels that flicker,
-and `node tools/debug-map.mjs out.png` draws the map data from above. Add `--browser=firefox` to the play, bench, look and
+`node tools/play/walk-trace.mjs out.json [--shift]` walks at a few places and measures how much the walker's head, pelvis and the camera
+shake from frame to frame, and `node tools/debug-map.mjs out.png` draws the map data from above. `--dist=dir` has look and flicker show
+another build, for pictures from before a change. Add `--browser=firefox` to the play, bench, look and
 flicker tools for the WebGL2 path, or `--browser=webkit` for Safari's engine: Playwright's Linux build, drawing in software, the
 nearest thing to an iPhone here. A WebKit run reports its web process's memory, as it has no `performance.memory`. Reports' pictures
 are the game's own picture of the world under the page's HUD, as the browser's screenshot comes back black behind a WebGPU canvas.
@@ -116,13 +118,15 @@ alone needs only the build's later steps, about 3.5 minutes on the last build's 
 The gardens (`tools/build-garden.mjs`): in the Royal Botanic Garden, the Domain, round the Opera House and along Circular Quay, OSM's
 footpaths, steps and cycleways off the roads, the gates on them, its hedges, ponds and beds, and every plant. Its trees come from OSM,
 by what it says they are or what grows round them; each garden OSM names, and those on the garden's own map that OSM hasn't (placed on
-the world from the ones it has, to about 20 m), is planted by its kind: roses, herbs, succulents, natives, palms, rainforest, beds. It's
-a list of areas at the top of the script, so more can be added; the rest of the map's footpaths wait, as they'd change where everyone
-walks.
+the world from the ones it has, to about 20 m), is planted by its kind: roses, herbs, succulents, natives, palms, rainforest, beds. Along
+the parks' shores (not the boxes round the Opera House and the Quay) a sandstone parapet tops the sea wall, open where steps or a jetty
+reach the water. Still water in a garden is its pond, untagged as OSM may leave it, not the sea (`tools/build-geodata.mjs`). The areas
+are a list in `tools/garden-areas.mjs`, so more can be added; the rest of the map's footpaths wait, as they'd change where everyone walks.
 
 The generators write the whole map to `tools/data/generated/`, and `tools/build-tiles.mjs` cuts it up. What needs a 1 m raster is done a region at a
-time, each 7.2 km square with a margin, in worker threads (`tools/geodata/`), since one raster of it all wouldn't fit in memory. `tools/geo-common.mjs`
-sets the world frame and the play area; `SYDNEY_AREA=inner` makes Inner Sydney instead, or `today` the old CBD map, for checking a generator still makes
+time, each 7.2 km square with a margin, in worker threads (`tools/geodata/`), since one raster of it all wouldn't fit in memory. Lawns and
+footpaths come out of it as pieces of 240 m squares, each traced to its square's edges with every point on them kept through smoothing
+and simplifying (`tiledPolygons()`), so neighbours meet on the same points, with no gap and nothing drawn twice. `tools/geo-common.mjs` sets the world frame and the play area; `SYDNEY_AREA=inner` makes Inner Sydney instead, or `today` the old CBD map, for checking a generator still makes
 what it did.
 
 | File | Holds | Fetched |
@@ -186,7 +190,10 @@ what it did.
   colours, pitch, gables and eaves. The walls are two more sets of uniforms for the masonry facade, so the GPU compiles nothing more,
   and every pitched roof is one vertex-coloured material.
 - **A garden is drawn over its lawn** (`js/garden.js`): its paths as strips in their surfaces' colours, its beds speckled with what's
-  planted in them, so they read as planted from further off than the plants are drawn, its hedges, ponds and gates. People out walking
+  planted in them, so they read as planted from further off than the plants are drawn, its hedges, ponds and gates, and the parapets
+  along its shore, which you can't walk or jump over. All of it lies on the lawn as the lawn is drawn, not on the ground under it, which
+  bends where the lawn's triangles are straight; and its paths are a centimetre apart by surface (steps on top, then asphalt, paving,
+  gravel, timber), so where two cross one is always over the other. People out walking
   take its paths (`js/pedestrian-routes.js`), joined where they meet and onto the street's footpath where one ends beside it, through
   the gates; a garden's paths bring more people out, one for each 40 m. Its plants are the trees' kinds and more (`js/trees.js`): palms,
   araucarias, the Wollemi pine, tree ferns, cycads, and small ones, shrubs, natives, flowers, roses, succulents and grasses, grown as
@@ -251,7 +258,8 @@ What a model has to be:
   climbs and the floor upstairs doesn't take you. Walls hold you at their own heights, so a wall upstairs is over your head downstairs. A
   shut door is a wall, filling its doorway through the wall's thickness, so nothing catches in the recess its leaf leaves. F opens the
   door or takes the seat in front of you (the hand button on touch, X on a gamepad); its prompt shows only within 1.5 m, facing it.
-  Inside you walk rather than run, at 2.6 m/s, turning in 1 m, and you're 0.22 m round (the models' checks use 0.3).
+  On foot you walk at 1.5 m/s, the pace of the people in the street, and run at 6 with Shift (or a stick pushed nearly all the way).
+  Inside you walk at 1.2 m/s and run at 2.4, turning in under a metre, and you're 0.22 m round (the models' checks use 0.3).
 - **The camera in it, or beside it:** it comes in closer and looks ahead level. Looking on from over your head, it's kept 0.25 m clear of
   every wall and door leaf, 0.7 m under a ceiling and 0.25 m over a floor, and the line it sees you along goes through no floor or stair.
   It comes in at once and eases back out. Its near plane is 0.1 m there (0.35 m elsewhere), so it never cuts into a wall. Nearer than

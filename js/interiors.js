@@ -14,6 +14,7 @@ import {
 //   says whether there's anything behind its front door.
 // - At a door, within reach and facing it, F opens it (a hand button on touch, X on a gamepad). If there's an inside, that's when it's
 //   fetched: the door swings to a little open while it comes, then all the way. It's let go of RELEASE metres after you leave.
+// - Inside, its own doors are open when it comes in, unless they're locked; F shuts one.
 // - Inside, only the rooms you can see are drawn: the one you're in, and those through open doorways from it (interior-data.js).
 // - In it or beside it, the camera behind you is kept clear of its walls, floors and ceilings, so it never looks through one.
 // Every site's model is in its own frame (x across, z along, y up from its ground floor), placed at (x, y, z) and turned by yaw.
@@ -200,6 +201,16 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, shown = () => {
     }
     return doors;
   }
+  // Open from the start, as a lived-in building's inner doors are: the swing done and the doorway clear
+  function openNow(door) {
+    door.angle = door.target = Math.abs(door.d.turn);
+    colliders.remove([door.collider]);
+    for (const [node, sign] of [[door.node, 1], [door.pair, -1]]) {
+      if (!node) continue;
+      node.rotation.y = door.angle * Math.sign(door.d.turn) * sign;
+      node.updateMatrixWorld(true);
+    }
+  }
   function removeDoors(doors) {
     for (const door of doors.values()) if (door.angle < 0.05) colliders.remove([door.collider]);
   }
@@ -314,6 +325,9 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, shown = () => {
       record.walls = data.walls.map((w) => wallCollider(site, w));
       colliders.add(record.walls);
       record.doors = addDoors(site, data.doors, scene, 'in', [...data.walls, ...site.out.data.walls]);
+      // Its own doors, between its rooms, are open unless locked; those in the outside, to the street and the house's terraces, as
+      // they were left
+      for (const door of record.doors.values()) if (!door.d.locked) openNow(door);
       record.rooms = new Map(data.rooms.map((r) => [r.id, scene.getObjectByName(r.node)]));
       record.state = 'ready';
       placeFloors(site);

@@ -2231,6 +2231,44 @@ function createParkLawnMaterial(isMeadow = false) {
  * their plants are drawn. Up to four kinds of bed, `beds` as [{ soil, speckles (three colours), cover (how much of it they cover) }]; a
  * vertex's colour says which (its red, the kind over 3), so one material draws them all.
  */
+/**
+ * Sandstone in courses, as the harbour's sea walls are built: blocks about 1.2 m long and 0.45 m high, each its own shade of honey to
+ * ochre, with thin pale joints, and the stone darker and greener up to half a metre over the water, where the tide wets it. The blocks
+ * run along the world's x + z, so a wall facing any way has them; the courses go by height.
+ */
+function createSandstoneWallMaterial({ waterLevel }) {
+  const mat = new THREE.MeshStandardNodeMaterial({ metalness: 0.0, roughness: 0.9 });
+  mat.colorNode = Fn(() => {
+    const y = positionWorld.y;
+    const course = y.div(0.45);
+    const row = floor(course);
+    const along = patternXZ.x.add(patternXZ.y).div(1.2).add(mod(row, 2.0).mul(0.5));
+    const shade = hash2D(vec2(floor(along), row));
+    const grain = noise2D(patternXZ.mul(2.5).add(vec2(y.mul(2.5), y.mul(1.7)))).mul(0.14).add(0.93);
+    const stone = mix(color(0xb59462), color(0x8c6c45), shade).mul(grain);
+    // Joints about 2 cm wide, fading out as they shrink under a pixel
+    const joint = max(smoothstep(0.455, 0.49, abs(fract(course).sub(0.5))), smoothstep(0.47, 0.495, abs(fract(along).sub(0.5))))
+      .mul(float(1.0).sub(smoothstep(0.08, 0.3, fwidth(course))));
+    const laid = mix(stone, color(0xcdbb98), joint.mul(0.6));
+    const wet = float(1.0).sub(smoothstep(waterLevel + 0.1, waterLevel + 0.7, y));
+    return mix(laid, color(0x3d4836), wet.mul(0.7));
+  })();
+  return mat;
+}
+
+/**
+ * A garden's pond: still, fresh water, dark olive with slow patches of green and brown where it's shallow or weedy, and only a soft
+ * sheen of the sky. The harbour's water is a dark mirror with waves; this is neither.
+ */
+function createPondMaterial() {
+  const mat = new THREE.MeshStandardNodeMaterial({ metalness: 0.0, roughness: 0.32 });
+  mat.colorNode = Fn(() => {
+    const patch = noise2D(patternXZ.mul(0.18)).mul(0.6).add(noise2D(patternXZ.mul(0.7)).mul(0.4));
+    return mix(color(0x1e2a1b), color(0x3a4429), smoothstep(0.35, 0.85, patch));
+  })();
+  return mat;
+}
+
 function createGardenBedMaterial(beds) {
   const mat = new THREE.MeshStandardNodeMaterial({ metalness: 0.0, roughness: 0.95 });
   const kinds = [0, 1, 2, 3].map((i) => beds[Math.min(i, beds.length - 1)]);
@@ -2316,6 +2354,8 @@ export {
   createRoadPaintMaterial,
   createSidewalkMaterial,
   createCurbMaterial,
+  createPondMaterial,
+  createSandstoneWallMaterial,
   createWaterMaterial,
   createParkLawnMaterial,
   createGardenBedMaterial,

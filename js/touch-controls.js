@@ -1,6 +1,7 @@
 // Touch input stays separate from the keyboard, so releasing a finger never releases a held key.
 const DEAD_ZONE = 0.15;
 const MAX_RADIUS = 44;
+const RUN_REACH = 0.85; // of the stick's travel past which you run, on foot
 
 class TouchControls {
   constructor(controllerManager) {
@@ -125,6 +126,7 @@ class TouchControls {
     this.controller.setTouchInput('right', Math.max(0, x * strength));
     this.controller.setTouchInput('forward', Math.max(0, -y * strength));
     this.controller.setTouchInput('backward', Math.max(0, y * strength));
+    this.controller.setTouchInput('run', strength >= RUN_REACH);
   }
 
   releaseCapture(element, pointerId) {
@@ -138,7 +140,7 @@ class TouchControls {
     this.stick.classList.remove('is-pressed');
     this.knob.style.setProperty('--stick-x', '0px');
     this.knob.style.setProperty('--stick-y', '0px');
-    for (const action of ['forward', 'backward', 'left', 'right']) this.controller.setTouchInput(action, 0);
+    for (const action of ['forward', 'backward', 'left', 'right', 'run']) this.controller.setTouchInput(action, 0);
   }
 
   updateButton(button, action) {

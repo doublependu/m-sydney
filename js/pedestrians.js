@@ -1076,7 +1076,9 @@ const GAIT = {
   heelOff: 0.55,
   landLead: 0.4, // feet land this share of the stance's travel ahead of the hips
   bob: 0.022, // walking pelvis dip after each heel strike at a 0.72 m step (m, for a 1.75 m person)
+  runBob: 0.06, // ...and running, from between landings to mid-stance
   maxDrop: 0.12, // planted feet never pull the pelvis lower than this below standing height (the foot slips instead)
+  runGive: 0.01, // ...and running, no lower than this below the run's own bounce
   armLag: 0.07, // s the arm swing trails the legs
   // Turning: quicker, shorter steps the sharper the turn; hurried steps when a planted foot is left out of reach;
   // feet stay on their own side of each other; a lean into the turn
@@ -1118,12 +1120,11 @@ const smooth = (e0, e1, x) => {
 const lerp = (a, b, t) => a + (b - a) * t;
 const ease = (dt, tau) => 1 - Math.exp(-dt / tau); // share of the way a first-order lag covers in dt
 let _easeDt = -1;
-let _e03 = 0, _e045 = 0, _e07 = 0, _e10 = 0, _e12 = 0, _e15 = 0, _e22 = 0, _e30 = 0, _e35 = 0;
+let _e03 = 0, _e07 = 0, _e10 = 0, _e12 = 0, _e15 = 0, _e22 = 0, _e30 = 0, _e35 = 0;
 function syncEase(dt) {
   if (dt === _easeDt) return;
   _easeDt = dt;
   _e03 = ease(dt, 0.03);
-  _e045 = ease(dt, 0.045);
   _e07 = ease(dt, GAIT.armLag);
   _e10 = ease(dt, 0.1);
   _e12 = ease(dt, 0.12);
@@ -1426,10 +1427,11 @@ class PersonRig {
     // turning on the spot in quick steps of ~45-60 degrees
     if (Math.abs(yawErr) > 0.12) f = Math.max(f, GAIT.minCadence * (1 + 0.6 * turning));
     // A planted foot the body has turned or moved away from (round a corner), pulling the hips down further than any
-    // stride does, is picked up sooner
+    // stride does, is picked up sooner. Not running: every foot a run leaves behind is out of reach by then, and the run's
+    // cadence already allows for it (hurried, the cycle and the body's bob would leap forward at each step)
     const reach = this.legLength * 0.997;
     for (const foot of this.feet) {
-      if (foot.swing || f === 0) continue;
+      if (foot.swing || f === 0 || run > 0.5) continue;
       const hx = x + cosY * foot.side * HIP_X * s;
       const hz = z - sinY * foot.side * HIP_X * s;
       const drop = this.standY - (reachTop(foot.ax, foot.ay, foot.az, hx, hz, reach) + (PELVIS_Y - HIP_Y) * s);
@@ -1474,18 +1476,26 @@ class PersonRig {
     this.setPelvisRotation();
 
     // Height: walking, an even rise over each stance foot (the legs flex taking the weight and before toe-off);
-    // running, the legs give under the landing and the body floats between steps. The standing height follows the
-    // ground under the feet with a lag, as a foot's height only changes when it lands (stepping off a curb).
+    // running, a bob once a step. The standing height follows the ground under the feet with a lag, as a foot's height
+    // only changes when it lands: stepping off a kerb, the body goes down over a tenth of a second.
     const groundAvg = cSum > 0.01 ? (left.contact * left.py + right.contact * right.py) / cSum : (left.py + right.py) * 0.5;
-    this.standY += (this.standingHeight(groundAvg) - this.standY) * _e045;
+    this.standY += (this.standingHeight(groundAvg) - this.standY) * _e10;
     const stepRatio = f > 0 ? Math.min(1.3, speed / (2 * f * 0.72 * s)) : 0;
     const walkDrop = s * g * GAIT.bob * stepRatio * (0.5 - 0.5 * Math.cos(4 * Math.PI * (this.phase - duty * 0.5)));
-    const runDrop = this.legLength * 0.032 + s * (0.075 * Math.max(left.stance, right.stance) - 0.015);
+    // A run bobs smoothly once a step, lowest at mid-stance and highest between landings, rather than dipping only while a foot's down
+    const runDrop = this.legLength * 0.032 + s * (GAIT.runBob * (0.5 + 0.5 * Math.cos(4 * Math.PI * (this.phase - duty * 0.5))) - 0.015);
     let y = this.standY - lerp(walkDrop, runDrop, run) - IDLE.drop * s * Math.abs(this.lean) * idle;
 
     // ...never higher than the legs reach: planted feet hold the hips down (yet they slip rather than pull them below
     // maxDrop); a swinging leg lets go gradually after toe-off and draws them down ahead of its landing
-    const lowest = this.standY - GAIT.maxDrop * s;
+    // Running, the stance's travel is longer than a leg reaches across, and those limits would yank the hips down as each foot lands
+    // and pop them up as it leaves, a few frames apart. So a run keeps its own bounce, the legs taking it no more than RUN_GIVE
+    // lower, and a foot out of reach leaves the ground a moment early instead (limb() stretches the leg to its length).
+    // Nor does a swinging foot pull them lower than a planted one may: when the body's sped up or been knocked back, its
+    // lift-off point can be further off than a leg reaches, and would draw them down to the ground in a frame.
+    const give = y - GAIT.runGive * s;
+    const firm = smooth(0.2, 0.6, run); // all of it from well into a run, as the run's own bounce is
+    const lowest = lerp(this.standY - GAIT.maxDrop * s, Math.max(this.standY - GAIT.maxDrop * s, give), firm);
     const k = s * (0.002 + 0.028 * Math.max(g, run)); // smooth where the constraints hand over in a stride
     for (let i = 0; i < 2; i++) {
       const foot = this.feet[i];
@@ -1497,7 +1507,8 @@ class PersonRig {
         const tRem = (1 - w) * tSwing;
         const fromLiftOff = reachTop(foot.ax, foot.ay, foot.az, hx, hz, reach) + 0.5 * s * w * w;
         const toLanding = reachTop(foot.ex, foot.ey, foot.ez, hx + this.vx * tRem, hz + this.vz * tRem, reach) + 0.25 * s * (1 - w) * (1 - w);
-        y = smin(y, Math.min(fromLiftOff, toLanding) - _v.y, k);
+        const top = Math.min(fromLiftOff, toLanding) - _v.y;
+        y = smin(y, Math.max(lowest, top), k);
       } else {
         y = smin(y, Math.max(lowest, reachTop(foot.ax, foot.ay, foot.az, hx, hz, reach) - _v.y), k);
       }

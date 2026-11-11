@@ -242,15 +242,21 @@ What a model has to be:
 
 - **Where it goes:** `js/model-sites.js` lists each site: its file, where its middle stands, how it's turned, its ground floor's height
   (or none, to stand it on the ground), and points in the map's buildings it replaces. The tile build leaves those buildings out
-  (`tools/tiles/derive.mjs`), and the model is drawn with its tile. A site that says `far` leaves them in the far level, for a building
-  seen from kilometres off.
-- **Two files a part:** a binary glTF (`.glb`, compressed with meshopt) and a JSON beside it. Metres, y up, the model's middle at (0, 0)
-  and its ground floor at y = 0. Colour is in the vertices, with ambient occlusion baked into it; materials are named (`plaster`,
-  `timber`, `glass` and so on) and the game makes its own from the names (`js/interiors.js`).
-- **The outside** (`<file>.glb`, `<file>.json`): what you see from the street, the leaves of its outer doors as nodes turning about their
-  hinges (`door_<id>`), and in the JSON its outer walls, its doors and the floors outside them (a step). A door that leads somewhere names
-  the inside's file. Its glass faces out only: from the street it's lit at night like the neighbours' windows; from inside you see through.
-- **The inside** (`<file>-in.glb`, `.json`), fetched when one of its doors is opened and let go of 60 m after you leave. Each room is a
+  (`tools/tiles/derive.mjs`) and from the far level, and the model is drawn with its tile.
+- **Two files a part:** a binary glTF, compressed with meshopt and gzipped (`.glb.gz`: Cloudflare doesn't compress glTF on the way, and
+  gzip takes a model to a third or less), and a JSON beside it. Metres, y up, the model's middle at (0, 0) and its ground floor at y = 0.
+  Colour is in the vertices, with ambient occlusion baked into it; materials are named (`plaster`, `timber`, `glass` and so on) and the
+  game makes its own from the names (`js/interiors.js`).
+- **Few draws:** what a model costs to draw is its draws, one a node and material, far more than its triangles. What never moves is one
+  node (`body`), so one draw a material.
+- **The outside** (`<file>.glb.gz`, `<file>.json`): what you see from the street, the leaves of its outer doors as nodes turning about
+  their hinges (`door_<id>`), and in the JSON its outer walls, its doors and the floors outside them (a step). A door that leads somewhere
+  names the inside's file. Its glass faces out only: from the street it's lit at night like the neighbours' windows; from inside you see
+  through. Its leaves are drawn as one shut piece (`doors_shut`) until you or the camera are within 20 m of it.
+- **Near and far:** a model is drawn within 400 m of the camera (a site's `near` can say otherwise). Past that, and wherever its tile isn't
+  drawn, its far version is if its site says `far` (`<file>-far.glb.gz`: a shell in two draws and under 2,000 triangles, drawn as far as
+  the far level reaches), or what it takes the place of (the Opera House's plain podium and glass).
+- **The inside** (`<file>-in.glb.gz`, `.json`), fetched when one of its doors is opened and let go of 60 m after you leave. Each room is a
   node (`room_<id>`) and only those you can see are drawn: the one the camera's in and those through open doorways from it, three
   deep, and the one you're in and those next to it. The JSON has its
   floors (shapes at heights, a stair as a slope, holes where a stair comes through), walls (2D segments with a bottom and a top), inner
@@ -271,13 +277,15 @@ What a model has to be:
   the same over the pane. About half are lit, as the city's windows are.
 - **Under the street:** a site's `cut` leaves a hole in the paving or lawn it stands in, and lowers the base under it, for rooms below the
   street; the model draws its own ground there.
+- **Before its doors:** a site's `clear` lists circles where no street tree is planted (`js/street-details.js`), so a surveyed tree
+  doesn't stand in its doorway.
 - **The test interior** (`test-interior`), a plain two-storey house on Hyde Park's lawn, is drawn only with `?debug=1`. The `walk-in`
   scenario walks into it, up its stair, sits and comes out again; `tests/interiors.test.mjs` reads its JSON.
-- **Lower Fort St, west side** (`lfs-west`): a row of eight houses in Millers Point as one model, one of them with its inside. The
-  `lower-fort-55` scenario walks through it.
+- **Lower Fort St, west side** (`lfs-west`): a row of eight houses in Millers Point as one model, one of them with its inside, and a far
+  version. The `lower-fort-55` scenario walks through it.
 - **The Ribbon** (`ribbon`), Darling Harbour: a curved glass slab between the Western Distributor and its on-ramp, in place of the map's
-  box of its outline. Its site says `far`, so the far level, which draws no models, keeps the map's building. Its glass is `curtain`: a
-  curtain wall's, bluer and less of a mirror than a window's, lit at night pane by pane.
+  box of its outline, with a far version. Its glass is `curtain`: a curtain wall's, bluer and less of a mirror than a window's, lit at
+  night pane by pane.
 - **The Opera House** (`opera-house`): its shells are the game's own, drawn near and far (`js/opera-house.js`). Near it a model takes the
   place of the game's plain podium, steps and glass: the granite podium, the Monumental Steps and the flights to the upper podium, which
   you can climb, the glass walls on their mullions and the louvres, the parapets, and round it the Broadwalk's lamps, the Opera Bar's
@@ -287,6 +295,15 @@ What a model has to be:
   and its foyers (`opera-house-ch`) are fetched at its south doors: up the grand stair, round to the doors at the front of the stalls, up
   to the top of the circle and down the red stair to the northern foyer. The `opera-house` scenario walks that, and sits in the stalls
   and by the glass.
+- **Sydney Tower** (`sydney-tower`): the tower and Westfield's podium round its foot, in place of the map's podium, with a foyer behind a
+  door on Market St, its lifts through security gates. Both the model and the game's own tower, drawn from anywhere, are made from one
+  shape in `js/sydney-tower.js` (the model's script reads it through node), so the game's stands in for it unseen wherever its tile isn't
+  drawn. Its site's `near` is 5,000 m: drawn whenever its tile is. The `sydney-tower` scenario walks in.
+- **The Pylon Lookout** (`pylon-lookout`), in the Harbour Bridge's south-east pylon: a door off the footway into a foyer, and up its stair
+  the first exhibition floor. The pylon is the game's: `js/harbour-bridge.js` leaves its granite hollow there (`lookoutPlace()`,
+  `LOOKOUT`), with a doorway, and collides as the hollow's walls. A walker on the footway who presses on through the doorway onto the
+  model's floor is on that floor, which is the ground there, and back on the footway on the way out (`js/controllers.js`). The
+  `pylon-lookout` scenario walks from a car on the deck to its door, in and up.
 - **What a big inside adds:** `instances` in its JSON draw a node many times from one (the hall's seats: a node, the room it's in, and
   `[x, y, z, yaw]` for each), as one InstancedMesh for each of its materials; each seat to sit in is in `seats` as well. A room can say
   how far it shuts out the sky (`shelter`, 0.85 unless it says: a glazed foyer less, a concert hall all of it) and how much its own colours

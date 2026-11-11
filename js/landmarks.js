@@ -8,6 +8,7 @@ import { buildHarbourBridge, harbourBridgeColliders } from './harbour-bridge.js'
 import { buildOperaHouse } from './opera-house.js';
 import { createRoadSurfaceMaterial } from './tsl-materials.js';
 import { TOWER_SIGNS, placeTowerSign } from './tower-signs.js';
+import { TOWER, TOWER_AXIS, TOWER_STREET, towerCables } from './sydney-tower.js';
 
 // Sydney's icons at their real sites. The Opera House (js/opera-house.js) and the bridge have modules of their own.
 
@@ -21,36 +22,54 @@ function settle(mesh, cast = true) {
   return mesh;
 }
 
-// Sydney Tower: a slim golden turret on its shaft and the stays around it, standing out of Westfield
+// Sydney Tower, from its shape (js/sydney-tower.js), and Westfield's podium round its foot: drawn from anywhere, and in place of its model
+// (js/model-sites.js `sydney-tower`) wherever that isn't drawn, so the two are made alike. Three draws: the gold, everything else in its
+// own colours, and the turret's windows, lit at night. Returns the group, for the model to stand in for near it.
 function buildSydneyTower(group) {
-  const { x, z } = LANDMARK_SITES.sydneyTower;
-  const base = groundHeight(x, z);
-  const metal = new THREE.MeshStandardNodeMaterial({ color: 0xc8cbcd, roughness: 0.4, metalness: 0.6 });
-  const gold = new THREE.MeshStandardNodeMaterial({ color: 0xd9a441, roughness: 0.32, metalness: 0.85 });
-  gold.emissiveNode = color(0xffc25a).mul(smoothstep(0.55, 1.2, cityUniforms.uInteriorGlow).mul(0.9));
-  const glass = new THREE.MeshStandardNodeMaterial({ color: 0x2f3e4a, roughness: 0.2, metalness: 0.7 });
-  const add = (geometry, material, y) => {
-    const mesh = settle(new THREE.Mesh(geometry, material));
-    mesh.position.set(x, base + y, z);
-    group.add(mesh);
+  const tower = new THREE.Group();
+  tower.name = 'SydneyTower';
+  tower.position.set(TOWER_AXIS.x, TOWER_STREET, TOWER_AXIS.z);
+  tower.userData.lifted = true;
+  const linear = (hex) => new THREE.Color(hex);
+  const coloured = (g, hex) => {
+    const c = linear(hex), n = g.attributes.position.count, a = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) a.set([c.r, c.g, c.b], i * 3);
+    g.setAttribute('color', new THREE.BufferAttribute(a, 3));
+    return g.index ? g.toNonIndexed() : g;
   };
-  add(new THREE.CylinderGeometry(3.6, 4.4, 250, 16), metal, 125);
-  add(new THREE.CylinderGeometry(21, 16, 5, 28), gold, 232);
-  add(new THREE.CylinderGeometry(23, 21, 6, 28), glass, 238);
-  add(new THREE.CylinderGeometry(23, 23, 9, 28), gold, 245);
-  add(new THREE.CylinderGeometry(21, 23, 6, 28), glass, 252);
-  add(new THREE.CylinderGeometry(15, 21, 5, 28), gold, 257);
-  add(new THREE.CylinderGeometry(0.4, 2.4, 50, 8), gold, 284);
-  const stays = [];
-  for (let i = 0; i < 12; i++) {
-    const a = (i / 12) * Math.PI * 2;
-    const top = new THREE.Vector3(Math.cos(a) * 12, 228, Math.sin(a) * 12), foot = new THREE.Vector3(Math.cos(a) * 15, 60, Math.sin(a) * 15);
-    const c = new THREE.CylinderGeometry(0.12, 0.12, top.distanceTo(foot), 5);
-    c.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), top.clone().sub(foot).normalize()));
-    c.translate((top.x + foot.x) / 2, (top.y + foot.y) / 2, (top.z + foot.z) / 2);
-    stays.push(c);
+  const lathe = (profile, segments) => new THREE.LatheGeometry(profile.map(([y, r]) => new THREE.Vector2(Math.max(r, 0.001), y)), segments);
+  const gold = [], rest = [];
+  for (const part of TOWER.parts) {
+    const g = coloured(lathe(part.profile, part.name === 'spire' ? 6 : part.name === 'shaft' || part.name === 'base' ? 16 : 32), part.colour);
+    (part.material === 'metal' ? gold : rest).push(g);
   }
-  add(mergeGeometries(stays, false), metal, 0);
+  // The net, fewer cables than the model's: at this distance a mesh, not cables
+  for (const [a, b] of towerCables(20)) {
+    const A = new THREE.Vector3(...a), B = new THREE.Vector3(...b);
+    const g = new THREE.CylinderGeometry(0.16, 0.16, A.distanceTo(B), 3, 1, true);
+    g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), B.clone().sub(A).normalize()));
+    g.translate((A.x + B.x) / 2, (A.y + B.y) / 2, (A.z + B.z) / 2);
+    rest.push(coloured(g, '#3c3a38'));
+  }
+  // The podium, its outline straight up from under the street to its roof
+  const shape = new THREE.Shape(TOWER.podium.outline.map(([x, z]) => new THREE.Vector2(x - TOWER_AXIS.x, -(z - TOWER_AXIS.z))));
+  const podium = new THREE.ExtrudeGeometry(shape, { depth: TOWER.podium.top + 2.5, bevelEnabled: false }).rotateX(-Math.PI / 2).translate(0, -2.5, 0);
+  rest.push(coloured(podium, '#cfc3ad'));
+  const cup = TOWER.parts.find((p) => p.name === 'cup').profile;
+  const at = (y) => cup[0][1] + ((cup[1][1] - cup[0][1]) * (y - cup[0][0])) / (cup[1][0] - cup[0][0]);
+  const windows = TOWER.windows.map(([y0, y1]) => lathe([[y0, at(y0) + 0.05], [y1, at(y1) + 0.05]], 32));
+  const goldMaterial = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.85 });
+  goldMaterial.emissiveNode = color(0xffc25a).mul(smoothstep(0.55, 1.2, cityUniforms.uInteriorGlow).mul(0.9));
+  const restMaterial = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.35 });
+  const glass = new THREE.MeshStandardNodeMaterial({ color: 0x1c2228, roughness: 0.15, metalness: 0.6 });
+  glass.emissiveNode = color(0xffd9a0).mul(smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow).mul(0.7));
+  for (const [list, material] of [[gold, goldMaterial], [rest, restMaterial], [windows.map((g) => g.index ? g.toNonIndexed() : g), glass]]) {
+    const mesh = settle(new THREE.Mesh(mergeGeometries(list.map((g) => { g.deleteAttribute('uv'); return g; }), false), material));
+    mesh.frustumCulled = false; // js/scene-culling.js leaves it be, for the model to stand in for
+    tower.add(mesh);
+  }
+  group.add(tower);
+  return tower;
 }
 
 function clockTower(group, x, z, w, height, material, roofHeight = 0, roof = null, dials = true) {
@@ -173,12 +192,12 @@ function buildLandmarks(scene) {
   group.name = 'Landmarks';
   const colliders = [];
   const opera = buildOperaHouse(group, colliders);
-  buildSydneyTower(group);
+  const tower = buildSydneyTower(group);
   buildHeritage(group);
   buildLunaPark(group);
   harbourBridgeColliders(colliders);
   scene.add(group);
-  return { group, colliders, operaPlain: opera.plain };
+  return { group, colliders, operaPlain: opera.plain, towerPlain: tower };
 }
 
 /** Just where the landmarks stand, for making the tiles: the buildings they replace (tools/tiles/derive.mjs) */

@@ -209,9 +209,8 @@ function cutMap(derived) {
   // The pieces of one building stay together, in the tile of its lowest piece: they share a look and a floor
   const pieceHome = new Map();
   for (const b of REAL_BUILDINGS) if (b.group && !b.bottom) pieceHome.set(b.group, [b.cx, b.cz]);
-  // Left out: under a landmark's own model, or under a deck with no room (tools/tiles/derive.mjs); and one a model's drawn in place of
-  // near, which the far level still has
-  const skip = new Set([...(derived?.underLandmarks || []), ...(derived?.dropped || []), ...(derived?.farOnly || [])]);
+  // Left out: under a landmark or one a model's drawn in place of, or under a deck with no room (tools/tiles/derive.mjs)
+  const skip = new Set([...(derived?.underLandmarks || []), ...(derived?.dropped || [])]);
   REAL_BUILDINGS.forEach((b, i) => {
     if (skip.has(i)) return;
     const [hx, hz] = (b.group && pieceHome.get(b.group)) || [b.cx, b.cz];
@@ -620,10 +619,6 @@ function write(derived, graded_ = null) {
     if (!farGroups.has(key)) farGroups.set(key, { entries: [], roads: [] });
     const group = farGroups.get(key);
     for (const { b, i } of t.buildings) group.entries.push({ b, i, ix: t.ix, iz: t.iz });
-  }
-  for (const i of derived?.farOnly || []) {
-    const b = REAL_BUILDINGS[i], [ix, iz] = tileOf(b.cx, b.cz);
-    farGroups.get(farKeyOfTile(ix, iz))?.entries.push({ b, i, ix, iz });
   }
   const seenRoads = new Set();
   for (const t of tiles.values()) {

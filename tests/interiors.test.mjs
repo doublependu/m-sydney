@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
+import zlib from 'node:zlib';
 
 // Walking into buildings (js/interiors.js) stands on js/interior-data.js and on the JSON each model comes with. These read the committed
 // test interior (public/models/test-interior*.json): a hall with a stair up to a landing, three doors, two arches and some chairs.
@@ -32,18 +33,41 @@ function pointIn(poly) {
 }
 const stair = inside.floors.find((f) => f.plane);
 
-/** The node names in a binary glTF */
-function nodeNames(name) {
-  const bytes = fs.readFileSync(new URL(`../public/models/${name}.glb`, import.meta.url));
+/** A binary glTF's JSON chunk: the models are gzipped, as the host doesn't compress glTF on the way */
+function gltf(name) {
+  const bytes = zlib.gunzipSync(fs.readFileSync(new URL(`../public/models/${name}.glb.gz`, import.meta.url)));
+  assert.equal(bytes.toString('latin1', 0, 4), 'glTF', name);
   const length = bytes.readUInt32LE(12);
-  return new Set(JSON.parse(bytes.subarray(20, 20 + length).toString('utf8')).nodes.map((n) => n.name));
+  return JSON.parse(bytes.subarray(20, 20 + length).toString('utf8'));
+}
+/** The node names in a model */
+const nodeNames = (name) => new Set(gltf(name).nodes.map((n) => n.name));
+/** What a model costs to draw: a draw a primitive, and its triangles */
+function cost(name) {
+  const g = gltf(name), primitives = g.meshes.flatMap((m) => m.primitives);
+  return { draws: primitives.length, triangles: primitives.reduce((sum, p) => sum + g.accessors[p.indices].count / 3, 0) };
 }
 
 test('every site has its model, and the test house is only for ?debug=1', () => {
   for (const site of MODEL_SITES) {
-    for (const ext of ['glb', 'json']) assert.ok(fs.existsSync(new URL(`../public/${site.file}.${ext}`, import.meta.url)), `${site.file}.${ext}`);
+    for (const ext of ['glb.gz', 'json']) assert.ok(fs.existsSync(new URL(`../public/${site.file}.${ext}`, import.meta.url)), `${site.file}.${ext}`);
   }
   assert.equal(MODEL_SITES.find((s) => s.id === 'test-interior').debug, true);
+});
+
+test('an outside is drawn in a draw or so a material, its door leaves as one shut piece from afar, and its far version in two', () => {
+  for (const site of MODEL_SITES) {
+    const name = site.file.replace('models/', '');
+    const g = gltf(name), nodes = nodeNames(name), doors = read(name).doors;
+    // what never moves is one node, and every node not a door leaf or the shut piece is drawn in one draw a material
+    const apart = g.nodes.filter((n) => n.mesh === undefined && !/^door_|^doors_shut$/.test(n.name) && n.children?.length);
+    assert.ok(apart.length <= 1, `${name}: ${apart.map((n) => n.name)}`);
+    if (doors.length) assert.ok(nodes.has('doors_shut'), `${name}: no doors_shut`);
+    if (site.far) {
+      const far = cost(`${name}-far`);
+      assert.ok(far.draws <= 2 && far.triangles <= 2000, `${name}-far: ${far.draws} draws, ${far.triangles} triangles`);
+    }
+  }
 });
 
 test('the JSON names only nodes its model has: each room, each door', () => {

@@ -35,9 +35,8 @@ REAL_BUILDINGS.forEach((b, i) => {
     && b.polygons.some((p) => polygonBoxOverlaps(p, (c.minX + c.maxX) / 2, (c.minZ + c.maxZ) / 2, (c.maxX - c.minX) / 2, (c.maxZ - c.minZ) / 2)))) underLandmarks.push(i);
 });
 
-// ...and the buildings a model of its own is drawn in place of (js/model-sites.js), each found by a point inside it. A site with `far`
-// keeps its building in the far level, which draws no models: out of the tiles only.
-const farOnly = [];
+// ...and the buildings a model of its own is drawn in place of (js/model-sites.js), each found by a point inside it: out of the tiles
+// and the far level, where its far version stands in for it
 {
   const { MODEL_SITES, toWorldOf } = await import('../../js/model-sites.js');
   const inOutline = (b, x, z) => x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ && b.polygons.some((p) => inRingXZ(p.outer, x, z));
@@ -46,8 +45,7 @@ const farOnly = [];
       const { x, z } = toWorldOf(site, lx, lz);
       const i = REAL_BUILDINGS.findIndex((b) => inOutline(b, x, z));
       if (i < 0) throw new Error(`[derive] model site ${site.id}: no building at (${lx}, ${lz}) in its frame to draw in place of`);
-      const list = site.far ? farOnly : underLandmarks;
-      if (!list.includes(i)) list.push(i);
+      if (!underLandmarks.includes(i)) underLandmarks.push(i);
     }
   }
 }
@@ -238,6 +236,6 @@ const farParks = {};
 
 const round = (v) => Math.round(v * 1000) / 1000;
 fs.writeFileSync(process.argv[2], JSON.stringify({
-  tunnels, portals, floors, underLandmarks, farOnly, looks, farParks, deckProfile, bridgeSpan: BRIDGE_SPAN, caps, dropped, treesUnder,
+  tunnels, portals, floors, underLandmarks, looks, farParks, deckProfile, bridgeSpan: BRIDGE_SPAN, caps, dropped, treesUnder,
   landmarkBoxes: boxes.map((c) => ({ minX: round(c.minX), maxX: round(c.maxX), minZ: round(c.minZ), maxZ: round(c.maxZ), maxY: round(c.maxY ?? 1e4) }))
 }));

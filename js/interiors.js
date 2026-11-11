@@ -17,6 +17,9 @@ import {
 // - Inside, its own doors are open when it comes in, unless they're locked; F shuts one.
 // - Inside, only the rooms you can see are drawn: the one you're in, and those through open doorways from it (interior-data.js).
 // - In it or beside it, the camera behind you is kept clear of its walls, floors and ceilings, so it never looks through one.
+// - Its door leaves are drawn as one shut piece until you're near (`doors_shut`), and the whole model only within NEAR of the camera
+//   (or its site's `near`). Past that, and wherever its tile isn't drawn, its far version is (`<file>-far`), if its site has one; or
+//   what the model takes the place of, which hears of it through `shown()` (the Opera House's plain podium and glass).
 // Every site's model is in its own frame (x across, z along, y up from its ground floor), placed at (x, y, z) and turned by yaw.
 
 const RELEASE = 60; // m from a building that its inside is let go of, unless its site says (`reach`)
@@ -26,6 +29,9 @@ const LIGHTS_REACH = 9; // m: a room's lamp lights you within this
 const EYE_EASE = 2.5; // m/s the camera goes back out once a wall's no longer in its way; it comes in at once
 const EYE_CLOSE = 0.7; // m from over your head: nearer than this, you aren't drawn, or you'd fill the view
 const SEEN_DEPTH = 3; // rooms deep, through open doorways, that the camera sees
+const NEAR = 400; // m from the camera that a model is drawn, rather than its far version, unless its site says (`near`)
+const DOORS_NEAR = 20; // m from a model, for the player or the camera, that its door leaves are drawn apart, ready to swing
+const FAR_KEEP = 1000; // m past the far level's reach before a far version is let go of
 
 // One material of each kind for every model: they compile once. Their colour is in the vertices; inside, a little of it glows, the
 // light the model's lamps and windows give, baked into its vertices; three lights are moved round as well.
@@ -75,7 +81,8 @@ function half(d, sign) {
 }
 
 let loader = null;
-async function loadModel(file) {
+/** A model's glTF, gzipped (the host doesn't compress glTF on the way), and its JSON unless it's a far version, which has none */
+async function loadModel(file, json = true) {
   if (!loader) {
     const [{ GLTFLoader }, { MeshoptDecoder }] = await Promise.all([
       import('three/addons/loaders/GLTFLoader.js'), import('three/addons/libs/meshopt_decoder.module.js')
@@ -84,10 +91,18 @@ async function loadModel(file) {
     loader.setMeshoptDecoder(MeshoptDecoder);
   }
   const url = (ext) => new URL(`${file}.${ext}`, document.baseURI).href;
-  const [gltf, data] = await Promise.all([loader.loadAsync(url('glb')), fetch(url('json')).then((r) => {
+  const glb = fetch(url('glb.gz')).then(async (r) => {
+    if (!r.ok) throw new Error(`${file}.glb.gz: ${r.status}`);
+    const body = new Uint8Array(await r.arrayBuffer());
+    // A server that sends .gz as Content-Encoding: gzip hands over bytes the browser has already inflated
+    const bytes = body[0] === 0x1f && body[1] === 0x8b
+      ? await new Response(new Response(body).body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer() : body.buffer;
+    return loader.parseAsync(bytes, '');
+  });
+  const [gltf, data] = await Promise.all([glb, json ? fetch(url('json')).then((r) => {
     if (!r.ok) throw new Error(`${file}.json: ${r.status}`);
     return r.json();
-  })]);
+  }) : null]);
   return { scene: gltf.scene, data };
 }
 
@@ -133,12 +148,14 @@ function instance(scene, list = []) {
 
 /**
  * `reveal(group)` puts a group in the scene with its shaders ready. `colliders` is { add, remove }. `lights` are PointLights kept for
- * this. `tileBuilt(x, z)` says whether the tile at (x, z) is drawn, so a site can be. `shown(id, on)` hears when a site's outside is drawn
- * or let go of, for what it takes the place of. `debug`: the debug sites too.
+ * this. `tileBuilt(x, z)` says whether the tile at (x, z) is drawn, so a site can be. `shown(id, on)` hears when a site's outside starts
+ * or stops being drawn, for what it takes the place of. `farReach()`: m from the camera that far versions are wanted, 0 while the city
+ * round you is still coming. `debug`: the debug sites too.
  */
-function createInteriors({ reveal, colliders, lights, tileBuilt, shown = () => {}, debug = false }) {
+function createInteriors({ reveal, colliders, lights, tileBuilt, shown = () => {}, farReach = () => 0, debug = false }) {
   const sites = MODEL_SITES.filter((s) => debug || !s.debug).map((s) => ({
-    ...s, y: s.y ?? null, reach: s.reach ?? RELEASE, out: null, inside: null, loading: false, failed: false, ref: null
+    ...s, y: s.y ?? null, reach: s.reach ?? RELEASE, near: s.near ?? NEAR, out: null, inside: null, loading: false, failed: false, ref: null,
+    drawn: false, far: s.far ? { group: null, loading: false, failed: false } : null
   }));
   let here = null; // { site, room } the player is in
   let prompt = null; // { kind: 'door' | 'seat', site, door | seat, label }
@@ -274,15 +291,20 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, shown = () => {
       prepare(scene, false);
       const group = groupFor(site, scene, `Model_${site.id}`);
       await reveal(group);
+      // Drawn once update() finds it near; till then its far version, or what it takes the place of, stays
+      group.visible = false;
+      site.drawn = false;
       const walls = data.walls.map((w) => wallCollider(site, w));
       colliders.add(walls);
       // Where the camera's kept clear of its walls: over it, and a little round it (holdEye())
       const ends = data.walls.flatMap((w) => [w.a, w.b]);
       const xs = ends.map((p) => p[0]), zs = ends.map((p) => p[1]);
       const bounds = { minX: Math.min(...xs) - 1, maxX: Math.max(...xs) + 1, minZ: Math.min(...zs) - 1, maxZ: Math.max(...zs) + 1 };
-      site.out = { group, data, walls, bounds, doors: addDoors(site, data.doors, scene, 'out', data.walls) };
+      site.out = { group, data, walls, bounds, doors: addDoors(site, data.doors, scene, 'out', data.walls), shut: scene.getObjectByName('doors_shut') ?? null,
+        leaves: true };
+      showLeaves(site, false);
       placeFloors(site);
-      shown(site.id, true);
+      if (site.far?.group) site.far.group.position.y = site.y;
     } catch (e) {
       console.warn('[interiors]', site.id, e);
       site.failed = true; // what can't be had isn't asked for again
@@ -299,7 +321,49 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, shown = () => {
     removeDoors(out.doors);
     dispose(out.group);
     clearFloor(site.id);
-    shown(site.id, false);
+    if (site.drawn) shown(site.id, false);
+    site.drawn = false;
+  }
+
+  /** The outside's door leaves apart, each to swing on its own, or (from further off) the one shut piece in their place */
+  function showLeaves(site, on) {
+    const out = site.out;
+    if (!out.shut) return;
+    out.leaves = on;
+    out.shut.visible = !on;
+    for (const door of out.doors.values()) {
+      if (door.node) door.node.visible = on;
+      if (door.pair) door.pair.visible = on;
+    }
+  }
+
+  /** Whether (x, z) is within m of a site's outside */
+  function within(site, x, z, m) {
+    const p = toLocal(site, x, z), b = site.out.bounds;
+    return p.x > b.minX - m && p.x < b.maxX + m && p.z > b.minZ - m && p.z < b.maxZ + m;
+  }
+
+  // --- Far versions ----------------------------------------------------------------------------------------------------------
+  async function loadFar(site) {
+    const far = site.far;
+    far.loading = true;
+    try {
+      const { scene } = await loadModel(`${site.file}-far`, false);
+      prepare(scene, false);
+      const group = groupFor({ ...site, y: site.y ?? groundHeight(site.x, site.z) }, scene, `Far_${site.id}`);
+      await reveal(group);
+      group.visible = false;
+      far.group = group;
+    } catch (e) {
+      console.warn('[interiors]', `${site.file}-far`, e);
+      far.failed = true;
+    } finally {
+      far.loading = false;
+    }
+  }
+  function dropFar(site) {
+    dispose(site.far.group);
+    site.far.group = null;
   }
 
   async function fetchInside(site, file) {
@@ -369,11 +433,32 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, shown = () => {
    */
   function update(dt, player, mode, eye, look, head = null) {
     const { x, z } = player.position;
+    const reach = farReach();
     for (const site of sites) {
       const wanted = site.debug ? tileBuilt(x, z) && Math.hypot(site.x - x, site.z - z) < DEBUG_RANGE : tileBuilt(site.x, site.z);
       if (wanted && !site.out && !site.loading && !site.failed) loadOutside(site);
       else if (!wanted && site.out) dropOutside(site);
+      // The model within its `near` of the camera (a little further once it's drawn, so it doesn't flicker at the line), its far
+      // version wherever it isn't
+      const seen = Math.hypot(site.x - eye.x, (site.y ?? eye.y) - eye.y, site.z - eye.z);
+      const drawn = !!site.out && (seen < site.near * (site.drawn ? 1.1 : 1) || here?.site === site);
+      if (drawn !== site.drawn) {
+        site.drawn = drawn;
+        site.out.group.visible = drawn;
+        shown(site.id, drawn);
+      }
+      // ...and its inside with it, or it would stand there alone
+      if (site.inside?.group) site.inside.group.visible = drawn;
+      if (site.far) {
+        const away = Math.hypot(site.x - eye.x, site.z - eye.z);
+        if (reach > 0 && away < reach && !site.far.group && !site.far.loading && !site.far.failed) loadFar(site);
+        else if (site.far.group && away > reach + FAR_KEEP) dropFar(site);
+        if (site.far.group) site.far.group.visible = !drawn;
+      }
       if (!site.out) continue;
+      const doorsNear = within(site, x, z, DOORS_NEAR) || within(site, eye.x, eye.z, DOORS_NEAR)
+        || [...site.out.doors.values()].some((door) => door.angle > 0 || door.target > 0);
+      if (doorsNear !== site.out.leaves) showLeaves(site, doorsNear);
       // Which floor counts, where there are floors over floors: the one under the player's feet now
       const away = Math.hypot(site.x - x, site.z - z);
       if (mode === 'person' && !player.surface && away < site.reach) site.ref = player.surfaceY ?? site.ref;
@@ -572,7 +657,8 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, shown = () => {
 
   function state() {
     return {
-      sites: sites.map((s) => ({ id: s.id, y: s.y, out: !!s.out, inside: s.inside?.state ?? null, failed: s.failed })),
+      sites: sites.map((s) => ({ id: s.id, y: s.y, out: !!s.out, inside: s.inside?.state ?? null, failed: s.failed, drawn: s.drawn,
+        leaves: s.out?.leaves ?? null, far: s.far ? (s.far.group ? (s.far.group.visible ? 'drawn' : 'held') : s.far.failed ? 'failed' : null) : undefined })),
       held: sites.filter((s) => s.inside?.state === 'ready').map((s) => s.id),
       inside: here?.site.id ?? null,
       room: here?.room.id ?? null,

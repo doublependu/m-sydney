@@ -135,3 +135,32 @@ test('the pylons stand clear of the deck and of the streets beneath, and collide
     }
   }
 });
+
+// The Pylon Lookout's model (js/model-sites.js) stands in the hollow the south-east pylon's granite leaves for it (js/harbour-bridge.js)
+test('the lookout stands in the south-east pylon\'s hollow, its door in the doorway, and only its walls stop you in it', async () => {
+  const { harbourBridgeColliders, lookoutPlace, LOOKOUT } = await import('../js/harbour-bridge.js');
+  const { MODEL_SITES, toWorldOf } = await import('../js/model-sites.js');
+  const L = lookoutPlace(), site = MODEL_SITES.find((s) => s.id === 'pylon-lookout');
+  assert.ok(Math.hypot(site.x - L.x, site.z - L.z) < 0.01, `the site at ${site.x}, ${site.z}; the hollow's middle at ${L.x}, ${L.z}`);
+  assert.ok(Math.abs(site.y - L.floor) < 0.01 && Math.abs(site.yaw - L.yaw) < 1e-4, `site y ${site.y}, yaw ${site.yaw}: ${L.floor}, ${L.yaw}`);
+  const out = JSON.parse(fs.readFileSync(new URL('../public/models/pylon-lookout.json', import.meta.url), 'utf8'));
+  const [door] = out.doors;
+  const half = (L.to - L.from) / 2;
+  // across the doorway in the arch's face, 0.1 m inside the granite's jambs either side
+  assert.ok(Math.abs(Math.hypot(door.latch[0] - door.hinge[0], door.latch[1] - door.hinge[1]) - (LOOKOUT.door - 0.2)) < 0.01);
+  assert.ok(door.hinge[1] < half && door.hinge[1] > half - LOOKOUT.wall - 0.1, `the door at z ${door.hinge[1]}`);
+  const colliders = [];
+  harbourBridgeColliders(colliders);
+  const hits = (lx, lz, up) => {
+    const { x, z } = toWorldOf(site, lx, lz), y = site.y + up, g = groundHeight(x, z);
+    return colliders.some((c) => {
+      const o = c.obb;
+      if (!o || Math.abs((x - o.cx) * o.cs - (z - o.cz) * o.sn) > o.hx || Math.abs((x - o.cx) * o.sn + (z - o.cz) * o.cs) > o.hz) return false;
+      const bottom = c.level ? c.minY : g + (c.minY ?? 0), top = c.baseY === undefined ? g + c.maxY : c.maxY + c.baseY;
+      return y > bottom && y < top;
+    });
+  };
+  for (const [lx, lz] of [[0, 0], [6, 1], [-8, -2], [0, half - 0.3]]) assert.ok(!hits(lx, lz, 1), `granite in the foyer at ${lx}, ${lz}`);
+  for (const [lx, lz] of [[-3, half - 0.3], [3, -half + 0.3], [9.9, 0]]) assert.ok(hits(lx, lz, 1), `no granite in its walls at ${lx}, ${lz}`);
+  assert.ok(hits(0, 0, -1) && hits(0, 0, LOOKOUT.height + 1), 'granite under its floor and over its ceiling');
+});

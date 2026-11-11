@@ -390,6 +390,102 @@ async function face(human, target) {
   await human.releaseAll();
 }
 
+// Into the Pylon Lookout (js/model-sites.js, pylon-lookout), in the Harbour Bridge's south-east pylon: along the footway to its door,
+// in, round the foyer, up the stair to the gallery and down, and out onto the footway again
+function lookoutScenario() {
+  return {
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const SITE = { x: -41.2543, z: -2066.4534, yaw: -1.91484, y: 49.0219 };
+      const at = (x, z) => ({ x: SITE.x + x * Math.cos(SITE.yaw) + z * Math.sin(SITE.yaw), z: SITE.z - x * Math.sin(SITE.yaw) + z * Math.cos(SITE.yaw) });
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const level = async () => (await human.state()).surfaceY - SITE.y;
+      const walk = async (x, z, why) => expect(await walkTo(human, at(x, z)), `never got ${why}`);
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      // In a car in the corridor's lanes north of the pylon, facing south, then on foot: out onto the footway (js/arrivals.js)
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'car', true), { ...at(-16.0, 26.8), h: SITE.yaw + Math.PI / 2 });
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'pylon-lookout')?.out, null, { timeout: 60000, polling: 250 });
+      await human.press('Digit1');
+      await human.wait(1500);
+      expect((await debug(() => window.__gameDebug.player())).onFootway, 'not out on the footway');
+      await walk(0.0, 5.0, 'along the footway to the door');
+      expect(Math.abs(await level()) < 0.2, `on the footway at ${(await level()).toFixed(2)} m from the door's step`);
+      // Off the footway onto its step, at the shut door (a wall through the doorway till it's open)
+      await walk(0.0, 4.3, 'onto the door\'s step');
+      expect(Math.abs(await level()) < 0.05, `on the door's step at ${(await level()).toFixed(2)} m`);
+      await face(human, at(0.0, 2.5));
+      await human.wait(300);
+      const prompt = (await interior()).prompt;
+      expect(prompt === 'Open', `at the lookout's door the prompt is ${prompt}`);
+      await human.press('KeyF');
+      const open = await human.until(async () => (await interior()).doors.find((d) => d.id === 'lookout')?.angle >= 1.5, { timeout: 15000, read: interior });
+      expect(open, 'its door never opened');
+      await walk(0.0, 2.0, 'in through the door');
+      let i = await interior();
+      expect(i.room === 'foyer' && Math.abs(await level()) < 0.05, `in the foyer, in ${i.room} at ${(await level()).toFixed(2)} m`);
+      metric('fpsInFoyer', (await debug(() => window.__gameDebug.frameCost())).fps);
+      // Round the cases to the foot of the stair, and up it
+      await walk(4.0, 0.0, 'past the bench');
+      await walk(5.0, -2.37, 'to the foot of the stair');
+      await walk(-4.2, -2.37, 'up the stair');
+      i = await interior();
+      expect(i.room === 'gallery' && Math.abs((await level()) - 4.5) < 0.05, `up the stair, in ${i.room} at ${(await level()).toFixed(2)} m`);
+      await walk(-6.0, 0.0, 'into the gallery');
+      metric('fpsInGallery', (await debug(() => window.__gameDebug.frameCost())).fps);
+      await walk(-4.2, -2.37, 'back to the top of the stair');
+      await walk(5.0, -2.37, 'down the stair');
+      expect(Math.abs(await level()) < 0.05, 'not back down in the foyer');
+      await walk(4.0, 0.0, 'off the stair');
+      await walk(0.0, 2.0, 'to the door');
+      await walk(0.0, 5.0, 'out onto the footway');
+      expect((await interior()).inside === null, 'still inside, out on the footway');
+      // Along the footway again, off the door's step
+      await walk(-5.0, 5.4, 'on along the footway');
+      const s = await human.state();
+      expect(Math.abs(s.surfaceY - SITE.y + 0.14) < 0.2, `back on the footway at ${(s.surfaceY - SITE.y).toFixed(2)} m`);
+    }
+  };
+}
+
+// Into Sydney Tower's foyer (js/model-sites.js, sydney-tower), behind its door on Market St: in, through the gates to the lifts, and out
+function towerScenario() {
+  return {
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const SITE = { x: 143, z: -311, yaw: 0.1418, y: 20.1 };
+      const at = (x, z) => ({ x: SITE.x + x * Math.cos(SITE.yaw) + z * Math.sin(SITE.yaw), z: SITE.z - x * Math.sin(SITE.yaw) + z * Math.cos(SITE.yaw) });
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const level = async () => (await human.state()).surfaceY - SITE.y;
+      const walk = async (x, z, why) => expect(await walkTo(human, at(x, z)), `never got ${why}`);
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      // On Market St's footpath, west of the door, facing east along it
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...at(-6.0, 19.6), h: SITE.yaw + Math.PI / 2 });
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'sydney-tower')?.out, null, { timeout: 60000, polling: 250 });
+      await walk(0.0, 19.4, 'along the footpath to the door');
+      await walk(0.0, 18.6, 'up to the door');
+      expect(Math.abs(await level()) < 0.15, `at the door at ${(await level()).toFixed(2)} m`);
+      await face(human, at(0.0, 17.0));
+      await human.wait(300);
+      const prompt = (await interior()).prompt;
+      expect(prompt === 'Open', `at the tower's door the prompt is ${prompt}`);
+      await human.press('KeyF');
+      const open = await human.until(async () => (await interior()).doors.find((d) => d.id === 'tower')?.angle >= 1.5, { timeout: 15000, read: interior });
+      expect(open, 'its door never opened');
+      await walk(0.0, 15.5, 'in through the door');
+      let i = await interior();
+      expect(i.room === 'foyer' && Math.abs(await level()) < 0.05, `in the foyer, in ${i.room} at ${(await level()).toFixed(2)} m`);
+      metric('fpsInFoyer', (await debug(() => window.__gameDebug.frameCost())).fps);
+      // Through a gate to the lifts, and back
+      await walk(0.55, 11.5, 'to the gates');
+      await walk(0.55, 7.6, 'through a gate to the lifts');
+      await walk(0.55, 11.5, 'back through the gate');
+      await walk(0.0, 15.5, 'to the door');
+      await walk(0.0, 19.6, 'out onto the footpath');
+      expect((await interior()).inside === null, 'still inside, out on the footpath');
+    }
+  };
+}
+
 // Through 55 Lower Fort St (js/model-sites.js, lfs-west): in at the front door, up the stair, through the sitting room onto the balcony
 // to sit at its table, back down and down again to the basement, out of the back door into the courtyard and out of its gate
 function lowerFortScenario() {
@@ -1207,6 +1303,10 @@ export const SCENARIOS = {
   'walk-in': walkInScenario(),
   'walk-in-phone': { ...walkInScenario(), profile: 'phone' },
   'lower-fort-55': lowerFortScenario(),
+  'pylon-lookout': lookoutScenario(),
+  'pylon-lookout-phone': { ...lookoutScenario(), profile: 'phone' },
+  'sydney-tower': towerScenario(),
+  'sydney-tower-phone': { ...towerScenario(), profile: 'phone' },
   'opera-house': operaHouseScenario(),
   'opera-house-phone': { ...operaHouseScenario(), profile: 'phone' },
   'origin-move': originScenario(''),

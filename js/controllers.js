@@ -1136,6 +1136,22 @@ class ThirdPersonControllerManager {
       // slides along it as it would along a wall: a car driven into it loses speed as squarely as it hit.
       const active = this.getActiveEntity();
       const last = (pos.landed ??= { x: pos.x, z: pos.z });
+      // Through a door off the footway (the Pylon Lookout's, js/model-sites.js): pressing on past the footway's edge onto a model's
+      // floor puts you on that floor, the ground there (js/surfaces.js groundHeight()), where its walls and its door stop you; off the
+      // floor again over the footway, you're back on the footway
+      if (this.activeMode === 'person') {
+        if (active.onFootway && onFloor(pos.x, pos.z)) {
+          const held = holdOnFootway(pos.x, pos.z);
+          if (held && Math.hypot(held.x - pos.x, held.z - pos.z) > 0.005) {
+            active.onFootway = false;
+            active.surface = 0;
+            active.surfaceY = groundHeight(pos.x, pos.z);
+          }
+        } else if (!active.onFootway && !active.surface && onFloor(last.x, last.z) && !onFloor(pos.x, pos.z)) {
+          const held = holdOnFootway(pos.x, pos.z);
+          if (held && Math.abs(held.y - groundHeight(last.x, last.z)) < 1) active.onFootway = true;
+        }
+      }
       // Walking the Harbour Bridge's footway, between its railing and the barrier. It stops short of the ends, where
       // the corridor narrows and you come out on the road.
       if (active.onFootway) {

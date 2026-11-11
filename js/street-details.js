@@ -8,6 +8,7 @@ import { createTreeFieldSteps, setPlantDistance } from './trees.js';
 import { placeStreetTreesSteps } from './tree-placements.js';
 import { groundHeight, groundRoadAt, groundRoadDistance } from './surfaces.js';
 import { roomOver, treeClear } from './deck-room.js';
+import { clearOfSites } from './model-sites.js';
 import { polygonContains } from './building-collision.js';
 import { SignAtlas, bladesOnPole, junctionRoads, namedJunctions } from './street-signs.js';
 import { buildRoadSigns } from './road-signs.js';
@@ -817,10 +818,11 @@ function* buildStreetDetails(scene, allColliders = [], lightPools) {
   // Surveyed street trees; parks keep their authored terrain, clearings and tree layouts.
   const realTrees = heldTrees();
   const TREE_ROOM = 12; // m: a street tree's crown, and its trunk under it
-  // A garden's small plants want a metre or so clear, and room for themselves under a deck. A tree's crown keeps off a deck beside it
+  // A garden's small plants want a metre or so clear, and room for themselves under a deck. A tree's crown keeps off a deck beside it,
+  // and no tree stands before a model's door (js/model-sites.js `clear`)
   let sidewalkTreePositions = yield* placeStreetTreesSteps(realTrees.points, realTrees.kinds, realTrees.heights, treePositions,
     (x, z, small = false, tall = 0) => isClearOfPoles(x, z, small ? 0.8 : 2.2) && roomOver(x, z, small ? 1 : 3) >= (small ? 3 : TREE_ROOM) &&
-      (small || treeClear(x, z, tall)));
+      (small || treeClear(x, z, tall)) && clearOfSites(x, z));
   for (const tree of sidewalkTreePositions) treePositions.push(tree);
   sidewalkTreePositions = sidewalkTreePositions.filter((t) => t.tier > 0);
   for (const t of treePositions) t.y = (t.y || 0) + groundHeight(t.x, t.z);

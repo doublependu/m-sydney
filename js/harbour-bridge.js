@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { abs, color, float, floor, fract, max, mix, mod, positionWorld, smoothstep, sqrt, step, texture, uv } from 'three/tsl';
+import { abs, color, float, floor, fract, max, mix, mod, positionLocal, positionWorld, sin, smoothstep, sqrt, step, texture, time, uv, vec3 } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { cityUniforms } from './tsl-materials.js';
 import { BRIDGE_LENGTH, BRIDGE_SPAN, DECK_BARRIER as BARRIER, DECK_REACH, DECK_SID, bridgeAt, bridgePoint, deckEdges, deckGapAt, deckHeight, deckIsFull, deckLanes, deckAcross as layout, deckSpanAt } from './bridge.js';
@@ -18,8 +18,16 @@ import { DECK_DEPTH, groundHeight } from './surfaces.js';
 
 const WATER = -2.2;
 const ARCH_TOP = 134 + WATER; // top of the arch above the water
-const LOWER_RISE = 118; // m the lower chord rises from its hinges
+const HINGE = WATER + 3; // the arch's four hinges, on their bearings
+// The truss is 18 m deep at the crown and 57 m at the bearings, so the top chord falls from its crown in a curve, as the lower one
+// rises to it
+const DEPTH_CROWN = 18, DEPTH_BEARINGS = 57;
+const LOWER_RISE = ARCH_TOP - HINGE - DEPTH_CROWN; // m the lower chord rises from its hinges
 const PANELS = 28;
+// The flags at the crown, on a mast over each truss's top chord: the Aboriginal flag on the west, the Australian flag on the east, and
+// the aircraft beacon between them (Transport for NSW). Each about 8 x 4 m on a mast 14 m over the chord, from the photos.
+const FLAG = { width: 8, height: 4, mast: 14 };
+const WIND = new THREE.Vector2(0.86, 0.51); // the way the flags fly: the wind the trees lean in (js/tsl-materials.js)
 const PYLON_HEIGHT = 89 + WATER;
 const PYLON_BASE = [20, 21]; // m across and along the deck
 const PYLON_OPENING = 11; // m high at its crown, over the deck: what goes through the pylons, under the railway's wires (6.8 m)
@@ -170,6 +178,32 @@ function pylonStations() {
   return pylonPlaces;
 }
 
+// The Pylon Lookout, in the south-east pylon (js/model-sites.js, `pylon-lookout`): the granite east of the footway's arch is hollow
+// from the footway's level up, LOOKOUT.height m, its walls `wall` m thick, with a doorway off the footway in the middle of its length.
+// The model draws the foyer and the floor over it, their door and its threshold; what's here is the granite round them, and what
+// stops you. The doorway is 0.1 m wider each side than the model's door frame, and higher, so their faces never meet.
+const LOOKOUT = { wall: 0.78, height: 8.0, door: 2.0, doorHeight: 3.1, under: 0.3 };
+const FOOTWAY_LIFT = 0.14; // m: the footway's top over the deck's (buildHarbourBridge())
+/** Where the lookout's granite is: s along the deck, across from (the arch's east face) to, its middle (x, z), the footway's height
+ *  there, and the turn that puts a model's +z towards the footway (west) and +x south */
+function lookoutPlace() {
+  const s = pylonStations()[0], a = pylonAcross(s, 1), q = axis(s);
+  const p = at(s, (a.openTo + a.to) / 2, 0);
+  return { s, from: a.openTo, to: a.to, x: p.x, z: p.z, floor: deckHeight(s) + FOOTWAY_LIFT, yaw: Math.atan2(q.uz, -q.ux) };
+}
+/** The hollow piece's parts, each [from, to] across, [a0, a1] along from its middle (s), [y0, y1] high (world), given its granite
+ *  from y0 to y1 and `along` m either side: what's under the hollow, over it, its walls, the lintel and sill of its doorway */
+function lookoutParts(y0, y1, along) {
+  const L = lookoutPlace(), W = LOOKOUT.wall, f = L.floor, top = f + LOOKOUT.height, dw = LOOKOUT.door / 2;
+  return [
+    [L.from, L.to, -along, along, y0, f - LOOKOUT.under], [L.from, L.to, -along, along, top, y1],
+    [L.from, L.from + W, -along, -dw, f - LOOKOUT.under, top], [L.from, L.from + W, dw, along, f - LOOKOUT.under, top],
+    [L.from, L.from + W, -dw, dw, f + LOOKOUT.doorHeight, top], [L.from, L.from + W, -dw, dw, f - LOOKOUT.under, f - 0.02],
+    [L.to - W, L.to, -along, along, f - LOOKOUT.under, top],
+    [L.from + W, L.to - W, -along, -along + W, f - LOOKOUT.under, top], [L.from + W, L.to - W, along - W, along, f - LOOKOUT.under, top]
+  ];
+}
+
 // A pylon's granite either side of its opening, across: [[from, to], [from, to]]
 const pylonPieces = (s, side) => {
   const a = pylonAcross(s, side);
@@ -180,18 +214,30 @@ const pylonPieces = (s, side) => {
 // unlike the bridge itself. Not the opening's: a car on the deck is at the simulation's flat height, as it is on the ground.
 function harbourBridgeColliders(colliders) {
   readStreets();
+  // A box from..to across and a0..a1 along from s, turned with the deck; y0..y1 in the world's heights, or from the ground up
+  const box = (s, from, to, a0, a1, y0, y1) => {
+    const q = axis(s), c = at(s, (from + to) / 2, 0), m = (a0 + a1) / 2;
+    const p = { x: c.x + q.ux * m, z: c.z + q.uz * m };
+    const yaw = Math.atan2(q.ux, q.uz);
+    const hx = (to - from) / 2, hz = (a1 - a0) / 2;
+    const ex = Math.abs(Math.cos(yaw)) * hx + Math.abs(Math.sin(yaw)) * hz, ez = Math.abs(Math.sin(yaw)) * hx + Math.abs(Math.cos(yaw)) * hz;
+    const heights = y0 === null ? { minY: 0, maxY: y1 - groundHeight(p.x, p.z) } : { minY: y0, maxY: y1, baseY: 0, level: true };
+    colliders.push({
+      minX: p.x - ex, maxX: p.x + ex, minZ: p.z - ez, maxZ: p.z + ez, ...heights,
+      obb: { cx: p.x, cz: p.z, hx, hz, cs: Math.cos(yaw), sn: Math.sin(yaw) }
+    });
+  };
+  const lookout = lookoutPlace();
   for (const s of pylonStations()) {
     for (const side of [-1, 1]) {
       for (const [from, to] of pylonPieces(s, side)) {
-        const p = at(s, (from + to) / 2, 0);
-        const q = axis(s);
-        const yaw = Math.atan2(q.ux, q.uz);
-        const hx = (to - from) / 2, hz = PYLON_BASE[1] / 2;
-        const ex = Math.abs(Math.cos(yaw)) * hx + Math.abs(Math.sin(yaw)) * hz, ez = Math.abs(Math.sin(yaw)) * hx + Math.abs(Math.cos(yaw)) * hz;
-        colliders.push({
-          minX: p.x - ex, maxX: p.x + ex, minZ: p.z - ez, maxZ: p.z + ez, minY: 0, maxY: PYLON_HEIGHT - groundHeight(p.x, p.z),
-          obb: { cx: p.x, cz: p.z, hx, hz, cs: Math.cos(yaw), sn: Math.sin(yaw) }
-        });
+        if (s === lookout.s && from === lookout.from) {
+          // Hollow: the parts round the lookout, its doorway open (the model's door closes it)
+          const half = PYLON_BASE[1] / 2;
+          for (const [a, b, a0, a1, y0, y1] of lookoutParts(-1000, PYLON_HEIGHT, half)) box(s, a, b, a0, a1, y0, y1);
+          continue;
+        }
+        box(s, from, to, -PYLON_BASE[1] / 2, PYLON_BASE[1] / 2, null, PYLON_HEIGHT);
       }
     }
   }
@@ -260,6 +306,79 @@ const GANTRIES = [200, 490, 700, 1068, 1220, 1430, 1580].filter((g) => g > 80 &&
  *  whose direction the time of day sets */
 const gantryLights = (s) => deckLanes(s).filter((l) => l.signal).map(({ off, north }) => ({ off, north }));
 
+/**
+ * The two flags, each from the top of its mast at `tops` (west, east), flying with the wind: one plane each in strips, their uv's x
+ * 0 to 0.49 the west's (the Aboriginal flag's) half of the texture and 0.51 to 1 the east's, so each flies from 0 at its mast to 1
+ */
+function flagGeometry(tops) {
+  const parts = tops.map((top, k) => {
+    const g = new THREE.PlaneGeometry(FLAG.width, FLAG.height, 16, 4).translate(FLAG.width / 2, -FLAG.height / 2, 0);
+    const coords = g.attributes.uv;
+    for (let i = 0; i < coords.count; i++) coords.setX(i, k * 0.51 + coords.getX(i) * 0.49);
+    // Its length along the wind, its face square across it
+    g.rotateY(Math.atan2(-WIND.y, WIND.x)).translate(top.x, top.y, top.z);
+    return g;
+  });
+  return mergeGeometries(parts, false);
+}
+/** The flags' texture, the Aboriginal flag then the Australian flag, and their flying: a wave down each from its mast, more the further */
+function flagMaterial() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = 256;
+  const c = canvas.getContext('2d');
+  // The Aboriginal flag (Harold Thomas, 1971): black over red, a yellow disc in the middle half its height across
+  c.fillStyle = '#000000';
+  c.fillRect(0, 0, 502, 128);
+  c.fillStyle = '#cc0000';
+  c.fillRect(0, 128, 502, 128);
+  c.fillStyle = '#ffd500';
+  c.beginPath(); c.arc(251, 128, 64, 0, Math.PI * 2); c.fill();
+  // The Australian flag: the Union Jack in its canton, the Commonwealth Star under it, the Southern Cross in the fly
+  const x0 = 522, w = 502, h = 256;
+  c.fillStyle = '#012169';
+  c.fillRect(x0, 0, w, h);
+  const cw = w / 2, ch = h / 2;
+  c.save();
+  c.beginPath(); c.rect(x0, 0, cw, ch); c.clip();
+  c.strokeStyle = '#ffffff'; c.lineWidth = ch / 5;
+  c.beginPath(); c.moveTo(x0, 0); c.lineTo(x0 + cw, ch); c.moveTo(x0 + cw, 0); c.lineTo(x0, ch); c.stroke();
+  c.strokeStyle = '#c8102e'; c.lineWidth = ch / 15;
+  c.beginPath(); c.moveTo(x0, 0); c.lineTo(x0 + cw, ch); c.moveTo(x0 + cw, 0); c.lineTo(x0, ch); c.stroke();
+  c.fillStyle = '#ffffff';
+  c.fillRect(x0 + cw / 2 - ch / 6, 0, ch / 3, ch); c.fillRect(x0, ch / 2 - ch / 6, cw, ch / 3);
+  c.fillStyle = '#c8102e';
+  c.fillRect(x0 + cw / 2 - ch / 10, 0, ch / 5, ch); c.fillRect(x0, ch / 2 - ch / 10, cw, ch / 5);
+  c.restore();
+  const star = (x, y, r, points) => {
+    c.beginPath();
+    for (let i = 0; i < points * 2; i++) {
+      const a = -Math.PI / 2 + (i * Math.PI) / points, rr = i % 2 ? r * 0.44 : r;
+      c.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+    }
+    c.closePath(); c.fill();
+  };
+  c.fillStyle = '#ffffff';
+  star(x0 + cw / 2, ch * 1.5, 26, 7);
+  star(x0 + w * 0.75, h * 0.81, 12, 7);
+  star(x0 + w * 0.62, h * 0.43, 12, 7);
+  star(x0 + w * 0.75, h * 0.17, 12, 7);
+  star(x0 + w * 0.87, h * 0.37, 12, 7);
+  star(x0 + w * 0.81, h * 0.52, 6, 5);
+  const map = new THREE.CanvasTexture(canvas);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.anisotropy = 4;
+  const material = new THREE.MeshStandardNodeMaterial({ map, roughness: 0.85, side: THREE.DoubleSide });
+  // How far along it a point is, from its mast: 0 to 1
+  const along = mix(uv().x.div(0.49), uv().x.sub(0.51).div(0.49), step(0.5, uv().x));
+  const wave = sin(time.mul(3.4).sub(along.mul(7.5)).add(uv().y.mul(1.3))).mul(along).mul(0.45)
+    .add(sin(time.mul(5.1).sub(along.mul(13)).add(step(0.5, uv().x).mul(2))).mul(along).mul(0.12));
+  material.positionNode = positionLocal.add(vec3(-WIND.y, 0, WIND.x).mul(wave));
+  // Floodlit at night
+  material.emissiveNode = texture(map, uv()).rgb.mul(smoothstep(0.55, 1.2, cityUniforms.uInteriorGlow).mul(0.55));
+  return material;
+}
+
 function buildHarbourBridge(group) {
   readStreets();
   const bridge = new THREE.Group();
@@ -267,17 +386,20 @@ function buildHarbourBridge(group) {
   bridge.userData.lifted = true;
   const struts = [];
   const strut = (a, b, w = 1.6, d = 1.6) => struts.push(strutMatrix(a, b, w, d));
+  // A steel plate s m along the deck, `off` m east of its line, centred at height y: w along the deck, h high, t thick across it
+  const plate = (s, off, y, w, h, t) => {
+    const q = axis(s), c = at(s, off, y);
+    const m = new THREE.Matrix4().makeBasis(new THREE.Vector3(q.ux, 0, q.uz), new THREE.Vector3(0, 1, 0), new THREE.Vector3(-q.uz, 0, q.ux));
+    struts.push(m.scale(new THREE.Vector3(w, h, t)).setPosition(c));
+  };
   const lanterns = [];
   const pylonPlaces = pylonStations();
 
   // The arch from hinge to hinge, short of the pylons: the approaches' trusses carry the deck between
   const archFrom = BRIDGE_SPAN.middle - BEARINGS / 2, archTo = BRIDGE_SPAN.middle + BEARINGS / 2;
   const middle = (archFrom + archTo) / 2, halfSpan = (archTo - archFrom) / 2;
-  const lower = (t) => WATER + 3 + LOWER_RISE * (1 - t * t); // t: -1 .. 1 along the span
-  const upper = (t) => {
-    const depth = 18 + 40 * t * t; // the truss deepens towards the bearings
-    return Math.min(ARCH_TOP + WATER * 0, lower(t) + depth);
-  };
+  const lower = (t) => HINGE + LOWER_RISE * (1 - t * t); // t: -1 .. 1 along the span
+  const upper = (t) => lower(t) + DEPTH_CROWN + (DEPTH_BEARINGS - DEPTH_CROWN) * t * t; // the truss deepens towards the bearings
 
   // Two trusses and the bracing between them
   for (const side of TRUSSES) {
@@ -302,6 +424,23 @@ function buildHarbourBridge(group) {
     }
     const end = PANELS / 2;
     void end;
+  }
+  // Along each top chord, the climbers' walkway: a handrail either side on posts at every other panel point. At each panel point the
+  // gusset plates, on the trusses' outer faces, where the members meet both chords; and a light on the top chord, lit at night.
+  for (const side of TRUSSES) {
+    const out = side === TRUSS.east ? 1 : -1;
+    for (let i = 0; i <= PANELS; i++) {
+      const t0 = i / PANELS * 2 - 1, s0 = middle + t0 * halfSpan;
+      plate(s0, side + out * 1.35, upper(t0), 3.4, 3.6, 0.12);
+      plate(s0, side + out * 1.45, lower(t0), 3.8, 4.4, 0.12);
+      lanterns.push(at(s0, side, upper(t0) + 1.55));
+      for (const rail of [-1, 1]) {
+        if (i % 2 === 0) strut(at(s0, side + rail * 0.95, upper(t0) + 1.3), at(s0, side + rail * 0.95, upper(t0) + 2.35), 0.07, 0.07);
+        if (i === PANELS) continue;
+        const t1 = (i + 1) / PANELS * 2 - 1, s1 = middle + t1 * halfSpan;
+        strut(at(s0, side + rail * 0.95, upper(t0) + 2.3), at(s1, side + rail * 0.95, upper(t1) + 2.3), 0.06, 0.06);
+      }
+    }
   }
   for (let i = 0; i <= PANELS; i++) {
     const t = i / PANELS * 2 - 1, s = middle + t * halfSpan;
@@ -457,12 +596,16 @@ function buildHarbourBridge(group) {
     }
   }
 
-  // Flags on top of the arch
-  for (const side of [-3, 3]) strut(at(middle, TRUSS_MID + side, upper(0)), at(middle, TRUSS_MID + side, upper(0) + 14), 0.22, 0.22);
+  // The flags' masts over the top chords at the crown, and between them the aircraft beacon's mast, its red light on top
+  const chordTop = upper(0) + 1.3;
+  for (const side of TRUSSES) strut(at(middle, side, chordTop), at(middle, side, chordTop + FLAG.mast), 0.24, 0.24);
+  strut(at(middle, TRUSS_MID, upper(0) - 0.4), at(middle, TRUSS_MID, chordTop + 6), 0.5, 0.5);
+  const beacon = at(middle, TRUSS_MID, chordTop + 6.4);
 
-  // Railings along the deck's outer edges, and masts for the railway's wires
+  // Railings along the deck's outer edges, and masts for the railway's wires. Not through the pylons' arches: the granite's either side
+  const throughPylon = (a, b) => pylonPlaces.some((p) => b > p - PYLON_BASE[1] / 2 && a < p + PYLON_BASE[1] / 2);
   for (let s = 60; s + 6 <= BRIDGE_LENGTH - 60; s += 6) {
-    if (s > 66 && s < BRIDGE_LENGTH - 66) {
+    if (s > 66 && s < BRIDGE_LENGTH - 66 && !throughPylon(s, s + 6)) {
       for (const side of [-1, 1]) {
         const here = layout(s), next = layout(s + 6);
         const off = side < 0 ? here.edgeWest + 0.25 : here.edgeEast - 0.25, off1 = side < 0 ? next.edgeWest + 0.25 : next.edgeEast - 0.25;
@@ -494,7 +637,10 @@ function buildHarbourBridge(group) {
     // Posts curving in over the footway every 3 m, rails along their tops, and a mesh between them
     const from = pylonPlaces[0] - PYLON_BASE[1] / 2 - 30, to = pylonPlaces[1] + PYLON_BASE[1] / 2 + 30;
     const panels = [];
+    // Not through the pylons: the footway goes through an arch in each east one
+    const inPylon = (a, b) => pylonPlaces.some((p) => b > p - PYLON_BASE[1] / 2 && a < p + PYLON_BASE[1] / 2);
     for (let s = from; s + 3 <= to; s += 3) {
+      if (inPylon(s, s + 3)) continue;
       const lay = layout(s), lay1 = layout(s + 3), y = deckHeight(s) + 0.18, y1 = deckHeight(s + 3) + 0.18;
       const outer = lay.edgeEast - 0.35, outer1 = lay1.edgeEast - 0.35;
       strut(at(s, outer, y), at(s, outer, y + 2.4), 0.07, 0.07);
@@ -606,7 +752,7 @@ function buildHarbourBridge(group) {
     const edges = deckEdges(s), under = y + 0.04 - DECK_DEPTH;
     ribbon(r.underside, s, edges.east, edges.west, under, under, 0, -1, 0);
     if (full) {
-      if (!opening(s, 1)) ribbon(r.footway, s, lay.footFrom, lay.edgeEast, y + 0.18, y + 0.18);
+      if (!opening(s, 1)) ribbon(r.footway, s, lay.footFrom, lay.edgeEast, y + 0.04 + FOOTWAY_LIFT, y + 0.04 + FOOTWAY_LIFT);
       if (!opening(s, -1)) {
         ribbon(r.rail, s, lay.railFrom, lay.roadWest - BARRIER.width, y - 0.02, y - 0.02);
         ribbon(r.cycleway, s, lay.edgeWest, lay.railFrom, y + 0.12, y + 0.12);
@@ -648,6 +794,7 @@ function buildHarbourBridge(group) {
   // The four granite pylons, where they were placed above. Solid to the deck; there, an arch through each, round-headed, for the
   // railway and cycleway on the west and the Cahill's lane and the footway on the east; then tapering, with ledges, stepping in at
   // the top. In the pylon's own frame x runs west, so a place across the deck east of its line is at -(off - middle).
+  const lookout = lookoutPlace();
   for (const s of pylonPlaces) {
     for (const side of [-1, 1]) {
       const across = pylonAcross(s, side), middle = (across.from + across.to) / 2;
@@ -665,7 +812,27 @@ function buildHarbourBridge(group) {
         return g;
       };
       const parts = [frustum(W, D, W * 0.98, D * 0.98, base, dy - 1.2)];
-      for (const [from, to] of pylonPieces(s, side)) parts.push(block(from, to, dy - 1.2, top));
+      for (const [from, to] of pylonPieces(s, side)) {
+        if (s === lookout.s && from === lookout.from) {
+          // The lookout's: in parts round its hollow, each face's courses running on across the joins as the whole piece's would
+          const cx = -((from + to) / 2 - middle);
+          for (const [a, b, a0, a1, y0, y1] of lookoutParts(dy - 1.2, top, (D * 0.97) / 2)) {
+            const g = frustum(b - a, a1 - a0, b - a, a1 - a0, y0, y1).translate(-((a + b) / 2 - middle), 0, (a0 + a1) / 2);
+            const pos = g.attributes.position, nrm = g.attributes.normal, uvs = g.attributes.uv;
+            for (let k = 0; k < uvs.count; k++) {
+              const nx = nrm.getX(k), nz = nrm.getZ(k), x = pos.getX(k) - cx, z = pos.getZ(k);
+              if (nx > 0.5) uvs.setX(k, z);
+              else if (nx < -0.5) uvs.setX(k, -z);
+              else if (nz < -0.5) uvs.setX(k, x);
+              else if (nz > 0.5) uvs.setX(k, -x);
+              uvs.setY(k, uvs.getY(k) + 200);
+            }
+            parts.push(g);
+          }
+          continue;
+        }
+        parts.push(block(from, to, dy - 1.2, top));
+      }
       parts.push(block(across.openFrom, across.openTo, crown, top));
       // The arch's head: the corners filled in, in steps, to a half circle no wider than the opening
       const r = Math.min((across.openTo - across.openFrom) / 2, PYLON_OPENING - ARCH_CLEAR);
@@ -809,11 +976,15 @@ function buildHarbourBridge(group) {
     backs.userData.lifted = true;
     bridge.add(backs);
   }
-  {
-    const flagGeo = [-3, 3].map((off) => new THREE.BoxGeometry(0.06, 2.6, 5).translate(at(middle, off, 0).x, upper(0) + 12.4, at(middle, off, 0).z + 2.6));
-    const flags = new THREE.Mesh(mergeGeometries(flagGeo, false), new THREE.MeshBasicNodeMaterial({ color: 0x1b2a78 }));
+  if (typeof document !== 'undefined') {
+    const flags = new THREE.Mesh(flagGeometry(TRUSSES.map((side) => at(middle, side, chordTop + FLAG.mast - 0.3))), flagMaterial());
     flags.userData.lifted = true;
     bridge.add(flags);
+    const red = new THREE.MeshBasicNodeMaterial();
+    red.colorNode = color(0xff2a1a).mul(mix(float(0.8), float(2.2), smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow)));
+    const light = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.7).translate(beacon.x, beacon.y, beacon.z), red);
+    light.userData.lifted = true;
+    bridge.add(light);
   }
 
   // Sandstone arches where the approaches come down to the land, wherever nothing runs through. Each wall stands on the
@@ -859,4 +1030,4 @@ function buildHarbourBridge(group) {
   return surface;
 }
 
-export { GANTRIES, buildHarbourBridge, gantryLights, harbourBridgeColliders };
+export { GANTRIES, LOOKOUT, buildHarbourBridge, gantryLights, harbourBridgeColliders, lookoutPlace };

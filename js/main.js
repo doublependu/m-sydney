@@ -893,24 +893,38 @@ async function initApp() {
   markInit('compile');
   await showLoadingStage('Preparing shadows and the first frame...');
 
+  // Stages revealed at once (models and their far versions as the city completes) compile one after another. Side by side, the first to
+  // finish took the scene pass's target from under the others mid-compile, and two compiles shared the renderer's one precompile state:
+  // their pipelines didn't match what the scene pass drew with, and frames failed ("[Texture "output"] usage ... includes writable
+  // usage", "Color target has no corresponding fragment stage output").
+  let compileQueue = Promise.resolve();
+  function compileJobs(jobs, task = null) {
+    const run = compileQueue.then(() => compileJobsNow(jobs, task));
+    compileQueue = run.catch(() => {});
+    return run;
+  }
+
   // Runs between frames once the game is interactive, a few objects per frame, so that a shader nobody has reached yet
   // doesn't stall the moment the player turns towards it.
-  async function compileJobs(jobs, task = null) {
+  async function compileJobsNow(jobs, task = null) {
     setCompileTarget(true);
-    let sliceStart = performance.now();
-    const total = jobs.reduce((sum, job) => sum + job.length, 0) || 1;
-    let done = 0;
-    for (const job of jobs) {
-      for (const object of job) {
-        await compileObject(object);
-        task?.set(++done / total);
-        if (performance.now() - sliceStart > 3) {
-          await new Promise((resolve) => requestAnimationFrame(resolve));
-          sliceStart = performance.now();
+    try {
+      let sliceStart = performance.now();
+      const total = jobs.reduce((sum, job) => sum + job.length, 0) || 1;
+      let done = 0;
+      for (const job of jobs) {
+        for (const object of job) {
+          await compileObject(object);
+          task?.set(++done / total);
+          if (performance.now() - sliceStart > 3) {
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            sliceStart = performance.now();
+          }
         }
       }
+    } finally {
+      setCompileTarget(false);
     }
-    setCompileTarget(false);
   }
 
   const settled = (root) => root.traverse((o) => { o.userData.lifted = true; });
@@ -1064,15 +1078,19 @@ async function initApp() {
   // --- Tiles around the player -----------------------------------------------------------------------------------------
   const shadowOf = () => [lightingSystem.sunLight.shadow, renderer.backend.isWebGPUBackend === true];
   let operaPlain = []; // js/opera-house.js: what the Opera House's model takes the place of near it
+  let towerPlain = null; // js/landmarks.js: Sydney Tower as the game draws it, which its model takes the place of
   const interiors = createInteriors({
     reveal: (group) => revealStage(group),
     shown: (id, on) => {
       if (id === 'opera-house') for (const mesh of operaPlain) mesh.visible = !on;
+      if (id === 'sydney-tower' && towerPlain) towerPlain.visible = !on;
     },
     lights: lightPools.interiorLights,
     colliders: { add: (list) => controllerManager.addColliders(list), remove: (list) => controllerManager.removeColliders(list) },
     // Not in the first view: a model comes once the city round you has
     tileBuilt: (x, z) => worldCompleteAt !== null && builtTiles.get(tileKeyAt(x, z))?.done === true,
+    // Far versions as far as the far level reaches at most: each is a draw or two, and a few KB
+    farReach: () => (worldCompleteAt === null ? 0 : quality.farRange),
     debug: new URLSearchParams(location.search).get('debug') === '1'
   });
   let indoors = false;
@@ -1325,8 +1343,9 @@ async function initApp() {
     const heldForLandmarks = landmarkTiles.filter((key) => !isHeld(key));
     yield holdTiles(landmarkTiles);
     const landmarkStage = new THREE.Group();
-    const { colliders: landmarkColliders, group: landmarks, operaPlain: plain } = buildLandmarks(landmarkStage);
+    const { colliders: landmarkColliders, group: landmarks, operaPlain: plain, towerPlain: tower } = buildLandmarks(landmarkStage);
     operaPlain = plain;
+    towerPlain = tower;
     controllerManager.addColliders(landmarkColliders);
     yield;
     addHarbourBridge(landmarks);

@@ -2,7 +2,7 @@ import * as THREE from 'three/webgpu';
 import { abs, color, float, floor, fract, max, mix, mod, positionWorld, smoothstep, sqrt, step, texture, uv } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { cityUniforms } from './tsl-materials.js';
-import { BRIDGE_LENGTH, BRIDGE_SPAN, DECK_REACH, DECK_SID, bridgeAt, bridgePoint, deckGapAt, deckHeight, deckLanes, deckSpanAt } from './bridge.js';
+import { BRIDGE_LENGTH, BRIDGE_SPAN, DECK_BARRIER as BARRIER, DECK_REACH, DECK_SID, bridgeAt, bridgePoint, deckEdges, deckGapAt, deckHeight, deckIsFull, deckLanes, deckAcross as layout, deckSpanAt } from './bridge.js';
 import { GEO } from './geodata.js';
 import { DECK_DEPTH, groundHeight } from './surfaces.js';
 
@@ -27,7 +27,6 @@ const ARCH_CLEAR = 4.3; // m over the deck, at least, where an arch's head start
 const PIER = 1.0; // m of granite at least between the roads and an opening
 const PYLON_FROM_MIDDLE = 282; // m along the deck from the middle of the arch to each pair of pylons
 const BEARINGS = 503; // m between the arch's hinges
-const BARRIER = { width: 0.5, height: 0.9 };
 const KIND_CUTTING = 3; // a street on the ground sunk into a cutting (js/surfaces.js KIND)
 // The sign gantry over the lanes coming off the bridge southbound, where they run side by side on the ground before they part
 // (a Street View picture of it from the lanes under it): across the line z = SOUTH_GANTRY.z, over the southbound roads within `reach`
@@ -37,25 +36,6 @@ const SOUTH_GANTRY = {
   x: -290, z: -1285, reach: 25,
   boards: [['bus', 'LANE', '24 hrs'], ['bus', 'LANE'], ['green', 'Western', 'Suburbs'], ['green', 'City South', 'Darling Hbr'], ['blank'], ['green', 'GROSVENOR ST', 'City North']]
 };
-const RAIL_WIDTH = 10.6, CYCLE_WIDTH = 2.8, FOOT_WIDTH = 2.8;
-
-// What's where across the deck s m along it, m east of the corridor's line
-function layout(s) {
-  const span = deckSpanAt(s);
-  const roadWest = span.west - 0.5, roadEast = span.east + 0.5; // the barriers' inner faces, half a metre past the lanes
-  const railTo = roadWest - BARRIER.width - 0.3, railFrom = railTo - RAIL_WIDTH;
-  const cycleTo = railFrom - 0.3, cycleFrom = cycleTo - CYCLE_WIDTH;
-  const footFrom = roadEast + BARRIER.width, footTo = footFrom + FOOT_WIDTH;
-  const gap = deckGapAt(s);
-  return { roadWest, roadEast, gap, railFrom, railTo, tracks: [railTo - 2.8, railTo - 7.6], cycleFrom, cycleTo, footFrom, footTo, edgeWest: cycleFrom - 0.3, edgeEast: footTo + 0.3 };
-}
-// The deck's outer edges s m along it, where its steel sides hang: past the railway and the footway between the ends, past the
-// barriers near them, where the deck is its roads alone
-function deckEdges(s) {
-  const lay = layout(s);
-  if (s >= 60 && s <= BRIDGE_LENGTH - 60) return { west: lay.edgeWest, east: lay.edgeEast };
-  return { west: lay.roadWest - BARRIER.width, east: lay.roadEast + BARRIER.width };
-}
 // The arch's trusses: the west one beside the roadway, the east one between the bus lane and the Cahill's lane, where its hangers
 // stand, at the middle of the span
 const TRUSS = (() => {
@@ -601,7 +581,7 @@ function buildHarbourBridge(group) {
     const y = deckHeight(s) - 0.04;
     const lay = layout(s);
     // Near its ends the deck is its roads alone; between, its rail, cycleway and footway too
-    const full = s >= 60 && s <= BRIDGE_LENGTH - 60;
+    const full = deckIsFull(s);
     const r = Object.fromEntries(strips.map((k) => [k, []]));
     // Each pair runs left to right seen from above, travelling north
     ribbon(r.road, s, lay.roadWest, lay.roadEast, y, y);

@@ -7,11 +7,12 @@
 //             1.5-5.7 m over it, in the cars' way, or more than 1.5 m under it, leaving them in the air. Where two roads at
 //             different heights overlap, the ground can only be at one of them. Over 5.7 m up it's a street crossing over
 //   buildings a building in a lane on a structure or in a cutting: its body over the road and under 4.2 m of it, or its wall where
-//             the lane crosses its outline, from the wall's foot (js/wall-foot.js) to its top
+//             the lane crosses its outline, from the wall's foot (js/wall-foot.js) to its top. And one reaching up into the Harbour
+//             Bridge's deck beyond its roads, under its railway, cycleway or footway
 //   drawn     the road as js/structures.js draws it against the height a car is held at, along every lane of every tunnel and
 //             bridge: a hole (nothing drawn within 1 m), or the road drawn over the wheels or under them by more than 10 cm
-//   trees     a tree in a lane on a structure or in a cutting: its trunk in the road, or its crown across a bridge's height
-//             from beside it
+//   trees     a tree where the game stands it, in a lane on a structure or in a cutting: its trunk in the road, or its crown
+//             across a bridge's height from beside it, or across any of the Harbour Bridge's deck
 //   piers     a structure's pier in another road's lane
 // usage: node tools/check-layers.mjs [--json] [--strict] [--list] [--tiles=0_-2,1_-2]
 import fs from 'node:fs';
@@ -19,10 +20,15 @@ globalThis.fetch = async (url) => new Response(fs.readFileSync(new URL(url)));
 console.info = () => {};
 const started = performance.now();
 const THREE = await import('three/webgpu');
-const { heldTiles } = await import('../js/geodata.js');
+const { heldTiles, heldTrees } = await import('../js/geodata.js');
 const { DECK_DEPTH, DECK_STRUCTURE, KIND, LINKS, STEP, TUNNEL_HEIGHT, groundHeight, roadHeight, tunnelCovered } = await import('../js/surfaces.js');
 const { buildStructures } = await import('../js/structures.js');
-const { onDeckSpan } = await import('../js/bridge.js');
+const { DECK_REACH, bridgeAt, deckUndersideAt, onDeckSpan } = await import('../js/bridge.js');
+const { crownRadius, roomOver, treeClear } = await import('../js/deck-room.js');
+const { placeStreetTrees } = await import('../js/tree-placements.js');
+// The gardens' plants: how tall each kind is at scale 1 (js/trees.js), and those too small to reach a road's height
+const GARDEN_SIZE = { 6: 14, 7: 10, 8: 30, 9: 12, 10: 2, 11: 4, 12: 3, 13: 3, 14: 3, 15: 3, 16: 3, 17: 3 };
+const SMALL_SPECIES = new Set([10, 12, 13, 14, 15, 16, 17]);
 const { wallFootAt } = await import('../js/wall-foot.js');
 
 const json = process.argv.includes('--json');
@@ -224,30 +230,55 @@ const inRing = (ring, x, z) => {
       }
     }
   }
-  report.buildings = { count: touched.size, byKind, body: bodies.summary(), wall: walls.summary() };
+  // Under the Harbour Bridge's deck beyond its roads, where its railway, cycleway and footway run: a building reaching up into it
+  const deck = new Places();
+  for (const b of heldTiles().flatMap((t) => t.buildings)) {
+    if (!wanted(b.cx, b.cz) || !bridgeAt(b.cx, b.cz, DECK_REACH + Math.hypot(b.maxX - b.minX, b.maxZ - b.minZ))) continue;
+    let worst = null;
+    for (let x = b.minX + 0.5; x < b.maxX; x += 1) {
+      for (let z = b.minZ + 0.5; z < b.maxZ; z += 1) {
+        const under = deckUndersideAt(x, z);
+        if (under === null || !b.polygons.some((p) => inRing(p.outer, x, z))) continue;
+        const by = b.floor + b.height - under;
+        if (by > 0 && (!worst || by > worst.by)) worst = { x, z, by };
+      }
+    }
+    if (worst) deck.add(worst.x, worst.z, 'Sydney Harbour Bridge (its deck)', worst.by);
+  }
+  report.buildings = { count: touched.size, byKind, body: bodies.summary(), wall: walls.summary(), deck: deck.summary() };
 
-  // Trees: their trunks within a structure's or a cutting's road, or their crowns across its height from beside it
+  // Trees where the game stands them (js/tree-placements.js, with js/street-details.js' test of what's over and beside them, but not its
+  // street lights to keep clear of, so a few more than it draws): their trunks within a structure's or a cutting's road, or their crowns
+  // across its height from beside it, or across the Harbour Bridge's deck, its railway and footway as well as its roads
   const trunks = new Places(), crowns = new Places();
-  for (const t of heldTiles()) {
-    const tr = t.trees;
-    if (!tr) continue;
-    for (let i = 0; i < tr.kinds.length; i++) {
-      const x = tr.points[i * 2], z = tr.points[i * 2 + 1];
-      if (!wanted(x, z)) continue;
-      const tall = tr.heights[i] || 8, base = groundHeight(x, z), crown = Math.min(4, tall * 0.3);
-      for (const q of segCells.get(cellKey(x, z)) || []) {
-        if (!raised(q.l)) continue;
-        const dx = q.b.x - q.a.x, dz = q.b.z - q.a.z;
-        const t = Math.max(0, Math.min(1, ((x - q.a.x) * dx + (z - q.a.z) * dz) / (q.len * q.len)));
-        const d = Math.hypot(q.a.x + dx * t - x, q.a.z + dz * t - z);
-        if (d > q.l.width / 2 + crown) continue;
-        const y = q.a.y + (q.b.y - q.a.y) * t;
-        if (q.l.kind === KIND.TUNNEL && tunnelCovered(q.l, q.s0 + t * q.len)) continue; // under the ground, out of reach
-        const name = `${q.l.name || q.l.id} (${kindOf(q.l, q.s0 + t * q.len)})`;
-        if (d <= q.l.width / 2 - 0.5) {
-          if (base < y + CLEAR && base + tall > y + 0.3) { trunks.add(x, z, name, base + tall - y); break; }
-        // Beside a bridge, its crown across the deck's height. Beside a street, a tree's crown over it is a street tree's
-        } else if (d > q.l.width / 2 && q.l.kind === KIND.BRIDGE && base < y && base + tall > y + 1.5) { crowns.add(x, z, name, base + tall - y); break; }
+  const tr = heldTrees();
+  const sites = placeStreetTrees(tr.points, tr.kinds, tr.heights, [],
+    (x, z, small = false, tall = 0) => roomOver(x, z, small ? 1 : 3) >= (small ? 3 : 12) && (small || treeClear(x, z, tall)));
+  for (const site of sites) {
+    const { x, z } = site;
+    if (!wanted(x, z) || SMALL_SPECIES.has(site.species)) continue;
+    const tall = (GARDEN_SIZE[site.species] || 13) * site.scale, base = groundHeight(x, z), crown = crownRadius(tall);
+    const under = [[0, 0], [crown, 0], [-crown, 0], [0, crown], [0, -crown]].map(([dx, dz]) => deckUndersideAt(x + dx, z + dz)).find((u) => u !== null);
+    if (under !== undefined && under + DECK_DEPTH > base + 0.5 && base + tall > under + DECK_DEPTH) {
+      crowns.add(x, z, 'Sydney Harbour Bridge (its deck)', base + tall - under - DECK_DEPTH);
+      continue;
+    }
+    for (const q of segCells.get(cellKey(x, z)) || []) {
+      if (!raised(q.l)) continue;
+      const dx = q.b.x - q.a.x, dz = q.b.z - q.a.z;
+      const t = Math.max(0, Math.min(1, ((x - q.a.x) * dx + (z - q.a.z) * dz) / (q.len * q.len)));
+      const d = Math.hypot(q.a.x + dx * t - x, q.a.z + dz * t - z);
+      if (d > q.l.width / 2 + crown) continue;
+      const y = q.a.y + (q.b.y - q.a.y) * t;
+      if (q.l.kind === KIND.TUNNEL && tunnelCovered(q.l, q.s0 + t * q.len)) continue; // under the ground, out of reach
+      const name = `${q.l.name || q.l.id} (${kindOf(q.l, q.s0 + t * q.len)})`;
+      if (d <= q.l.width / 2 - 0.5) {
+        if (base < y + CLEAR && base + tall > y + 0.3) { trunks.add(x, z, name, base + tall - y); break; }
+      // Beside a bridge, its crown across the deck's height, under a truck's height over it. Beside a street, a tree's crown over it is
+      // a street tree's, and so is one high over a deck
+      } else if (d > q.l.width / 2 && q.l.kind === KIND.BRIDGE && base + 0.5 < y && base + tall > y && base + tall * 0.35 < y + TRUCK) {
+        crowns.add(x, z, name, base + tall - y);
+        break;
       }
     }
   }
@@ -275,7 +306,7 @@ const inRing = (ring, x, z) => {
       }
       continue;
     }
-    if (mesh.material !== roadMat) continue;
+    if (!mesh.userData.road) continue; // the road's surface, open or under a tunnel's roof
     const P = mesh.geometry.attributes.position, I = mesh.geometry.index;
     const at = (k) => v.fromBufferAttribute(P, k).applyMatrix4(mesh.matrixWorld).toArray();
     for (let i = 0; i < I.count; i += 3) {
@@ -357,6 +388,7 @@ else {
   console.log(`buildings ${r.buildings.count} in lanes on structures or in cuttings ${JSON.stringify(r.buildings.byKind)}`);
   console.log(`  body    ${r.buildings.body.metres} m of lane${where(r.buildings.body)}`);
   console.log(`  wall    ${r.buildings.wall.metres} m of lane${where(r.buildings.wall)}`);
+  console.log(`  deck    ${r.buildings.deck.metres} up into the Harbour Bridge's deck beyond its roads${where(r.buildings.deck)}`);
   console.log(`drawn     ${r.drawn.lanes} m of tunnel and bridge lane walked`);
   console.log(`  holes   ${r.drawn.holes.metres} m with no road drawn within ${GAP} m of the wheels${where(r.drawn.holes)}`);
   console.log(`  over    ${r.drawn.over.metres} m with the road drawn over the wheels by more than ${DRAWN_OFF * 100} cm${where(r.drawn.over)}`);
@@ -377,10 +409,12 @@ if (strict) {
     [r.ground.over.metres, 90, 'metres of lane with the ground drawn over it'],
     [r.ground.under.metres, 100, 'metres of lane with the ground drawn under it'],
     [r.buildings.count, 0, 'buildings in lanes on structures or in cuttings'],
+    [r.buildings.deck.metres, 0, 'buildings up into the Harbour Bridge\'s deck'],
     [r.drawn.holes.metres, 20, 'metres of tunnel or bridge lane with no road drawn'],
     [r.drawn.over.metres, 10, 'metres of tunnel or bridge lane drawn over the wheels'],
-    [r.trees.trunks.metres, 115, 'trees in a structure\'s or a cutting\'s road'],
-    [r.piers.metres, 22, 'piers in another road\'s lane']
+    [r.trees.trunks.metres, 2, 'trees in a structure\'s or a cutting\'s road'],
+    [r.trees.crowns.metres, 2, 'trees with their crown across a deck\'s height'],
+    [r.piers.metres, 3, 'piers in another road\'s lane']
   ];
   let failed = false;
   for (const [value, limit, label] of limits) {

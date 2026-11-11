@@ -2256,6 +2256,75 @@ function createSandstoneWallMaterial({ waterLevel }) {
   return mat;
 }
 
+// A structure's face laid in stone carries this in its uv.y, its distance along the wall in uv.x (js/structures.js); a face that's to
+// look like the plain dark ground under the city (js/city-grid.js), this
+const STONE_FACE = 1e6, BASE_FACE = 2e6;
+
+/**
+ * Roads off the ground (js/structures.js), in one material, so a tile's structures are one draw:
+ * - The walls of cuttings, tunnel approaches and embankments, where the geometry says so (uv.y = STONE_FACE): Sydney sandstone in dressed
+ *   blocks, as along the Bradfield Highway and through the Warringah Freeway's cuttings. Courses 0.6 m high of blocks 0.9-1.9 m long, each
+ *   course its own length and set off from the last, each block its own tone from honey and ochre to weathered grey, banded with
+ *   ironstone, streaked where water runs down, joints thin and pale. uv.x is the wall's own distance along it, so a curved wall keeps its
+ *   courses; heights are the world's.
+ * - Everything else, decks' undersides, barriers, medians, tunnels' ceilings and piers: plain concrete, grey, mottled, with the faint
+ *   lines of its formwork.
+ */
+function createStructureMaterial() {
+  const mat = new THREE.MeshStandardNodeMaterial({ metalness: 0.0, roughness: 0.9 });
+  mat.colorNode = Fn(() => {
+    const y = positionWorld.y;
+    const s = uv().x;
+    const course = y.div(0.6);
+    const row = floor(course);
+    const blockLength = hash2D(vec2(row, 17.0)).add(0.9);
+    const along = s.div(blockLength).add(hash2D(vec2(row, 3.0)));
+    const block = floor(along);
+    const tone = hash2D(vec2(block, row));
+    const weather = hash2D(vec2(block.add(31.0), row));
+    const honey = mix(color(0xb59a72), color(0xa1825c), smoothstep(0.3, 1.0, tone).mul(0.7));
+    const sandstone = mix(honey, color(0x948f84), weather.mul(0.35).add(0.25));
+    // Ironstone in bands across each block, and the stone's grain
+    const bands = noise2D(vec2(s.mul(0.9), y.mul(2.6)).add(vec2(block.mul(5.3), row.mul(1.7))));
+    const iron = smoothstep(0.64, 0.82, bands).mul(0.3);
+    const grain = noise2D(vec2(s, y).mul(7.0)).mul(0.12).add(0.94);
+    // Streaks where water runs down the face, long and narrow
+    const streak = smoothstep(0.55, 0.85, noise2D(vec2(s.mul(1.6), y.mul(0.12)))).mul(0.28);
+    const laid = mix(sandstone, color(0x7d5a3c), iron).mul(grain).mul(float(1.0).sub(streak));
+    // Joints about 1.5 cm, pale, with the dressed edge of each block a little darker beside them; faded out under a pixel
+    const fx = abs(fract(along).sub(0.5)).mul(blockLength), fy = abs(fract(course).sub(0.5)).mul(0.6);
+    const edge = min(float(0.5).mul(blockLength).sub(fx), float(0.3).sub(fy));
+    const fade = float(1.0).sub(smoothstep(0.03, 0.12, fwidth(s).add(fwidth(y))));
+    const joint = float(1.0).sub(smoothstep(0.006, 0.012, edge)).mul(fade);
+    const arris = float(1.0).sub(smoothstep(0.012, 0.05, edge)).mul(fade).mul(0.18);
+    const stone = mix(laid.mul(float(1.0).sub(arris)), color(0xd6cbb2), joint.mul(0.85));
+
+    const p = vec2(patternXZ.x.add(patternXZ.y), y);
+    const mottle = noise2D(p.mul(0.35)).mul(0.6).add(noise2D(p.mul(2.2)).mul(0.4));
+    const lines = float(1.0).sub(smoothstep(0.0, 0.03, abs(fract(y.div(1.2)).sub(0.5)).sub(0.47).abs())).mul(0.06);
+    const concrete = mix(color(0x8c8a83), color(0xa3a199), mottle).mul(float(1.0).sub(lines));
+    return mix(mix(concrete, stone, step(STONE_FACE * 0.5, uv().y)), color(0x2c2b29), step(STONE_FACE * 1.5, uv().y));
+  })();
+  return mat;
+}
+
+/**
+ * A palisade fence of black steel along the top of a cutting's wall: bars 13 cm apart with pointed heads between two rails, cut out of a
+ * strip whose uv is (m along it, m up from its foot), so a whole fence is one draw
+ */
+function createPalisadeMaterial(height) {
+  const mat = new THREE.MeshStandardNodeMaterial({ color: 0x1b1d1e, metalness: 0.45, roughness: 0.55, side: THREE.DoubleSide });
+  const u = uv().x.div(0.13), v = uv().y;
+  const across = abs(fract(u).sub(0.5)).mul(0.13); // m from the middle of the nearest bar
+  // The bar narrows to a point over its last 8 cm
+  const head = clamp(float(height).sub(v).div(0.08), 0.0, 1.0);
+  const bar = step(across, head.mul(0.014)).mul(step(v, float(height)));
+  const rails = max(step(abs(v.sub(0.12)), float(0.025)), step(abs(v.sub(height - 0.18)), float(0.025)));
+  mat.opacityNode = max(bar, rails);
+  mat.alphaTest = 0.5;
+  return mat;
+}
+
 /**
  * A garden's pond: still, fresh water, dark olive with slow patches of green and brown where it's shallow or weedy, and only a soft
  * sheen of the sky. The harbour's water is a dark mirror with waves; this is neither.
@@ -2356,6 +2425,10 @@ export {
   createCurbMaterial,
   createPondMaterial,
   createSandstoneWallMaterial,
+  STONE_FACE,
+  BASE_FACE,
+  createStructureMaterial,
+  createPalisadeMaterial,
   createWaterMaterial,
   createParkLawnMaterial,
   createGardenBedMaterial,

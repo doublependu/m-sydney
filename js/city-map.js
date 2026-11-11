@@ -252,6 +252,7 @@ function loadWholeMap() {
 const mapRoads = () => wholeMap?.roads ?? ROADS;
 const mapBlocks = () => wholeMap?.blocks ?? BLOCKS;
 const ROWS = 2; // m: each tile's land comes in runs along rows this far apart
+const SPARSE = 0.25; // a held tile whose blocks cover less of its land than this has its roads drawn as lines (mapLayers())
 // (the held tiles' land is what changes while the whole map's names are here)
 const mapContents = () => (wholeMap ? (wholeMap.shores ? -1 : -2 - getMapVersion()) : getMapVersion() * 2 + (GEO.surroundings ? 1 : 0));
 let LAYERS = null, layersOf = -2, layersAt = -Infinity;
@@ -268,19 +269,30 @@ function mapLayers() {
     for (const hole of holes) addRing(L.land, hole, true);
   }
   L.shores = new Path2D();
+  L.sparse = new Path2D();
   if (wholeMap?.shores) {
     for (const [outer, ...docks] of wholeMap.shores) {
       addRing(L.shores, outer);
       for (const dock of docks) addRing(L.shores, dock, true);
     }
   } else {
-    // What's held: each tile's land, whole or in runs
+    // What's held: each tile's land, whole or in runs. The streets are the gaps between the blocks, so a tile its blocks hardly cover
+    // goes in L.sparse instead: out where roads seldom close round a block (Dural), or where a big block's middle is in a tile that isn't
+    // held, the gaps would be all of it, and no street would show. There the radar draws its roads as lines (drawWorld()).
+    const covered = new Map();
+    for (const b of mapBlocks()) {
+      const key = Math.floor(b.cx / 1000) * 100000 + Math.floor(b.cz / 1000);
+      covered.set(key, (covered.get(key) || 0) + b.area);
+    }
     for (const tile of heldTiles()) {
       const x0 = tile.ix * 1000, z0 = tile.iz * 1000;
-      if (tile.land === 1) L.shores.rect(x0, z0, 1000, 1000);
+      let land = tile.land === 1 ? 1e6 : 0;
+      if (Array.isArray(tile.land)) for (const row of tile.land) for (let n = 0; n + 1 < row.length; n += 2) land += (row[n + 1] - row[n]) * ROWS;
+      const path = land > 0 && (covered.get(tile.ix * 100000 + tile.iz) || 0) < land * SPARSE ? L.sparse : L.shores;
+      if (tile.land === 1) path.rect(x0, z0, 1000, 1000);
       else if (Array.isArray(tile.land)) {
         tile.land.forEach((row, k) => {
-          for (let n = 0; n + 1 < row.length; n += 2) L.shores.rect(x0 + row[n], z0 + k * ROWS, row[n + 1] - row[n], ROWS);
+          for (let n = 0; n + 1 < row.length; n += 2) path.rect(x0 + row[n], z0 + k * ROWS, row[n + 1] - row[n], ROWS);
         });
       }
     }
@@ -296,7 +308,9 @@ function mapLayers() {
   L.highways = new Path2D();
   L.bridges = new TiledLayer(1000); // over what they cross
   L.tunnels = new TiledLayer(1000); // under it
+  L.roads = new TiledLayer(1000); // every road, for the held land its blocks hardly cover
   for (const r of mapRoads()) {
+    if (r.kind !== 2) L.roads.line(r.pts);
     if (r.highway) {
       if (!r.tunnel) addLine(L.highways, r.pts);
     } else if (r.major) L.mainRoads.line(r.pts);
@@ -851,9 +865,22 @@ class CityMapSystem {
     ctx.fillStyle = MAP.land;
     ctx.fill(L.land);
 
-    // 2. The play area (roadway deck colour: the streets are the gaps between the blocks)
-    ctx.fillStyle = MAP.streets;
-    ctx.fill(L.shores);
+    // 2. The play area (roadway deck colour: the streets are the gaps between the blocks). The images have it already, drawn by this
+    // same code from the whole map, so over them only the blocks are drawn: where the blocks held don't close round the streets (out at
+    // Dural), the gaps between them would hide the images' streets. Without the images, where its blocks hardly cover it, land with the
+    // roads drawn over it
+    if (!images) {
+      ctx.fillStyle = MAP.streets;
+      ctx.fill(L.shores);
+      ctx.fillStyle = MAP.block;
+      ctx.fill(L.sparse);
+      ctx.save();
+      ctx.clip(L.sparse);
+      ctx.strokeStyle = MAP.streets;
+      ctx.lineWidth = Math.max(px(1.2), 8);
+      L.roads.each(v, (p) => ctx.stroke(p));
+      ctx.restore();
+    }
     if (wholeMap?.shores) {
       ctx.strokeStyle = MAP.shore;
       ctx.lineWidth = px(isMinimap ? 1.6 : 2.0);

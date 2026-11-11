@@ -21,6 +21,7 @@ const DECK_HALF = 12.5; // m either side of the Harbour Bridge's corridor cars c
 const LOW_DECK = 3; // m: a structure lower than this over the ground lowers the ground under it, so it can't show through
 const TUNNEL_COVER = 6.3; // m: a tunnel with less ground than this over its road is an open cutting (js/structures.js)
 const TUNNEL_HEIGHT = 5.6; // m from a tunnel's road up to its ceiling
+const MOUTH_AT_NODE = 1; // m of a tunnel left open where it's covered from the very node it meets the open road at (deriveTunnels())
 const DECK_DEPTH = 1.4; // m from a deck's road down to its soffit
 const OVERHEAD = 4; // m: a deck less than this above a road isn't over it
 const DRAWN_PAST_EDGE = 1.1; // m past its edge that a road's surface is drawn, under the kerbs (js/ground-geometry.js)
@@ -243,8 +244,9 @@ function deriveTunnels() {
     return Infinity;
   };
   const tunnels = LINKS.filter((l) => l.kind === KIND.TUNNEL);
-  // Nodes where a tunnel can come to the surface: it stops being a tunnel there
-  const mouths = [];
+  // Nodes where a tunnel can come to the surface: it stops being a tunnel there. Those where a road joins it, or where the tunnel
+  // before it is open all the way, are open to the sky: a tunnel covered from its first metre there has its mouth right at the node
+  const mouths = [], entrances = new Set();
   for (const l of tunnels) {
     l.length = lengthOf(l);
     l.openA = 0;
@@ -252,6 +254,7 @@ function deriveTunnels() {
     for (const n of [l.a, l.b]) {
       const others = linksAt.get(n).filter((o) => o !== l);
       if (!others.length || others.some((o) => o.kind !== KIND.TUNNEL)) mouths.push(n);
+      if (others.some((o) => o.kind !== KIND.TUNNEL)) entrances.add(n);
     }
   }
   const seen = new Set();
@@ -262,10 +265,14 @@ function deriveTunnels() {
     for (const l of linksAt.get(n)) {
       if (l.kind !== KIND.TUNNEL) continue;
       const fromA = l.a === n;
-      const open = openFrom(l, fromA);
+      // A metre of it open, at least, where it starts at an entrance: so it has a mouth, its face and the ground's cut there
+      const open = Math.max(openFrom(l, fromA), entrances.has(n) ? Math.min(MOUTH_AT_NODE, l.length / 2) : 0);
       if (fromA) l.openA = Math.min(open, l.length);
       else l.openB = Math.min(open, l.length);
-      if (open === Infinity) mouths.push(fromA ? l.b : l.a);
+      if (open === Infinity) {
+        mouths.push(fromA ? l.b : l.a);
+        entrances.add(fromA ? l.b : l.a);
+      }
     }
   }
   // A roof a few metres long is no tunnel
@@ -411,12 +418,23 @@ function groundHeight(x, z) {
     const p = project(seg, x, z);
     if (p.d > seg.link.half + 1) continue;
     const road = seg.ay + (seg.by - seg.ay) * p.t;
-    // Under a deck only where it's low; over a tunnel only where it's still a cutting
-    if (seg.link.kind === KIND.TUNNEL ? tunnelCovered(seg.link, seg.s0 + seg.len * p.t) : road - y >= LOW_DECK) continue;
+    // Under a deck only where it's low; over a tunnel only where it's still a cutting, and not over the same tunnel's tube where it
+    // turns or runs on beside it: there the ground stays over its ceiling, or you'd see down into it
+    if (seg.link.kind === KIND.TUNNEL ? tunnelCovered(seg.link, seg.s0 + seg.len * p.t) || overTube(seg.link.sid, x, z) : road - y >= LOW_DECK) continue;
     low = Math.min(low, road - 0.45);
   }
   if (low < y && !onGroundRoad(x, z)) return low;
   return y;
+}
+
+// Whether (x, z) is over a covered stretch of structure `sid`'s tunnel, within its width
+function overTube(sid, x, z) {
+  for (const seg of segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || []) {
+    if (seg.link.sid !== sid || seg.link.kind !== KIND.TUNNEL) continue;
+    const p = project(seg, x, z);
+    if (p.d <= seg.link.half && tunnelCovered(seg.link, seg.s0 + seg.len * p.t)) return true;
+  }
+  return false;
 }
 
 // A road's own shape at (x, z): its height along it, and a little lean across

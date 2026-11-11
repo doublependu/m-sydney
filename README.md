@@ -50,8 +50,9 @@ run one at a time after the rest (`ALONE` in `tools/play/run.mjs`).
 Three checks need no browser. `node tools/check-roads.mjs [--list] [--tiles=0_-2,1_-2]` walks every lane of every road by the
 game's own rules and says what would slant, jolt or stop a car: lean, change of grade, steps, roll, dead stops, buildings and
 kerbs in lanes, paving over roads. `node tools/check-layers.mjs [--list] [--tiles=0_-2,1_-2]` looks at roads on more than one
-level: a road under another with too little room, two roads sunk to different heights sharing the ground, buildings, trees and
-piers in the lanes of bridges, tunnels and cuttings, and tunnels and bridges drawn higher or lower than cars drive on them, or not
+level: a road under another with too little room, two roads sunk to different heights sharing the ground, buildings, trees (where
+the game stands them) and piers in the lanes of bridges, tunnels and cuttings, trees' crowns across a deck beside them, buildings
+under the Harbour Bridge's railway and footway, and tunnels and bridges drawn higher or lower than cars drive on them, or not
 at all. `node tools/check-traffic.mjs [--seeds=3] [--at=northSydney,townHall,bridgeDeck]` runs the
 real traffic about 50 times faster than real time with a seeded random number generator, and says how much is stopped, how
 fast the rest moves, what's holding each queue up, how long a car waits at a red and how often nobody is using the green. It

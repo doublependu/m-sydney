@@ -1,10 +1,9 @@
 import * as THREE from 'three/webgpu';
-import { abs, color, float, floor, fract, max, mix, mod, normalWorld, positionWorld, smoothstep } from 'three/tsl';
+import { color, float, smoothstep } from 'three/tsl';
 import { GroundCells, offsetLine } from './ground-geometry.js';
-import { DECK_DEPTH, DECK_STRUCTURE, KIND, LINKS, STRUCTURES, TUNNEL_HEIGHT, edgeNeighbour, groundHeight, onGroundRoad, tunnelCovered } from './surfaces.js';
+import { DECK_DEPTH, DECK_STRUCTURE, KIND, LINKS, STRUCTURES, TUNNEL_HEIGHT, edgeNeighbour, groundHeight, onGroundRoad, structuresAt, tunnelCovered } from './surfaces.js';
 import { onDeckSpan } from './bridge.js';
-import { cityUniforms } from './tsl-materials.js';
-import { patternXZ } from './world-origin.js';
+import { BASE_FACE, STONE_FACE, cityUniforms, createPalisadeMaterial, createStructureMaterial } from './tsl-materials.js';
 
 // Every road off the ground, drawn from its own heights (js/surfaces.js): bridges and viaducts as decks, tunnels as
 // cuttings that close over into lit tubes. The Harbour Bridge's own deck is js/harbour-bridge.js; the ramps that join
@@ -14,6 +13,10 @@ const STEP = 6; // m between stations
 const BARRIER = { height: 0.9, width: 0.4 };
 const SOLID_BELOW = 4.5; // m: lower than this over the ground a deck stands on a wall (an abutment, an embankment)
 const PIER_EVERY = 26; // m
+const ROOF = 0.3, ROOF_INSIDE = 12; // m: a tunnel's roof over its ceiling, and how far it's drawn inside a mouth
+// Along the top of a cutting's wall where it drops more than `drop` to the road: a sandstone coping, `coping` m high and `width` wide, and
+// on it a steel palisade `height` m high, `offset` m back from the wall's face
+const FENCE = { drop: 2, coping: 0.25, width: 0.45, height: 1.5, offset: 0.22, stop: 2.2 };
 
 // Stations along a link: { x, z, y, s }, every STEP or less, heights from its profile
 function stations(link) {
@@ -31,13 +34,15 @@ function stations(link) {
   return out;
 }
 
-// A quad strip between two rows of points (each row one point per station), wound to face `up` (or outward)
+// A quad strip between two rows of points (each row one point per station), wound to face `up` (or outward). Points with an `s` set their
+// uv to (s, v): a wall laid in stone, its distance along it and STONE_FACE (js/tsl-materials.js), or a fence's, and how far up it
 function strip(cells, c, rowA, rowB, normalOf, flip = false) {
   let prev = -1;
   for (let i = 0; i < rowA.length; i++) {
     const n = normalOf(i);
     const a = cells.vertex(c, rowA[i].x, rowA[i].y, rowA[i].z, n.x, n.y, n.z);
     cells.vertex(c, rowB[i].x, rowB[i].y, rowB[i].z, n.x, n.y, n.z);
+    if (rowA[i].s !== undefined) c.uv.splice(a * 2, 4, rowA[i].s, rowA[i].v, rowB[i].s, rowB[i].v);
     if (prev >= 0) {
       if (flip) c.index.push(prev, prev + 1, a, prev + 1, a + 1, a);
       else c.index.push(prev, a, prev + 1, prev + 1, a, a + 1);
@@ -61,6 +66,22 @@ function runs(n, closed) {
   return out;
 }
 const slice = (row, [a, b]) => row.slice(a, b + 1);
+// Runs of the stretches between stations k and k + 1 where `test(k)` holds, as [first station, last station] pairs
+function segmentRuns(n, test) {
+  const out = [];
+  let from = -1;
+  for (let k = 0; k < n; k++) {
+    const t = k + 1 < n && test(k);
+    if (t && from < 0) from = k;
+    if (!t && from >= 0) {
+      out.push([from, k]);
+      from = -1;
+    }
+  }
+  return out;
+}
+// A row of a wall laid in stone: each point with its distance along the road, for the courses
+const stoneRow = (row, st) => row.map((p, i) => ({ ...p, s: st[i].s, v: STONE_FACE }));
 
 // Each side's stations with another road beside them at this road's level (js/surfaces.js, edgeNeighbour()): there's no
 // barrier or wall there, and the gap between the two is deck. One road does what's between the two: the one with the lower
@@ -114,28 +135,71 @@ function fillGaps(deck, concrete, c, w, row, st, open, side, covered = null) {
   }
 }
 
-// Soffits and decks in concrete; the walls of viaducts, cuttings and tunnel approaches in sandstone blocks, as along the
-// Bradfield Highway and through the Warringah Freeway's cuttings. One for all the tiles.
-let concreteMat = null, lampMat = null;
+// Soffits, barriers, ceilings and piers in concrete; the walls of embankments, cuttings and tunnel approaches in sandstone blocks, as along
+// the Bradfield Highway and through the Warringah Freeway's cuttings: one material for both (js/tsl-materials.js), so a tile's structures
+// are one draw, and one for the fences along the cuttings' tops. One of each for all the tiles.
+let concreteMat = null, fenceMat = null, lampMat = null;
 function structureMaterials() {
   if (concreteMat) return;
-  concreteMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.9 });
-  const courses = positionWorld.y.div(0.75);
-  const blocks = patternXZ.x.add(patternXZ.y).div(1.6).add(mod(floor(courses), 2).mul(0.5));
-  const joints = max(smoothstep(0.43, 0.5, abs(fract(courses).sub(0.5))), smoothstep(0.46, 0.5, abs(fract(blocks).sub(0.5))));
-  const wall = float(1).sub(smoothstep(0.3, 0.6, abs(normalWorld.y)));
-  concreteMat.colorNode = mix(color(0x8b8a84), mix(color(0xa8946f), color(0x7a6a4e), joints.mul(0.8)), wall);
+  concreteMat = createStructureMaterial();
+  fenceMat = createPalisadeMaterial(FENCE.height);
   // Strip lights along the tunnel ceilings, brighter after dark like the street lights
   lampMat = new THREE.MeshStandardNodeMaterial({ color: 0x222222, roughness: 0.6 });
   lampMat.emissiveNode = color(0xfff1d0).mul(smoothstep(0.0, 1.0, cityUniforms.uInteriorGlow).mul(1.5).add(1.2));
+}
+// A road's material under a tunnel's roof: as on the open road, but with little of the sky's light, and none of its wet patches' shine
+// of the sky (what's left of it is its lights'). One for each road material
+const UNDER_ROOF = 0.12;
+const tunnelRoads = new WeakMap();
+function tunnelRoadOf(roadMat) {
+  let mat = tunnelRoads.get(roadMat);
+  if (!mat) {
+    mat = roadMat.clone();
+    mat.aoNode = float(UNDER_ROOF);
+    mat.metalnessNode = float(0);
+    tunnelRoads.set(roadMat, mat);
+  }
+  return mat;
+}
+
+// The coping and the palisade along a run of stations of a cutting's wall top, `out(i)` the way away from the road at station i: the
+// coping's faces in stone, carrying the wall's face on up, the palisade a strip of its own whose bars its material cuts out, and colliders
+// along it, standing over the ground as every collider does (the simulation is flat)
+function fenceAlong(stone, c, fences, row, st, wallTop, run, out, side) {
+  const n = run[1] - run[0] + 1;
+  const line = (d, dy, v) => Array.from({ length: n }, (_, k) => {
+    const i = run[0] + k, o = out(i);
+    return { x: row[i].x + o.x * d, z: row[i].z + o.z * d, y: wallTop[i].y + dy, s: st[i].s, v };
+  });
+  const C = FENCE.coping, W = FENCE.width;
+  const face = (k) => out(run[0] + k), back = (k) => { const o = out(run[0] + k); return { x: -o.x, y: 0, z: -o.z }; };
+  strip(stone, c, line(-0.03, -0.05, STONE_FACE), line(-0.03, C, STONE_FACE), back, side > 0);
+  const inner = line(-0.03, C, STONE_FACE), outer = line(W, C, STONE_FACE);
+  strip(stone, c, side > 0 ? outer : inner, side > 0 ? inner : outer, () => ({ x: 0, y: 1, z: 0 }));
+  strip(stone, c, line(W, -0.3, STONE_FACE), line(W, C, STONE_FACE), face, side < 0);
+  strip(fences, fences.cell(row[run[0]].x, row[run[0]].z), line(FENCE.offset, C - 0.02, 0), line(FENCE.offset, C + FENCE.height, FENCE.height), face);
+  const colliders = [];
+  const at = line(FENCE.offset, 0, 0);
+  for (let k = 1; k < n; k++) {
+    const a = at[k - 1], b = at[k], L = Math.hypot(b.x - a.x, b.z - a.z);
+    if (L < 0.05) continue;
+    const yaw = Math.atan2((b.x - a.x) / L, (b.z - a.z) / L), cs = Math.cos(yaw), sn = Math.sin(yaw);
+    const cx = (a.x + b.x) / 2, cz = (a.z + b.z) / 2, hx = 0.25, hz = L / 2 + 0.05;
+    const ex = Math.abs(cs) * hx + Math.abs(sn) * hz, ez = Math.abs(sn) * hx + Math.abs(cs) * hz;
+    colliders.push({ minX: cx - ex, maxX: cx + ex, minZ: cz - ez, maxZ: cz + ez, minY: 0, maxY: FENCE.stop, obb: { cx, cz, hx, hz, cs, sn } });
+  }
+  return colliders;
 }
 
 // `links`: the structure links to build. `touching`: every link near them, for the joints between them; `wanted` says which
 // joints are this call's to build.
 function* buildStructures(group, roadMat, links = LINKS, touching = links, wanted = () => true) {
   structureMaterials();
+  const tunnelRoad = tunnelRoadOf(roadMat);
   const deck = new GroundCells(1e6); // road surfaces
   const concrete = new GroundCells(1e6); // barriers, walls, soffits, tunnel linings
+  const fences = new GroundCells(1e6); // the palisades along cuttings' tops
+  const tunnelDeck = new GroundCells(1e6); // tunnels' roads under their roofs
   const piers = [];
   const lights = [];
   const colliders = [];
@@ -173,6 +237,9 @@ function* buildStructures(group, roadMat, links = LINKS, touching = links, wante
         const top = row.map((p, i) => ({ x: p.x, z: p.z, y: p.y + (raised[i] ? BARRIER.height : 0.05) }));
         const inner = offsetLine(st, (half - BARRIER.width) * side).map((p, i) => ({ x: p.x, z: p.z, y: top[i].y }));
         const foot = row.map((p, i) => ({ x: p.x, z: p.z, y: p.y - ground(p) < SOLID_BELOW ? ground(p) - 0.3 : p.y - DECK_DEPTH }));
+        // The deck's edge, in concrete, and under it down to the ground where it stands on a wall, the wall in stone
+        const edge = row.map((p, i) => ({ x: p.x, z: p.z, y: Math.max(foot[i].y, p.y - DECK_DEPTH) }));
+        const stoneFoot = stoneRow(foot, st), stoneTop = stoneRow(edge, st);
         const innerBase = inner.map((p, i) => ({ x: p.x, z: p.z, y: st[i].y }));
         // Barrier top (the row further out on the +n side first, as for the road), its face to the road, and the outer
         // face down to the wall's foot. A vertical strip from foot to top faces +n unflipped.
@@ -181,20 +248,28 @@ function* buildStructures(group, roadMat, links = LINKS, touching = links, wante
           const out = (i) => across(n0 + i, side), back = (i) => across(n0 + i, -side);
           strip(concrete, w, slice(side > 0 ? top : inner, run), slice(side > 0 ? inner : top, run), up);
           strip(concrete, w, slice(innerBase, run), slice(inner, run), back, side > 0);
-          strip(concrete, w, slice(foot, run), slice(top, run), out, side < 0);
+          strip(concrete, w, slice(edge, run), slice(top, run), out, side < 0);
+        }
+        for (const run of runs(row.length, (i) => !open[i] && foot[i].y < edge[i].y - 0.01)) {
+          strip(concrete, w, slice(stoneFoot, run), slice(stoneTop, run), (i) => across(run[0] + i, side), side < 0);
         }
       }
       // The underside, facing down, where there is air under it
       const soffitL = left.map((p) => ({ x: p.x, z: p.z, y: p.y - DECK_DEPTH }));
       const soffitR = right.map((p) => ({ x: p.x, z: p.z, y: p.y - DECK_DEPTH }));
       strip(concrete, w, soffitR, soffitL, () => ({ x: 0, y: -1, z: 0 }));
-      // Piers under the middle, wherever it stands high, kept off the streets beneath
+      // Piers under the middle, wherever it stands high, kept off the streets beneath and out of the lanes of any other road
+      // that passes between their feet and the deck: a tunnel's approach in its cutting, a ramp, a lower viaduct
+      const r = half > 7 ? 1.3 : 0.9;
+      const clearBelow = (p) => {
+        const g = ground(p);
+        return !structuresAt(p.x, p.z, -(r + 0.3)).some((o) => o.y > g - 0.5 && o.y < p.y - DECK_DEPTH - 0.5);
+      };
       for (let s0 = PIER_EVERY / 2; s0 < st[st.length - 1].s; s0 += PIER_EVERY) {
         const at = [0, 4, -4, 8, -8].map((d) => s0 + d).map((s) => st.reduce((best, p) => (Math.abs(p.s - s) < Math.abs(best.s - s) ? p : best), st[0]))
-          .find((p) => p.y - ground(p) > SOLID_BELOW && !onGroundRoad(p.x, p.z) && ![2, -2].some((d) => onGroundRoad(p.x + d, p.z + d)));
+          .find((p) => p.y - ground(p) > SOLID_BELOW && !onGroundRoad(p.x, p.z) && ![2, -2].some((d) => onGroundRoad(p.x + d, p.z + d)) && clearBelow(p));
         if (!at) continue;
         const g = ground(at);
-        const r = half > 7 ? 1.3 : 0.9;
         piers.push([at.x, g - 0.5, at.z, at.y - DECK_DEPTH, r]);
         colliders.push({ minX: at.x - r, maxX: at.x + r, minZ: at.z - r, maxZ: at.z + r, minY: 0, maxY: at.y - DECK_DEPTH - g });
       }
@@ -202,8 +277,11 @@ function* buildStructures(group, roadMat, links = LINKS, touching = links, wante
       // A tunnel: open to the sky while it's shallow (the ground is lowered over it, js/surfaces.js), a tube once the
       // ground closes over it
       const covered = st.map((p) => tunnelCovered(link, p.s));
-      // The road surface, all the way
-      strip(deck, c, left, right, up);
+      // The road surface, all the way: under the roof in a material the sky doesn't light, or its wet patches would shine with the
+      // sky like a pool of water at the mouth
+      for (const r of segmentRuns(st.length, (k) => !(covered[k] && covered[k + 1]))) strip(deck, c, slice(left, r), slice(right, r), up);
+      const tc = tunnelDeck.cell(st[0].x, st[0].z);
+      for (const r of segmentRuns(st.length, (k) => covered[k] && covered[k + 1])) strip(tunnelDeck, tc, slice(left, r), slice(right, r), up);
       for (const [side, row] of [[1, left], [-1, right]]) {
         // Walls: up to the ceiling in the tube, up to the ground above in the cutting. None where another road runs beside
         // it at its level, as where a ramp joins in a cutting or two tunnels' roads merge underground.
@@ -212,7 +290,29 @@ function* buildStructures(group, roadMat, links = LINKS, touching = links, wante
         medians(concrete, w, row, st, open, side);
         const wallTop = row.map((p, i) => ({ x: p.x, z: p.z, y: covered[i] ? p.y + TUNNEL_HEIGHT : Math.max(p.y + 1, groundHeight(p.x + across(i, side).x * 1.5, p.z + across(i, side).z * 1.5)) }));
         const wallFoot = row.map((p) => ({ x: p.x, z: p.z, y: p.y - 0.2 }));
-        for (const run of runs(row.length, (i) => !open[i])) strip(concrete, w, slice(wallFoot, run), slice(wallTop, run), (i) => across(run[0] + i, -side), side > 0);
+        const stoneFoot = stoneRow(wallFoot, st), stoneTop = stoneRow(wallTop, st);
+        for (const run of runs(row.length, (i) => !open[i])) strip(concrete, w, slice(stoneFoot, run), slice(stoneTop, run), (i) => across(run[0] + i, -side), side > 0);
+        // Along the top where it's open to the sky and the drop is worth guarding: the coping and the fence on it, and what stops you
+        // walking through it. Not where a street on the ground crosses the line, over the tunnel's mouth.
+        const guarded = (i) => {
+          if (open[i] || covered[i] || wallTop[i].y - st[i].y < FENCE.drop) return false;
+          const n = across(i, side);
+          return !onGroundRoad(row[i].x + n.x * FENCE.offset, row[i].z + n.z * FENCE.offset, 0.3);
+        };
+        for (const run of runs(row.length, guarded)) colliders.push(...fenceAlong(concrete, w, fences, row, st, wallTop, run, (i) => across(i, side), side));
+      }
+      // Over the tube for its first metres inside each mouth, its roof: the ground there is left out below the ceiling (js/tunnel-mouths.js),
+      // since the ground's lattice can only slope from the cutting's floor up over the tube, and from above, behind the portal's face,
+      // you'd look down into the tube, its lights and the dark under it. Under the ground wherever the ground is drawn, and where it
+      // isn't, the plain dark ground's colour, as round it.
+      const mouthsAt = [];
+      for (let i = 1; i < st.length; i++) if (covered[i] !== covered[i - 1]) mouthsAt.push(st[covered[i] ? i : i - 1].s);
+      if (mouthsAt.length) {
+        const roof = (row, side) => row.map((p, i) => ({ x: p.x + across(i, side).x * 0.4, z: p.z + across(i, side).z * 0.4, y: st[i].y + TUNNEL_HEIGHT + ROOF, s: st[i].s, v: BASE_FACE }));
+        const roofL = roof(left, 1), roofR = roof(right, -1);
+        for (const r of runs(st.length, (i) => covered[i] && mouthsAt.some((s) => Math.abs(st[i].s - s) <= ROOF_INSIDE + STEP))) {
+          strip(concrete, w, slice(roofL, r), slice(roofR, r), up);
+        }
       }
       // The ceiling and its lights, where it's covered
       let run = [];
@@ -238,9 +338,10 @@ function* buildStructures(group, roadMat, links = LINKS, touching = links, wante
         const g = ground(st[k]) + 0.4;
         const pl = left[k], pr = right[k];
         const n = across(k, 1);
+        const faceWidth = Math.hypot(pl.x - pr.x, pl.z - pr.z) + 3;
         const face = [
-          { x: pl.x + n.x * 1.5, z: pl.z + n.z * 1.5, y: st[k].y + TUNNEL_HEIGHT },
-          { x: pr.x - n.x * 1.5, z: pr.z - n.z * 1.5, y: st[k].y + TUNNEL_HEIGHT }
+          { x: pl.x + n.x * 1.5, z: pl.z + n.z * 1.5, y: st[k].y + TUNNEL_HEIGHT, s: 0, v: STONE_FACE },
+          { x: pr.x - n.x * 1.5, z: pr.z - n.z * 1.5, y: st[k].y + TUNNEL_HEIGHT, s: faceWidth, v: STONE_FACE }
         ];
         const topRow = face.map((p) => ({ ...p, y: Math.max(p.y + 0.5, g) }));
         // Facing out of the tunnel, towards the cutting
@@ -290,11 +391,14 @@ function* buildStructures(group, roadMat, links = LINKS, touching = links, wante
       mesh.receiveShadow = true;
       mesh.castShadow = cast;
       mesh.userData.lifted = true;
+      mesh.userData.road = material === roadMat || material === tunnelRoad;
       group.add(mesh);
     }
   };
   build(deck, roadMat, false);
+  build(tunnelDeck, tunnelRoad, false);
   build(concrete, concreteMat, true);
+  build(fences, fenceMat, false);
   if (piers.length) {
     const inst = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, 10).translate(0, 0.5, 0), concreteMat, piers.length);
     const m = new THREE.Matrix4(), q = new THREE.Quaternion();

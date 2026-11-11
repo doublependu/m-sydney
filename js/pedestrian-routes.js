@@ -5,6 +5,7 @@ const CROSSWALK = 2.5; // depth between a junction and its stop lines (road-netw
 const PATH_SNAP = 1.5; // m: a path's end this close to another path joins it there
 const PATH_REACH = 9; // m past a road's edge a path's loose end may be and still join the footpath along it
 const JOIN_MARGIN = 3; // m from either end of a footpath's track that no path joins it
+const WALL_CLEAR = 1.2; // m further out a footpath's tracks keep beside a tunnel's road, open between walls
 
 function createPedestrianRoutes({ walkable, onSidewalk, edges = [], paths = [] }, blockAt) {
   const sidewalks = new Map(), crossings = new Map(), junctions = new Map(), connections = new WeakMap(), edgeCells = new WeakMap();
@@ -158,10 +159,11 @@ function createPedestrianRoutes({ walkable, onSidewalk, edges = [], paths = [] }
     const result = [];
     sidewalks.set(e, result);
     if (e.deck) return result; // nobody strolls across the Harbour Bridge's roadway
-    // Two walking lines on each side leave room for people to pass or stop together.
+    // Two walking lines on each side leave room for people to pass or stop together. Beside a cutting's wall, back from the fence on
+    // its top (js/structures.js), not along the edge
     for (const sign of [-1, 1]) {
       for (const inset of [1.7, 2.8]) {
-        const off = sign * (e.half + inset);
+        const off = sign * (e.half + inset + (e.walled ? WALL_CLEAR : 0));
         const a = { x: e.sx + e.rx * off, z: e.sz + e.rz * off };
         const b = { x: a.x + e.dx * e.len, z: a.z + e.dz * e.len };
         const block = blockAt(a.x, a.z);

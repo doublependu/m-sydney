@@ -1,6 +1,6 @@
 import { GEO } from './geodata.js';
 import { rawTerrainHeight as terrainHeight } from './terrain.js';
-import { DECK_STRUCTURE, ownLaneOffsets, structureAt } from './surfaces.js';
+import { DECK_DEPTH, DECK_STRUCTURE, ownLaneOffsets, structureAt } from './surfaces.js';
 
 // The Harbour Bridge's corridor: a road with its own height, one of the structures of js/surfaces.js. A car on the deck
 // and a car on the street under its approach share (x, z); what tells them apart is the surface each is on. Its height
@@ -101,6 +101,39 @@ function deckGapAt(s) {
   if (!here) return null;
   // Between two bins that both have one, the nearer's
   return here;
+}
+
+// What's where across the deck s m along it, m east of the corridor's line (from OSM, the video of the drive over and Street
+// View pictures from the footway): the cycleway, the two railway tracks, the barrier, the roads, the barrier, the footway in its cage.
+// Near its ends the deck is its roads alone; between, its rail, cycleway and footway too (deckEdges()).
+const DECK_BARRIER = { width: 0.5, height: 0.9 };
+const RAIL_WIDTH = 10.6, CYCLE_WIDTH = 2.8, FOOT_WIDTH = 2.8;
+const FULL_FROM = 60; // m from each end: where the railway, cycleway and footway are on the deck
+function deckAcross(s) {
+  const span = deckSpanAt(s);
+  const roadWest = span.west - 0.5, roadEast = span.east + 0.5; // the barriers' inner faces, half a metre past the lanes
+  const railTo = roadWest - DECK_BARRIER.width - 0.3, railFrom = railTo - RAIL_WIDTH;
+  const cycleTo = railFrom - 0.3, cycleFrom = cycleTo - CYCLE_WIDTH;
+  const footFrom = roadEast + DECK_BARRIER.width, footTo = footFrom + FOOT_WIDTH;
+  const gap = deckGapAt(s);
+  return { roadWest, roadEast, gap, railFrom, railTo, tracks: [railTo - 2.8, railTo - 7.6], cycleFrom, cycleTo, footFrom, footTo, edgeWest: cycleFrom - 0.3, edgeEast: footTo + 0.3 };
+}
+/** Whether the railway, cycleway and footway are on the deck s m along it */
+const deckIsFull = (s) => s >= FULL_FROM && s <= LENGTH - FULL_FROM;
+/** The deck's outer edges s m along it, where its steel sides hang: past the railway and the footway between the ends, past the
+ *  barriers near them, where the deck is its roads alone */
+function deckEdges(s) {
+  const lay = deckAcross(s);
+  if (deckIsFull(s)) return { west: lay.edgeWest, east: lay.edgeEast };
+  return { west: lay.roadWest - DECK_BARRIER.width, east: lay.roadEast + DECK_BARRIER.width };
+}
+/** The deck's underside over (x, z), anything of the deck counting (its railway and footway as well as its roads), `margin` m past its
+ *  edges: null where it isn't over it */
+function deckUndersideAt(x, z, margin = 0) {
+  const here = bridgeAt(x, z, DECK_REACH + margin);
+  if (!here) return null;
+  const e = deckEdges(here.s);
+  return here.off >= e.west - margin && here.off <= e.east + margin ? here.y - DECK_DEPTH : null;
 }
 
 /** Whether (x, z) is over the deck's roads, `margin` m past their edges counting */
@@ -436,4 +469,5 @@ function deckLines(s0, s1, busOnly = () => false, every = 3) {
   return lines.filter((line) => line.pts[line.pts.length - 1][2] - line.pts[0][2] >= 15).map(({ kind, pts }) => ({ solid: kind === 'solid', pts }));
 }
 
-export { DECK_REACH, DECK_STEP, DECK_SID, HALF_WIDTH, LENGTH as BRIDGE_LENGTH, SPAN as BRIDGE_SPAN, bridgeAt, bridgePoint, deckGapAt, deckHeight, deckLanePoints, deckLanes, deckLines, deckLinkIds, deckRoadPoint, deckSpanAt, onDeckSpan };
+export { DECK_BARRIER, DECK_REACH, DECK_STEP, DECK_SID, HALF_WIDTH, LENGTH as BRIDGE_LENGTH, SPAN as BRIDGE_SPAN, bridgeAt, bridgePoint, deckAcross, deckEdges, deckGapAt, deckHeight, deckIsFull, deckLanePoints, deckLanes, deckLines, deckLinkIds,
+  deckRoadPoint, deckSpanAt, deckUndersideAt, onDeckSpan };

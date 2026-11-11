@@ -10,8 +10,10 @@ function hashPos(x, y, z) {
 const GARDEN_KINDS = { 6: 14, 7: 10, 8: 30, 9: 12, 10: 2, 11: 4, 12: 3, 13: 3, 14: 3, 15: 3, 16: 3, 17: 3 };
 const SMALL_KINDS = new Set([10, 12, 13, 14, 15, 16, 17]);
 const LAWN_Y = 0.24; // a park's lawn (js/city-grid.js)
+const DRAWN = 13; // m: about how tall a street or park tree is drawn at scale 1 (js/trees.js)
 
 // Fit surveyed street trees to the modeled curbs, preserving nearby park and plaza trees. A garden's plants stand where they were planted.
+// isClear(x, z, small, tall): whether a plant may stand at (x, z), small or a tree `tall` m high as drawn
 function* placeStreetTreesSteps(points, kinds, heights, existingSites, isClear) {
   const cells = new Map();
   const insert = (site) => {
@@ -40,11 +42,11 @@ function* placeStreetTreesSteps(points, kinds, heights, existingSites, isClear) 
     if (GARDEN_KINDS[kind]) {
       const small = SMALL_KINDS.has(kind);
       const metres = small ? heights[i / 2] / 10 : heights[i / 2];
-      if (!isClear(sourceX, sourceZ, small)) continue;
+      const scale = Math.max(0.15, Math.min(1.6, (metres || GARDEN_KINDS[kind] * 0.8) / GARDEN_KINDS[kind]));
+      if (!isClear(sourceX, sourceZ, small, GARDEN_KINDS[kind] * scale)) continue;
       // Trees keep clear of each other as the park's do; small plants are planted close
       if (!small && occupied(sourceX, sourceZ)) continue;
-      const site = { x: sourceX, y: LAWN_Y - 0.02, z: sourceZ, species: kind, tier: 0,
-        scale: Math.max(0.15, Math.min(1.6, (metres || GARDEN_KINDS[kind] * 0.8) / GARDEN_KINDS[kind])) };
+      const site = { x: sourceX, y: LAWN_Y - 0.02, z: sourceZ, species: kind, tier: 0, scale };
       sites.push(site);
       if (!small) insert(site);
       continue;
@@ -54,8 +56,9 @@ function* placeStreetTreesSteps(points, kinds, heights, existingSites, isClear) 
     if (originalBlock?.median) continue;
     // Park trees stand where they were surveyed; street trees are fitted to the modelled curbs
     if (originalBlock && (originalBlock.park > 0.6 || originalBlock.area > 12000)) {
-      if (occupied(sourceX, sourceZ) || !isClear(sourceX, sourceZ)) continue;
-      const site = { x: sourceX, y: 0.22, z: sourceZ, scale: Math.max(0.5, Math.min(1.5, tall / 12)), species: kind, tier: 0 };
+      const scale = Math.max(0.5, Math.min(1.5, tall / 12));
+      if (occupied(sourceX, sourceZ) || !isClear(sourceX, sourceZ, false, scale * DRAWN)) continue;
+      const site = { x: sourceX, y: 0.22, z: sourceZ, scale, species: kind, tier: 0 };
       sites.push(site);
       insert(site);
       continue;
@@ -89,10 +92,11 @@ function* placeStreetTreesSteps(points, kinds, heights, existingSites, isClear) 
     const x = move ? edge.x + nx * 0.9 : sourceX;
     const z = move ? edge.z + nz * 0.9 : sourceZ;
     if ((x - sourceX) ** 2 + (z - sourceZ) ** 2 > 9 || blockAt(x, z) !== edge.block) continue;
-    if (!isClear(x, z) || occupied(x, z)) continue;
-
     const crossStreet = Math.abs(edge.dx) > Math.abs(edge.dz);
     const narrow = crossStreet && !!blockAt(x - nx * 14, z - nz * 14);
+    const scale = Math.max(0.42, Math.min(narrow ? 0.7 : 1.1, tall / 13));
+    if (!isClear(x, z, false, scale * DRAWN) || occupied(x, z)) continue;
+
     const pitS = narrow ? 0.7 : 1;
     let fits = true;
     for (const across of [-0.85, 0.85]) for (const along of [-1.3, 1.3]) {
@@ -102,7 +106,7 @@ function* placeStreetTreesSteps(points, kinds, heights, existingSites, isClear) 
     if (!fits) continue;
 
     const yaw = Math.atan2(edge.dx, edge.dz);
-    const site = { x, y: 0.22, z, scale: Math.max(0.42, Math.min(narrow ? 0.7 : 1.1, tall / 13)),
+    const site = { x, y: 0.22, z, scale,
       species: kind,
       yaw, sx: 0.82, tier: crossStreet ? 2 : 1, pitRot: yaw, grate: !crossStreet, pitS };
     sites.push(site);

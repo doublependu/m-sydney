@@ -1,7 +1,7 @@
 import { CITY_BOUNDS, DRIVE_SIDE, BLOCKS, blockAt, landAt } from './city-config.js';
 import { GEO, heldTiles } from './geodata.js';
 import { polygonBoxOverlaps } from './building-collision.js';
-import { ROAD_CLASS, linkById, ownLaneOffsets, roadClass } from './surfaces.js';
+import { KIND, ROAD_CLASS, linkById, ownLaneOffsets, roadClass } from './surfaces.js';
 import { deckLanePoints, deckLinkIds, deckRoadPoint } from './bridge.js';
 
 // How far either side of the Harbour Bridge's line a lane counts as on the bridge (its own height, nothing in its way)
@@ -186,7 +186,9 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
       // cls: its OSM class (js/surfaces.js ROAD_CLASSES), 0 where the map doesn't say
       // busOnly: buses and nothing else in traffic, as the bus lane between the Harbour Bridge's east pylons (flag 32,
       // tools/build-geodata.mjs)
-      return { id, a, b, name: RG.names[ni], w, lanes, dir, major: !!major, deck: !!deck, sid: linkById.get(id).sid, cls: roadClass(flags), busOnly: !!(flags & 32), pts, len };
+      return { id, a, b, name: RG.names[ni], w, lanes, dir, major: !!major, deck: !!deck, sid: linkById.get(id).sid, cls: roadClass(flags), busOnly: !!(flags & 32), pts, len,
+        // A tunnel's road, between walls where it's open to the sky: the footpaths beside it keep back from their tops (js/pedestrian-routes.js)
+        walled: linkById.get(id).kind === KIND.TUNNEL };
     });
     // Junctions a few metres apart (divided roads, offset corners) are one: collapse links under 14 m
     const parent = new Map();
@@ -313,7 +315,7 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
       }
       stations.push(B);
       const lanes = lanesOf(l);
-      for (let k = 0; k + 1 < stations.length; k++) runs.push({ from: stations[k], to: stations[k + 1], deck: l.deck, sid: l.sid, link: l.id, cls: l.cls, busOnly: l.busOnly, ...lanes });
+      for (let k = 0; k + 1 < stations.length; k++) runs.push({ from: stations[k], to: stations[k + 1], deck: l.deck, sid: l.sid, link: l.id, cls: l.cls, busOnly: l.busOnly, walled: l.walled, ...lanes });
     }
     console.info(`[roads] centreline streets: ${links.length} links, ${runs.length} straight runs`);
     return runs;
@@ -355,7 +357,7 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
     if (laid) lanes = laid.map((p) => (p.rel === null ? (p.x - mx) * rx + (p.z - mz) * rz : p.rel * (p.east.x * rx + p.east.z * rz)));
     const open = run.sid ? lanes.slice() : lanes.filter((o) => laneOpen(x0, z0, dx, dz, span, o, maxOnKerb));
     if (!open.length) return false;
-    edges.push({ from, to, axis, x0, z0, dx, dz, rx, rz, span, half, lanes: open.sort((p, q) => p - q), moves: [], general: true, cand: lanes, divided: !!divided, deck: !!run.deck, laidOut: !!laid, sid: run.sid || 0, link: run.link, cls: run.cls || 0, busOnly: !!run.busOnly });
+    edges.push({ from, to, axis, x0, z0, dx, dz, rx, rz, span, half, lanes: open.sort((p, q) => p - q), moves: [], general: true, cand: lanes, divided: !!divided, deck: !!run.deck, laidOut: !!laid, sid: run.sid || 0, link: run.link, cls: run.cls || 0, busOnly: !!run.busOnly, walled: !!run.walled });
     return true;
   }
   // A divided road drawn as two one-way roadways between the same two junctions (most of the Bowery) runs both ways

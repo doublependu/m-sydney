@@ -6,7 +6,8 @@ import { heldList, heldTrees } from './geodata.js';
 import { cityUniforms, createTreeGrateMaterial } from './tsl-materials.js';
 import { createTreeFieldSteps, setPlantDistance } from './trees.js';
 import { placeStreetTreesSteps } from './tree-placements.js';
-import { groundHeight, groundRoadAt, groundRoadDistance, roomUnderDeck } from './surfaces.js';
+import { groundHeight, groundRoadAt, groundRoadDistance } from './surfaces.js';
+import { roomOver, treeClear } from './deck-room.js';
 import { polygonContains } from './building-collision.js';
 import { SignAtlas, bladesOnPole, junctionRoads, namedJunctions } from './street-signs.js';
 import { buildRoadSigns } from './road-signs.js';
@@ -300,13 +301,14 @@ function* buildStreetDetails(scene, allColliders = [], lightPools) {
     addFootprint(x, z, width, width, true);
   }
 
-  // Under a deck, only where a street light would fit under it: nothing placed here pokes up through a road overhead
+  // Under a deck, only where a street light would fit under it: nothing placed here pokes up through a road overhead, or through the
+  // Harbour Bridge's railway, cycleway or footway, which are deck too
   const FURNITURE_ROOM = 9;
   // True only when (x, z) and its surrounding pad-meter footprint sit on a real curb island (never in a road or median)
   const isOnCurbIsland = (x, z, pad = 0.55) => {
     const b = blockAt(x, z);
     if (!b || b.median) return false;
-    if (roomUnderDeck(x, z, 1) < FURNITURE_ROOM) return false;
+    if (roomOver(x, z, 1) < FURNITURE_ROOM) return false;
     if (pad <= 0) return true;
     const b1 = blockAt(x - pad, z);
     const b2 = blockAt(x + pad, z);
@@ -815,9 +817,10 @@ function* buildStreetDetails(scene, allColliders = [], lightPools) {
   // Surveyed street trees; parks keep their authored terrain, clearings and tree layouts.
   const realTrees = heldTrees();
   const TREE_ROOM = 12; // m: a street tree's crown, and its trunk under it
-  // A garden's small plants want a metre or so clear, and room for themselves under a deck
+  // A garden's small plants want a metre or so clear, and room for themselves under a deck. A tree's crown keeps off a deck beside it
   let sidewalkTreePositions = yield* placeStreetTreesSteps(realTrees.points, realTrees.kinds, realTrees.heights, treePositions,
-    (x, z, small = false) => isClearOfPoles(x, z, small ? 0.8 : 2.2) && roomUnderDeck(x, z, small ? 1 : 3) >= (small ? 3 : TREE_ROOM));
+    (x, z, small = false, tall = 0) => isClearOfPoles(x, z, small ? 0.8 : 2.2) && roomOver(x, z, small ? 1 : 3) >= (small ? 3 : TREE_ROOM) &&
+      (small || treeClear(x, z, tall)));
   for (const tree of sidewalkTreePositions) treePositions.push(tree);
   sidewalkTreePositions = sidewalkTreePositions.filter((t) => t.tier > 0);
   for (const t of treePositions) t.y = (t.y || 0) + groundHeight(t.x, t.z);

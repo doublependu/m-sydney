@@ -11,7 +11,8 @@ const { blockAt } = await import('../../js/city-config.js');
 const { MAX_POINTS, TALL, TALL_POINTS, outlineOf } = await import('../../js/building-outlines.js');
 const { buildingLook } = await import('../../js/building-look.js');
 const { roofFrame } = await import('../../js/building-footprints.js');
-const { DECK_DEPTH, KIND, LINKS, STRUCTURES, deriveTunnels, groundHeight, groundRoadAt, roadHeight, roomUnderDeck, structuresAt } = await import('../../js/surfaces.js');
+const { DECK_DEPTH, KIND, LINKS, STRUCTURES, deriveTunnels, groundHeight, groundRoadAt, roadHeight, structuresAt } = await import('../../js/surfaces.js');
+const { roomOver } = await import('../../js/deck-room.js');
 const { CLEAR_OVER_ROAD } = await import('../../js/wall-foot.js');
 const { buildingFloor } = await import('../../js/building-floor.js');
 const { polygonBoxOverlaps } = await import('../../js/building-collision.js');
@@ -23,7 +24,7 @@ const { REAL_TREES, TREE_HEIGHTS } = await import(path.join(GENERATED, 'tree-geo
 const { tunnels, portals } = deriveTunnels();
 
 // The Harbour Bridge's deck and span, whichever tiles are held (js/bridge.js)
-const { BRIDGE_LENGTH, BRIDGE_SPAN, DECK_STEP, deckHeight } = await import('../../js/bridge.js');
+const { BRIDGE_LENGTH, BRIDGE_SPAN, DECK_REACH, DECK_STEP, bridgePoint, deckHeight, deckUndersideAt } = await import('../../js/bridge.js');
 const deckProfile = [];
 for (let s = 0; s <= BRIDGE_LENGTH + DECK_STEP; s += DECK_STEP) deckProfile.push(Math.round(deckHeight(s) * 100) / 100);
 
@@ -90,6 +91,13 @@ for (const l of LINKS) {
     }
   }
 }
+// The Harbour Bridge's deck is wider than its roads: its railway and cycleway on the west and its footway on the east are deck too
+for (let s = 0; s <= BRIDGE_LENGTH; s += 10) {
+  const p = bridgePoint(s), pad = DECK_REACH + 2;
+  for (let x = Math.floor((p.x - pad) / DECK_CELL); x <= Math.floor((p.x + pad) / DECK_CELL); x++) {
+    for (let z = Math.floor((p.z - pad) / DECK_CELL); z <= Math.floor((p.z + pad) / DECK_CELL); z++) deckCells.add(x * 100000 + z);
+  }
+}
 const nearDeck = (minX, minZ, maxX, maxZ) => {
   for (let x = Math.floor(minX / DECK_CELL); x <= Math.floor(maxX / DECK_CELL); x++) {
     for (let z = Math.floor(minZ / DECK_CELL); z <= Math.floor(maxZ / DECK_CELL); z++) if (deckCells.has(x * 100000 + z)) return true;
@@ -136,6 +144,8 @@ const raisedRoadsAt = (x, z) => {
   }
   const road = groundRoadAt(x, z);
   if (road?.cut) out.push({ y: roadHeight(road, x, z), deck: false });
+  const bridge = deckUndersideAt(x, z);
+  if (bridge !== null) out.push({ y: bridge + DECK_DEPTH, deck: true });
   return out;
 };
 const caps = {}, raised = {}, dropped = [], measured = [];
@@ -174,10 +184,9 @@ const treesUnder = [];
 for (let i = 0; i < TREE_HEIGHTS.length; i++) {
   const x = REAL_TREES[i * 2], z = REAL_TREES[i * 2 + 1];
   if (!nearDeck(x - 3, z - 3, x + 3, z + 3)) continue;
-  if (roomUnderDeck(x, z, 2) < (TREE_HEIGHTS[i] || 8)) treesUnder.push(i);
+  if (roomOver(x, z, 2) < (TREE_HEIGHTS[i] || 8)) treesUnder.push(i);
 }
 console.log(`[derive] ${treesUnder.length} trees left out from under decks`);
-void DECK_DEPTH;
 
 // What each building looks like from far away: which facade, which roof, its outline in 0.5 m, and for a pitched roof, metres more to
 // the far model's flat top, about the middle of the roof, so a street of houses stands as tall far away as near

@@ -224,3 +224,28 @@ test('mouse hover and zoom buttons remain available without a pan', () => {
   h.zoomOut.dispatch('click');
   assert.equal(h.map.viewZoom, 1);
 });
+
+test('held land its blocks hardly cover has its roads drawn as lines, not painted over as one street', () => {
+  class Path2D {
+    rects = [];
+    rect(x, z, w, h) { this.rects.push([x, z, w, h]); }
+    moveTo() {}
+    lineTo() {}
+    closePath() {}
+  }
+  const square = (x0, z0, size) => [{ x: x0, z: z0 }, { x: x0 + size, z: z0 }, { x: x0 + size, z: z0 + size }, { x: x0, z: z0 + size }];
+  // A town's tile, half of it blocks, and a farm's, a few house lots on a road that closes round none of them
+  const town = Array.from({ length: 50 }, (_, i) => ({ poly: square((i % 10) * 100, Math.floor(i / 10) * 200, 100), cx: (i % 10) * 100 + 50, cz: Math.floor(i / 10) * 200 + 50, area: 10000, park: 0 }));
+  const farm = [{ poly: square(1400, 400, 30), cx: 1415, cz: 415, area: 900, park: 0 }];
+  const { mapLayers } = loadModule(source + '\nexport { mapLayers };', {
+    globals: { Path2D, performance: { now: () => 0 } },
+    imports: {
+      './geodata.js': { GEO: { frame: {} }, heldTiles: () => [{ ix: 0, iz: 0, land: 1 }, { ix: 1, iz: 0, land: 1 }], loadMapData: () => new Promise(() => {}) },
+      './city-config.js': { ROADS: [{ kind: 0, pts: [{ x: 1000, z: 500 }, { x: 2000, z: 500 }] }], BLOCKS: [...town, ...farm], SUBURBS: [], getMapVersion: () => 1 }
+    }
+  });
+  const L = mapLayers();
+  assert.deepEqual(L.shores.rects, [[0, 0, 1000, 1000]], 'the town\'s streets are the gaps between its blocks');
+  assert.deepEqual(L.sparse.rects, [[1000, 0, 1000, 1000]], 'the farm\'s tile is land, with its road drawn over it');
+  assert.equal(L.roads.tiles.size, 1, 'the road is there to draw');
+});

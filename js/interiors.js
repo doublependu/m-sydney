@@ -167,11 +167,12 @@ function instance(scene, list = []) {
 
 /**
  * `reveal(group)` puts a group in the scene with its shaders ready. `colliders` is { add, remove }. `lights` are PointLights kept for
- * this. `tileBuilt(x, z)` says whether the tile at (x, z) is drawn, so a site can be. `shown(id, on)` hears when a site's outside starts
- * or stops being drawn, for what it takes the place of. `farReach()`: m from the camera that far versions are wanted, 0 while the city
- * round you is still coming. `debug`: the debug sites too.
+ * this. `tileBuilt(x, z)` says whether the tile at (x, z) is drawn, so a site can be. `tileReady(x, z)` says the same of the tile alone,
+ * before the city round you is complete: a site's far version stands in from then, as the map's buildings it replaces would have, till
+ * the model comes. `shown(id, on)` hears when a site's outside starts or stops being drawn, for what it takes the place of.
+ * `farReach()`: m from the camera that far versions are wanted, 0 while the city round you is still coming. `debug`: the debug sites too.
  */
-function createInteriors({ reveal, colliders, lights, tileBuilt, shown = () => {}, farReach = () => 0, debug = false }) {
+function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () => false, shown = () => {}, farReach = () => 0, debug = false }) {
   const sites = MODEL_SITES.filter((s) => debug || !s.debug).map((s) => ({
     ...s, y: s.y ?? null, reach: s.reach ?? RELEASE, near: s.near ?? NEAR, out: null, inside: null, loading: false, failed: false, ref: null,
     drawn: false, far: s.far ? { group: null, loading: false, failed: false } : null
@@ -470,8 +471,9 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, shown = () => {
       if (site.inside?.group) site.inside.group.visible = drawn;
       if (site.far) {
         const away = Math.hypot(site.x - eye.x, site.z - eye.z);
-        if (reach > 0 && away < reach && !site.far.group && !site.far.loading && !site.far.failed) loadFar(site);
-        else if (site.far.group && away > reach + FAR_KEEP) dropFar(site);
+        const wantFar = (reach > 0 && away < reach) || (!site.debug && tileReady(site.x, site.z));
+        if (wantFar && !site.far.group && !site.far.loading && !site.far.failed) loadFar(site);
+        else if (!wantFar && site.far.group && away > reach + FAR_KEEP) dropFar(site);
         if (site.far.group) site.far.group.visible = !drawn;
       }
       if (!site.out) continue;

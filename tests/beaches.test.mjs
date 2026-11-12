@@ -3,13 +3,11 @@ import fs from 'node:fs';
 import test from 'node:test';
 import zlib from 'node:zlib';
 
-// The beaches (tools/build-sand.mjs, js/city-grid.js) and the house over Bronte's (js/model-sites.js, bronte-pacific), read from the
-// tiles' own files: the tiles the other tests hold (SYDNEY_TILES) don't reach the eastern beaches.
+// The beaches (tools/build-sand.mjs, js/city-grid.js), read from the tiles' own files: the tiles the other tests hold (SYDNEY_TILES)
+// don't reach the eastern beaches. The house over Bronte's is tests/houses.test.mjs'.
 globalThis.fetch = async (url) => new Response(fs.readFileSync(new URL(url)));
 const { unpackTile } = await import('../js/tiles/tile-file.js');
 const { tileFile } = await import('../js/tiles/paths.js');
-const { MODEL_SITES, toWorldOf } = await import('../js/model-sites.js');
-const { STYLE } = await import('../js/house-styles.js');
 
 const world = JSON.parse(fs.readFileSync(new URL('../public/tiles/world.json', import.meta.url), 'utf8'));
 const tiles = new Map();
@@ -26,14 +24,6 @@ const inFlat = (f, x, z) => {
   let c = false;
   for (let i = 0, j = f.length - 2; i < f.length; j = i, i += 2) {
     if ((f[i + 1] > z) !== (f[j + 1] > z) && x < ((f[j] - f[i]) * (z - f[i + 1])) / (f[j + 1] - f[i + 1]) + f[i]) c = !c;
-  }
-  return c;
-};
-const inRing = (ring, x, z) => {
-  let c = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const a = ring[i], b = ring[j];
-    if ((a.z > z) !== (b.z > z) && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) c = !c;
   }
   return c;
 };
@@ -77,26 +67,3 @@ test('a beach runs down into the water, not to a sea wall, and its sand comes do
   assert.ok(moved < -1, `the ground at Bronte's water's edge (${x.toFixed(0)}, ${z.toFixed(0)}) is moved ${moved.toFixed(2)} m, not down to the sea`);
 });
 
-test('499 Bronte Rd: its model stands in place of the map\'s box, with an inside fetched at its doors, and flats round it', () => {
-  const site = MODEL_SITES.find((s) => s.id === 'bronte-pacific');
-  assert.ok(site?.far && site.cut, 'no site, far version or cut for it');
-  for (const [lx, lz] of site.replaces) {
-    const { x, z } = toWorldOf(site, lx, lz);
-    const left = tileAt(x, z).buildings.filter((b) => x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ && b.polygons.some((p) => inRing(p.outer, x, z)));
-    assert.equal(left.length, 0, `the map still has a building at (${x.toFixed(1)}, ${z.toFixed(1)})`);
-  }
-  const out = JSON.parse(fs.readFileSync(new URL('../public/models/bronte-pacific.json', import.meta.url), 'utf8'));
-  const into = out.doors.filter((d) => d.inside === 'bronte-pacific-i').map((d) => d.id);
-  for (const id of ['front', 'garage-side']) assert.ok(into.includes(id), `its ${id} door doesn't lead in`);
-  // Budgets: the outside drawn with its tile, the inside fetched at the door (README, "Building models")
-  const size = (f) => fs.statSync(new URL(`../public/models/${f}`, import.meta.url)).size;
-  assert.ok(size('bronte-pacific.glb.gz') < 150_000, 'its outside is over 150 KB');
-  assert.ok(size('bronte-pacific-i.glb.gz') < 2_000_000, 'its inside is over 2 MB');
-  const glb = zlib.gunzipSync(fs.readFileSync(new URL('../public/models/bronte-pacific-i.glb.gz', import.meta.url)));
-  const gltf = JSON.parse(glb.subarray(20, 20 + glb.readUInt32LE(12)).toString('utf8'));
-  const triangles = gltf.meshes.flatMap((m) => m.primitives).reduce((n, p) => n + gltf.accessors[p.indices].count / 3, 0);
-  assert.ok(triangles < 40_000, `its inside is ${triangles} triangles`);
-  // Its street: the flats round it in red brick under tiled roofs (tools/local/bronte.json)
-  const flats = tileAt(6100, 2790).buildings.filter((b) => b.houseStyle === STYLE['Red-brick flats']);
-  assert.ok(flats.length >= 20, `only ${flats.length} of its neighbours are red-brick flats`);
-});

@@ -843,12 +843,15 @@ function* buildStreetDetails(scene, allColliders = [], lightPools) {
   const pitGrateGeo = new THREE.RingGeometry(0.24, 0.82, 12, 1).rotateX(-Math.PI / 2);
   const gratedTrees = sidewalkTreePositions.filter((t) => t.grate !== false);
 
-  const pitCurbInst = new THREE.InstancedMesh(pitCurbGeo, pitCurbMat, sidewalkTreePositions.length);
-  const pitSoilInst = new THREE.InstancedMesh(pitSoilGeo, pitSoilMat, sidewalkTreePositions.length);
+  // At least one slot each, drawn none of: a storage buffer can't be bound at size zero (WebGPU), and out in the bush there are no
+  // street trees at all
+  const pitCurbInst = new THREE.InstancedMesh(pitCurbGeo, pitCurbMat, Math.max(1, sidewalkTreePositions.length));
+  const pitSoilInst = new THREE.InstancedMesh(pitSoilGeo, pitSoilMat, Math.max(1, sidewalkTreePositions.length));
   const pitGrateInst = new THREE.InstancedMesh(pitGrateGeo, grateMat, Math.max(1, gratedTrees.length));
   pitCurbInst.receiveShadow = true;
   pitSoilInst.receiveShadow = true;
   pitGrateInst.receiveShadow = true;
+  pitCurbInst.count = pitSoilInst.count = sidewalkTreePositions.length;
   pitGrateInst.count = gratedTrees.length;
 
   sidewalkTreePositions.forEach((t, i) => {

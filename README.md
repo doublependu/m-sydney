@@ -254,6 +254,8 @@ What a model has to be:
 - **Where it goes:** `js/model-sites.js` lists each site: its file, where its middle stands, how it's turned, its ground floor's height
   (or none, to stand it on the ground), and points in the map's buildings it replaces. The tile build leaves those buildings out
   (`tools/tiles/derive.mjs`) and from the far level, and the model is drawn with its tile.
+- **On the map:** its `outline`, a ring for each house or part in its frame and how high it stands, is drawn as the map's buildings are
+  (`js/city-map.js`): the radar, the full map and the map's images. `tests/model-sites.test.mjs` holds it to the far version from above.
 - **Two files a part:** a binary glTF, compressed with meshopt and gzipped (`.glb.gz`: Cloudflare doesn't compress glTF on the way, and
   gzip takes a model to a third or less), and a JSON beside it. Metres, y up, the model's middle at (0, 0) and its ground floor at y = 0.
   Colour is in the vertices, with ambient occlusion baked into it; materials are named (`plaster`, `timber`, `glass` and so on) and the
@@ -266,7 +268,9 @@ What a model has to be:
   through. Its leaves are drawn as one shut piece (`doors_shut`) until you or the camera are within 20 m of it.
 - **Near and far:** a model is drawn within 400 m of the camera (a site's `near` can say otherwise). Past that, and wherever its tile isn't
   drawn, its far version is if its site says `far` (`<file>-far.glb.gz`: a shell in two draws and under 2,000 triangles, drawn as far as
-  the far level reaches), or what it takes the place of (the Opera House's plain podium and glass).
+  the far level reaches), or what it takes the place of (the Opera House's plain podium and glass). A far version comes as soon as the
+  ground under its site is built, from the first view (the model only once the city round you is complete), and covers whatever its
+  site's `cut` leaves undrawn.
 - **The inside** (`<file>-in.glb.gz`, `.json`), fetched when one of its doors is opened and let go of 60 m after you leave. Each room is a
   node (`room_<id>`) and only those you can see are drawn: the one the camera's in and those through open doorways from it, three
   deep, and the one you're in and those next to it. The JSON has its
@@ -289,7 +293,8 @@ What a model has to be:
   blue: 0.5 its own teal-grey, towards 0 a light, bright blue (Crown Sydney's), towards 1 a deep blue-black (Salesforce Tower's).
   `clear` is glass to walk on: nearly clear, seen from above (Customs House's floor over the city in miniature).
 - **Under the street:** a site's `cut` leaves a hole in the paving or lawn it stands in, and lowers the base under it, for rooms below the
-  street; the model draws its own ground there.
+  street; the model draws its own ground there. The lawns and paving are 240 m squares, which can reach past their tile's edge: the cuts
+  within 240 m of a tile count for it.
 - **Before its doors:** a site's `clear` lists circles where no street tree is planted (`js/street-details.js`), so a surveyed tree
   doesn't stand in its doorway.
 - **The test interior** (`test-interior`), a plain two-storey house on Hyde Park's lawn, is drawn only with `?debug=1`. The `walk-in`
@@ -341,6 +346,17 @@ What a model has to be:
   inside, fetched at its doors (the front door, the garage's side door, the rumpus room's onto the pool, the middle floor's onto the
   deck), has the three floors of its floor plan. The `bronte-pacific` scenario walks in at the front door, sits on the terrace, and goes
   down through the house to the pool. The flats round it are red brick under tiled roofs (`tools/local/bronte.json`).
+- **Two places in Dural,** out in the bush, their models from the floor plans and photos of their listings, `tests/houses.test.mjs`
+  holding each to its budgets, its doors and the map:
+  - **86 Quarry Rd** (`quarry-rd`): a single-storey house in white render and black-framed glass under a low pale roof, at the end of a
+    ridge, its master wing in face brick with a round retreat; a deck and pool along the valley side to the north, a carport for six under
+    a hipped terracotta roof on its west. It stands on a pad cut into the slope, so its site's `cut` leaves the ground undrawn round it and
+    the model draws the pad, the cutting's sandstone face and the drive's ramp up to the ridge. The `quarry-rd` scenario walks in from the
+    carport, sits in the living room, goes through the master suite to its retreat, and out onto the deck and down its stair.
+  - **6 Parklea Close** (`parklea-close`, `parklea-cottage`, `parklea-shed`): a red brick house in a U round a paved courtyard under a
+    verandah on timber posts, a balcony along its back over the lawn; its small brick cottage by the road; a steel workshop, its roller
+    door open, beside two greenhouses. Each in place of the map's box. The `parklea-close` scenario walks in at the front doors, sits in
+    the lounge, goes through the bedroom wing and out onto the balcony and down to the lawn; `parklea-cottage` through the cottage.
 - **What a big inside adds:** `instances` in its JSON draw a node many times from one (the hall's seats: a node, the room it's in, and
   `[x, y, z, yaw]` for each), as one InstancedMesh for each of its materials; each seat to sit in is in `seats` as well. A room can say
   how far it shuts out the sky (`shelter`, 0.85 unless it says: a glazed foyer less, a concert hall all of it) and how much its own colours

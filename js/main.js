@@ -1089,6 +1089,12 @@ async function initApp() {
     colliders: { add: (list) => controllerManager.addColliders(list), remove: (list) => controllerManager.removeColliders(list) },
     // Not in the first view: a model comes once the city round you has
     tileBuilt: (x, z) => worldCompleteAt !== null && builtTiles.get(tileKeyAt(x, z))?.done === true,
+    // ...but its far version, a draw or two, as soon as the ground it stands on is: the map's buildings it replaces aren't in the tile.
+    // Round the start, that's the part of its tile built before you can move.
+    tileReady: (x, z) => {
+      const record = builtTiles.get(tileKeyAt(x, z));
+      return !!record && (record.done || (record.startPart === true && inStart(x, z)));
+    },
     // Far versions as far as the far level reaches at most: each is a draw or two, and a few KB
     farReach: () => (worldCompleteAt === null ? 0 : quality.farRange),
     debug: new URLSearchParams(location.search).get('debug') === '1'

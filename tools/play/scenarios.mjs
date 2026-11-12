@@ -1,4 +1,6 @@
 // Each scenario plays one stretch of the game. `metric` records feel numbers; `expect` fails the run.
+import { MODEL_SITES } from '../../js/model-sites.js';
+
 const MPH_60 = 26.82;
 
 async function teleportAndSettle(human, place, mode) {
@@ -627,6 +629,116 @@ function lowerFortScenario() {
     }
   };
 }
+
+// A walk through a house drawn from a model (js/model-sites.js), from a list of steps in its site's frame: ['walk', x, z, why],
+// ['open', x, z, door] (facing that point, from where the last step left you), ['room', id], ['level', y] (over its floor, to 5 cm),
+// ['below', y], ['sit', x, z] (facing the seat at that point), ['fps', name], ['fetched'] (its inside has been, at the door just opened).
+// It starts with the player on foot at `start`, facing `toward`, once the city's complete and the model's in; its inside isn't
+// fetched until a door's opened.
+function houseScenario(id, { start, toward, inside, steps }) {
+  // Started beside the house, as a player coming back to it: a teleport of 20 km out to Dural from the default start throws WebGPU
+  // validation errors (a buffer bound at size zero) on HEAD as well
+  const S = MODEL_SITES.find((s) => s.id === id);
+  const p = { x: S.x + start[0] * Math.cos(S.yaw) + start[1] * Math.sin(S.yaw), z: S.z - start[0] * Math.sin(S.yaw) + start[1] * Math.cos(S.yaw) };
+  return {
+    storage: JSON.stringify({ version: 1, activeMode: 'person', entities: { person: { x: p.x, y: 0, z: p.z, heading: 0, surface: 0 } } }),
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      const site = await debug((sid) => window.__gameDebug.interior().sites.find((s) => s.id === sid) ?? null, id);
+      expect(site, `no site ${id}`);
+      const SITE = S;
+      const at = (x, z) => ({ x: SITE.x + x * Math.cos(SITE.yaw) + z * Math.sin(SITE.yaw), z: SITE.z - x * Math.sin(SITE.yaw) + z * Math.cos(SITE.yaw) });
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const level = async () => (await human.state()).surfaceY - SITE.y;
+      const fetched = () => debug(() => performance.getEntriesByType('resource').map((r) => r.name).filter((n) => /\/models\//.test(n)));
+      const local = async () => {
+        const s = await human.state(), dx = s.x - SITE.x, dz = s.z - SITE.z, c = Math.cos(SITE.yaw), n = Math.sin(SITE.yaw);
+        return `(${(dx * c - dz * n).toFixed(2)}, ${(dx * n + dz * c).toFixed(2)}) at ${(s.surfaceY - SITE.y).toFixed(2)} m`;
+      };
+      const from = at(...start), to = at(...toward);
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...from, h: Math.atan2(to.x - from.x, to.z - from.z) });
+      await page.waitForFunction((sid) => window.__gameDebug.interior().sites.find((s) => s.id === sid)?.out, id, { timeout: 60000, polling: 250 });
+      if (inside) expect(!(await fetched()).some((n) => n.includes(`/${inside}.`)), 'its inside was fetched before a door was opened');
+      for (const [kind, a, b, c] of steps) {
+        if (kind === 'walk') expect(await walkTo(human, at(a, b)), `never got ${c}, stuck at ${await local()}`);
+        else if (kind === 'open') {
+          await face(human, at(a, b));
+          await human.wait(300);
+          const prompt = (await interior()).prompt;
+          expect(prompt === 'Open', `at door ${c} the prompt is ${prompt}, standing at ${await local()}`);
+          await human.press('KeyF');
+          expect(await human.until(async () => (await interior()).doors.find((d) => d.id === c)?.angle >= 1.59, { timeout: 15000, read: interior }),
+            `door ${c} never opened`);
+        } else if (kind === 'room') expect((await interior()).room === a, `not in ${a}: in ${(await interior()).room}, at ${await local()}`);
+        else if (kind === 'level') expect(Math.abs((await level()) - a) < 0.05, `at ${(await level()).toFixed(2)} m, not ${a}`);
+        else if (kind === 'below') expect((await level()) < a, `at ${(await level()).toFixed(2)} m, not under ${a}`);
+        else if (kind === 'fetched') expect((await fetched()).some((n) => n.includes(`/${inside}.`)), 'its inside wasn\'t fetched at the door');
+        else if (kind === 'fps') metric(a, (await debug(() => window.__gameDebug.frameCost())).fps);
+        else if (kind === 'sit') {
+          await face(human, at(a, b));
+          await human.wait(300);
+          expect((await interior()).prompt === 'Sit', `at the seat the prompt is ${(await interior()).prompt}, at ${await local()}`);
+          await human.press('KeyF');
+          await human.wait(1200);
+          expect((await interior()).seated, 'not sitting');
+          await human.hold('KeyW', 120);
+          await human.wait(400);
+        }
+      }
+    }
+  };
+}
+
+// 86 Quarry Rd, Dural (quarry-rd): from the carport up onto the patio, in at the front door; to the sofa by the family room's stove;
+// through the master suite to the study and its round retreat; back to the living room, out onto the deck by the pool, down its stair
+const quarryScenario = () => houseScenario('quarry-rd', {
+  start: [24.0, 7.5], toward: [19.0, 3.0], inside: 'quarry-rd-i',
+  steps: [
+    ['walk', 20.4, 4.45, 'onto the patio\'s step'], ['walk', 18.7, 2.7, 'to the front door'], ['level', 0], ['open', 17.85, 2.7, 'front'],
+    ['walk', 16.8, 3.0, 'in at the front door'], ['room', 'living'], ['fetched'],
+    ['walk', 16.4, 4.6, 'into the living room'], ['walk', 16.4, 6.6, 'to the corner sofa'], ['sit', 17.3, 6.6], ['fps', 'fpsInLivingRoom'],
+    ['walk', 13.6, 3.6, 'to the family room'], ['walk', 13.6, 1.2, 'to the master suite\'s door'], ['walk', 14.95, 1.2, 'into its hall'],
+    ['walk', 14.95, -0.6, 'into the master bedroom'], ['room', 'master'], ['walk', 20.9, -0.6, 'across the bedroom'],
+    ['walk', 20.9, 0.9, 'into the study'], ['walk', 21.1, 1.1, 'to the retreat\'s door'], ['walk', 22.9, 0.6, 'into the retreat'],
+    ['room', 'retreat'],
+    ['walk', 21.0, 1.0, 'back to the study'], ['walk', 20.9, -0.6, 'back to the bedroom'], ['walk', 14.95, -0.6, 'across the bedroom'],
+    ['walk', 14.95, 1.2, 'into the hall'], ['walk', 13.6, 1.4, 'back to the family room'], ['walk', 16.5, 9.4, 'to the deck\'s doors'],
+    ['open', 16.5, 10.45, 'living-deck'], ['walk', 16.5, 11.7, 'out onto the deck'], ['level', 0], ['fps', 'fpsOnDeck'],
+    ['walk', 18.4, 15.0, 'to the deck\'s stair'], ['walk', 22.6, 15.0, 'down the stair'], ['below', -1.0]
+  ]
+});
+
+// 6 Parklea Close, Dural (parklea-close): across the courtyard to the verandah, in at the front doors; to the sofa in the lounge; along
+// the bedroom wing's hall into bedroom 3; back out through the lounge onto the balcony at the back, and down its stair to the lawn
+const parkleaScenario = () => houseScenario('parklea-close', {
+  start: [14.0, 19.5], toward: [10.35, 10.0], inside: 'parklea-close-i',
+  steps: [
+    ['walk', 10.35, 12.6, 'across the courtyard'], ['walk', 10.35, 10.3, 'to the front doors'], ['level', 0], ['open', 10.35, 9.4, 'front'],
+    ['walk', 10.35, 8.6, 'in at the front doors'], ['room', 'hall'], ['fetched'],
+    ['walk', 12.4, 8.7, 'into the lounge'], ['room', 'lounge'], ['walk', 15.6, 5.85, 'to the sofa'], ['sit', 15.6, 5.0], ['fps', 'fpsInLounge'],
+    ['walk', 17.0, 7.05, 'to the bedrooms\' hall'], ['walk', 19.6, 7.05, 'through its arch'], ['room', 'hall2'],
+    ['walk', 21.55, 7.2, 'into the hall'], ['walk', 21.55, 12.5, 'along the hall'], ['walk', 23.2, 12.5, 'into bedroom 3'], ['room', 'bed3'],
+    ['walk', 21.55, 12.5, 'back to the hall'], ['walk', 21.55, 7.2, 'back along it'], ['walk', 17.0, 7.05, 'back to the lounge'],
+    ['walk', 13.4, 4.3, 'to the balcony doors'], ['open', 13.4, 3.25, 'lounge-balcony'], ['walk', 13.4, 1.6, 'out onto the balcony'], ['level', 0],
+    ['fps', 'fpsOnBalcony'], ['walk', 18.0, 0.55, 'along the balcony'], ['walk', 23.5, 0.55, 'down its stair'], ['below', -1.0]
+  ]
+});
+
+// ...its cottage by the road (parklea-cottage): up onto the porch, in at the front door, through to bedroom 1, out of the laundry onto
+// the patio
+const cottageScenario = () => houseScenario('parklea-cottage', {
+  start: [-4.5, 8.65], toward: [0.0, 8.65], inside: 'parklea-cottage-i',
+  steps: [
+    ['walk', -2.0, 8.65, 'up the porch\'s steps'], ['walk', -0.7, 8.65, 'onto the porch'], ['level', 0], ['open', 0.1, 8.65, 'front'],
+    ['walk', 1.0, 8.65, 'in at the front door'], ['room', 'meals'], ['fetched'], ['walk', 2.4, 4.5, 'into the living room'], ['room', 'living'],
+    ['fps', 'fpsInCottage'],
+    ['walk', 3.5, 12.0, 'back across the meals room'], ['walk', 4.0, 12.0, 'to the laundry'],
+    ['walk', 5.6, 12.0, 'into the laundry'], ['walk', 5.5, 14.0, 'to bedroom 1\'s door'], ['walk', 5.5, 15.4, 'into bedroom 1'],
+    ['room', 'bed1'], ['walk', 5.5, 14.0, 'back to the laundry'], ['walk', 7.2, 12.6, 'to the patio door'], ['open', 8.0, 12.6, 'patio'],
+    ['walk', 9.4, 12.6, 'out onto the patio'], ['level', 0]
+  ]
+});
 
 // A house on three levels over Bronte beach (js/model-sites.js, bronte-pacific): from Pacific St in at the front door, through to the
 // living room and out onto its terrace to sit; down the stair to the family room and out onto the deck; down again to the rumpus room
@@ -1444,6 +1556,11 @@ export const SCENARIOS = {
   'lower-fort-55': lowerFortScenario(),
   'bronte-pacific': bronteScenario(),
   'bronte-pacific-phone': { ...bronteScenario(), profile: 'phone' },
+  'quarry-rd': quarryScenario(),
+  'quarry-rd-phone': { ...quarryScenario(), profile: 'phone' },
+  'parklea-close': parkleaScenario(),
+  'parklea-close-phone': { ...parkleaScenario(), profile: 'phone' },
+  'parklea-cottage': cottageScenario(),
   'pylon-lookout': lookoutScenario(),
   'pylon-lookout-phone': { ...lookoutScenario(), profile: 'phone' },
   'sydney-tower': towerScenario(),

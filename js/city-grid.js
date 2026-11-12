@@ -362,8 +362,10 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
   yield* addRoadDeck(road, wanted, links, tile.fills);
   const midOf = (rings) => rings[0][rings[0].length >> 1];
   // Under a building drawn from a model with rooms below the street (js/model-sites.js), the paving or lawn it stands in has a hole: the
-  // model has its own floors there, down to its basement's
-  const cuts = SITE_CUTS.filter((c) => c.maxX > box.x0 && c.minX < box.x1 && c.maxZ > box.z0 && c.minZ < box.z1);
+  // model has its own floors there, down to its basement's. A tile's lawns and paving are 240 m squares (tools/geo-common.mjs
+  // tiledPolygons()), which reach past its edge: so the cuts near it, not only in it
+  const reach = 240;
+  const cuts = SITE_CUTS.filter((c) => c.maxX > box.x0 - reach && c.minX < box.x1 + reach && c.maxZ > box.z0 - reach && c.minZ < box.z1 + reach);
   const withCuts = (rings) => {
     let out = rings;
     for (const c of cuts) {

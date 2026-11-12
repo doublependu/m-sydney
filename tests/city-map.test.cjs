@@ -15,7 +15,7 @@ test('surveyed building courtyards remain holes in the map footprint layer', () 
   }
   const { footprintLayers } = loadModule(source + '\nexport { footprintLayers };', {
     globals: { Path2D },
-    imports: { './geodata.js': { GEO: { frame: {} }, heldTiles: () => [], loadMapData: () => new Promise(() => {}) }, './city-config.js': { ROADS: [], SUBURBS: [] } }
+    imports: { './geodata.js': { GEO: { frame: {} }, heldTiles: () => [], loadMapData: () => new Promise(() => {}) }, './city-config.js': { ROADS: [], SUBURBS: [] }, './model-sites.js': { SITE_OUTLINES: [] } }
   });
   const ring = (x0, z0, x1, z1) => [{ x: x0, z: z0 }, { x: x1, z: z0 }, { x: x1, z: z1 }, { x: x0, z: z1 }];
   const layers = footprintLayers([{ footprints: [{ h: 120, pts: ring(0, 0, 20, 20), holes: [ring(5, 5, 15, 15)] }] }]);
@@ -27,12 +27,36 @@ test('surveyed building courtyards remain holes in the map footprint layer', () 
   assert.deepEqual(areas, [400, -100], 'opposite winding cuts the courtyard out under the nonzero fill rule');
 });
 
+test('buildings drawn from models are on the map by their own outlines, in their shade, under the same edge', () => {
+  class Path2D {
+    rings = [];
+    moveTo(x, z) { this.rings.push([[x, z]]); }
+    lineTo(x, z) { this.rings.at(-1).push([x, z]); }
+    closePath() {}
+  }
+  const ring = (x0, z0, x1, z1) => [{ x: x0, z: z0 }, { x: x1, z: z0 }, { x: x1, z: z1 }, { x: x0, z: z1 }];
+  const SITE_OUTLINES = [{ h: 12, pts: ring(100, 100, 110, 115) }, { h: 263, pts: ring(-30, -1200, 20, -1180) }];
+  const { footprintLayers } = loadModule(source + '\nexport { footprintLayers };', {
+    globals: { Path2D },
+    imports: {
+      './geodata.js': { GEO: { frame: {} }, heldTiles: () => [], loadMapData: () => new Promise(() => {}) }, './city-config.js': { ROADS: [], SUBURBS: [] },
+      './model-sites.js': { SITE_OUTLINES }
+    }
+  });
+  const layers = footprintLayers([{ footprints: [{ h: 6, pts: ring(0, 0, 20, 20), holes: [] }] }]);
+  const rings = (t) => [...layers.tones[t].tiles.values()].flatMap((tile) => tile.path.rings);
+  assert.equal(rings(0).length, 2, 'the house beside the tile\'s building, in the low shade');
+  assert.deepEqual(rings(0)[1].map(([x]) => x).sort((a, b) => a - b), [100, 100, 110, 110]);
+  assert.equal(rings(2).length, 1, 'the tower in the tall shade');
+  assert.equal(rings(1).length, 0);
+});
+
 for (const [width, height, dpr] of [[500, 300, 1], [320, 180, 1.5], [1920, 1080, 2]]) {
   test(`map clicks match rendered world positions at ${width}x${height}, DPR ${dpr}`, () => {
     const window = { innerWidth: width, innerHeight: height, devicePixelRatio: dpr };
     const { CityMapSystem } = loadModule(source, {
       globals: { window, performance: { now: () => 0 } },
-      imports: { './geodata.js': { GEO: { frame: {} }, heldTiles: () => [], loadMapData: () => new Promise(() => {}) }, './city-config.js': { ROADS: [], SUBURBS: [] } }
+      imports: { './geodata.js': { GEO: { frame: {} }, heldTiles: () => [], loadMapData: () => new Promise(() => {}) }, './city-config.js': { ROADS: [], SUBURBS: [] }, './model-sites.js': { SITE_OUTLINES: [] } }
     });
     const map = Object.create(CityMapSystem.prototype);
     // Capture the production render viewport; drawing primitives are irrelevant to coordinate conversion.
@@ -124,7 +148,7 @@ function mapHarness() {
   };
   const { CityMapSystem } = loadModule(source, {
     globals: { window, document },
-    imports: { './geodata.js': { GEO: { frame: {}, surroundings: [] }, heldTiles: () => [], loadMapData: () => new Promise(() => {}) }, './city-config.js': config }
+    imports: { './geodata.js': { GEO: { frame: {}, surroundings: [] }, heldTiles: () => [], loadMapData: () => new Promise(() => {}) }, './city-config.js': config, './model-sites.js': { SITE_OUTLINES: [] } }
   });
   const teleports = [], toggles = [];
   const map = new CityMapSystem({
@@ -241,7 +265,8 @@ test('held land its blocks hardly cover has its roads drawn as lines, not painte
     globals: { Path2D, performance: { now: () => 0 } },
     imports: {
       './geodata.js': { GEO: { frame: {} }, heldTiles: () => [{ ix: 0, iz: 0, land: 1 }, { ix: 1, iz: 0, land: 1 }], loadMapData: () => new Promise(() => {}) },
-      './city-config.js': { ROADS: [{ kind: 0, pts: [{ x: 1000, z: 500 }, { x: 2000, z: 500 }] }], BLOCKS: [...town, ...farm], SUBURBS: [], getMapVersion: () => 1 }
+      './city-config.js': { ROADS: [{ kind: 0, pts: [{ x: 1000, z: 500 }, { x: 2000, z: 500 }] }], BLOCKS: [...town, ...farm], SUBURBS: [], getMapVersion: () => 1 },
+      './model-sites.js': { SITE_OUTLINES: [] }
     }
   });
   const L = mapLayers();

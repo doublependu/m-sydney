@@ -1,7 +1,22 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+const fs = require('node:fs');
+const path = require('node:path');
+
 const buildings = import('../js/geodata.js').then((m) => m.heldTiles().flatMap((t) => t.buildings));
+// The towers drawn from models of their own (js/model-sites.js) are left out of the tiles: as the city has them, each stands where its
+// model's walls do, as high as they reach
+const drawn = Promise.all([buildings, import('../js/model-sites.js')]).then(([tiles, { MODEL_SITES, toWorldOf }]) => [
+  ...tiles,
+  ...MODEL_SITES.filter((s) => s.replaces?.length).map((s) => {
+    const { walls } = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'public', `${s.file}.json`), 'utf8'));
+    const points = walls.flatMap((w) => [w.a, w.b]).map(([x, z]) => toWorldOf(s, x, z));
+    const xs = points.map((p) => p.x), zs = points.map((p) => p.z);
+    return { model: s.id, height: Math.round(Math.max(...walls.map((w) => w.y1))), minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs),
+      maxZ: Math.max(...zs), cx: s.x, cz: s.z };
+  })
+]);
 
 function area(ring) {
   let sum = 0;
@@ -45,11 +60,11 @@ test('the compressed survey retains every footprint, courtyard and quantized dim
 });
 
 test('survey buildings align with the existing city coordinate frame', async () => {
-  const REAL_BUILDINGS = await buildings;
+  const REAL_BUILDINGS = await drawn;
   const tallest = [...REAL_BUILDINGS].sort((a, b) => b.height - a.height);
-  assert.equal(tallest[0].height, 271, 'Crown Sydney, standing on its podium, tops the survey');
+  assert.equal(tallest[0].height, 271, 'Crown Sydney tops the city');
   assert.ok(tallest[0].cx > -800 && tallest[0].cx < -600 && tallest[0].cz > -1300 && tallest[0].cz < -1000, 'at Barangaroo');
-  assert.ok(tallest[0].bottom > 0 && tallest[0].group > 0);
+  assert.equal(tallest[0].model, 'crown-sydney', 'drawn from its model');
   const office = REAL_BUILDINGS.find((b) => b.height === 263);
   assert.ok(office.cx > -300 && office.cx < 400 && office.cz > -1400 && office.cz < -900, 'in the CBD, near Circular Quay');
   const northSydney = REAL_BUILDINGS.filter((b) => b.height > 100 && b.cz < -3000);
@@ -57,7 +72,7 @@ test('survey buildings align with the existing city coordinate frame', async () 
 });
 
 test('the tallest towers stand as tall as they do in the real city', async () => {
-  const REAL_BUILDINGS = await buildings;
+  const REAL_BUILDINGS = await drawn;
   const towers = [
     ['Crown Sydney', -711, -1139, 271], ['Salesforce Tower', -13, -1201, 263], ['Chifley Tower', 326, -897, 244],
     ['World Tower', 41, 400, 230], ['55 Pitt', 13, -1149, 230], ['MLC Centre', 150, -516, 228],

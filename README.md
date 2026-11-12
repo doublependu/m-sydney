@@ -273,8 +273,10 @@ What a model has to be:
   0.7 m to your head, you aren't drawn.
 - **Budgets:** an outside under 150 KB; an inside under 2 MB and 40,000 triangles on a phone. Nothing of either is in the first view, which
   doesn't hold the loader.
-- **Glass:** each pane's vertex colour isn't its colour but two numbers: whether it's lit at night (red, under 0.5) and how warm (green),
-  the same over the pane. About half are lit, as the city's windows are.
+- **Glass:** each pane's vertex colour isn't its colour but numbers: whether it's lit at night (red, under 0.5) and how warm (green), the
+  same over the pane. About half are lit, as the city's windows are. A curtain wall's (`curtain`) lights fewer, and takes its tint from
+  blue: 0.5 its own teal-grey, towards 0 a light, bright blue (Crown Sydney's), towards 1 a deep blue-black (Salesforce Tower's).
+  `clear` is glass to walk on: nearly clear, seen from above (Customs House's floor over the city in miniature).
 - **Under the street:** a site's `cut` leaves a hole in the paving or lawn it stands in, and lowers the base under it, for rooms below the
   street; the model draws its own ground there.
 - **Before its doors:** a site's `clear` lists circles where no street tree is planted (`js/street-details.js`), so a surveyed tree
@@ -304,6 +306,23 @@ What a model has to be:
   `LOOKOUT`), with a doorway, and collides as the hollow's walls. A walker on the footway who presses on through the doorway onto the
   model's floor is on that floor, which is the ground there, and back on the footway on the way out (`js/controllers.js`). The
   `pylon-lookout` scenario walks from a car on the deck to its door, in and up.
+- **Four CBD buildings,** each in place of the map's box (or boxes) of its outline, with a far version, and a foyer behind a door off the
+  street, which the scenario of its name walks into and out of:
+  - **Salesforce Tower** (`salesforce-tower`, 263 m), on George St at Circular Quay: two halves in blue-black glass, a white spine up their
+    joint and white fins branching up its north and south faces, sunshades along the east face, a glass crown. The game's own sign is on
+    the crown's north face (`js/tower-signs.js`). Its foyer is double height, a wall of light at its back.
+  - **The EY Centre** (`ey-centre`, 141 m), across George St: a rounded slab, its panes gold where their timber blinds are down and dark
+    glass where they're up, on white columns over a lobby set back under a timber soffit. Its foyer is timber-lined.
+  - **Customs House** (`customs-house`), facing the Quay: sandstone, its colonnades, porch, clock and pavilions, the penthouse on its roof,
+    up steps from the square. Inside, the library's atrium, open to its glass roof, and in its floor the city at 1:500 under glass, made
+    from the map's own buildings. Its site's `cut` leaves the ground under it undrawn, for the pit.
+  - **Crown Sydney** (`crown-sydney`, 271 m), Barangaroo: three petals of light blue glass twisting 60 degrees as they rise and parting at
+    the top, the wing beside them and the podium in white fins round both; the hotel's lobby off the plaza to the north.
+  - Their scripts read the site from `js/model-sites.js` through node, and ask the game for the ground and the map's buildings
+    (`tests/cbd-buildings.test.mjs` holds them to the map). The map's survey of tall towers counts them as their models stand
+    (`tests/building-geodata.test.cjs`).
+  - A tower's site says how high it stands and how far it reaches (`top`, `radius`): a helicopter arriving beside it clears it
+    (`roofsNear()`, `js/controllers.js`) though its model comes only once the city round you is in, as it cleared the map's box.
 - **What a big inside adds:** `instances` in its JSON draw a node many times from one (the hall's seats: a node, the room it's in, and
   `[x, y, z, yaw]` for each), as one InstancedMesh for each of its materials; each seat to sit in is in `seats` as well. A room can say
   how far it shuts out the sky (`shelter`, 0.85 unless it says: a glazed foyer less, a concert hall all of it) and how much its own colours

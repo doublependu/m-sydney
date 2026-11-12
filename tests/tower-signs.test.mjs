@@ -23,6 +23,7 @@ test('each sign is on its own tower, near the top, facing the harbour', () => {
 });
 
 test('a sign fits the wall it is on', () => {
-  const walls = { 'Salesforce Tower': 47.5, 'Governor Phillip Tower': 52.1 };
+  // Salesforce Tower's: its model's glass crown's north face (tools/models/salesforce.py)
+  const walls = { 'Salesforce Tower': 36.75, 'Governor Phillip Tower': 52.1 };
   for (const sign of TOWER_SIGNS) assert.ok(sign.w < walls[sign.tower], sign.text);
 });

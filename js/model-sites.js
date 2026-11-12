@@ -11,6 +11,8 @@
 //   clear: [[x, z, r]] in its frame: circles before its doors where no street tree is planted (js/street-details.js)
 //   debug: drawn only with ?debug=1
 //   reach: m from its middle that it's walked in and round, its doors open, and its inside is kept (60 unless it says)
+//   top, radius: how high its model stands over y, and how far from its middle it reaches, for a tower: a helicopter arriving beside it
+//     clears it before the model's in (js/controllers.js roofsNear()), as it cleared the map's box it replaces
 const MODEL_SITES = [
   // A plain two-storey house on Hyde Park's lawn, for the walk-in scenario and the unit tests
   { id: 'test-interior', file: 'models/test-interior', x: 440, z: -300, yaw: 0, y: null, debug: true, replaces: [] },
@@ -37,7 +39,34 @@ const MODEL_SITES = [
     id: 'sydney-tower', file: 'models/sydney-tower', x: 143, z: -311, yaw: 0.1418, y: 20.1, reach: 40, near: 5000, replaces: [[-34.2, 6.2]],
     clear: [[0, 20.0, 2.5]]
   },
-  { id: 'pylon-lookout', file: 'models/pylon-lookout', x: -41.2543, z: -2066.4534, yaw: -1.91484, y: 49.0219, reach: 40, near: 150, replaces: [] }
+  { id: 'pylon-lookout', file: 'models/pylon-lookout', x: -41.2543, z: -2066.4534, yaw: -1.91484, y: 49.0219, reach: 40, near: 150, replaces: [] },
+  // Salesforce Tower, 180 George St, Circular Quay: 263 m, in place of the map's box of its outline, its foyer behind a door on George
+  // St. Its frame: 21 m in from the middle of its George St face, +z out through that face; the footpath at the door.
+  {
+    id: 'salesforce-tower', file: 'models/salesforce-tower', x: -13.226, z: -1191.178, yaw: -2.1544, y: 3.75, far: true, replaces: [[0, 0]],
+    top: 263, radius: 50.5,
+    clear: [[0, 23.0, 2.5]]
+  },
+  // The EY Centre, 200 George St, across George St from it: a rounded slab in gold louvres, 37 storeys, its foyer behind a door on
+  // George St. Its frame: the middle of its plan, +z out through its George St face (its short axis); the footpath at the door.
+  {
+    id: 'ey-centre', file: 'models/ey-centre', x: -68.618, z: -1174.325, yaw: 1.2608, y: 4.4, far: true, replaces: [[0, 0]], top: 141, radius: 28.5,
+    clear: [[0, 17.5, 3.0]]
+  },
+  // Customs House, 31 Alfred St, facing Circular Quay: sandstone, its colonnades, clock and pavilions, a glass penthouse on top, and
+  // inside its atrium the city in miniature under a glass floor. Its frame: 21 m in from the middle of its front, +z out through it;
+  // its ground floor, up steps from the square. The ground under it is left undrawn, for the pit under the glass floor.
+  {
+    id: 'customs-house', file: 'models/customs-house', x: 194.896, z: -1247.815, yaw: -3.0631, y: 3.9, far: true, replaces: [[0, 0]],
+    clear: [[0, 21.5, 4.5]], cut: { poly: [[-21.5, -19.5], [21.5, -19.5], [21.5, 17.5], [-21.5, 17.5]], y: -1.6 }
+  },
+  // Crown Sydney, 1 Barangaroo Ave: three glass petals twisting as they rise to 271 m, the lower wing beside them and the podium in
+  // white fins, in place of the map's three parts. Its frame: the tower's middle, +z out through the podium's north face, where the
+  // hotel's door is; the plaza's level there.
+  {
+    id: 'crown-sydney', file: 'models/crown-sydney', x: -710, z: -1138, yaw: 3.1093, y: 2.3, far: true, top: 271.3, radius: 25,
+    replaces: [[0, 0], [-30.89, -27.02], [-12.51, -77.64]], clear: [[-20.2, 19.0, 3.0]]
+  }
 ];
 
 const toWorldOf = (site, x, z) => {

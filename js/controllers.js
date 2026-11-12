@@ -24,6 +24,7 @@ import { DECK_SID } from './bridge.js';
 import { FLY, arrivalFor, holdOnFootway } from './arrivals.js';
 import { STRUCTURES, chooseSurface, clearOfWater, floorBelow, groundHeight, onFloor, structureAt, surfaceHeight } from './surfaces.js';
 import { WALKER } from './interior-data.js';
+import { MODEL_SITES } from './model-sites.js';
 
 // On the Harbour Bridge's deck: any of its roads' structures, the corridor's and those of the carriageways east of it (plan 5)
 const onDeck = (sid) => !!sid && !!STRUCTURES[sid]?.deck;
@@ -402,6 +403,12 @@ class ThirdPersonControllerManager {
       if (away > radius || !(c.maxY > 2.5)) continue;
       const base = c.baseY ?? groundHeight((c.minX + c.maxX) / 2, (c.minZ + c.maxZ) / 2);
       out.push({ top: base + c.maxY, away });
+    }
+    // The towers drawn from models of their own, loaded or not yet (they come once the city round you is in): their sites say how high
+    for (const s of MODEL_SITES) {
+      if (!s.top) continue;
+      const away = Math.max(0, Math.hypot(x - s.x, z - s.z) - (s.radius ?? 0));
+      if (away <= radius) out.push({ top: s.y + s.top, away });
     }
     return out;
   }

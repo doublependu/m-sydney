@@ -48,6 +48,10 @@ function materialFor(name, inside) {
     m = new THREE.MeshStandardNodeMaterial({ color: 0x4a3c2e, roughness: 0.06, metalness: 0.35, transparent: true, opacity: 0.32, depthWrite: false,
       flatShading: true });
     m.emissiveNode = color(0xffc27a).mul(smoothstep(0.55, 1.2, cityUniforms.uInteriorGlow).mul(0.25));
+  } else if (name === 'clear') {
+    // Glass to walk on, as over a pit with something to see in it: nearly clear, a little of the room's light on it
+    m = new THREE.MeshStandardNodeMaterial({ color: 0xd8e6ea, roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.16, depthWrite: false,
+      flatShading: true });
   } else if (name === 'glass' || name === 'curtain') {
     // From the street a window like the neighbours': dark by day, lit at night. It faces out only, so from inside you see through it.
     // A curtain wall's (`curtain`, The Ribbon's) is bluer and less of a mirror: its flat panes round a curve would each catch the sky
@@ -59,6 +63,11 @@ function materialFor(name, inside) {
     const roll = vertexColor();
     // A curtain wall's panes are a storey high and wide open: fewer lit, and dimmer, or it's a lit chequerboard at night
     const curtain = name === 'curtain';
+    // ...and their tint is the model's (b, 0.5 the colour above): lighter and bluer below it, as Crown Sydney's; a deep blue-black
+    // above it, as Salesforce Tower's
+    if (curtain) {
+      m.colorNode = mix(mix(color(0x6f9cc0), color(0x35525a), smoothstep(0.0, 0.5, roll.b)), color(0x15233c), smoothstep(0.5, 1.0, roll.b));
+    }
     const lit = step(roll.r, curtain ? 0.3 : 0.5);
     const tint = mix(color(0xffc98a), color(0xfff1d6), roll.g);
     m.emissiveNode = tint.mul(smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow)).mul(lit.mul(curtain ? 0.22 : 0.6).add(0.03));

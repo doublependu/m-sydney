@@ -486,6 +486,53 @@ function towerScenario() {
   };
 }
 
+// Into a CBD building's foyer (js/model-sites.js): from out in front of its door, up to it, open it, in, along a way round the foyer (its
+// points in the site's frame, each [x, z, why]), checking each is on the foyer's floor, and back out. `steps`: points outside on the
+// way to the door, each [x, z, why, level over the door's]. Its frames inside are its metric `fpsIn<Room>`.
+function foyerScenario({ id, door, doorId, room, steps = [], inside }) {
+  return {
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const SITE = (await import('../../js/model-sites.js')).MODEL_SITES.find((s) => s.id === id);
+      const at = (x, z) => ({ x: SITE.x + x * Math.cos(SITE.yaw) + z * Math.sin(SITE.yaw), z: SITE.z - x * Math.sin(SITE.yaw) + z * Math.cos(SITE.yaw) });
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const level = async () => (await human.state()).surfaceY - SITE.y;
+      const walk = async (x, z, why) => expect(await walkTo(human, at(x, z)), `never got ${why}`);
+      const [dx, dz] = door;
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      // Out in front of the door, facing it
+      const [sx, sz] = steps[0] ?? [dx + 1.5, dz + 4.0];
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...at(sx, sz), h: SITE.yaw + Math.PI });
+      await page.waitForFunction((siteId) => window.__gameDebug.interior().sites.find((s) => s.id === siteId)?.out, id, { timeout: 60000, polling: 250 });
+      for (const [x, z, why, y] of steps.slice(1)) {
+        await walk(x, z, why);
+        if (y !== undefined) expect(Math.abs((await level()) - y) < 0.2, `${why}: at ${(await level()).toFixed(2)} m, not ${y}`);
+      }
+      await walk(dx, dz + 1.6, 'up to the door');
+      await walk(dx, dz + 0.9, 'to the door');
+      expect(Math.abs(await level()) < 0.15, `at the door at ${(await level()).toFixed(2)} m`);
+      await face(human, at(dx, dz - 2.0));
+      await human.wait(300);
+      const prompt = (await interior()).prompt;
+      expect(prompt === 'Open', `at the door the prompt is ${prompt}`);
+      await human.press('KeyF');
+      const open = await human.until(async () => (await interior()).doors.find((d) => d.id === doorId)?.angle >= 1.5, { timeout: 15000, read: interior });
+      expect(open, 'its door never opened');
+      let first = true;
+      for (const [x, z, why] of inside) {
+        await walk(x, z, why);
+        const i = await interior();
+        expect(i.room === room && Math.abs(await level()) < 0.05, `${why}: in ${i.room} at ${(await level()).toFixed(2)} m`);
+        if (first) metric(`fpsIn${room[0].toUpperCase()}${room.slice(1)}`, (await debug(() => window.__gameDebug.frameCost())).fps);
+        first = false;
+      }
+      for (const [x, z, why] of [...inside].reverse().slice(1)) await walk(x, z, `back ${why}`);
+      await walk(dx, dz + 2.5, 'out through the door');
+      expect((await interior()).inside === null, 'still inside, out in front of the door');
+    }
+  };
+}
+
 // Through 55 Lower Fort St (js/model-sites.js, lfs-west): in at the front door, up the stair, through the sitting room onto the balcony
 // to sit at its table, back down and down again to the basement, out of the back door into the courtyard and out of its gate
 function lowerFortScenario() {
@@ -1307,6 +1354,28 @@ export const SCENARIOS = {
   'pylon-lookout-phone': { ...lookoutScenario(), profile: 'phone' },
   'sydney-tower': towerScenario(),
   'sydney-tower-phone': { ...towerScenario(), profile: 'phone' },
+  'salesforce-tower': foyerScenario({
+    id: 'salesforce-tower', door: [0, 21.0], doorId: 'salesforce', room: 'foyer',
+    inside: [[0, 18.6, 'in through the door'], [0.55, 12.4, 'to the gates'], [0.55, 9.0, 'through a gate to the lifts']]
+  }),
+  'ey-centre': foyerScenario({
+    id: 'ey-centre', door: [0, 15.37], doorId: 'ey', room: 'foyer',
+    inside: [[0, 12.8, 'in through the door'], [0, 8.6, 'to the gates'], [0, 5.0, 'through a gate to the lifts']]
+  }),
+  'customs-house': foyerScenario({
+    id: 'customs-house', door: [0, 17.8], doorId: 'customs', room: 'atrium',
+    steps: [[2.5, 26.5], [0.8, 22.2, 'onto the steps'], [0.8, 21.25, 'up the steps', -0.1], [0, 20.4, 'under the porch', 0.0]],
+    inside: [[0, 15.2, 'in through the door'], [0, 2.4, 'to the glass floor'], [0.4, -3.0, 'onto the glass, over the city'], [0.4, -7.2, 'across the glass']]
+  }),
+  'customs-house-phone': { ...foyerScenario({
+    id: 'customs-house', door: [0, 17.8], doorId: 'customs', room: 'atrium',
+    steps: [[2.5, 26.5], [0.8, 22.2, 'onto the steps'], [0.8, 21.25, 'up the steps', -0.1], [0, 20.4, 'under the porch', 0.0]],
+    inside: [[0, 15.2, 'in through the door'], [0.4, -3.0, 'onto the glass, over the city']]
+  }), profile: 'phone' },
+  'crown-sydney': foyerScenario({
+    id: 'crown-sydney', door: [-20.21, 16.91], doorId: 'crown', room: 'lobby',
+    inside: [[-20.21, 14.4, 'in through the door'], [-20.21, 9.6, 'to the reception'], [-16.0, 9.0, 'beside the columns']]
+  }),
   'opera-house': operaHouseScenario(),
   'opera-house-phone': { ...operaHouseScenario(), profile: 'phone' },
   'origin-move': originScenario(''),

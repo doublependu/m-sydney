@@ -70,7 +70,10 @@ const HOUSES = {
   'quarry-rd': { doors: ['front', 'living-deck'], cut: true },
   'parklea-close': { doors: ['front', 'lounge-balcony', 'lounge-verandah', 'garage', 'office'], cut: false },
   'parklea-cottage': { doors: ['front', 'patio'], cut: false },
-  'parklea-shed': { doors: [], cut: false }
+  'parklea-shed': { doors: [], cut: false },
+  'cove-st-41': { doors: ['front', 'back'], cut: false },
+  'cove-st-43': { doors: ['front', 'back'], cut: false },
+  'school-st': { doors: ['front', 'side', 'courtyard', 'balcony-1', 'balcony-2', 'balcony-3'], cut: false }
 };
 
 for (const [id, want] of Object.entries(HOUSES)) {

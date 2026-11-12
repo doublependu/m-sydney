@@ -740,6 +740,57 @@ const cottageScenario = () => houseScenario('parklea-cottage', {
   ]
 });
 
+// 41 Cove St, Watsons Bay (cove-st-41): from the drive up the porch's steps, in at the front door; to the sofa; into the master
+// bedroom; through the kitchen and the laundry into the storeroom, and out of the back door onto its landing
+const cove41Scenario = () => houseScenario('cove-st-41', {
+  start: [-4.0, -1.6], toward: [-1.0, 1.45], inside: 'cove-st-41-i',
+  steps: [
+    ['walk', -1.0, -0.9, 'to the foot of the porch\'s steps'], ['walk', -1.0, 2.0, 'up onto the porch'], ['level', 0],
+    ['walk', -0.7, 3.15, 'to the front door'], ['open', 0.0, 3.15, 'front'], ['walk', 0.9, 3.0, 'in at the front door'], ['room', 'living'],
+    ['fetched'], ['walk', 1.5, 1.35, 'to the sofa'], ['sit', 1.5, 0.55], ['fps', 'fpsInLiving'],
+    ['walk', 2.28, 3.2, 'to the master bedroom\'s door'], ['walk', 2.28, 4.4, 'into the master bedroom'], ['room', 'master'],
+    ['walk', 2.28, 3.2, 'back to the living room'], ['walk', 4.0, 1.7, 'to the dining room'], ['walk', 7.0, 2.53, 'to the kitchen'],
+    ['walk', 8.4, 2.53, 'into the kitchen'], ['room', 'kitchen'], ['walk', 8.9, 2.8, 'to the laundry\'s door'],
+    ['walk', 10.2, 2.8, 'into the laundry'], ['room', 'laundry'], ['walk', 10.95, 2.9, 'to the storeroom'],
+    ['walk', 10.95, 4.4, 'into the storeroom'], ['room', 'storage'], ['walk', 10.95, 2.8, 'back to the laundry'],
+    ['walk', 11.1, 2.8, 'to the back door'], ['open', 11.63, 2.8, 'back'], ['walk', 12.2, 2.85, 'out onto the landing'], ['level', 0],
+    ['fps', 'fpsOnLanding']
+  ]
+});
+
+// 43 Cove St, Watsons Bay (cove-st-43): from the footpath up the front steps, in at the front door to the sunroom; through the hall into
+// bed 2; to a chair at the dining table; out of the back door onto the garden
+const cove43Scenario = () => houseScenario('cove-st-43', {
+  start: [4.33, 13.9], toward: [4.33, 9.6], inside: 'cove-st-43-i',
+  steps: [
+    ['walk', 4.33, 13.0, 'to the foot of the front steps'], ['walk', 4.33, 10.0, 'up the front steps'], ['level', 0],
+    ['open', 4.33, 9.59, 'front'], ['walk', 4.4, 8.7, 'in at the front door'], ['room', 'sunroom'], ['fetched'],
+    ['walk', 6.5, 8.75, 'along the sunroom'], ['fps', 'fpsInSunroom'], ['walk', 4.47, 8.7, 'back to the hall door'],
+    ['walk', 4.47, 7.0, 'into the hall'], ['room', 'living'], ['walk', 4.4, 6.3, 'to bed 2\'s door'], ['walk', 6.2, 6.3, 'into bed 2'],
+    ['room', 'bed2'], ['walk', 4.4, 6.3, 'back to the hall'], ['walk', 4.6, 3.2, 'into the living room'], ['sit', 4.9, 2.42],
+    ['walk', 4.15, 3.0, 'away from the table'], ['walk', 4.15, 0.7, 'past it'], ['walk', 3.15, 0.7, 'into the lobby'],
+    ['open', 3.115, 0.0, 'back'], ['walk', 3.1, -0.45, 'out onto the back landing'], ['level', 0]
+  ]
+});
+
+// 2 School St, Balmain East (school-st): from the parking up onto the terrace, up onto the verandah and in at the front door; to the
+// sofa by the fireplace; up the glass stair to the first floor and out onto the balcony; up the attic's stair into bed 4
+const schoolScenario = () => houseScenario('school-st', {
+  start: [-2.6, 16.6], toward: [-0.3, 16.6], inside: 'school-st-i',
+  steps: [
+    ['walk', 0.3, 16.6, 'up the terrace\'s steps'], ['walk', 3.87, 16.9, 'across the terrace'], ['level', -0.45],
+    ['walk', 3.87, 14.4, 'up onto the verandah'], ['level', 0], ['open', 3.87, 13.38, 'front'], ['walk', 3.87, 12.6, 'in at the front door'],
+    ['room', 'living'], ['fetched'], ['walk', 3.2, 12.8, 'past the sofa\'s end'], ['walk', 1.4, 12.8, 'round it'], ['walk', 1.4, 11.3, 'to the sofa'],
+    ['sit', 2.4, 11.3], ['fps', 'fpsInLiving'], ['walk', 1.4, 12.8, 'away from the sofa'], ['walk', 3.3, 12.8, 'round its end'],
+    ['walk', 4.045, 11.0, 'to the foot of the stair'], ['walk', 4.045, 6.4, 'up the glass stair'], ['level', 3.45], ['room', 'lounge'],
+    ['walk', 3.0, 6.4, 'across the landing'], ['walk', 3.3, 9.6, 'past the stair\'s rail'], ['walk', 3.97, 12.6, 'to the balcony doors'],
+    ['open', 3.97, 13.38, 'balcony-2'], ['walk', 3.97, 14.4, 'out onto the balcony'], ['level', 3.45], ['fps', 'fpsOnBalcony'],
+    ['walk', 3.97, 12.6, 'back in'], ['walk', 3.3, 9.6, 'back past the rail'], ['walk', 1.6, 9.6, 'to the attic\'s stair'],
+    ['walk', 1.6, 6.15, 'along it'], ['walk', 0.56, 6.15, 'to its foot'], ['walk', 0.56, 10.4, 'up to the attic'], ['level', 6.55],
+    ['room', 'attic'], ['walk', 1.8, 10.6, 'along the landing'], ['walk', 3.6, 10.6, 'into bed 4'], ['room', 'bed4'], ['fps', 'fpsInAttic']
+  ]
+});
+
 // A house on three levels over Bronte beach (js/model-sites.js, bronte-pacific): from Pacific St in at the front door, through to the
 // living room and out onto its terrace to sit; down the stair to the family room and out onto the deck; down again to the rumpus room
 // and out onto the pool's terrace. Its inside isn't fetched until the front door opens.
@@ -1561,6 +1612,9 @@ export const SCENARIOS = {
   'parklea-close': parkleaScenario(),
   'parklea-close-phone': { ...parkleaScenario(), profile: 'phone' },
   'parklea-cottage': cottageScenario(),
+  'cove-st-41': cove41Scenario(),
+  'cove-st-43': cove43Scenario(),
+  'school-st': schoolScenario(),
   'pylon-lookout': lookoutScenario(),
   'pylon-lookout-phone': { ...lookoutScenario(), profile: 'phone' },
   'sydney-tower': towerScenario(),

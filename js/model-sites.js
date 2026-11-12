@@ -187,6 +187,37 @@ const MODEL_SITES = [
   {
     id: 'parklea-shed', file: 'models/parklea-shed', x: -16630.5, z: -17772, yaw: 0.187, y: 203.0, far: true, replaces: [[15, 7]],
     outline: [[2.6, [[0, 0], [29.5, 0], [29.5, 15.3], [0, 15.3]]], [5.1, [[-1.9, 16.1], [17.7, 16.1], [17.7, 27.0], [-1.9, 27.0]]]]
+  },
+  // 41 Cove St, Watsons Bay: a fibro and weatherboard cottage of the 1920s on the narrow end of the street, south-east of Pacific St, its
+  // covered porch on the street side and the drive past it; and the house beyond it to the south-east, which the map had in the same
+  // box. Its frame: the floor plan's, from the outer corner by the drive; +x away from the street (north-east), +z along it to the
+  // south-east; its floor.
+  {
+    id: 'cove-st-41', file: 'models/cove-st-41', x: 6279.17, z: -4450.39, yaw: 0.7196, y: 9.1, far: true, replaces: [[5, 4]],
+    clear: [[-1.0, -0.3, 2.5]],
+    outline: [
+      [5.2, [[-0.45, -0.45], [12.08, -0.45], [12.08, 7.31], [-0.45, 7.31]]], [3.4, [[-2.4, 1.15], [-0.45, 1.15], [-0.45, 6.5], [-2.4, 6.5]]],
+      [7.4, [[-3.3, 7.6], [14.5, 7.6], [14.5, 16.6], [-3.3, 16.6]]]
+    ]
+  },
+  // ...and 43, the cottage beside it to the north-west, its front door and sunroom to the street. Its frame: the floor plan's, from the
+  // outer corner at the back on the north-west; +x along the street to the south-east, +z towards it; its floor.
+  {
+    id: 'cove-st-43', file: 'models/cove-st-43', x: 6276.18, z: -4464.42, yaw: -0.8512, y: 8.7, far: true, replaces: [],
+    clear: [[4.33, 11.2, 2.0]],
+    outline: [[5.4, [[-0.45, -0.45], [9.86, -0.45], [9.86, 10.04], [-0.45, 10.04]]], [2.6, [[0.2, -6.0], [2.6, -6.0], [2.6, -3.0], [0.2, -3.0]]]]
+  },
+  // 2 School St, Balmain East: a Victorian house of 1840 on the corner of School St and Gallimore Ave, sandstone below and render above, a
+  // verandah and a balcony of cast-iron lace to the harbour, three dormers in its roof; its parking beside it on School St. Its frame: the
+  // floor plans', from the outer corner at the back on School St's side; +x along the front to the north-west, +z to the front (the
+  // north-east); its ground floor.
+  {
+    id: 'school-st', file: 'models/school-st', x: -1488.11, z: -1751.45, yaw: 2.1683, y: 17.3, far: true, replaces: [[4, 9]],
+    clear: [[3.87, 16.6, 2.5], [-1.2, 3.0, 2.0]],
+    outline: [
+      [11.0, [[-0.4, 5.25], [8.55, 5.25], [8.55, 13.78], [-0.4, 13.78]]], [6.0, [[-0.1, 13.78], [8.25, 13.78], [8.25, 15.45], [-0.1, 15.45]]],
+      [7.6, [[2.2, -0.4], [6.15, -0.4], [6.15, 5.25], [2.2, 5.25]]], [3.4, [[6.15, -0.2], [8.66, -0.2], [8.66, 5.25], [6.15, 5.25]]]
+    ]
   }
 ];
 

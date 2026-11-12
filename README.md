@@ -357,6 +357,14 @@ What a model has to be:
     verandah on timber posts, a balcony along its back over the lawn; its small brick cottage by the road; a steel workshop, its roller
     door open, beside two greenhouses. Each in place of the map's box. The `parklea-close` scenario walks in at the front doors, sits in
     the lounge, goes through the bedroom wing and out onto the balcony and down to the lawn; `parklea-cottage` through the cottage.
+- **Two cottages in Watsons Bay** (`cove-st-41`, `cove-st-43`), side by side on the narrow end of Cove St: fibro and weatherboard under
+  hipped roofs of pale green iron, 41 with a gabled porch over its drive, 43 with a sunroom to the street; each with its inside, fetched
+  at its front or back door. The map had both and the house beyond 41 in one box, so 41's model draws that house too, plain. Their
+  scenarios walk in from the drive and the footpath, through the rooms, and out at the back.
+- **A Victorian house in Balmain East** (`school-st`), on the corner of School St and Gallimore Ave: sandstone below and render above, a
+  verandah and a balcony in green cast-iron lace to the harbour, three dormers in a steep roof. Its inside has the three levels of its
+  plans, a glass stair to the first floor and a straight one to the attic. The `school-st` scenario walks up from the parking onto the
+  terrace, in at the front door, sits by the fireplace, goes up to the balcony and on to the attic.
 - **What a big inside adds:** `instances` in its JSON draw a node many times from one (the hall's seats: a node, the room it's in, and
   `[x, y, z, yaw]` for each), as one InstancedMesh for each of its materials; each seat to sit in is in `seats` as well. A room can say
   how far it shuts out the sky (`shelter`, 0.85 unless it says: a glazed foyer less, a concert hall all of it) and how much its own colours

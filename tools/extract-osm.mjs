@@ -29,6 +29,11 @@ const CATEGORIES = {
     relations: `${isIn('man_made', ['pier'])} OR ${isIn('leisure', ['park', 'garden'])} OR ${isIn('natural', ['water'])}`
   },
   coast: { ways: isIn('natural', ['coastline']) },
+  // Beaches and the rock along the shore (tools/build-sand.mjs), and the cliffs' lines
+  sand: {
+    ways: isIn('natural', ['beach', 'sand', 'bare_rock', 'shingle', 'cliff']),
+    relations: isIn('natural', ['beach', 'sand', 'bare_rock'])
+  },
   // Footpaths and what a garden's drawn with: its beds, hedges and scrub, and the gates on its paths (tools/build-garden.mjs)
   paths: {
     ways: `${isIn('highway', ['footway', 'path', 'steps', 'cycleway', 'track', 'bridleway'])} OR ${isIn('landuse', ['flowerbed'])} OR ${isIn('barrier', ['hedge'])} OR ${isIn('natural', ['scrub', 'tree_row'])}`,

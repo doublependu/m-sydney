@@ -8,6 +8,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BitRaster, bbox, elementRings, flat, load, pointInRing, q1, rdp, ringArea, rdpRing, toWorld } from './geo-common.mjs';
 import { gardenAreas } from './garden-areas.mjs';
+import { localAreas } from './local-edits.mjs';
+import { beachBehind, beachTest, loadSand } from './sand-pieces.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const GENERATED = path.join(ROOT, 'tools/data/generated');
@@ -248,6 +250,8 @@ for (const e of land) {
   for (let i = 1; i < pts.length; i++) openings.push([pts[i - 1], pts[i]]);
 }
 const isOpen = (x, z) => openings.some(([a, b]) => segDist(x, z, a, b) < OPENING);
+// ...and none where a beach runs down to the water (tools/build-sand.mjs)
+const onBeach = beachTest(loadSand(GENERATED));
 const seawalls = [];
 let wallMetres = 0;
 for (const rings of GEO.shores) {
@@ -277,10 +281,11 @@ for (const rings of GEO.shores) {
         flush();
         continue;
       }
-      const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 2));
+      const L = Math.hypot(bx - ax, bz - az) || 1;
+      const n = Math.max(1, Math.ceil(L / 2));
       for (let k = 0; k < n; k++) {
         const x = ax + ((bx - ax) * k) / n, z = az + ((bz - az) * k) / n;
-        if (inPark(x, z) && !isOpen(x, z)) run.push([x, z]);
+        if (inPark(x, z) && !isOpen(x, z) && !beachBehind(onBeach, x, z, (bx - ax) / L, (bz - az) / L, side)) run.push([x, z]);
         else flush();
       }
     }
@@ -442,6 +447,30 @@ for (const e of pathsSource) {
     }
   }
 }
+// Planted by hand (tools/local/, `plants`): a kind of tree in a row along a line every so many metres, or at points
+let byHand = 0;
+for (const area of localAreas()) {
+  for (const p of area.plants || []) {
+    const kind = K[p.kind];
+    if (kind === undefined) throw new Error(`tools/local/${area.file}: no kind of plant called ${p.kind}`);
+    const spots = [...(p.at || [])];
+    if (p.line) {
+      // Every `every` metres along the line, from its start, carried round its corners
+      let next = 0, walked = 0;
+      for (let i = 1; i < p.line.length; i++) {
+        const [ax, az] = p.line[i - 1], [bx, bz] = p.line[i], L = Math.hypot(bx - ax, bz - az);
+        for (; next <= walked + L; next += p.every) spots.push([ax + ((bx - ax) * (next - walked)) / L, az + ((bz - az) * (next - walked)) / L]);
+        walked += L;
+      }
+    }
+    for (const [x, z] of spots) {
+      if (!areaAt(x, z) || !clearFor(x, z, SMALL.has(kind)) || treeNear(x, z, p.apart ?? 4)) continue;
+      const [lo, hi] = p.height;
+      addPlant(x, z, kind, Math.round(lo + seeded(x, z, 9) * (hi - lo)));
+      byHand++;
+    }
+  }
+}
 // Each zone filled by its mix, round the trees already there; beds under the small plants
 const planted = {};
 for (const zone of zones) {
@@ -471,7 +500,7 @@ for (const zone of zones) {
 const counts = {};
 for (const [, , kind] of plants) counts[kind] = (counts[kind] || 0) + 1;
 const names = Object.fromEntries(Object.entries(K).map(([k, v]) => [v, k]));
-log(`${plants.length} plants: ${osmTrees} trees from OSM; by zone ${JSON.stringify(planted)}`);
+log(`${plants.length} plants: ${osmTrees} trees from OSM, ${byHand} by hand; by zone ${JSON.stringify(planted)}`);
 log(`by kind: ${Object.entries(counts).map(([k, v]) => `${names[k]} ${v}`).join(', ')}; ${beds.length} beds`);
 
 fs.writeFileSync(OUT, JSON.stringify({

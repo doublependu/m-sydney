@@ -1,0 +1,48 @@
+{
+  "name": "Bronte: the park behind the beach, its promenade, the Bogey Hole and the baths, and the flats round 499 Bronte Rd",
+  "box": [5540, 2290, 6300, 2910],
+  "plants": [
+    {
+      "kind": "datePalm",
+      "height": [8, 12],
+      "every": 13,
+      "line": [[6052, 2548], [6055, 2575], [6063, 2603], [6074, 2628], [6086, 2648], [6098, 2662], [6110, 2675], [6122, 2687], [6143, 2702]],
+      "why": "Canary Island date palms along the park's side of the Beach Promenade, as the listing's aerial photos of 499 Bronte Rd show them (02, 06, 13)"
+    },
+    {
+      "kind": "araucaria",
+      "height": [24, 32],
+      "every": 24,
+      "apart": 8,
+      "line": [[6078, 2700], [6100, 2708], [6124, 2722], [6146, 2730], [6172, 2738]],
+      "why": "Norfolk Island pines along the park's south edge above Calga Place, and at the corner by the steps up to Bronte Rd (02, 13)"
+    },
+    {
+      "kind": "araucaria",
+      "height": [22, 30],
+      "apart": 8,
+      "at": [[5990, 2610], [5962, 2640], [6010, 2470], [6030, 2455]],
+      "why": "Norfolk Island pines in the park's lawn, the tallest trees there in the photos"
+    }
+  ],
+  "rock": [
+    {
+      "ring": [[6144.9, 2647.3], [6158, 2638], [6176, 2642], [6190, 2656], [6196, 2676], [6194, 2696], [6188.3, 2716.6], [6166.9, 2684.9], [6172.1, 2684.5],
+        [6176.8, 2683.6], [6179.2, 2680.8], [6178.6, 2672.5], [6175.8, 2664.8], [6171.6, 2658], [6164.5, 2652.8]],
+      "why": "The rock shelf at the beach's south end round the Bogey Hole, the pool among the rocks (OSM's swimming area, way 592332752), which OSM doesn't draw as rock"
+    },
+    {
+      "ring": [[6221.3, 2710.6], [6226, 2700], [6244, 2712], [6262, 2730], [6278, 2748], [6269.8, 2755.4], [6252.3, 2737.8], [6237, 2724.5]],
+      "why": "The shelf past Bronte Baths, under the cliff"
+    }
+  ],
+  "buildings": [
+    {
+      "area": [[5900, 2700], [6060, 2700], [6140, 2735], [6240, 2770], [6262, 2880], [5900, 2905]],
+      "maxHeight": 14,
+      "kinds": ["flats", "house", "other"],
+      "style": "Red-brick flats",
+      "why": "The blocks of flats along Pacific St and up Bronte Rd from the beach, round 499 Bronte Rd: red brick under terracotta tiled roofs, two and three storeys (the listing's aerial photos 02 and 13). The build gave them the walk-ups' flat roofs and its houses' mix of styles."
+    }
+  ]
+}

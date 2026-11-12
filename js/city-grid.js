@@ -10,7 +10,9 @@ import {
   createCurbMaterial,
   createSandstoneWallMaterial,
   createWaterMaterial,
-  createParkLawnMaterial
+  createParkLawnMaterial,
+  createSandMaterial,
+  createCoastRockMaterial
 } from './tsl-materials.js';
 import { groundHeight, groundRoadAt, linkById } from './surfaces.js';
 import { GroundCells, SIDEWALK_TOP, addBase, addCurb, addRoadDeck, addSurface, denseRing, pointInPolygonXZ } from './ground-geometry.js';
@@ -224,7 +226,9 @@ function groundMaterials() {
     // Under all of it, a plain dark ground: a seam anywhere shows that, never the harbour
     base: new THREE.MeshStandardNodeMaterial({ color: 0x2c2b29, roughness: 1 }),
     // Both sides: a few shores' rings are wound the other way round, and their walls would face the land
-    seawall: Object.assign(createSandstoneWallMaterial({ waterLevel: CITY_BOUNDS.waterLevel }), { side: THREE.DoubleSide })
+    seawall: Object.assign(createSandstoneWallMaterial({ waterLevel: CITY_BOUNDS.waterLevel }), { side: THREE.DoubleSide }),
+    sand: createSandMaterial({ waterLevel: CITY_BOUNDS.waterLevel }),
+    rock: createCoastRockMaterial({ waterLevel: CITY_BOUNDS.waterLevel })
   };
   // ...and none of it closing a tunnel's mouth (js/tunnel-mouths.js)
   for (const mat of [shared.curb, shared.sidewalk, shared.lawn, shared.hedge, shared.base]) mat.maskNode = outsideTunnelMouths();
@@ -244,8 +248,99 @@ function buildWater(target) {
   return water;
 }
 
-// The shore, a segment at a time
-const shoreOfTile = (tile) => (tile.shore || []).map(([side, ax, az, bx, bz]) => ({ a: { x: ax, z: az }, b: { x: bx, z: bz }, side }));
+// The shore, a segment at a time; `beach` where a beach lies behind it (tools/build-tiles.mjs)
+const shoreOfTile = (tile) => (tile.shore || []).map(([side, ax, az, bx, bz, beach]) => ({ a: { x: ax, z: az }, b: { x: bx, z: bz }, side, beach: beach === 1 }));
+
+// Beaches and the coast's bare rock (tools/build-sand.mjs): sand and rock lie this far over the lawn they're drawn on, as the garden's paths
+// do, so neither shows through the other
+const SAND_LIFT = 0.06, ROCK_LIFT = 0.12;
+// A beach runs on past the shore and down under the water, so the sea meets it at a line: FACE_RUN m out, to FACE_FOOT under the water
+const FACE_RUN = 8, FACE_FOOT = 1.0;
+// A rock shelf in the sea stands this far over it, its edge down into the water
+const SHELF_TOP = 0.25, SHELF_FOOT = 0.6;
+const ptsOf = (flat) => {
+  const out = [];
+  for (let i = 0; i < flat.length; i += 2) out.push({ x: flat[i], z: flat[i + 1] });
+  return out;
+};
+/** A triangle into `cells`, wound to face up */
+function upTriangle(cells, c, p0, p1, p2) {
+  const P = c.position;
+  const ux = P[p1 * 3] - P[p0 * 3], uz = P[p1 * 3 + 2] - P[p0 * 3 + 2], vx = P[p2 * 3] - P[p0 * 3], vz = P[p2 * 3 + 2] - P[p0 * 3 + 2];
+  // y of (u x v): uz vx - ux vz
+  if (uz * vx - ux * vz >= 0) c.index.push(p0, p1, p2);
+  else c.index.push(p0, p2, p1);
+}
+
+/**
+ * A tile's beaches and the coast's rock, into `sand` and `rock`: the pieces on the land over its lawn and paving; past each stretch of shore
+ * with a beach behind it, the sand running on down under the water; and the rock shelves in the sea, flat a little over it, their edges
+ * down into it. `wanted` picks which by where they are. A few pieces a step, as the lawns are.
+ */
+function* addCoast(tile, sand, rock, wanted) {
+  const water = CITY_BOUNDS.waterLevel;
+  for (const [i, [kind, ...flats]] of (tile.sand || []).entries()) {
+    if (i % 4 === 3) yield;
+    const rings = flats.map(ptsOf);
+    const mid = rings[0][rings[0].length >> 1];
+    if (!wanted(mid.x, mid.z)) continue;
+    if (kind !== 2) {
+      addSurface(kind === 0 ? sand : rock, rings, SIDEWALK_TOP + (kind === 0 ? SAND_LIFT : ROCK_LIFT));
+      continue;
+    }
+    const top = water + SHELF_TOP, foot = water - SHELF_FOOT;
+    const c = rock.cell(mid.x, mid.z);
+    const v2 = (p) => new THREE.Vector2(p.x, p.z);
+    const [outer, ...holes] = rings;
+    const all = [...outer, ...holes.flat()];
+    const base = all.map((p) => rock.vertex(c, p.x, top, p.z, 0, 1, 0));
+    for (const [a, b, d] of THREE.ShapeUtils.triangulateShape(outer.map(v2), holes.map((h) => h.map(v2)))) upTriangle(rock, c, base[a], base[b], base[d]);
+    // The edge, down into the water: the material's both sides
+    for (const ring of rings) {
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[j], b = ring[i];
+        const L = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+        const nx = (b.z - a.z) / L, nz = -(b.x - a.x) / L;
+        const q = [rock.vertex(c, a.x, top, a.z, nx, 0, nz), rock.vertex(c, b.x, top, b.z, nx, 0, nz), rock.vertex(c, a.x, foot, a.z, nx, 0, nz), rock.vertex(c, b.x, foot, b.z, nx, 0, nz)];
+        c.index.push(q[0], q[2], q[1], q[1], q[2], q[3]);
+      }
+    }
+  }
+  // The beaches' faces: out from each point of the shore along its two segments' mean normal, so neighbours meet
+  const segs = shoreOfTile(tile).filter((s) => s.beach);
+  if (!segs.length) return;
+  const normals = new Map();
+  const keyOf = (p) => `${p.x},${p.z}`;
+  for (const s of segs) {
+    const L = Math.hypot(s.b.x - s.a.x, s.b.z - s.a.z) || 1;
+    s.nx = ((s.b.z - s.a.z) / L) * s.side;
+    s.nz = (-(s.b.x - s.a.x) / L) * s.side;
+    for (const p of [s.a, s.b]) {
+      const n = normals.get(keyOf(p)) || normals.set(keyOf(p), { x: 0, z: 0 }).get(keyOf(p));
+      n.x += s.nx;
+      n.z += s.nz;
+    }
+  }
+  for (const s of segs) {
+    if (!wanted((s.a.x + s.b.x) / 2, (s.a.z + s.b.z) / 2)) continue;
+    const c = sand.cell(s.a.x, s.a.z);
+    const out = [s.a, s.b].map((p) => {
+      const n = normals.get(keyOf(p)), L = Math.hypot(n.x, n.z) || 1;
+      return { x: n.x / L, z: n.z / L };
+    });
+    const ya = groundHeight(s.a.x, s.a.z) + SIDEWALK_TOP + SAND_LIFT, yb = groundHeight(s.b.x, s.b.z) + SIDEWALK_TOP + SAND_LIFT;
+    const slope = ((ya + yb) / 2 - (water - FACE_FOOT)) / FACE_RUN;
+    const ny = 1 / Math.hypot(slope, 1), nh = slope * ny;
+    const v = [
+      sand.vertex(c, s.a.x, ya, s.a.z, s.nx * nh, ny, s.nz * nh),
+      sand.vertex(c, s.b.x, yb, s.b.z, s.nx * nh, ny, s.nz * nh),
+      sand.vertex(c, s.a.x + out[0].x * FACE_RUN, water - FACE_FOOT, s.a.z + out[0].z * FACE_RUN, s.nx * nh, ny, s.nz * nh),
+      sand.vertex(c, s.b.x + out[1].x * FACE_RUN, water - FACE_FOOT, s.b.z + out[1].z * FACE_RUN, s.nx * nh, ny, s.nz * nh)
+    ];
+    upTriangle(sand, c, v[0], v[1], v[2]);
+    upTriangle(sand, c, v[1], v[3], v[2]);
+  }
+}
 
 /**
  * A tile's ground, into `target`: the road surface and the curb islands: curbs around every one, paving and lawn on them, a
@@ -309,12 +404,16 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
     if (part(mid.x, mid.z)) addSurface(onSeparator(rings) ? paving : lawns, cuts.length ? withCuts(rings) : rings, SIDEWALK_TOP + 0.02);
     if (i % 8 === 0) yield;
   }
+  const sand = cells(), rock = cells();
+  yield* addCoast(tile, sand, rock, wanted);
   yield;
   buildCells(road, target, mats.road);
   buildCells(curbs, target, mats.curb, { cast: true, cullDistance: GROUND_CULL.curbs });
   yield;
   buildCells(paving, target, mats.sidewalk);
   buildCells(lawns, target, mats.lawn);
+  buildCells(sand, target, mats.sand);
+  buildCells(rock, target, mats.rock);
   buildCells(hedges, target, mats.hedge, { cullDistance: GROUND_CULL.hedges });
   buildCells(yellow, target, mats.bollardYellow, { cullDistance: GROUND_CULL.bollards });
   buildCells(black, target, mats.bollardBlack, { cullDistance: GROUND_CULL.bollards });
@@ -337,7 +436,8 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
 
   // Sandstone seawalls down to the water, where the land ends
   const seawalls = cells();
-  for (const { a, b, side } of shoreOfTile(tile)) {
+  for (const { a, b, side, beach } of shoreOfTile(tile)) {
+    if (beach) continue;
     const L = Math.hypot(b.x - a.x, b.z - a.z) || 1;
     const nx = ((b.z - a.z) / L) * side, nz = (-(b.x - a.x) / L) * side;
     const c = seawalls.cell(a.x, a.z);

@@ -1,5 +1,5 @@
 // tools/tile-diff.mjs: which of the map's files a build changed, against git, and whether a change reached past the areas edited by
-// hand (tools/local/), the gardens tools/build-garden.mjs planted and the buildings drawn from models. Tiles are named for a hash of
+// hand (tools/local/), the gardens tools/build-garden.mjs planted, the beaches and the buildings drawn from models. Tiles are named for a hash of
 // their contents, so a changed tile is one whose name changed.
 // usage: node tools/tile-diff.mjs [--against=HEAD] [--accept] [--list]
 //   --accept  a change meant to reach the whole map (a new field in every tile): list it, don't fail on it
@@ -43,7 +43,13 @@ const gardens = fs.existsSync(gardenFile) ? JSON.parse(fs.readFileSync(gardenFil
 // ...and the buildings drawn from models of their own, which leave the map's buildings there out (js/model-sites.js)
 const { MODEL_SITES } = await import('../js/model-sites.js');
 const sites = MODEL_SITES.filter((s) => !s.debug).map((s) => ({ name: `${s.id}: a model (js/model-sites.js)`, box: [s.x - 80, s.z - 80, s.x + 80, s.z + 80] }));
-const areas = [...localAreas(), ...gardens, ...sites];
+// ...and the beaches and the coast's rock (tools/build-sand.mjs): each piece's box, padded for the ground graded down to the water there
+const sandFile = path.join(ROOT, 'tools/data/generated/sand.json');
+const sand = fs.existsSync(sandFile) ? JSON.parse(fs.readFileSync(sandFile, 'utf8')).pieces.map(([, outer]) => {
+  const xs = outer.filter((_, i) => i % 2 === 0), zs = outer.filter((_, i) => i % 2 === 1);
+  return { name: 'the beaches and the coast\'s rock (tools/build-sand.mjs)', box: [Math.min(...xs) - 60, Math.min(...zs) - 60, Math.max(...xs) + 60, Math.max(...zs) + 60] };
+}) : [];
+const areas = [...localAreas(), ...gardens, ...sites, ...sand];
 const inArea = (key) => {
   const [ix, iz] = key.split('_').map(Number);
   const x0 = ix * size, z0 = iz * size, x1 = x0 + size, z1 = z0 + size;
@@ -52,7 +58,8 @@ const inArea = (key) => {
 const outside = tiles.filter((k) => !inArea(k));
 
 console.log(`tiles: ${tiles.length} of ${Object.keys(now.tiles).length} changed against ${against}, ${outside.length} outside the areas edited by hand`);
-for (const a of areas) console.log(`  ${a.name}: ${tiles.filter((k) => inArea(k) === a).length} tiles`);
+for (const a of areas.filter((x) => !sand.includes(x))) console.log(`  ${a.name}: ${tiles.filter((k) => inArea(k) === a).length} tiles`);
+if (sand.length) console.log(`  the beaches and the coast's rock (tools/build-sand.mjs): ${tiles.filter((k) => sand.includes(inArea(k))).length} tiles`);
 console.log(`far squares: ${far.length} changed${far.length ? ` (${far.join(', ')})` : ''}`);
 console.log(`whole-map files changed: ${whole.join(', ') || 'none'}`);
 if (list || outside.length <= 20) for (const k of outside) console.log(`  outside: ${k}`);

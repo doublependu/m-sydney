@@ -99,7 +99,7 @@ in players' caches. They go in a folder for each 8 km square, 64 at most, as Git
 npm run data:fetch                                     # the original snapshots, from Overpass and open data sites
 curl -L -o tools/data/osm/australia-latest.osm.pbf https://download.geofabrik.de/australia-oceania/australia-latest.osm.pbf   # 972 MB
 BOX=150.8743,-34.1571,151.4826,-33.4732                # the map and a margin: west, south, east, north
-node tools/extract-osm.mjs $BOX tools/data/east        # cuts the roads, land, rail, coast and footpaths out of it, in seconds
+node tools/extract-osm.mjs $BOX tools/data/east        # cuts the roads, land, rail, coast, beaches and footpaths out of it, in seconds
 SYDNEY_DATA=tools/data/east SYDNEY_BOX='-34.1571,150.8743,-33.4732,151.4826' node tools/fetch-data.mjs overture_syd,overture_parts   # 3 min
 node tools/fetch-data.mjs overture_density             # for the horizon: 90 s
 node tools/fetch-elevation.mjs --cell=100              # for the horizon: 4 min
@@ -111,17 +111,24 @@ npm run data:map                                       # the map screen's images
 
 Hand edits to the map are in `tools/local/`, a file for each area (`tools/local-edits.mjs` says what one holds): OSM ways' tags, as the
 Harbour Bridge's ramps, a style of house for an area's buildings, as Millers Point's terraces, and one building's height and style, as
-Circular Quay West's. Each names what it expects to find, so the build stops when the data under it has changed. A change to buildings
+Circular Quay West's, trees planted by hand in a garden, as Bronte Park's palms and pines, and rock where OSM has none, as Bronte's
+shelves. Each names what it expects to find, so the build stops when the data under it has changed. A change to buildings
 alone needs only the build's later steps, about 3.5 minutes on the last build's data: `tools/build-buildings.mjs`, `build-garden.mjs`,
 `build-trees.mjs`, `build-awnings.mjs`, then `build-tiles.mjs`; a change to the gardens only `build-garden.mjs`, `build-trees.mjs` and
-`build-tiles.mjs`. `tools/tile-diff.mjs` checks that only tiles in the areas edited by hand, the gardens and the model sites changed.
+`build-tiles.mjs`; a change to the beaches `build-sand.mjs` (2 minutes) and then the gardens'. `tools/tile-diff.mjs` checks that only tiles in the areas edited by hand, the gardens and the model sites changed.
 
-The gardens (`tools/build-garden.mjs`): in the Royal Botanic Garden, the Domain, round the Opera House and along Circular Quay, OSM's
+The beaches (`tools/build-sand.mjs`): every beach OSM has (`natural=beach`, `sand`, `shingle`) is sand, and along the coast, within 150 m
+of the shore, its bare rock and a strip either side of each cliff's line are sandstone, and rock in the sea a shelf a little over it. Each
+piece lies where the ground is the curb islands' lawn or paving, cut to their 240 m squares, and is drawn over them (`js/city-grid.js`).
+Where a beach meets the sea its shore is the beach's, not a sea wall: the ground is graded down to the water there
+(`tools/tiles/grade-ground.mjs`), and the sand runs on past the shore and under the water, foam where the swash runs up it.
+
+The gardens (`tools/build-garden.mjs`): in the Royal Botanic Garden, the Domain, round the Opera House, along Circular Quay and in Bronte Park, OSM's
 footpaths, steps and cycleways off the roads, the gates on them, its hedges, ponds and beds, and every plant. Its trees come from OSM,
 by what it says they are or what grows round them; each garden OSM names, and those on the garden's own map that OSM hasn't (placed on
 the world from the ones it has, to about 20 m), is planted by its kind: roses, herbs, succulents, natives, palms, rainforest, beds. Along
 the parks' shores (not the boxes round the Opera House and the Quay) a sandstone parapet tops the sea wall, open where steps or a jetty
-reach the water. Still water in a garden is its pond, untagged as OSM may leave it, not the sea (`tools/build-geodata.mjs`). The areas
+reach the water, and none where a beach does. Still water in a garden is its pond, untagged as OSM may leave it, not the sea (`tools/build-geodata.mjs`). The areas
 are a list in `tools/garden-areas.mjs`, so more can be added; the rest of the map's footpaths wait, as they'd change where everyone walks.
 
 The generators write the whole map to `tools/data/generated/`, and `tools/build-tiles.mjs` cuts it up. What needs a 1 m raster is done a region at a
@@ -134,7 +141,7 @@ what it did.
 |---|---|---|
 | `tiles/world.json` | What the whole map shares: tile list, structures, the bridge's deck | At start |
 | `tiles/far-heights.bin.gz` | The ground on a very coarse grid, for where nothing better is held | At start |
-| `tiles/<X>_<Z>/<x>_<z>.<hash>.bin.gz` | A tile, in the folder of the 8 km square it's in: roads with their shapes and OSM class, kerbs, where the land and shore are, buildings with each house's style, trees, heights, tunnel mouths, a 5 m grid of how far the ground moves to meet the roads, and a 100 m grid of residents, homes, workers, land use and zoning | When the player's near |
+| `tiles/<X>_<Z>/<x>_<z>.<hash>.bin.gz` | A tile, in the folder of the 8 km square it's in: roads with their shapes and OSM class, kerbs, where the land and shore are (and which of the shore is a beach's), the beaches and the coast's rock, buildings with each house's style, trees, heights, tunnel mouths, a 5 m grid of how far the ground moves to meet the roads, and a 100 m grid of residents, homes, workers, land use and zoning | When the player's near |
 | `tiles/far/far_<x>_<z>.<hash>.bin.gz` | 4 km of the far level: every building as a few points, plain ground with its own land and heights, main roads | Near the player, after the first frame |
 | `tiles/far.json.gz` | Land beyond the map, suburbs' names, and the streets around the Harbour Bridge | After the first frame |
 | `tiles/horizon.bin.gz` | The whole box out to Katoomba, coarsely | After the first frame |
@@ -181,6 +188,10 @@ what it did.
   (`roadShare()` in `js/traffic.js`). People out walking are one for every 200 residents and workers within 350 m, and a crowd at each
   station. The graphics level's numbers are the most there are. Cars are parked along the kerbs of streets of homes, as many as
   the homes there, drawn as the far cars are and simulating nothing; the player hits them.
+- **A beach's sand comes down to the sea.** The survey has the sand a metre or two over the water's edge, and the sea is 2.2 m under the
+  survey's zero, so a beach would end in a step. The ground on a beach is graded down within 60 m of its shore, rising 8 cm a metre
+  inland from 0.1 m over the sea until it meets the ground as surveyed, never raised, faded out over 4 m at the sand's other edges and
+  kept 6-12 m clear of the roads. The sand's material darkens where the swash wets it, and its foam runs up and back.
 - **The Opera House's shells are cut from spheres,** all of one radius, as Utzon's were (`js/opera-house.js`). Each shell is two
   mirrored halves with four corners: its tip and the end of its ridge on the hall's centre line, the foot of its valley at the side, and
   the pedestal its arch comes down to. The ridge is where a half's sphere meets its mirror's, and the valley where two shells back to back
@@ -323,6 +334,13 @@ What a model has to be:
     (`tests/building-geodata.test.cjs`).
   - A tower's site says how high it stands and how far it reaches (`top`, `radius`): a helicopter arriving beside it clears it
     (`roofsNear()`, `js/controllers.js`) though its model comes only once the city round you is in, as it cleared the map's box.
+- **A house over Bronte beach** (`bronte-pacific`), on the corner of Bronte Rd and Pacific St, in place of the map's box: white render on
+  three levels down the slope, a sandstone-clad garage turned square to Pacific St, the top floor's living room open to a terrace under a
+  timber pergola, a deck along the middle floor and a lap pool on the low side. It's built into the slope, so its site's `cut` leaves the
+  ground undrawn over the house, its deck and its pool's terrace, and the model draws the ground round them itself, as surveyed. Its
+  inside, fetched at its doors (the front door, the garage's side door, the rumpus room's onto the pool, the middle floor's onto the
+  deck), has the three floors of its floor plan. The `bronte-pacific` scenario walks in at the front door, sits on the terrace, and goes
+  down through the house to the pool. The flats round it are red brick under tiled roofs (`tools/local/bronte.json`).
 - **What a big inside adds:** `instances` in its JSON draw a node many times from one (the hall's seats: a node, the room it's in, and
   `[x, y, z, yaw]` for each), as one InstancedMesh for each of its materials; each seat to sit in is in `seats` as well. A room can say
   how far it shuts out the sky (`shelter`, 0.85 unless it says: a glazed foyer less, a concert hall all of it) and how much its own colours

@@ -66,6 +66,19 @@ const MODEL_SITES = [
   {
     id: 'crown-sydney', file: 'models/crown-sydney', x: -710, z: -1138, yaw: 3.1093, y: 2.3, far: true, top: 271.3, radius: 25,
     replaces: [[0, 0], [-30.89, -27.02], [-12.51, -77.64]], clear: [[-20.2, 19.0, 3.0]]
+  },
+  // A house of the 2000s on the corner of Bronte Rd and Pacific St, Bronte, over the beach: white render on three levels down the slope, a
+  // sandstone garage turned square to Pacific St, a lap pool on its low, west side. Its frame: +x along Bronte Rd to the south-east, +z
+  // towards Pacific St, its beach side's face at z = 0; its top floor, the garage's and the front door's level. It's built into the slope,
+  // so the ground's left undrawn over it, its deck and its pool's terrace, which it draws itself.
+  {
+    id: 'bronte-pacific', file: 'models/bronte-pacific', x: 6096.86, z: 2750.39, yaw: -0.6066, y: 19.7, far: true, replaces: [[0, 5.0]],
+    cut: {
+      poly: [[-21.8, -2.4], [-12.6, -2.4], [-12.6, -1.6], [13.0, -1.6], [13.0, 7.75], [8.7, 7.75], [8.7, 7.15], [4.35, 7.15], [4.35, 12.4],
+        [-1.6, 12.4], [-1.6, 13.4], [-3.43, 16.03], [-9.23, 19.37], [-12.57, 13.57], [-13.6, 12.2], [-16.4, 8.8]],
+      y: -7.0
+    },
+    clear: [[-3.4, 15.0, 2.5], [-6.0, 21.0, 3.5]]
   }
 ];
 

@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { color, mix, smoothstep, step, uniform, vertexColor } from 'three/tsl';
+import { Fn, cameraViewMatrix, color, mix, normalize, positionWorld, sin, smoothstep, step, time, uniform, vec3, vertexColor } from 'three/tsl';
 import { CITY_BOUNDS, blockAt } from './city-config.js';
 import { MODEL_SITES } from './model-sites.js';
 import { clearFloor, groundHeight, setFloor } from './surfaces.js';
@@ -52,6 +52,16 @@ function materialFor(name, inside) {
     // Glass to walk on, as over a pit with something to see in it: nearly clear, a little of the room's light on it
     m = new THREE.MeshStandardNodeMaterial({ color: 0xd8e6ea, roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.16, depthWrite: false,
       flatShading: true });
+  } else if (name === 'pool') {
+    // A pool's water, tiled or rock-cut under it: its vertex colour is the water's, clear and bright, the sky in it at a glance, and a
+    // slow ripple over it
+    m = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.08, metalness: 0.15, flatShading: false });
+    m.normalNode = Fn(() => {
+      const p = positionWorld.xz.mul(1.3);
+      const w = sin(p.x.add(time.mul(0.9))).mul(sin(p.y.mul(1.3).sub(time.mul(0.7)))).mul(0.04);
+      return cameraViewMatrix.transformDirection(normalize(vec3(w, 1.0, w.mul(-0.6))));
+    })();
+    m.emissiveNode = vertexColor().mul(0.12);
   } else if (name === 'glass' || name === 'curtain') {
     // From the street a window like the neighbours': dark by day, lit at night. It faces out only, so from inside you see through it.
     // A curtain wall's (`curtain`, The Ribbon's) is bluer and less of a mirror: its flat panes round a curve would each catch the sky

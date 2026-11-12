@@ -15,7 +15,7 @@
     "viewports": "node tools/play/viewports.mjs",
     "data:fetch": "node tools/fetch-data.mjs",
     "data:map": "npm run --silent build && node tools/build-map-images.mjs && npm run --silent build",
-    "data:build": "node --max-old-space-size=20000 tools/build-geodata.mjs && node --max-old-space-size=20000 tools/build-heights.mjs && node --max-old-space-size=20000 tools/build-geodata.mjs --reuse-rasters && node --max-old-space-size=20000 tools/build-heights.mjs && node --max-old-space-size=8000 tools/build-population.mjs && node --max-old-space-size=16000 tools/build-buildings.mjs && node tools/build-garden.mjs && node tools/build-trees.mjs && node tools/build-awnings.mjs && node tools/build-road-tags.mjs && node tools/build-tiles.mjs && node tools/build-horizon.mjs",
+    "data:build": "node --max-old-space-size=20000 tools/build-geodata.mjs && node --max-old-space-size=20000 tools/build-heights.mjs && node --max-old-space-size=20000 tools/build-geodata.mjs --reuse-rasters && node --max-old-space-size=20000 tools/build-heights.mjs && node --max-old-space-size=8000 tools/build-population.mjs && node --max-old-space-size=16000 tools/build-buildings.mjs && node --max-old-space-size=8000 tools/build-sand.mjs && node tools/build-garden.mjs && node tools/build-trees.mjs && node tools/build-awnings.mjs && node tools/build-road-tags.mjs && node tools/build-tiles.mjs && node tools/build-horizon.mjs",
     "check": "node tools/check.mjs"
   },
   "dependencies": {

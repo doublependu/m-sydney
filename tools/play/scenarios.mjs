@@ -628,6 +628,98 @@ function lowerFortScenario() {
   };
 }
 
+// A house on three levels over Bronte beach (js/model-sites.js, bronte-pacific): from Pacific St in at the front door, through to the
+// living room and out onto its terrace to sit; down the stair to the family room and out onto the deck; down again to the rumpus room
+// and out onto the pool's terrace. Its inside isn't fetched until the front door opens.
+function bronteScenario() {
+  return {
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const SITE = { x: 6096.86, z: 2750.39, yaw: -0.6066, y: 19.7 };
+      const at = (x, z) => ({ x: SITE.x + x * Math.cos(SITE.yaw) + z * Math.sin(SITE.yaw), z: SITE.z - x * Math.sin(SITE.yaw) + z * Math.cos(SITE.yaw) });
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const level = async () => (await human.state()).surfaceY - SITE.y;
+      const fetched = () => debug(() => performance.getEntriesByType('resource').map((r) => r.name).filter((n) => /\/models\//.test(n)));
+      const walk = async (x, z, why) => expect(await walkTo(human, at(x, z)), `never got ${why}, stuck at ${await local()}`);
+      const near = (a, b, d = 0.05) => Math.abs(a - b) < d;
+      const local = async () => {
+        const s = await human.state(), dx = s.x - SITE.x, dz = s.z - SITE.z, c = Math.cos(SITE.yaw), n = Math.sin(SITE.yaw);
+        return `(${(dx * c - dz * n).toFixed(2)}, ${(dx * n + dz * c).toFixed(2)}) at ${(s.surfaceY - SITE.y).toFixed(2)} m`;
+      };
+      const open = async (x, z, id) => {
+        await face(human, at(x, z));
+        await human.wait(300);
+        const prompt = (await interior()).prompt;
+        expect(prompt === 'Open', `at door ${id} the prompt is ${prompt}, standing at ${await local()}`);
+        await human.press('KeyF');
+        const done = await human.until(async () => (await interior()).doors.find((d) => d.id === id)?.angle >= 1.59, { timeout: 15000, read: interior });
+        expect(done, `door ${id} never opened`);
+      };
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...at(-2.4, 17.2), h: Math.PI + SITE.yaw });
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'bronte-pacific')?.out, null, { timeout: 60000, polling: 250 });
+      expect(!(await fetched()).some((n) => /bronte-pacific-i/.test(n)), 'its inside was fetched before a door was opened');
+
+      // Up the path from Pacific St to the front door, beside the garage, and in
+      await walk(-3.75, 14.25, 'to the front door');
+      await open(-4.1, 13.48, 'front');
+      await walk(-4.5, 12.3, 'into the entry');
+      expect((await interior()).room === 'entry', `not in the entry, in ${(await interior()).room}`);
+      expect((await fetched()).some((n) => /bronte-pacific-i/.test(n)), 'its inside wasn\'t fetched at the door');
+      // Through to the living room and out onto the terrace, to the sofa
+      await walk(-4.9, 9.9, 'across the entry');
+      await walk(-4.9, 7.8, 'into the hall');
+      await walk(-4.9, 5.6, 'into the living room');
+      expect((await interior()).room === 'living' && near(await level(), 0), `not in the living room, in ${(await interior()).room}`);
+      await walk(-7.9, 2.6, 'to the terrace doors');
+      await open(-8.8, 2.6, 'living-west-0');
+      await walk(-10.6, 2.6, 'out onto the terrace');
+      expect((await interior()).room === 'terrace', `not on the terrace, in ${(await interior()).room}`);
+      await walk(-11.2, 3.3, 'to the sofa');
+      await face(human, at(-12.05, 3.3));
+      await human.wait(300);
+      expect((await interior()).prompt === 'Sit', `at the sofa the prompt is ${(await interior()).prompt}`);
+      await human.press('KeyF');
+      await human.wait(1200);
+      expect((await interior()).seated, 'not sitting on the terrace');
+      metric('fpsOnTerrace', (await debug(() => window.__gameDebug.frameCost())).fps);
+      await human.hold('KeyW', 120);
+      await human.wait(400);
+      // Back in and down the stair beside the courtyard to the family room
+      await walk(-10.2, 2.6, 'back from the sofa');
+      await walk(-7.9, 2.6, 'back in');
+      await walk(-2.475, 6.2, 'to the head of the stair');
+      await walk(-2.475, 7.25, 'onto the landing');
+      await walk(-2.475, 12.1, 'down the stair');
+      expect(near(await level(), -3.1), `down the stair at ${(await level()).toFixed(2)} m`);
+      await walk(-3.9, 12.1, 'off the foot of the stair');
+      await walk(-4.9, 7.4, 'along the back hall');
+      await walk(-4.9, 5.4, 'into the family room');
+      expect((await interior()).room === 'family', `not in the family room, in ${(await interior()).room}`);
+      metric('fpsInFamilyRoom', (await debug(() => window.__gameDebug.frameCost())).fps);
+      await walk(-5.0, 1.1, 'to the deck doors');
+      await open(-5.0, 0.15, 'family-deck');
+      await walk(-5.0, -0.9, 'out onto the deck');
+      expect(near(await level(), -3.1), `on the deck at ${(await level()).toFixed(2)} m`);
+      // Down again to the rumpus room, and out onto the pool's terrace
+      await walk(-5.0, 1.2, 'back in from the deck');
+      await walk(-2.475, 6.0, 'to the stair down');
+      await walk(-2.475, 7.25, 'onto its landing');
+      await walk(-2.475, 12.1, 'down to the ground floor');
+      expect(near(await level(), -6.2), `down the lower stair at ${(await level()).toFixed(2)} m`);
+      await walk(-3.9, 12.1, 'off its foot');
+      await walk(-4.9, 7.4, 'along the hall');
+      await walk(-4.9, 5.6, 'into the hall by the rumpus room');
+      await walk(-8.0, 5.1, 'into the rumpus room');
+      expect((await interior()).room === 'rumpus', `not in the rumpus room, in ${(await interior()).room}`);
+      await walk(-11.6, 1.7, 'to the pool doors');
+      await open(-12.6, 1.7, 'rumpus-pool-0');
+      await walk(-13.6, 2.0, 'out onto the terrace by the pool');
+      expect(near(await level(), -6.2), `by the pool at ${(await level()).toFixed(2)} m`);
+    }
+  };
+}
+
 // The Opera House (js/model-sites.js, opera-house): up the Monumental Steps and the flight to the upper podium, in at the Concert Hall's
 // south doors, up its grand stair and round to the hall, a seat in the stalls, up the side aisle to the top of the circle, and down the
 // red stair to the northern foyer, to sit and look out over the harbour
@@ -1350,6 +1442,8 @@ export const SCENARIOS = {
   'walk-in': walkInScenario(),
   'walk-in-phone': { ...walkInScenario(), profile: 'phone' },
   'lower-fort-55': lowerFortScenario(),
+  'bronte-pacific': bronteScenario(),
+  'bronte-pacific-phone': { ...bronteScenario(), profile: 'phone' },
   'pylon-lookout': lookoutScenario(),
   'pylon-lookout-phone': { ...lookoutScenario(), profile: 'phone' },
   'sydney-tower': towerScenario(),

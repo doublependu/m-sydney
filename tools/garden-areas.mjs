@@ -10,7 +10,10 @@ export const AREAS = [
   { name: 'Tarpeian Precinct', osm: 'Domain Tarpeian Precinct' },
   // Round the Opera House: not on its podium, which its own model draws (js/model-sites.js)
   { name: 'Bennelong Point', box: [330, -2060, 730, -1640], except: [[448, -1955, 574, -1752]] },
-  { name: 'Circular Quay', box: [-40, -1720, 470, -1330] }
+  { name: 'Circular Quay', box: [-40, -1720, 470, -1330] },
+  // Behind Bronte Beach: its promenade and paths, palms and pines (tools/local/bronte.json). No still water in it, so adding it needed no
+  // whole build
+  { name: 'Bronte Park', osm: 'Bronte Park' }
 ];
 
 /** Each area with its rings ([[x, z], ...], from OSM's outline or its box), their bounding box, and the boxes left out of it */

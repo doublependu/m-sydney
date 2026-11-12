@@ -6,7 +6,11 @@
 //   buildings: [{ area: [[x, z], ...], kinds: [...], maxHeight, style, why }]: a style of house (js/house-styles.js) for the buildings in
 //   an area of those kinds (tools/build-buildings.mjs KIND) and no taller (tools/build-buildings.mjs); or [{ at: [x, z], expect: [lo, hi],
 //   height, style, why }]: the one building with that point inside it, which the build has between lo and hi m tall, made `height` m,
-//   and given that house style if it says }
+//   and given that house style if it says;
+//   plants: [{ kind, height: [lo, hi], every, line: [[x, z], ...] | at: [[x, z], ...], apart, why }]: trees planted by hand in a garden's
+//   area (tools/garden-areas.mjs, tools/build-garden.mjs), of the tree system's kinds, in a row every `every` m or at points, none nearer
+//   another tree than `apart` m (4 unless it says);
+//   rock: [{ ring: [[x, z], ...], why }]: bare rock where OSM has none (tools/build-sand.mjs): on the land, or a shelf in the sea }
 // `expect` is what the ways' tags were when the edit was made: if OSM has changed them since, the build stops and says so, as the
 // edit may no longer be right. A tag set to null is taken away. Each way an edit names is marked `local` (its area's file): the
 // build takes in some ways only where an area has been looked at by hand, as bus-only roads (tools/build-geodata.mjs).

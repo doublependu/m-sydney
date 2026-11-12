@@ -2256,6 +2256,71 @@ function createSandstoneWallMaterial({ waterLevel }) {
   return mat;
 }
 
+/**
+ * A beach's sand (js/city-grid.js): pale gold, in drifts and wind ripples, darker and shinier within half a metre of the water where the
+ * swash wets it, and over that a band of foam that runs up the slope and back every ten seconds or so. The beach runs down under the
+ * water (its face, drawn past the shore), so the sea meets it at a line, and the foam is where they meet.
+ */
+function createSandMaterial({ waterLevel }) {
+  const mat = new THREE.MeshStandardNodeMaterial({ metalness: 0.0, roughness: 0.93 });
+  const y = positionWorld.y;
+  const wetness = smoothstep(waterLevel + 0.55, waterLevel + 0.08, y);
+  mat.colorNode = Fn(() => {
+    const p = patternXZ;
+    const drift = noise2D(p.mul(0.045));
+    const grain = noise2D(p.mul(2.7));
+    const ripple = sin(p.x.mul(1.4).add(p.y.mul(0.45)).add(noise2D(p.mul(0.18)).mul(5.0))).mul(0.5).add(0.5);
+    const dry = mix(color(0xab8b56), color(0xc4a36d), drift.mul(0.6).add(grain.mul(0.22)).add(ripple.mul(0.18)));
+    const wet = mix(color(0x7d6440), color(0x8f7650), grain);
+    const sand = mix(dry, wet, wetness);
+    // The swash: how far up the slope it reaches now, by where it is along the beach, and lace in its foam
+    const along = p.x.mul(0.045).add(p.y.mul(0.031));
+    const reach = sin(time.mul(0.62).add(along.mul(6.2831))).mul(0.5).add(0.5).mul(0.24).add(waterLevel + 0.04);
+    const lace = noise2D(p.mul(1.7).add(vec2(time.mul(0.35), time.mul(-0.22))));
+    const band = smoothstep(reach, reach.sub(0.07), y).mul(smoothstep(waterLevel - 0.06, waterLevel + 0.01, y));
+    return mix(sand, color(0xf2f4f1), band.mul(smoothstep(0.22, 0.6, lace)));
+  })();
+  mat.roughnessNode = mix(float(0.95), float(0.42), wetness);
+  mat.normalNode = Fn(() => {
+    const camDist = length(positionWorld.sub(cameraPosition));
+    const ripple = sin(patternXZ.x.mul(1.4).add(patternXZ.y.mul(0.45)).add(noise2D(patternXZ.mul(0.18)).mul(5.0)));
+    return bumpNormal(ripple.mul(0.006).mul(smoothstep(60.0, 8.0, camDist)).mul(float(1.0).sub(wetness)));
+  })();
+  return mat;
+}
+
+/**
+ * The coast's sandstone where it's bare (js/city-grid.js): its headlands, the cliffs' faces and the rock shelves at the water's edge.
+ * Honey and orange-brown in layers by height, weathered grey in patches, pitted dark, and wet, dark and green up to half a metre over the
+ * sea, as a shelf awash is.
+ */
+function createCoastRockMaterial({ waterLevel }) {
+  const mat = new THREE.MeshStandardNodeMaterial({ metalness: 0.0, roughness: 0.9, side: THREE.DoubleSide });
+  // Over the lawn on a cliff's slope, where the two are triangulated apart: pulled towards the eye by the slope, as the garden's paths are
+  mat.polygonOffset = true;
+  mat.polygonOffsetFactor = -4;
+  mat.polygonOffsetUnits = -4;
+  const y = positionWorld.y;
+  const wet = smoothstep(waterLevel + 0.6, waterLevel + 0.12, y);
+  mat.colorNode = Fn(() => {
+    const p = patternXZ;
+    const layer = sin(y.mul(7.0).add(noise2D(p.mul(0.25)).mul(4.0))).mul(0.5).add(0.5);
+    const tone = noise2D(p.mul(0.11));
+    const stone = mix(mix(color(0x9c6a3a), color(0x7e4c27), tone), color(0xab7d4a), layer.mul(0.35));
+    const weathered = mix(stone, color(0x77716a), smoothstep(0.5, 0.85, noise2D(p.mul(0.035).add(3.1))).mul(0.55));
+    const pits = smoothstep(0.62, 0.9, noise2D(p.mul(1.9))).mul(0.35);
+    const dry = weathered.mul(float(1.0).sub(pits));
+    return mix(dry, mix(color(0x3e3a2a), color(0x4a5236), noise2D(p.mul(0.6))), wet.mul(0.85));
+  })();
+  mat.roughnessNode = mix(float(0.92), float(0.5), wet);
+  mat.normalNode = Fn(() => {
+    const camDist = length(positionWorld.sub(cameraPosition));
+    const rough = noise2D(patternXZ.mul(1.3)).mul(0.05).add(noise2D(patternXZ.mul(4.1)).mul(0.012));
+    return bumpNormal(rough.mul(smoothstep(80.0, 10.0, camDist)));
+  })();
+  return mat;
+}
+
 // A structure's face laid in stone carries this in its uv.y, its distance along the wall in uv.x (js/structures.js); a face that's to
 // look like the plain dark ground under the city (js/city-grid.js), this
 const STONE_FACE = 1e6, BASE_FACE = 2e6;
@@ -2425,6 +2490,8 @@ export {
   createCurbMaterial,
   createPondMaterial,
   createSandstoneWallMaterial,
+  createSandMaterial,
+  createCoastRockMaterial,
   STONE_FACE,
   BASE_FACE,
   createStructureMaterial,

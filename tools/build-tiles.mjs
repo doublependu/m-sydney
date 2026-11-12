@@ -12,6 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 import { BitRaster, flat, rdp } from './geo-common.mjs';
+import { beachBehind, beachTest, loadSand } from './sand-pieces.mjs';
 import { onRegionEdge } from './geodata/regions.mjs';
 import { farFile, tileFile } from '../js/tiles/paths.js';
 
@@ -36,6 +37,9 @@ const { REAL_TREES, TREE_KINDS, TREE_HEIGHTS } = await import(path.join(SRC, 'tr
 const GARDEN_FILE = path.join(SRC, 'garden.json');
 const GARDEN = fs.existsSync(GARDEN_FILE) ? JSON.parse(fs.readFileSync(GARDEN_FILE, 'utf8')) : null;
 if (!GARDEN) console.warn('[tiles] no garden.json: no garden paths (node tools/build-garden.mjs)');
+// Beaches, and the rock of the coast's headlands and shelves (tools/build-sand.mjs): [kind, outer, ...holes]
+const SAND = loadSand(SRC);
+if (!SAND.length) console.warn('[tiles] no sand.json: no beaches (node tools/build-sand.mjs)');
 
 const RG = GEO.roadGraph;
 const KIND_CUTTING = 3;
@@ -109,7 +113,7 @@ function cutMap(derived) {
     if (!tiles.has(key)) {
       tiles.set(key, { ix, iz, blocks: [], lawns: [], pavements: [], fills: [], signals: [], postBoxes: [], busShelters: [], nodes: new Map(), links: [], home: [],
         scenery: [], awnings: [], tags: { buses: [], cycles: [], cycleways: [], speeds: [], oneways: [], zebras: [], directions: [] }, buildings: [], trees: [],
-        garden: { paths: [], gates: [], hedges: [], ponds: [], beds: [], seawalls: [] } });
+        garden: { paths: [], gates: [], hedges: [], ponds: [], beds: [], seawalls: [] }, sand: [] });
     }
     return tiles.get(key);
   };
@@ -126,6 +130,7 @@ function cutMap(derived) {
   };
   for (const rings of GEO.lawns) ringsHome(rings).lawns.push(rings);
   for (const rings of GEO.pavements) ringsHome(rings).pavements.push(rings);
+  for (const [kind, ...rings] of SAND) ringsHome(rings).sand.push([kind, ...rings]);
   for (const flat of GEO.fills) at(flat[0], flat[1]).fills.push(flat);
   const pairs = (list, field) => { for (let i = 0; i + 1 < list.length; i += 2) at(list[i], list[i + 1])[field].push(list[i], list[i + 1]); };
   pairs(GEO.signals, 'signals');
@@ -352,7 +357,12 @@ const landOfTile = (ix, iz) => {
   if (!tileLand.has(key)) tileLand.set(key, landRuns(ix * SIZE, iz * SIZE, SIZE, 2, 1));
   return tileLand.get(key);
 };
+const onBeach = beachTest(SAND);
+const BEACH_STEP = 2; // m along the shore that's tested for a beach behind it
+
 // The shore a segment at a time, each in the tile it starts in, with which side the land's on. Not where a region's edge cut the land.
+// Where a beach lies behind it, it's a beach's (a sixth number, 1): js/city-grid.js draws the sand running down into the water there, not
+// a sea wall.
 function shoreByTile() {
   const out = new Map();
   for (const rings of GEO.shores) {
@@ -370,7 +380,26 @@ function shoreByTile() {
           const px = ax + ((bx - ax) * k) / n, pz = az + ((bz - az) * k) / n, qx = ax + ((bx - ax) * (k + 1)) / n, qz = az + ((bz - az) * (k + 1)) / n;
           const key = KEY(...tileOf(px, pz));
           if (!out.has(key)) out.set(key, []);
-          out.get(key).push([side, Math.round(px * 10) / 10, Math.round(pz * 10) / 10, Math.round(qx * 10) / 10, Math.round(qz * 10) / 10]);
+          const r = (v) => Math.round(v * 10) / 10;
+          // Split where a beach starts or ends behind it
+          const L = Math.hypot(qx - px, qz - pz) || 1;
+          const steps = Math.max(1, Math.round(L / BEACH_STEP));
+          const flags = [];
+          for (let s = 0; s < steps; s++) {
+            const f = (s + 0.5) / steps;
+            flags.push(beachBehind(onBeach, px + (qx - px) * f, pz + (qz - pz) * f, (qx - px) / L, (qz - pz) / L, side));
+          }
+          if (!flags.some(Boolean)) {
+            out.get(key).push([side, r(px), r(pz), r(qx), r(qz)]);
+            continue;
+          }
+          for (let s0 = 0; s0 < steps;) {
+            let s1 = s0 + 1;
+            while (s1 < steps && flags[s1] === flags[s0]) s1++;
+            const ux = px + ((qx - px) * s0) / steps, uz = pz + ((qz - pz) * s0) / steps, vx = px + ((qx - px) * s1) / steps, vz = pz + ((qz - pz) * s1) / steps;
+            out.get(key).push(flags[s0] ? [side, r(ux), r(uz), r(vx), r(vz), 1] : [side, r(ux), r(uz), r(vx), r(vz)]);
+            s0 = s1;
+          }
         }
       }
     }
@@ -591,7 +620,8 @@ function write(derived, graded_ = null) {
       land: landOfTile(t.ix, t.iz), shore: shores.get(KEY(t.ix, t.iz)) || [],
       portals: (derived?.portals || []).filter((p) => KEY(...tileOf(p.x, p.z)) === KEY(t.ix, t.iz)),
       ...(place && { place }),
-      ...(Object.values(t.garden).some((list) => list.length) && { garden: t.garden })
+      ...(Object.values(t.garden).some((list) => list.length) && { garden: t.garden }),
+      ...(t.sand.length && { sand: t.sand })
     }));
     const buildings = packBuildings(t.buildings, derived?.floors), trees = packTrees(t.trees), heights = packHeights(t.ix, t.iz);
     const graded = packGround(graded_?.[KEY(t.ix, t.iz)]);

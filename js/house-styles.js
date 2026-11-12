@@ -27,7 +27,11 @@ const HOUSE_STYLES = [
   // the ASN Co building, of red brick under slate gables...
   { name: 'Rocks warehouse', walls: [[1, 1, 0, 1]], roofs: [[5, 1]], pitch: 32, gabled: 1, eaves: 0.2, storeys: [[3, 1]] },
   // ...and the Park Hyatt beside them, low and pale under a flat roof
-  { name: 'Quayside render', walls: [[0, 1, 0.65, 1]], roofs: null, storeys: [[4, 1]] }
+  { name: 'Quayside render', walls: [[0, 1, 0.65, 1]], roofs: null, storeys: [[4, 1]] },
+  // Given by hand (tools/local/bronte.json): the eastern beaches' blocks of flats of the 1930s-60s, red and liver brick under hipped
+  // roofs of terracotta tile, two and three storeys
+  { name: 'Red-brick flats', walls: [[BRICK, 8, 0, 0.22], [BRICK, 2, 0.25, 0.45]], roofs: [[4, 6], [6, 3], [7, 1]], pitch: 24, gabled: 0.15,
+    eaves: 0.45, storeys: [[3, 0.6], [2, 0.4]], flats: true }
 ];
 const STYLE = Object.fromEntries(HOUSE_STYLES.map((s, i) => [s?.name, i]).filter(([name]) => name));
 

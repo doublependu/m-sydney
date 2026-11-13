@@ -289,9 +289,9 @@ test('a road over a creek with no bridge on the map doesn\'t stop you, and the w
 });
 
 // Roads drawn as one deck (js/structures.js, from js/surfaces.js linkEdges()) are one deck to whatever stands on them. Each body
-// is driven as js/controllers.js moves the player, 0.1 m a step (js/surfaces.js moveOver()), with a car's margin, a cyclist's and a
-// walker's
-const MARGINS = [['a car', 1.0], ['a cyclist', 0.39], ['a walker', 0.29]];
+// is driven as js/controllers.js moves the player, 0.1 m a step (js/surfaces.js moveOver()), with a car's margin and the room it
+// needs under a deck, a cyclist's and a walker's
+const MARGINS = [['a car', 1.0, 2.0], ['a cyclist', 0.39, 2.3], ['a walker', 0.29, 2.3]];
 // Where a link's centre line crosses x
 const centreAt = (id, x) => {
   const l = LINKS.find((o) => o.id === id);
@@ -301,17 +301,19 @@ const centreAt = (id, x) => {
   }
   return null;
 };
-async function drive(sid, y, points, margin) {
+// `each(x, z, sid, y)` after every step
+async function drive(sid, y, points, margin, room = 0, each = null) {
   const { moveOver } = await import('../js/surfaces.js');
   let [x, z] = points[0], held = 0, lowest = Infinity, ground = false;
   for (const [tx, tz] of points.slice(1)) {
     for (let i = 0; i < 2000; i++) {
       const dx = tx - x, dz = tz - z, L = Math.hypot(dx, dz);
       if (L < 0.05) break;
-      const m = moveOver(sid, y, x, z, x + (dx / L) * Math.min(0.1, L), z + (dz / L) * Math.min(0.1, L), margin);
+      const m = moveOver(sid, y, x, z, x + (dx / L) * Math.min(0.1, L), z + (dz / L) * Math.min(0.1, L), margin, room);
       if (m.held) held++;
       const stopped = Math.hypot(m.x - x, m.z - z) < 0.002;
       ({ x, z, sid, y } = m);
+      each?.(x, z, sid, y);
       lowest = Math.min(lowest, y);
       if (!sid) ground = true;
       if (stopped) break;
@@ -325,15 +327,15 @@ test('the Cahill\'s westbound deck past the on-ramp\'s island is one deck, as dr
   // The first video's place: past the island's nose the ramp (link 94751) and the Cahill (94748) are 7-8 m apart, drawn as one deck,
   // with the top of Macquarie St's cutting bank 0.1-1.5 m under the middle. A car steered into the middle sank down the bank onto
   // Macquarie St at 11 m
-  for (const [body, margin] of MARGINS) {
+  for (const [body, margin, room] of MARGINS) {
     assert.equal(chooseSurface(94, 16.95, 402.5, -1333.4, margin)?.sid, 94, `${body} in the middle by the island's nose`);
-    const r = await drive(0, groundHeight(409, -1325.5), [[409, -1325.5], [402.8, -1333.2], [400, -1334.7], [397, -1335.75], [394, -1336.5], [390, -1337.75]], margin);
+    const r = await drive(0, groundHeight(409, -1325.5), [[409, -1325.5], [402.8, -1333.2], [400, -1334.7], [397, -1335.75], [394, -1336.5], [390, -1337.75]], margin, room);
     assert.equal(r.sid, 94, `${body} steered into the middle ends on ${r.sid} at ${r.y.toFixed(1)} m`);
     assert.ok(r.lowest > 16.5, `${body} steered into the middle sank to ${r.lowest.toFixed(1)} m`);
     // ...and across it, from the ramp's centre line to the Cahill's, where the middle was an invisible wall
     for (const x of [396, 390]) {
       const from = centreAt(94751, x);
-      const across = await drive(94, surfaceHeight(94, x, from), [[x, from], [x, centreAt(94748, x)]], margin);
+      const across = await drive(94, surfaceHeight(94, x, from), [[x, from], [x, centreAt(94748, x)]], margin, room);
       assert.equal(across.held, 0, `${body} held ${across.held} times crossing at x ${x}`);
       assert.ok(across.sid === 94 && across.left < 0.1, `${body} crossing at x ${x} ends ${across.left.toFixed(1)} m short, on ${across.sid}`);
     }
@@ -344,10 +346,10 @@ test('a deck\'s start takes a body on across its whole width: the Cahill\'s on-r
   // 2.5 m off the ramp's centre line a car never got onto the deck, and rolled 6 m down the bank beside it
   const ramp = LINKS.find((l) => l.id === 94751);
   const [a, b] = ramp.pts, L = Math.hypot(b.x - a.x, b.z - a.z), ux = (b.x - a.x) / L, uz = (b.z - a.z) / L;
-  for (const [body, margin] of MARGINS) {
+  for (const [body, margin, room] of MARGINS) {
     for (const off of [-2.5, 2.5]) {
       const P = [-15, 0, 25].map((s) => [a.x + ux * s - uz * off, a.z + uz * s + ux * off]);
-      const r = await drive(0, groundHeight(...P[0]), P, margin);
+      const r = await drive(0, groundHeight(...P[0]), P, margin, room);
       assert.equal(r.sid, 94, `${body} ${off} m off the ramp's line ends on ${r.sid}`);
       assert.ok(r.lowest > 16.5, `${body} ${off} m off the ramp's line dropped to ${r.lowest.toFixed(1)} m`);
     }
@@ -356,9 +358,9 @@ test('a deck\'s start takes a body on across its whole width: the Cahill\'s on-r
 
 test('a median holds: between the Cahill\'s two carriageways, nothing drops through it or gets past it', async () => {
   // At (400, -1341) the ground under the median is within a step of the decks: a car dropped through to it
-  for (const [body, margin] of MARGINS) {
+  for (const [body, margin, room] of MARGINS) {
     for (const [sid, from, to] of [[94, [400, -1338.5], [400, -1344]], [355, [400, -1346], [400, -1338]]]) {
-      const r = await drive(sid, surfaceHeight(sid, ...from), [from, to], margin);
+      const r = await drive(sid, surfaceHeight(sid, ...from), [from, to], margin, room);
       assert.equal(r.ground, false, `${body} from structure ${sid} dropped through the median`);
       assert.equal(r.sid, sid, `${body} from structure ${sid} got past the median onto ${r.sid}`);
       assert.ok(r.left > 1, `${body} from structure ${sid} got past the median`);
@@ -381,8 +383,123 @@ test('two tunnels\' roads drawn as one are one road: across from the M4 East Tun
   if (!m4 || !link) return; // not held
   const p = m4.pts.reduce((best, q) => (Math.hypot(q.x + 3063.4, q.z - 26.9) < Math.hypot(best.x + 3063.4, best.z - 26.9) ? q : best));
   const o = link.pts.reduce((best, q) => (Math.hypot(q.x - p.x, q.z - p.z) < Math.hypot(best.x - p.x, best.z - p.z) ? q : best));
-  for (const [body, margin] of MARGINS) {
-    const r = await drive(m4.sid, p.y, [[p.x, p.z], [o.x, o.z]], margin);
+  for (const [body, margin, room] of MARGINS) {
+    const r = await drive(m4.sid, p.y, [[p.x, p.z], [o.x, o.z]], margin, room);
     assert.ok(!r.ground && r.left < 0.5 && r.held === 0, `${body}: ${JSON.stringify(r)}`);
+  }
+});
+
+// Under a deck as drawn, the ground is solid where there's less room under the deck's underside than a body needs (2 m for a car, 2.3
+// for a cyclist or a walker): from the ground, a body stops at the deck's side, or gets on where the two meet, within 0.6 m of its top.
+// On the Harbour Bridge that's its whole cross-section, its railway, cycleway and footway too, which aren't anything to stand on
+const SWITCH = 0.6;
+// The point `off` m east of the Harbour Bridge's corridor (to the right of travel north), `s` m along it
+const across = (B, s, off) => { const p = B.bridgePoint(s); return [p.x - p.uz * off, p.z + p.ux * off]; };
+// A body on the ground at height y inside the Harbour Bridge's deck as drawn: more than SWITCH under its top, with less than `room` under
+// its underside
+const insideBridge = (B, x, z, y, room) => { const u = B.deckUndersideAt(x, z); return u !== null && u + DECK_DEPTH - y > SWITCH && u - y < room; };
+// The nearest place on a link's centre line to (x, z): { x, z, y, d, ux, uz }
+const nearestOn = (link, x, z) => {
+  let best = null;
+  for (let i = 1; i < link.pts.length; i++) {
+    const a = link.pts[i - 1], b = link.pts[i], dx = b.x - a.x, dz = b.z - a.z, L = Math.hypot(dx, dz) || 1;
+    const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / (L * L)));
+    const px = a.x + dx * t, pz = a.z + dz * t, d = Math.hypot(px - x, pz - z);
+    if (!best || d < best.d) best = { x: px, z: pz, y: a.y + (b.y - a.y) * t, d, ux: dx / L, uz: dz / L };
+  }
+  return best;
+};
+// ...and inside a bridge link's own drawn width
+const insideLink = (link, x, z, y, room) => { const p = nearestOn(link, x, z); return p.d <= link.half && p.y - y > SWITCH && p.y - DECK_DEPTH - y < room; };
+
+test('the second video\'s crossing: from the Harbour Bridge\'s railway into its lanes, nothing ends on the ground under the deck', async () => {
+  const B = await import('../js/bridge.js');
+  // 85 m along and 14 m west of the corridor's line: the railway, drawn on the deck, the ground 1.1-1.3 m under its top. A car on the
+  // ground there drove on into the lanes under the deck, and down under the approach spans
+  const from = across(B, 85, -14), to = across(B, 120, -3);
+  for (const [body, margin, room] of MARGINS) {
+    let inside = 0;
+    const r = await drive(0, groundHeight(...from), [from, to], margin, room, (x, z, sid, y) => { if (!sid && insideBridge(B, x, z, y, room)) inside++; });
+    assert.equal(inside, 0, `${body} was on the ground inside the deck for ${inside} steps`);
+    assert.ok(r.sid === B.DECK_SID || (!r.sid && r.left > 1), `${body} ends on ${r.sid} at ${r.y.toFixed(1)} m, ${r.left.toFixed(1)} m short`);
+  }
+});
+
+test('off Upper Fort St\'s east side, 120-130 m along the Harbour Bridge, a body stops at the deck\'s drawn west side', async () => {
+  const B = await import('../js/bridge.js');
+  const street = LINKS.find((l) => l.id === 108218);
+  if (!street) return;
+  const [a, b] = [street.pts[0], street.pts[street.pts.length - 1]];
+  // 120-127 m along: further on, the ground falls away under the cycleway, and a body can go a metre or two in under it with room
+  for (const t of [0.1, 0.3, 0.5]) {
+    const x0 = a.x + (b.x - a.x) * t, z0 = a.z + (b.z - a.z) * t, here = B.bridgeAt(x0, z0, 60);
+    const west = B.deckEdges(here.s).west;
+    for (const [body, margin, room] of MARGINS) {
+      let inside = 0;
+      const r = await drive(0, roadHeight(street, x0, z0), [[x0, z0], across(B, here.s, 0)], margin, room, (x, z, sid, y) => { if (!sid && insideBridge(B, x, z, y, room)) inside++; });
+      assert.equal(inside, 0, `${body} from ${here.s.toFixed(0)} m along was on the ground inside the deck for ${inside} steps`);
+      const end = B.bridgeAt(r.x, r.z, 60);
+      assert.ok(!r.sid && r.left > 1 && end.off < west, `${body} from ${here.s.toFixed(0)} m along ends on ${r.sid}, ${end.off.toFixed(1)} m off the corridor (its west side ${west.toFixed(1)})`);
+    }
+  }
+});
+
+test('north along Upper Fort St, a body stops at the railway\'s end, 60 m along the Harbour Bridge: the second video at 64 s', async () => {
+  const B = await import('../js/bridge.js');
+  const street = LINKS.find((l) => l.id === 23208);
+  if (!street) return;
+  // The street runs on under the railway, 0.6-0.8 m under the deck's top: that's in the map's data. The railway isn't anything to stand on
+  const pts = street.pts.filter((p) => { const h = B.bridgeAt(p.x, p.z, 60); return h && h.s > 30 && h.s < 80; }).map((p) => [p.x, p.z]);
+  for (const [body, margin, room] of MARGINS) {
+    let under = 0;
+    const r = await drive(0, roadHeight(street, ...pts[0]), pts, margin, room, (x, z, sid) => { if (!sid && B.deckIsFull(B.bridgeAt(x, z, 60).s) && B.deckUndersideAt(x, z) !== null) under++; });
+    assert.equal(under, 0, `${body} was under the railway for ${under} steps`);
+    assert.ok(!r.sid && r.left > 1 && B.bridgeAt(r.x, r.z, 60).s < 60, `${body} ends on ${r.sid}, ${B.bridgeAt(r.x, r.z, 60).s.toFixed(1)} m along`);
+  }
+});
+
+test('a ramp\'s low deck is solid from the lawn beside it, and taken where the two meet: the Western Distributor at (-1088, 274)', async () => {
+  const link = LINKS.find((l) => l.id === 108988);
+  if (!link) return;
+  // The ground falls away under it to the west: 1.3 m under its top at its west edge, 1.9 m 14 m out. From the east it's 0.4 m
+  const p = nearestOn(link, -1088, 274), at = (o) => [p.x - p.uz * o, p.z + p.ux * o];
+  for (const [body, margin, room] of MARGINS) {
+    let inside = 0;
+    const r = await drive(0, groundHeight(...at(-14)), [at(-14), at(3)], margin, room, (x, z, sid, y) => { if (!sid && insideLink(link, x, z, y, room)) inside++; });
+    assert.equal(inside, 0, `${body} from the west was on the ground inside the deck for ${inside} steps`);
+    assert.ok(!r.sid && r.left > 1, `${body} from the west ends on ${r.sid}, ${r.left.toFixed(1)} m short`);
+    const east = await drive(0, groundHeight(...at(12)), [at(12), at(0)], margin, room);
+    assert.equal(east.sid, link.sid, `${body} from the east ends on ${east.sid}`);
+  }
+});
+
+test('a street under a deck too low for it stays open: Ennis Rd, 1.8 m under the Cahill\'s edge', async () => {
+  // Its west lanes run under the Cahill's deck (link 46817), its road 1.8 m under the deck's: OSM's roads too close in height
+  const road = LINKS.find((l) => l.id === 116686);
+  if (!road) return;
+  const [a, b] = [road.pts[0], road.pts[road.pts.length - 1]], L = Math.hypot(b.x - a.x, b.z - a.z), ux = (b.x - a.x) / L, uz = (b.z - a.z) / L;
+  for (const [body, margin, room] of MARGINS) {
+    for (const off of [0, 3]) {
+      const P = [0.1, 0.9].map((t) => [a.x + (b.x - a.x) * t - uz * off, a.z + (b.z - a.z) * t + ux * off]);
+      const r = await drive(0, roadHeight(road, ...P[0]), P, margin, room);
+      assert.ok(!r.sid && r.held === 0 && r.left < 0.1, `${body} ${off} m west of Ennis Rd's line: ${JSON.stringify(r)}`);
+    }
+  }
+});
+
+test('a body left inside a deck, teleported or with a tile arriving round it, is lifted onto it or moved out beside it', async () => {
+  const { moveOver } = await import('../js/surfaces.js');
+  const B = await import('../js/bridge.js');
+  const ramp = LINKS.find((l) => l.id === 108988);
+  for (const [body, margin, room] of MARGINS) {
+    // On the Harbour Bridge's railway, 85 m along: nothing of the deck's to stand on there, so onto its lanes or the ground beside it
+    const [x, z] = across(B, 85, -14);
+    const m = moveOver(0, groundHeight(x, z), x, z, x, z, margin, room);
+    assert.ok(m.sid === B.DECK_SID || (!m.sid && !insideBridge(B, m.x, m.z, m.y, room)), `${body} on the railway: ${JSON.stringify(m)}`);
+    if (!ramp) continue;
+    // Under the Western Distributor's low deck, 3 m in from its west edge, 0.9 m under its road: lifted onto it
+    const p = nearestOn(ramp, -1088, 274), qx = p.x + p.uz * 3, qz = p.z - p.ux * 3;
+    const n = moveOver(0, groundHeight(qx, qz), qx, qz, qx, qz, margin, room);
+    assert.equal(n.sid, ramp.sid, `${body} under the Western Distributor: ${JSON.stringify(n)}`);
   }
 });

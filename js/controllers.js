@@ -22,7 +22,7 @@ import { anchorToOrigin } from './world-origin.js';
 import { polygonContact, polygonContains } from './building-collision.js';
 import { DECK_SID } from './bridge.js';
 import { FLY, arrivalFor, holdOnFootway } from './arrivals.js';
-import { STRUCTURES, clearOfWater, floorBelow, groundHeight, moveOver, onFloor, structureAt, surfaceHeight } from './surfaces.js';
+import { ROOM, STRUCTURES, clearOfWater, floorBelow, freeFromDeck, groundHeight, moveOver, onFloor, structureAt, surfaceHeight } from './surfaces.js';
 import { WALKER } from './interior-data.js';
 import { MODEL_SITES } from './model-sites.js';
 
@@ -502,13 +502,23 @@ class ThirdPersonControllerManager {
     // Nothing of the ground is in the way up on a structure; on the ground, a clear spot near (x, z)
     const destination = onStructure || exact ? { x, z } : this.findTeleportPosition(x, z, heading, altitude);
     if (destination) {
+      ent.surface = onStructure ? surface : 0;
+      ent.surfaceY = surfaceHeight(ent.surface, destination.x, destination.z);
+      // On the ground inside a deck too low to be under (js/surfaces.js freeFromDeck()): onto it, or out beside it. The margin is the
+      // player's step's (resolveHorizontalCollision())
+      const car = this.activeMode === 'car';
+      const out = !heli && !ent.surface ? freeFromDeck(ent.surfaceY, destination.x, destination.z, car ? 1.0 : (this.activeMode === 'person' ? 0.48 : 0.65) * 0.6, car ? ROOM.car : ROOM.foot) : null;
+      if (out) {
+        destination.x = out.x;
+        destination.z = out.z;
+        ent.surface = out.sid;
+        ent.surfaceY = out.y;
+      }
       ent.position.x = destination.x;
       ent.position.z = destination.z;
       ent.heading = heading;
-      ent.surface = onStructure ? surface : 0;
       ent.onFootway = false;
-      ent.surfaceY = surfaceHeight(ent.surface, destination.x, destination.z);
-      ent.deck = !!onStructure && onDeck(surface);
+      ent.deck = !!ent.surface && onDeck(ent.surface);
       ent.position.landed = { x: destination.x, z: destination.z };
       ent.position.y = heli ? altitude : this.getGroundHeight(destination.x, destination.z, this.activeMode);
     }
@@ -1180,12 +1190,14 @@ class ThirdPersonControllerManager {
       }
       const sid = active.surface || 0;
       const y = active.surfaceY ?? surfaceHeight(sid, last.x, last.z);
-      const margin = carEntity ? 1.0 : radius * 0.6;
+      // Kept its margin in from what holds it, and on the ground under a deck only where it fits under it
+      const margin = carEntity ? 1.0 : radius * 0.6, room = carEntity ? ROOM.car : ROOM.foot;
       // A car driven into what holds it loses speed as squarely as it hit
-      const here = moveOver(sid, y, last.x, last.z, pos.x, pos.z, margin);
+      const here = moveOver(sid, y, last.x, last.z, pos.x, pos.z, margin, room);
       if (here.held && carEntity && carEntity.speed) {
         const moved = Math.hypot(pos.x - last.x, pos.z - last.z) || 1;
-        carEntity.speed *= 0.5 + 0.5 * Math.hypot(here.x - last.x, here.z - last.z) / moved;
+        // Not more for being moved out of a deck it was left inside (js/surfaces.js freeFromDeck()), further than it was going
+        carEntity.speed *= 0.5 + 0.5 * Math.min(1, Math.hypot(here.x - last.x, here.z - last.z) / moved);
       }
       pos.x = here.x;
       pos.z = here.z;

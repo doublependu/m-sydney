@@ -1548,6 +1548,98 @@ export const SCENARIOS = {
       expect(held.z > -1341.6, `got past the median to ${held.z.toFixed(2)}`);
     }
   },
+  // The Harbour Bridge's south end from the ground, as a player drove it: off the Bradfield Hwy's west side onto Upper Fort St, where
+  // the deck's level with the ground; north along it at 50 km/h into the railway's end, where it runs under the deck (a car went on onto
+  // the railway and in under the lanes); off its east side further north at the deck's west side; placed on the railway and driven at
+  // the lanes. And a ramp's low deck from the lawn beside it, the Western Distributor's. Under a deck with too little room for it, the
+  // ground is the deck's inside (js/surfaces.js solidUnder()): a body stops at the side, and one put there is moved out
+  'bridge-south': {
+    minutes: 6,
+    async run({ human, page, metric, expect }) {
+      await human.wait(1000);
+      // On the ground inside a deck as drawn: more than 0.6 m under its top, with less room under its underside than the body needs
+      const inside = async (s, room) => {
+        if (s.surface) return false;
+        const { tops } = await page.evaluate(([x, z]) => window.__gameDebug.decksOver(x, z), [s.x, s.z]);
+        return tops.some((top) => top - s.surfaceY > 0.6 && top - 1.4 - s.surfaceY < room);
+      };
+      // Along `points`, steered at each in turn at up to `limit` m/s: every 120 ms whether it's inside a deck, until it's there or stopped
+      const along = async (points, limit, room) => {
+        const r = { inside: 0, samples: 0, stuck: false, end: null, fastest: 0 };
+        for (const target of points) {
+          const started = human.now();
+          let moved = human.now(), last = await human.state();
+          for (;;) {
+            const state = await human.state();
+            r.samples++;
+            r.fastest = Math.max(r.fastest, Math.abs(state.speed ?? 0));
+            if (await inside(state, room)) r.inside++;
+            if (Math.hypot(target.x - state.x, target.z - state.z) < 1.5) break;
+            if (Math.hypot(state.x - last.x, state.z - last.z) > 0.3) { moved = human.now(); last = state; }
+            if (human.now() - moved > 2500 || human.now() - started > 30000) { r.stuck = true; break; }
+            const error = await human.steerTowards(state, target, 0.05);
+            const speed = Math.abs(state.speed ?? 0);
+            // Creeping round to face a point well off to the side: a car can't turn standing still
+            await human.setKey('KeyW', speed < (Math.abs(error) < 1 ? limit : 2.5));
+            await human.setKey('KeyS', speed > limit + 1.5);
+            await human.wait(120);
+          }
+          await human.releaseAll();
+          if (r.stuck) break;
+        }
+        r.end = await human.state();
+        r.aim = await page.evaluate(([x, z]) => window.__gameDebug.bridgeAim(x, z), [r.end.x, r.end.z]);
+        return r;
+      };
+      const heading = (a, b) => Math.atan2(b.x - a.x, b.z - a.z);
+      const place = (s, east) => page.evaluate(([s, e]) => { const p = window.__gameDebug.bridgePlace(s); return { x: p.x + p.nx * e, z: p.z + p.nz * e }; }, [s, east]);
+      const legs = [];
+      // Upper Fort St (link 23208), north from 26 m along the bridge to 75, where it runs under the railway from 60
+      const street = [{ x: -340.6, z: -1415.6 }, { x: -337.4, z: -1425.6 }, { x: -320.4, z: -1457.5 }, { x: -318.3, z: -1462.7 }];
+      // Off the Bradfield Hwy's west lane at 20 m along onto Upper Fort St, then north along it at 50 km/h into the railway's end
+      const lane = await place(20, -5), off = await place(30, -24);
+      await page.evaluate(([x, z, h]) => window.__gameDebug.goto(x, z, h, 'car', true), [lane.x, lane.z, heading(lane, off)]);
+      await human.wait(800);
+      const onto = await along([off], 8, 2);
+      legs.push({ leg: 'car off the deck onto Upper Fort St', ...onto, want: 'there' });
+      legs.push({ leg: 'car north along Upper Fort St', ...await along(street.slice(2), 14, 2), want: 'railway' });
+      // On foot, the same way
+      await page.evaluate(([x, z, h]) => window.__gameDebug.goto(x, z, h, 'person'), [street[0].x, street[0].z, heading(street[0], street[1])]);
+      await human.wait(800);
+      await human.down('ShiftLeft');
+      legs.push({ leg: 'walker north along Upper Fort St', ...await along(street.slice(1), 8, 2.3), want: 'railway' });
+      await human.releaseAll();
+      // Off Upper Fort St's east side 124 m along, at the deck's drawn west side, its cycleway, at 50 km/h
+      const from = { x: -307.1, z: -1513.9 }, aim = await page.evaluate(([x, z]) => window.__gameDebug.bridgeAim(x, z), [from.x, from.z]);
+      const toward = await place(aim.s, 0);
+      await page.evaluate(([x, z, h]) => window.__gameDebug.goto(x, z, h, 'car', true), [from.x - (toward.x - from.x) * 0.6, from.z - (toward.z - from.z) * 0.6, heading(from, toward)]);
+      await human.wait(800);
+      legs.push({ leg: 'car off Upper Fort St at the deck\'s west side', ...await along([toward], 14, 2), want: 'side' });
+      // Put on the railway 85 m along, 14 m west of the corridor's line, with the ground 1.3 m under the deck's top: moved out, and driven
+      // at the lanes 120 m along, as the player did
+      const rail = await place(85, -14), lanes = await place(120, -3);
+      await page.evaluate(([x, z, h]) => window.__gameDebug.goto(x, z, h, 'car', true), [rail.x, rail.z, heading(rail, lanes)]);
+      await human.wait(800);
+      const put = await human.state();
+      metric('put on the railway', { surface: put.surface, y: +put.surfaceY.toFixed(2), moved: +Math.hypot(put.x - rail.x, put.z - rail.z).toFixed(1) });
+      expect(!(await inside(put, 2)), `put on the railway, left on the ground inside the deck at ${put.x.toFixed(1)}, ${put.z.toFixed(1)}`);
+      legs.push({ leg: 'car from the railway at the lanes', ...await along([lanes], 12, 2), want: 'any' });
+      // The Western Distributor's low deck at (-1088, 274), from the lawn to its west, where the ground falls away under it: 1.3 m under its
+      // top at its edge
+      const lawn = { x: -1099.3, z: 287.6 }, deck = { x: -1082.0, z: 266.8 };
+      await page.evaluate(([x, z, h]) => window.__gameDebug.goto(x, z, h, 'car', true), [lawn.x, lawn.z, heading(lawn, deck)]);
+      await human.wait(800);
+      legs.push({ leg: 'car from the lawn at the Western Distributor', ...await along([deck], 10, 2), want: 'side' });
+      for (const l of legs) {
+        metric(l.leg, { samples: l.samples, inside: l.inside, stuck: l.stuck, fastest: +l.fastest.toFixed(1), surface: l.end.surface, end: [+l.end.x.toFixed(1), +l.end.z.toFixed(1)], s: l.aim?.s ?? null, off: l.aim?.off ?? null });
+        expect(l.inside === 0, `${l.leg}: inside a deck ${l.inside} times of ${l.samples}`);
+        if (l.want === 'there') expect(!l.stuck && !l.end.surface, `${l.leg}: stopped at ${l.end.x.toFixed(1)}, ${l.end.z.toFixed(1)} on ${l.end.surface}`);
+        // Held at the railway's end, 60 m along, where it's drawn across the street
+        if (l.want === 'railway') expect(l.stuck && !l.end.surface && l.aim.s < 61, `${l.leg}: ${l.stuck ? 'stopped' : 'got through'} ${l.aim?.s} m along`);
+        if (l.want === 'side') expect(l.stuck && !l.end.surface, `${l.leg}: ${l.stuck ? 'stopped' : 'went on'} on ${l.end.surface}`);
+      }
+    }
+  },
   'bridge-edges': {
     minutes: 5,
     async run({ human, page, metric, expect }) {

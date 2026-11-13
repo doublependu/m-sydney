@@ -32,10 +32,10 @@ import { planTiles } from './tiles/tile-manager.js';
 import { BLOCKS } from './city-config.js';
 import { auditPrecision, moveOriginNear, origin, rebaseMeshes, setOrigin } from './world-origin.js';
 import { createInteriors } from './interiors.js';
-import { ceilingOver, groundHeight, inTunnel, roadRoute, structuresAt, surfaceHeight, surfaceSlope } from './surfaces.js';
+import { ceilingOver, decksAt, groundHeight, inTunnel, roadRoute, structuresAt, surfaceHeight, surfaceSlope } from './surfaces.js';
 import { updateTunnelMouths } from './tunnel-mouths.js';
 import { wheelContacts } from './ground-geometry.js';
-import { BRIDGE_LENGTH, DECK_REACH, bridgeAt, bridgePoint, deckSpanAt } from './bridge.js';
+import { BRIDGE_LENGTH, DECK_REACH, bridgeAt, bridgePoint, deckOver, deckSpanAt } from './bridge.js';
 import { fullscreenElement, fullscreenSupported, onFullscreenChange, toggleFullscreen } from './fullscreen.js';
 
 // Application setup, background city build and frame loop.
@@ -1651,6 +1651,13 @@ async function initApp() {
         return elapsed;
       },
       onDeck: () => !!controllerManager.getActiveEntity().deck,
+      // The ground at (x, z) and the tops of the decks drawn over it, the Harbour Bridge's whole width counting: what a body on the ground
+      // there is held to (js/surfaces.js solidUnder()), for the scenarios that check it never ends up inside one
+      decksOver(x, z) {
+        const tops = decksAt(x, z, 0).over.map((o) => o.y), bridge = deckOver(x, z, 0);
+        if (bridge) tops.push(bridge.top);
+        return { ground: groundHeight(x, z), tops };
+      },
       // Which side of the road every car on a two-way street is on, measured from where it actually is
       trafficSides() {
         const sides = { left: 0, right: 0 };

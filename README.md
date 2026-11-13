@@ -50,7 +50,8 @@ run one at a time after the rest (`ALONE` in `tools/play/run.mjs`).
 Three checks need no browser. `node tools/check-roads.mjs [--list] [--tiles=0_-2,1_-2]` walks every lane of every road by the
 game's own rules and says what would slant, jolt or stop a car: lean, change of grade, steps, roll, dead stops, buildings and
 kerbs in lanes, paving over roads; and, driven by the player's own step, roads drawn as one deck that a car drops through or is stopped
-in, medians it gets past, and decks' starts it doesn't get onto from the road on the ground. `node tools/check-layers.mjs [--list] [--tiles=0_-2,1_-2]` looks at roads on more than one
+in, medians it gets past, decks' starts it doesn't get onto from the road on the ground, a car driven in from the ground at decks'
+sides that ends up inside one, and one put inside one that's left there. `node tools/check-layers.mjs [--list] [--tiles=0_-2,1_-2]` looks at roads on more than one
 level: a road under another with too little room, two roads sunk to different heights sharing the ground, buildings, trees (where
 the game stands them) and piers in the lanes of bridges, tunnels and cuttings, trees' crowns across a deck beside them, buildings
 under the Harbour Bridge's railway and footway, and tunnels and bridges drawn higher or lower than cars drive on them, or not
@@ -182,6 +183,13 @@ what it did.
   barrier, a wall or a median but not from an open edge, a median holds, and the ground under a deck at its level isn't a way off, so
   a deck's start takes a car on across its whole width. A barrier's end flares in, and the player is held back to its line
   (`moveOver()`).
+- **A deck too low to be under is solid.** Under a deck as drawn, the Harbour Bridge's railway, cycleway and footway counting, the
+  ground is somewhere to be only where there's room for the body under the deck's underside: 2 m for a car, 2.3 m for a walker or a
+  rider (`ROOM` and `solidUnder()` in `js/surfaces.js`; the bridge's whole width is `deckOver()` in `js/bridge.js`). With less, a body
+  on the ground stops at the deck's side as at a wall, or gets on where the two meet, within 0.6 m of its top; one left inside (put
+  there, or a tile arriving round it) is lifted onto the deck or moved out beside it (`freeFromDeck()`). A street on the ground under a
+  deck too low for it stays open, as OSM's roads too close in height are where traffic drives, but not under the bridge's railway,
+  cycleway and footway, unless it carries on from one of the bridge's own roads.
 - **What stands under a deck fits under it.** `roomUnderDeck()` in `js/surfaces.js` says how much room there is. A building a deck
   runs through is cut down to fit when the tiles are made, and one over a road in a cutting or a tunnel's open cutting stands on a
   floor raised to leave a lane's height over it, its walls stopping there (`js/wall-foot.js`). One that can be neither is left out

@@ -18,14 +18,17 @@
 //   joins     roads drawn as one deck or one tunnel, driven across from one's lanes to the other's: where a car drops through to
 //             the ground, or is stopped where nothing's drawn; medians, where a car drops through or gets past; and decks' starts,
 //             a car driven on from the road on the ground near its kerbs, that never gets on or drops off beside it
+//   under     a car driven in from the ground at every deck's sides, every 10 m, the Harbour Bridge's whole cross-section too: where it
+//             ends on the ground inside the deck as drawn, with less room under it than a car needs; and a car placed inside one
+//             (teleported, or a tile arriving round it), left there
 // usage: node tools/check-roads.mjs [--json] [--strict] [--list] [--tiles=0_-2,1_-2]
 console.info = () => {};
 const { heldList, heldTiles } = await import('../js/geodata.js');
-const { DECK_DEPTH, DECK_STRUCTURE, KIND, LINKS, TUNNEL_HEIGHT, chooseSurface, clearOfWater, edgeNeighbour, groundHeight, groundRoadAt, laneAt, linkById, linkEdges, moveOver, onGroundRoad, roadHeight, tunnelCovered } = await import('../js/surfaces.js');
+const { DECK_DEPTH, DECK_STRUCTURE, KIND, LINKS, ROOM, TUNNEL_HEIGHT, chooseSurface, clearOfWater, edgeNeighbour, groundHeight, groundRoadAt, laneAt, linkById, linkEdges, moveOver, onGroundRoad, roadHeight, tunnelCovered } = await import('../js/surfaces.js');
 const { GroundCells, SIDEWALK_TOP, addSurface, groundLinks, wheelContacts } = await import('../js/ground-geometry.js');
 const { CITY_BOUNDS, blockAt } = await import('../js/city-config.js');
 const { buildRoadNetworkSteps } = await import('../js/road-network.js');
-const { onDeckSpan } = await import('../js/bridge.js');
+const { BRIDGE_LENGTH, bridgePoint, deckEdges, deckUndersideAt, onDeckSpan } = await import('../js/bridge.js');
 
 const started = performance.now();
 const json = process.argv.includes('--json');
@@ -163,6 +166,8 @@ const buildingAt = (x, z) => (buildingCells.get(Math.floor(x / CELL) * 100000 + 
   .find(({ p }) => inRing(p.outer, x, z) && !(p.holes || []).some((h) => inRing(h, x, z)));
 
 // --- Walking a path by the game's own rules ------------------------------------------------------------------------------
+// A car's margin from what holds it, and the room it needs under a deck (js/controllers.js)
+const CAR = 1.0, CAR_ROOM = ROOM?.car ?? 2.0;
 const BODY = [[0.9, 2.2], [-0.9, 2.2], [0.9, -2.2], [-0.9, -2.2], [0, 0]];
 const WHEELS = [[0.8, 1.4], [-0.8, 1.4], [0.8, -1.4], [-0.8, -1.4]];
 function walk(path, sid0, y0, name, out) {
@@ -172,14 +177,14 @@ function walk(path, sid0, y0, name, out) {
   for (const p of path) {
     if (!wanted(p.x, p.z)) {
       // On its way into the part being looked at, so it gets there on the right level
-      const passing = chooseSurface(sid, y, p.x, p.z, 1.0);
+      const passing = chooseSurface(sid, y, p.x, p.z, CAR, CAR_ROOM);
       if (passing) { y = passing.y; sid = passing.sid; }
       ys.push(null);
       prevRoll = null;
       continue;
     }
     out.metres++;
-    const here = chooseSurface(sid, y, p.x, p.z, 1.0);
+    const here = chooseSurface(sid, y, p.x, p.z, CAR, CAR_ROOM);
     if (!here) { out.stops.add(p.x, p.z, name); ys.push(null); prevRoll = null; continue; }
     y = here.y; sid = here.sid;
     ys.push(y);
@@ -468,7 +473,6 @@ const over = (places, limit) => places.all.filter((w) => w[0] > limit).length;
 }
 // --- Roads drawn as one, medians and decks' starts, driven by the game's own step (js/surfaces.js moveOver()) ------------------
 {
-  const CAR = 1.0; // a car's margin (js/controllers.js)
   // The nearest point on a link's centre line to (x, z)
   const nearestOn = (link, x, z) => {
     let best = null;
@@ -487,7 +491,7 @@ const over = (places, limit) => places.all.filter((w) => w[0] > limit).length;
     for (let i = 0; i < limit; i++) {
       const dx = tx - x, dz = tz - z, L = Math.hypot(dx, dz);
       if (L < 0.05) break;
-      const m = moveOver(sid, y, x, z, x + (dx / L) * Math.min(0.1, L), z + (dz / L) * Math.min(0.1, L), CAR);
+      const m = moveOver(sid, y, x, z, x + (dx / L) * Math.min(0.1, L), z + (dz / L) * Math.min(0.1, L), CAR, CAR_ROOM);
       if (Math.hypot(m.x - x, m.z - z) < 0.002) { stopped = true; break; }
       ({ x, z, sid, y } = m);
       if (!sid && past(x, z)) ground = Math.min(ground, y);
@@ -564,7 +568,7 @@ const over = (places, limit) => places.all.filter((w) => w[0] > limit).length;
         const ex = deck.x + deck.ux * 6 - deck.uz * off, ez = deck.z + deck.uz * 6 + deck.ux * off;
         // On the road that runs on onto it: not another road beside it, where it starts
         const g = roadHeight(road.o, sx, sz);
-        const start = chooseSurface(0, g, sx, sz, CAR);
+        const start = chooseSurface(0, g, sx, sz, CAR, CAR_ROOM);
         if (!start || start.sid || groundRoadAt(sx, sz, g) !== road.o) continue;
         // On the ground past the deck's start, more than a step down from it: dropped off beside it. Ending on the ground: never got on.
         // On another structure at its level, drawn as one with it, it got on
@@ -580,6 +584,82 @@ const over = (places, limit) => places.all.filter((w) => w[0] > limit).length;
     medians: medians * 2, medianDrops: medianDrops.summary(), medianPast: medianPast.summary(),
     starts, startsMissed: missed.summary(), startsFell: fell.summary()
   };
+}
+// --- Under decks: a car driven in from the ground at their sides, and placed inside them ---------------------------------------------
+{
+  const SWITCH = 0.6; // m: within this of a deck's top, the ground meets it (js/surfaces.js)
+  // On the ground at height y at (x, z), inside a deck as drawn whose top there is `top`: more than SWITCH under its top, with less room
+  // under its underside than a car needs. A street on the ground under a deck too low for it is the map's data, not this: its carriageway
+  // and kerbs, at its own level (js/surfaces.js groundRoadAt())
+  const insideAt = (top, x, z, y) => top !== null && top - y > SWITCH && top - DECK_DEPTH - y < CAR_ROOM && !groundRoadAt(x, z, y);
+  const inside = new Places(), stuck = new Places();
+  let drives = 0, on = 0, held = 0, under = 0, skipped = 0, placed = 0;
+  // From (x0, z0) 3 m outside a deck's side, straight in along (ux, uz) for `len` m. `topAt(x, z)`: the deck's top there, or null
+  const driveIn = (x0, z0, ux, uz, len, topAt, name) => {
+    let x = x0, z = z0, sid = 0, y = groundHeight(x0, z0);
+    // Only from ground a car could be on: not on another structure, or inside one
+    const start = chooseSurface(0, y, x, z, CAR, CAR_ROOM);
+    if (!start || start.sid || start.x !== undefined) { skipped++; return; }
+    y = start.y;
+    drives++;
+    const tx = x0 + ux * len, tz = z0 + uz * len;
+    for (let i = 0; i < len * 10 + 20; i++) {
+      const dx = tx - x, dz = tz - z, L = Math.hypot(dx, dz);
+      if (L < 0.05) break;
+      const m = moveOver(sid, y, x, z, x + (dx / L) * Math.min(0.1, L), z + (dz / L) * Math.min(0.1, L), CAR, CAR_ROOM);
+      if (Math.hypot(m.x - x, m.z - z) < 0.002) { held++; return; }
+      ({ x, z, sid, y } = m);
+      if (sid) { on++; return; }
+      if (insideAt(topAt(x, z), x, z, y)) { inside.add(x, z, name, topAt(x, z) - y); return; }
+    }
+    under++; // on under it with room, or beside it
+  };
+  // A car left on the ground inside a deck as drawn: the game's step from where it is to where it is, as each frame does, takes it out.
+  // Not over the water, where nothing's ever on the ground (js/controllers.js keeps everything off it)
+  const placeIn = (x, z, topAt, name) => {
+    const y = groundHeight(x, z);
+    if (!insideAt(topAt(x, z), x, z, y) || !clearOfWater(x, z)) return;
+    placed++;
+    const m = moveOver(0, y, x, z, x, z, CAR, CAR_ROOM);
+    if (!m.sid && insideAt(topAt(m.x, m.z), m.x, m.z, m.y)) stuck.add(x, z, name, topAt(x, z) - y);
+  };
+  for (const l of LINKS) {
+    if (l.kind !== KIND.BRIDGE || l.deck || !l.pts.some((p) => wanted(p.x, p.z))) continue;
+    const P = l.pts;
+    let acc = 0;
+    for (let i = 1; i < P.length; i++) {
+      const a = P[i - 1], b = P[i], L = Math.hypot(b.x - a.x, b.z - a.z);
+      if (L < 1e-6) continue;
+      const ux = (b.x - a.x) / L, uz = (b.z - a.z) / L;
+      for (let s = (10 - (acc % 10)) % 10; s < L; s += 10) {
+        const t = s / L, cx = a.x + (b.x - a.x) * t, cz = a.z + (b.z - a.z) * t, top = a.y + (b.y - a.y) * t;
+        if (!wanted(cx, cz)) continue;
+        // This stretch of the deck as drawn, its width a metre either way along but not past its segment's ends, and its height there
+        const topAt = (x, z) => {
+          const along = (x - cx) * ux + (z - cz) * uz;
+          return Math.abs(-(x - cx) * uz + (z - cz) * ux) <= l.half && Math.abs(along) < 1 && s + along >= 0 && s + along <= L ? top + ((b.y - a.y) * along) / L : null;
+        };
+        for (const side of [1, -1]) {
+          const nx = -uz * side, nz = ux * side;
+          driveIn(cx + nx * (l.half + 3), cz + nz * (l.half + 3), -nx, -nz, l.half * 2 + 3, topAt, l.name || `link ${l.id}`);
+          placeIn(cx + nx * l.half * 0.5, cz + nz * l.half * 0.5, topAt, l.name || `link ${l.id}`);
+        }
+      }
+      acc += L;
+    }
+  }
+  // The Harbour Bridge's whole cross-section: its railway, cycleway and footway as well as its roads
+  const bridgeTop = (x, z) => { const u = deckUndersideAt(x, z); return u === null ? null : u + DECK_DEPTH; };
+  for (let s = 5; s < BRIDGE_LENGTH; s += 10) {
+    const p = bridgePoint(s), q = bridgePoint(s + 1), L = Math.hypot(q.x - p.x, q.z - p.z) || 1, ux = (q.x - p.x) / L, uz = (q.z - p.z) / L;
+    if (!wanted(p.x, p.z)) continue;
+    const e = deckEdges(s);
+    // East is to the right of travel north: (-uz, ux)
+    driveIn(p.x - uz * (e.west - 3), p.z + ux * (e.west - 3), -uz, ux, e.east - e.west + 3, bridgeTop, `Harbour Bridge ${s} m, west side`);
+    driveIn(p.x - uz * (e.east + 3), p.z + ux * (e.east + 3), uz, -ux, e.east - e.west + 3, bridgeTop, `Harbour Bridge ${s} m, east side`);
+    for (const off of [e.west + 2, (e.west + e.east) / 2, e.east - 2]) placeIn(p.x - uz * off, p.z + ux * off, bridgeTop, `Harbour Bridge ${s} m`);
+  }
+  report.under = { drives, on, held, under, skipped, inside: inside.summary(), placed, stuck: stuck.summary() };
 }
 report.seconds = +((performance.now() - started) / 1000).toFixed(1);
 
@@ -610,6 +690,9 @@ else {
   console.log(`          stopped where nothing's drawn ${j.stops.metres * 2} m at ${j.stops.places} places${where(j.stops)}`);
   console.log(`          medians, ${j.medians} m: dropped through ${j.medianDrops.metres * 2} m${where(j.medianDrops)}; got past ${j.medianPast.metres * 2} m${where(j.medianPast)}`);
   console.log(`          decks' starts, ${j.starts}: a car near a kerb never gets on at ${j.startsMissed.metres}${where(j.startsMissed)}; drops off beside it at ${j.startsFell.metres}${where(j.startsFell)}`);
+  const u = r.under;
+  console.log(`under     driven in from the ground at decks' sides, ${u.drives}: on ${u.on}, held at the side ${u.held}, on under or beside ${u.under}; ended inside a deck ${u.inside.metres}${where(u.inside)}`);
+  console.log(`          placed inside a deck, ${u.placed}: left inside ${u.stuck.metres}${where(u.stuck)}`);
   console.log(`          in ${r.seconds} s`);
   if (r.byTile) {
     console.log(`by tile   ${r.byTile.passing} of ${r.byTile.tiles} pass, ${r.byTile.share}% (limits, in metres of lane: ${JSON.stringify(TILE_LIMITS)})`);
@@ -652,7 +735,10 @@ if (strict) {
     [r.joins.medianDrops.metres * 2, 0, 'metres of median a car drops through'],
     [r.joins.medianPast.metres * 2, 0, 'metres of median a car gets past'],
     [r.joins.startsMissed.metres, 2, 'decks\' starts a car near a kerb never gets on'],
-    [r.joins.startsFell.metres, 1, 'decks\' starts a car drops off beside']
+    [r.joins.startsFell.metres, 1, 'decks\' starts a car drops off beside'],
+    // No room under a deck is solid from the ground: a car stops at its side, or gets on where the two meet; one left inside is moved out
+    [r.under.inside.metres, 0, 'drives in from the ground that end inside a deck'],
+    [r.under.stuck.metres, 0, 'cars placed inside a deck and left there']
   ];
   let failed = false;
   for (const [value, limit, label] of limits) {

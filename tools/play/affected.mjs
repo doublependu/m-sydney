@@ -14,6 +14,7 @@ export const COVERS = {
   'loading-bar': { files: /^js\/(progress|world-jobs|main)\.js$/, area: null },
   'bridge-edges': { files: /^js\/(bridge|harbour-bridge)\.js$/, area: [-400, 300, -3500, -1300] },
   'deck-seams': { files: /^js\/(surfaces|structures|controllers)\.js$/, area: [360, 420, -1350, -1310] },
+  'bridge-south': { files: /^js\/(surfaces|bridge|structures|controllers)\.js$/, area: [-345, -280, -1530, -1350] },
   'under-the-bridge': { files: /^js\/(bridge|harbour-bridge|surfaces)\.js$/, area: [-250, 250, -2800, -1700] },
   'tile-streaming': { files: /^js\/(geodata|terrain|surfaces|city-config|city-grid|buildings|far-level|main|scene-culling)\.js$|^js\/tiles\/|^public\/tiles\//, area: null },
   'keeps-left': { files: /^js\/(traffic|road-network)\.js$/, area: null },

@@ -1,6 +1,6 @@
 import { GEO } from './geodata.js';
 import { rawTerrainHeight as terrainHeight } from './terrain.js';
-import { DECK_DEPTH, DECK_STRUCTURE, ownLaneOffsets, structureAt } from './surfaces.js';
+import { DECK_DEPTH, DECK_STRUCTURE, ownLaneOffsets, setBridgeDeck, structureAt } from './surfaces.js';
 
 // The Harbour Bridge's corridor: a road with its own height, one of the structures of js/surfaces.js. A car on the deck
 // and a car on the street under its approach share (x, z); what tells them apart is the surface each is on. Its height
@@ -136,10 +136,37 @@ function deckUndersideAt(x, z, margin = 0) {
   return here.off >= e.west - margin && here.off <= e.east + margin ? here.y - DECK_DEPTH : null;
 }
 
-/** Whether (x, z) is over the deck's roads, `margin` m past their edges counting */
+// The corridor's box, DECK_REACH round it: nothing outside it is near the deck
+const BOX = PATH.reduce((b, p) => [Math.min(b[0], p.x - DECK_REACH), Math.max(b[1], p.x + DECK_REACH), Math.min(b[2], p.z - DECK_REACH), Math.max(b[3], p.z + DECK_REACH)], [Infinity, -Infinity, Infinity, -Infinity]);
+/**
+ * The deck as drawn over (x, z), all of it counting, `margin` m round it, for what's on the ground under it (js/surfaces.js
+ * solidUnder()): { top, roads, ux, uz }, its road's height, whether it's over its roads and their barriers rather than its railway,
+ * cycleway or footway, and the way the corridor runs. Null where it isn't, and past the corridor's ends, where the ramps that join it
+ * are drawn (js/structures.js): there the nearest place on it is its end, not a place beside it.
+ */
+function deckOver(x, z, margin = 0) {
+  if (x < BOX[0] - margin || x > BOX[1] + margin || z < BOX[2] - margin || z > BOX[3] + margin) return null;
+  const here = bridgeAt(x, z, DECK_REACH + margin);
+  if (!here || here.s <= 0 || here.s >= LENGTH) return null;
+  // Its edges a margin along either way too: where the railway and the footway start, they keep a body off as its sides do
+  let west = Infinity, east = -Infinity;
+  for (const s of [here.s - margin, here.s, here.s + margin]) {
+    const e = deckEdges(Math.max(0, Math.min(LENGTH, s)));
+    west = Math.min(west, e.west);
+    east = Math.max(east, e.east);
+  }
+  if (here.off < west - margin || here.off > east + margin) return null;
+  const lay = deckAcross(here.s), p = bridgePoint(here.s);
+  const roads = here.off >= lay.roadWest - DECK_BARRIER.width - margin && here.off <= lay.roadEast + DECK_BARRIER.width + margin;
+  return { top: here.y, roads, ux: p.ux, uz: p.uz };
+}
+setBridgeDeck(deckOver);
+
+/** Whether (x, z) is over the deck's roads, `margin` m past their edges counting. Not past the corridor's ends, where the nearest place on
+ *  it is its end: js/harbour-bridge.js draws the deck from its start to its end, and the ramps that join it are drawn up to there */
 function onDeckSpan(x, z, margin = 0) {
   const here = bridgeAt(x, z, DECK_REACH + margin);
-  if (!here) return false;
+  if (!here || here.s <= 0 || here.s >= LENGTH) return false;
   const span = deckSpanAt(here.s);
   return here.off >= span.west - margin && here.off <= span.east + margin;
 }
@@ -470,4 +497,4 @@ function deckLines(s0, s1, busOnly = () => false, every = 3) {
 }
 
 export { DECK_BARRIER, DECK_REACH, DECK_STEP, DECK_SID, HALF_WIDTH, LENGTH as BRIDGE_LENGTH, SPAN as BRIDGE_SPAN, bridgeAt, bridgePoint, deckAcross, deckEdges, deckGapAt, deckHeight, deckIsFull, deckLanePoints, deckLanes, deckLines, deckLinkIds,
-  deckRoadPoint, deckSpanAt, deckUndersideAt, onDeckSpan };
+  deckOver, deckRoadPoint, deckSpanAt, deckUndersideAt, onDeckSpan };

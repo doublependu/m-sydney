@@ -24,6 +24,9 @@ const TUNNEL_HEIGHT = 5.6; // m from a tunnel's road up to its ceiling
 const MOUTH_AT_NODE = 1; // m of a tunnel left open where it's covered from the very node it meets the open road at (deriveTunnels())
 const DECK_DEPTH = 1.4; // m from a deck's road down to its soffit
 const OVERHEAD = 4; // m: a deck less than this above a road isn't over it
+// m a body needs between the ground and a deck's underside to be under it: its height and half a metre (chooseSurface()). Less, and the
+// ground there is the inside of the deck as drawn
+const ROOM = { car: 2.0, foot: 2.3 };
 const DRAWN_PAST_EDGE = 1.1; // m past its edge that a road's surface is drawn, under the kerbs (js/ground-geometry.js)
 const CELL = 32;
 
@@ -1027,16 +1030,17 @@ function heightOnLink(link, x, z) {
 
 /**
  * Every level of every structure a body's middle can be at (x, z), the body kept `margin` in from what holds it, as drawn:
- * { levels: [{ sid, y, d, push, joins }], covers: [y], medians: [y] }. `push`: the place the body is held back to, in from a barrier
- * it's pressed into (a barrier's flared end, a median); `joins`, a structure it's drawn as one with here. `covers`: the heights
- * of every deck drawn over (x, z), what a body at that level can't step down through to the ground; `medians`, of the decks
- * whose median (x, z) is in, where the ground isn't a way through either, even off a road on the ground. The Harbour Bridge's
- * deck keeps to its own (structuresAt()).
+ * { levels: [{ sid, y, d, push, joins }], covers: [y], medians: [y], over: [{ y, ux, uz }] }. `push`: the place the body is held back
+ * to, in from a barrier it's pressed into (a barrier's flared end, a median); `joins`, a structure it's drawn as one with here. `covers`:
+ * the heights of every deck drawn over (x, z), what a body at that level can't step down through to the ground; `medians`, of the decks
+ * whose median (x, z) is in, where the ground isn't a way through either, even off a road on the ground; `over`, every bridge's deck
+ * drawn over (x, z) or within `margin` of it, its height and the way it runs, for the room the ground under it has (solidUnder()).
+ * The Harbour Bridge's deck keeps to its own (structuresAt(); its whole width, setBridgeDeck()).
  */
-const decksHere = { levels: [], covers: [], medians: [] };
+const decksHere = { levels: [], covers: [], medians: [], over: [] };
 const found = [], passedOver = [];
 function decksAt(x, z, margin = 0) {
-  const levels = (decksHere.levels = []), covers = (decksHere.covers = []), medians = (decksHere.medians = []);
+  const levels = (decksHere.levels = []), covers = (decksHere.covers = []), medians = (decksHere.medians = []), over = (decksHere.over = []);
   found.length = 0;
   passedOver.length = 0;
   const segs = segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || [];
@@ -1078,6 +1082,9 @@ function decksAt(x, z, margin = 0) {
     const edge = edgeAt(E, side, s);
     const half = link.half;
     const hold = edge.line === null ? Infinity : Math.max(0, edge.line - margin * edge.flare);
+    // How far out the deck as drawn reaches here: behind a nose, between the barrier and the road beside, as far as the nose
+    const reach = edge.nose && Math.abs(s - edge.nose.s) <= FLARE ? Math.max(edge.reach, half + edge.nose.gap) : edge.reach;
+    if (link.kind === KIND.BRIDGE && e <= reach + margin) over.push({ y, ux: seg.ux, uz: seg.uz });
     // A median has its say beside it, not round a corner, where it's past its end and the next road's lanes are
     if (edge.median && !before && !past) {
       // A median, which this link draws, holds a body either side of it: neither road's lanes count within it, or within the body's
@@ -1099,7 +1106,6 @@ function decksAt(x, z, margin = 0) {
       }
     }
     // Behind a nose, between the barrier and the road beside: nothing to stand on, and not the ground either
-    const reach = edge.nose && Math.abs(s - edge.nose.s) <= FLARE ? Math.max(edge.reach, half + edge.nose.gap) : edge.reach;
     if (e > reach) continue;
     covers.push(y);
     // How far out the body's middle may be, and how far this link takes it: across the gap to the road beside, but not within the
@@ -1211,20 +1217,56 @@ function groundRoadDistance(x, z, limit = 30) {
   return best;
 }
 
+// --- Room under a deck -------------------------------------------------------------------------------------------------
+// The ground under a deck as drawn is somewhere a body can be only where there's room for it under the deck's underside (ROOM). With
+// less, the ground there is the deck's inside: from the ground, a body stops at the deck's side as at a wall, or gets on where the two
+// meet, within SWITCH of its top. A street on the ground under a deck too low for it stays open: OSM's roads too close in height, where
+// traffic drives on. Over the Harbour Bridge's railway, cycleway and footway, which aren't anything to stand on, only a street that
+// carries on from one of the bridge's own roads does: the Warringah Fwy off its north end, under the footway's edge as it goes down.
+// Upper Fort St, which runs into the railway's south end, doesn't.
+
+// The Harbour Bridge's deck across its whole width over (x, z), `margin` m round it counting: (x, z, margin) => { top, roads, ux, uz } or
+// null (js/bridge.js deckOver(), which sets it: it imports this module, so this one can't import it)
+let bridgeDeck = null;
+const setBridgeDeck = (fn) => { bridgeDeck = fn; };
+let solidWay = null; // the way the deck runs that last made the ground solid (chooseSurface()), to slide along it
+
+// Whether a road on the ground carries on from the Harbour Bridge's structure: it meets one of its roads at a node
+const offBridge = (road) => [road.a, road.b].some((n) => (linksAtNode.get(n) || []).some((o) => o.sid === DECK_STRUCTURE && o.kind));
+
+/**
+ * Whether the ground at (x, z), at height `ground`, is the inside of a deck for a body kept `margin` from it that needs `room` under it:
+ * `over`, the decks over it (decksAt()); `road`, the street on the ground whose carriageway it's on, if any. Sets solidWay.
+ */
+function solidUnder(x, z, ground, over, margin, room, road) {
+  let way = null;
+  if (!road) for (const o of over) if (o.y - ground >= SWITCH && o.y - DECK_DEPTH - ground < room) { way = o; break; }
+  if (!way && bridgeDeck) {
+    const hb = bridgeDeck(x, z, margin);
+    if (hb && hb.top - DECK_DEPTH - ground < room && (hb.roads ? !road && hb.top - ground >= SWITCH : !road || !offBridge(road))) way = hb;
+  }
+  // A model's floor is the ground there, its own walls bound it (the Pylon Lookout's, through its door off the footway)
+  if (!way || onFloor(x, z)) return false;
+  solidWay = way;
+  return true;
+}
+
 /**
  * The surface under (x, z) for something now at height `y` on surface `current`: the nearest road within STEP of that
  * height, the ground counting as a road where it's nearest. `margin` keeps a body's middle in from a structure's barriers
- * and walls (decksAt()). Returns { sid, y }, with { x, z } as well where a barrier holds the body back to there, or null
- * when every surface there is out of reach: the edge of a deck, a tunnel's wall.
+ * and walls (decksAt()); `room`, what it needs under a deck to be on the ground there (ROOM; 0, anything). Returns { sid, y },
+ * with { x, z } as well where a barrier holds the body back to there, or null when every surface there is out of reach: the
+ * edge of a deck, a tunnel's wall, the side of a deck too low to be under.
  */
-function chooseSurface(current, y, x, z, margin = 0) {
+function chooseSurface(current, y, x, z, margin = 0, room = 0) {
+  solidWay = null;
   const candidates = [];
   const consider = (sid, height, d, push = null, joins = 0) => {
     const gap = Math.abs(height - y);
     if (gap < STEP) candidates.push({ sid, y: height, d, gap, push, joins });
   };
   // On a structure the ground beside it is only a way off at its ends, where the two meet
-  const { levels, covers, medians } = decksAt(x, z, margin);
+  const { levels, covers, medians, over } = decksAt(x, z, margin);
   for (const s of levels) consider(s.sid, s.y, s.d, s.push, s.joins);
   // ...and on the ground, the road at this height, where another passes over it with nothing but its own surface. Past its
   // carriageway's edge only while the ground there is still at its level: where the ground beside it is another road's, at
@@ -1233,15 +1275,24 @@ function chooseSurface(current, y, x, z, margin = 0) {
   // across the corner between two roads and a wall would stop it
   const road = groundRoadAt(x, z, y);
   // Not the ground under a deck as drawn, at the deck's level, but for a road on it: the gap between two roads drawn as one, a
-  // deck's first metres off the road it carries on from. What's drawn there is the deck. Nor in a median, road or not
+  // deck's first metres off the road it carries on from. What's drawn there is the deck. Nor in a median, road or not. Nor under a
+  // deck with too little room for the body: there the ground is the deck's inside
+  let solid = false;
   if (!medians.some((my) => Math.abs(my - y) < STEP) && (road || !covers.some((cy) => Math.abs(cy - y) < SWITCH))) {
-    const roadDistance = groundRoadDistance(x, z);
     const ground = groundHeight(x, z);
-    consider(0, ground, roadDistance);
-    if (road) {
-      const own = roadHeight(road, x, z);
-      if (Math.abs(ground - own) < STEP || linkDistance(road, x, z) <= road.width / 2 || inJunction(road, x, z)) consider(0, own, roadDistance);
+    solid = room > 0 && (over.length > 0 || bridgeDeck !== null) && solidUnder(x, z, ground, over, margin, room, road);
+    if (!solid) {
+      const roadDistance = groundRoadDistance(x, z);
+      consider(0, ground, roadDistance);
+      if (road) {
+        const own = roadHeight(road, x, z);
+        if (Math.abs(ground - own) < STEP || linkDistance(road, x, z) <= road.width / 2 || inJunction(road, x, z)) consider(0, own, roadDistance);
+      }
     }
+  }
+  // From the ground, a deck too low to be under is taken only where the two meet: its side is a wall
+  if (solid && !current) {
+    for (let i = candidates.length - 1; i >= 0; i--) if (candidates[i].gap >= SWITCH) candidates.splice(i, 1);
   }
   // A tunnel's walls hold: nothing moves sideways from one tunnel into another, even where the two run so close their roads touch.
   // Two tunnels never share a node, or they'd be one structure, so there's no way from one to the other but through a wall. Where
@@ -1272,27 +1323,50 @@ function chooseSurface(current, y, x, z, margin = 0) {
 }
 
 /**
- * A body at (fx, fz) on surface `sid` at height `y`, moved towards (tx, tz) with its middle kept `margin` in from what holds it:
- * where it ends, and on what. Held back to a barrier's line where it's pressed into one; where nothing is in reach (over a
- * deck's edge, into a tunnel's wall), stopped at the edge and slid along it as along a wall. { x, z, sid, y, held }. The
- * player's every step (js/controllers.js), and what the checks drive by.
+ * A body at (fx, fz) on surface `sid` at height `y`, moved towards (tx, tz) with its middle kept `margin` in from what holds it, needing
+ * `room` under a deck (chooseSurface()): where it ends, and on what. Held back to a barrier's line where it's pressed into one; where
+ * nothing is in reach (over a deck's edge, into a tunnel's wall, at the side of a deck too low to be under), stopped at the edge and
+ * slid along it as along a wall. Left inside a deck (teleported there, or a tile arriving round it), lifted onto it or moved out beside
+ * it (freeFromDeck()). { x, z, sid, y, held }. The player's every step (js/controllers.js), and what the checks drive by.
  */
-function moveOver(sid, y, fx, fz, tx, tz, margin = 0) {
-  let here = chooseSurface(sid, y, tx, tz, margin), x = tx, z = tz;
+function moveOver(sid, y, fx, fz, tx, tz, margin = 0, room = 0) {
+  let here = chooseSurface(sid, y, tx, tz, margin, room), x = tx, z = tz;
   const held = !here || here.x !== undefined;
   if (!here) {
-    // Along the wall where we know which way it runs, a structure's edge: keeping one axis of the move instead would cost a car
-    // skimming a diagonal barrier most of its speed, every frame, and stop it dead for no reason it can see
-    const along = sid ? structureAt(sid, fx, fz, 2)?.seg : null;
+    // Along the wall where we know which way it runs, a structure's edge, or the side of a deck the ground's stopped at: keeping one
+    // axis of the move instead would cost a car skimming a diagonal barrier most of its speed, every frame, and stop it dead for no
+    // reason it can see
+    const along = sid ? structureAt(sid, fx, fz, 2)?.seg : solidWay;
     const run = along ? (tx - fx) * along.ux + (tz - fz) * along.uz : 0;
     const sx = along ? fx + along.ux * run : 0, sz = along ? fz + along.uz * run : 0;
-    if (along && (here = chooseSurface(sid, y, sx, sz, margin))) { x = sx; z = sz; }
-    else if ((here = chooseSurface(sid, y, tx, fz, margin))) z = fz;
-    else if ((here = chooseSurface(sid, y, fx, tz, margin))) x = fx;
+    if (along && (here = chooseSurface(sid, y, sx, sz, margin, room))) { x = sx; z = sz; }
+    else if ((here = chooseSurface(sid, y, tx, fz, margin, room))) z = fz;
+    else if ((here = chooseSurface(sid, y, fx, tz, margin, room))) x = fx;
+    else if (!sid && room > 0 && (here = freeFromDeck(y, fx, fz, margin, room))) { x = here.x; z = here.z; }
     else { x = fx; z = fz; here = { sid, y }; }
   }
   if (here.x !== undefined) { x = here.x; z = here.z; }
   return { x, z, sid: here.sid, y: here.y, held };
+}
+
+const FREE_REACH = 30; // m: the furthest a body left inside a deck is moved out
+/**
+ * A body on the ground at height y at (x, z), where the ground is a deck's inside to it: the nearest place out, { x, z, sid, y },
+ * onto a deck's road within STEP of it (the deck it's in, lifted onto it) or open ground beside it. Null where it isn't inside a deck,
+ * or nothing's within FREE_REACH.
+ */
+function freeFromDeck(y, x, z, margin, room) {
+  if (!solidUnder(x, z, groundHeight(x, z), decksAt(x, z, margin).over, margin, room, groundRoadAt(x, z, y))) return null;
+  for (let r = 0; r <= FREE_REACH; r += 0.5) {
+    for (let k = 0; k < (r ? 16 : 1); k++) {
+      const px = x + r * Math.cos((k * Math.PI) / 8), pz = z + r * Math.sin((k * Math.PI) / 8);
+      for (const l of decksAt(px, pz, margin).levels) if (!l.push && Math.abs(l.y - y) < STEP) return { x: px, z: pz, sid: l.sid, y: l.y };
+      if (!clearOfWater(px, pz)) continue;
+      const g = groundHeight(px, pz), c = chooseSurface(0, g, px, pz, margin, room);
+      if (c && c.x === undefined) return { x: px, z: pz, sid: c.sid, y: c.y };
+    }
+  }
+  return null;
 }
 
 /** Whether two things at heights ya and yb are on one level, so they can meet */
@@ -1373,7 +1447,7 @@ function roadRoute(waypoints, step = 8) {
 }
 
 export {
-  setFloor, clearFloor, onFloor, decksAt, DECK_DEPTH, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, ROAD_CLASS, ROAD_CLASSES, deriveTunnels, linkById, roadClass, SAME_LEVEL, SEGMENTS, STATION_STEP, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
+  setFloor, clearFloor, onFloor, decksAt, DECK_DEPTH, ROOM, freeFromDeck, setBridgeDeck, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, ROAD_CLASS, ROAD_CLASSES, deriveTunnels, linkById, roadClass, SAME_LEVEL, SEGMENTS, STATION_STEP, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
   clearOfWater, EDGE_GAP, edgeHeight, edgeNeighbour, floorBelow, laneAt, linkEdges, linkStations, moveOver, offsetLine, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, ownLaneOffsets, roadHeight, roadRoute, roomUnderDeck, sameLevel,
   structureAt, structuresAt, surfaceHeight, surfaceSlope, tunnelCovered
 };

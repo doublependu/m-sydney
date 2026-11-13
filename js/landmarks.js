@@ -56,8 +56,13 @@ function buildSydneyTower(group) {
   const podium = new THREE.ExtrudeGeometry(shape, { depth: TOWER.podium.top + 2.5, bevelEnabled: false }).rotateX(-Math.PI / 2).translate(0, -2.5, 0);
   rest.push(coloured(podium, '#cfc3ad'));
   const cup = TOWER.parts.find((p) => p.name === 'cup').profile;
-  const at = (y) => cup[0][1] + ((cup[1][1] - cup[0][1]) * (y - cup[0][0])) / (cup[1][0] - cup[0][0]);
-  const windows = TOWER.windows.map(([y0, y1]) => lathe([[y0, at(y0) + 0.05], [y1, at(y1) + 0.05]], 32));
+  const at = (y) => {
+    const k = cup.findIndex(([y1]) => y1 >= y), i = k < 0 ? cup.length - 1 : Math.max(1, k);
+    const [y0, r0] = cup[i - 1], [y1, r1] = cup[i];
+    return r0 + ((r1 - r0) * (y - y0)) / (y1 - y0);
+  };
+  // each band bent where the cup's profile bends, so it's never under it
+  const windows = TOWER.windows.map(([y0, y1]) => lathe([y0, ...cup.map(([y]) => y).filter((y) => y > y0 && y < y1), y1].map((y) => [y, at(y) + 0.05]), 32));
   const goldMaterial = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.85 });
   goldMaterial.emissiveNode = color(0xffc25a).mul(smoothstep(0.55, 1.2, cityUniforms.uInteriorGlow).mul(0.9));
   const restMaterial = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.35 });

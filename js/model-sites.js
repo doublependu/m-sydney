@@ -218,6 +218,22 @@ const MODEL_SITES = [
       [11.0, [[-0.4, 5.25], [8.55, 5.25], [8.55, 13.78], [-0.4, 13.78]]], [6.0, [[-0.1, 13.78], [8.25, 13.78], [8.25, 15.45], [-0.1, 15.45]]],
       [7.6, [[2.2, -0.4], [6.15, -0.4], [6.15, 5.25], [2.2, 5.25]]], [3.4, [[6.15, -0.2], [8.66, -0.2], [8.66, 5.25], [6.15, 5.25]]]
     ]
+  },
+  // 20 Wolseley Rd, Point Piper: a house of three floors at the foot of the slope from Wolseley Rd down to Double Bay, its verandahs to
+  // the harbour, a round stairwell on its east side; the garden and the pool, the jetty along the map's pier, the boat shed. Its frame:
+  // +x up the slope to the east, +z to the south, the ground floor's level; the first floor is at grade on the east, at the front door.
+  // Its cut takes in the house, its terraces and garden and the court round the east, inside the lawn: the map paves the shore.
+  {
+    id: 'wolseley-rd', file: 'models/wolseley-rd', x: 3911.0, z: -930.0, yaw: 0.206, y: 4.8, far: true, replaces: [[7.0, 9.4]],
+    cut: { poly: [[-7.87, -2.6], [7.8, -2.6], [7.8, -3.3], [16.5, -3.3], [16.5, 16.8], [-15.5, 16.8]], y: -3.0 },
+    outline: [
+      [10.3, [[0.71, -0.25], [12.75, -0.25], [12.75, 5.57], [13.22, 5.66], [13.67, 5.85], [14.07, 6.11], [14.43, 6.44], [14.71, 6.82],
+        [14.93, 7.26], [15.06, 7.72], [15.1, 8.2], [15.06, 8.68], [14.93, 9.14], [14.71, 9.58], [14.43, 9.96], [14.07, 10.29], [13.67, 10.55],
+        [13.22, 10.74], [12.75, 10.83], [12.75, 15.75], [-4.18, 15.75]]],
+      [3.4, [[7.8, -3.3], [16.5, -3.3], [16.5, 16.8], [12.6, 16.8], [12.6, 5.65], [14.15, 5.65], [14.15, 3.6], [12.6, 3.6], [12.6, 1.35],
+        [9.4, 1.35], [9.4, 0.05], [7.8, 0.05]]],
+      [3.6, [[-23.85, 8.07], [-31.67, 5.62], [-29.81, -0.29], [-21.99, 2.16]]]
+    ]
   }
 ];
 

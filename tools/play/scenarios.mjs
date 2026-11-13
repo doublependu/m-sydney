@@ -791,6 +791,49 @@ const schoolScenario = () => houseScenario('school-st', {
   ]
 });
 
+// 20 Wolseley Rd, Point Piper (wolseley-rd): from the court in at the front doors, through the foyer into the dining room and out onto
+// the verandah to sit; up the spiral stair round its well to the top floor, through the robe into the master bedroom to its armchair;
+// down both flights to the ground floor, out of the entertaining area's doors onto the terrace, down to the lawn and the pool, down the
+// sea wall's steps to the jetty, into the boat shed and out of its doors to the water
+const wolseleyArc = (down) => {
+  // the stair's walking line round the well, south to north round the east (up), or back (down)
+  const pts = Array.from({ length: 9 }, (_, k) => {
+    const a = Math.PI / 2 - (Math.PI * k) / 8;
+    return ['walk', +(12.45 + 1.7 * Math.cos(a)).toFixed(3), +(8.2 + 1.7 * Math.sin(a)).toFixed(3), down ? 'down the stair' : 'up the stair'];
+  });
+  return down ? pts.reverse() : pts;
+};
+const wolseleyScenario = () => houseScenario('wolseley-rd', {
+  start: [11.5, -2.2], toward: [10.95, 1.5], inside: 'wolseley-rd-i',
+  steps: [
+    ['walk', 10.95, 0.6, 'under the porch to the front doors'], ['level', 3.35], ['open', 10.95, 1.5, 'front'],
+    ['walk', 10.95, 2.6, 'in at the front doors'], ['room', 'entry'], ['fetched'], ['walk', 10.85, 5.2, 'through the arch'], ['room', 'foyer'],
+    ['walk', 8.3, 8.0, 'to the dining room\'s doors'], ['walk', 6.4, 8.35, 'into the dining room'], ['room', 'dining'],
+    ['sit', 5.6, 8.35], ['fps', 'fpsInDining'], ['walk', 6.4, 6.9, 'past the table'], ['walk', 2.6, 6.9, 'along it'],
+    ['walk', 2.6, 8.0, 'to the verandah\'s doors'], ['open', 1.9, 8.0, 'dining-verandah'], ['walk', 0.6, 8.0, 'out onto the verandah'],
+    ['level', 3.35], ['fps', 'fpsOnVerandah'],
+    ['walk', 2.6, 8.0, 'back in'], ['walk', 2.6, 6.9, 'round the table'], ['walk', 6.4, 6.9, 'back along it'], ['walk', 6.4, 8.0, 'to the doors'],
+    ['walk', 8.3, 8.0, 'back into the foyer'], ['walk', 10.8, 9.1, 'to the foot of the stair'], ['walk', 11.7, 9.9, 'to its first step'],
+    ...wolseleyArc(false), ['room', 'stair'], ['walk', 11.7, 6.5, 'off the stair onto the top floor'], ['level', 6.7], ['room', 'hall-s'],
+    ['walk', 10.3, 6.3, 'round the well'], ['walk', 10.3, 10.0, 'along the landing'], ['walk', 7.5, 10.0, 'to the master suite\'s door'],
+    ['walk', 7.5, 11.1, 'into the robe'], ['room', 'robe'], ['walk', 5.5, 11.05, 'into the master bedroom'], ['room', 'master'],
+    ['walk', 2.3, 12.0, 'to the armchair'], ['sit', 1.4, 12.0], ['fps', 'fpsInMaster'],
+    ['walk', 5.5, 11.05, 'back to the robe'], ['walk', 7.5, 11.1, 'through it'], ['walk', 7.5, 10.0, 'out to the landing'],
+    ['walk', 10.3, 10.0, 'along it'], ['walk', 10.3, 6.3, 'round the well'], ['walk', 11.7, 6.5, 'to the head of the stair'],
+    ...wolseleyArc(true), ['room', 'stair'], ['walk', 11.7, 9.9, 'off it on the first floor'], ['level', 3.35], ['walk', 10.8, 9.1, 'round the well'],
+    ['walk', 10.8, 7.3, 'past it'], ['walk', 11.7, 6.5, 'to the next flight'], ...wolseleyArc(true),
+    ['walk', 11.6, 9.9, 'off the stair on the ground floor'], ['level', 0], ['room', 'hall-g'], ['walk', 8.6, 9.6, 'through the arch'], ['room', 'ent'],
+    ['fps', 'fpsInEntertaining'], ['walk', 8.6, 7.0, 'round the sofas'], ['walk', 3.6, 7.0, 'across the room'],
+    ['walk', 3.6, 7.4, 'to the terrace doors'], ['open', 2.3, 7.9, 'terrace'], ['walk', 1.0, 7.9, 'out onto the terrace'], ['level', 0],
+    ['walk', 0.5, 3.64, 'along it to the steps'], ['walk', -2.3, 2.79, 'down onto the lawn'], ['level', -0.8],
+    ['walk', -6.0, 5.2, 'to the pool'], ['fps', 'fpsByPool'], ['walk', -10.5, 5.8, 'past it'], ['walk', -11.85, 8.59, 'to the sea wall\'s steps'],
+    ['walk', -15.29, 7.51, 'down the steps to the jetty'], ['level', -2.5], ['walk', -22.63, 5.21, 'along the jetty'],
+    ['walk', -23.4, 4.97, 'onto the boat shed\'s deck'], ['walk', -24.44, 4.64, 'to its door'], ['walk', -24.95, 4.58, 'in at its door'],
+    ['level', -2.5], ['fps', 'fpsInBoatShed'], ['walk', -26.36, 5.4, 'round the table'], ['walk', -29.27, 3.65, 'past it'],
+    ['walk', -30.41, 3.29, 'out of the doors to the water'], ['level', -2.5]
+  ]
+});
+
 // A house on three levels over Bronte beach (js/model-sites.js, bronte-pacific): from Pacific St in at the front door, through to the
 // living room and out onto its terrace to sit; down the stair to the family room and out onto the deck; down again to the rumpus room
 // and out onto the pool's terrace. Its inside isn't fetched until the front door opens.
@@ -1615,6 +1658,8 @@ export const SCENARIOS = {
   'cove-st-41': cove41Scenario(),
   'cove-st-43': cove43Scenario(),
   'school-st': schoolScenario(),
+  'wolseley-rd': { ...wolseleyScenario(), minutes: 8 },
+  'wolseley-rd-phone': { ...wolseleyScenario(), profile: 'phone', minutes: 10 },
   'pylon-lookout': lookoutScenario(),
   'pylon-lookout-phone': { ...lookoutScenario(), profile: 'phone' },
   'sydney-tower': towerScenario(),

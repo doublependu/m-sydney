@@ -1208,7 +1208,8 @@ class ThirdPersonControllerManager {
         last.z = pos.z;
         return;
       }
-      if (clearOfWater(pos.x, pos.z)) {
+      // ...nor on a model's floor (js/surfaces.js onFloor()), which its own walls bound: a jetty out over the water (js/model-sites.js)
+      if (clearOfWater(pos.x, pos.z) || (this.activeMode === 'person' && onFloor(pos.x, pos.z))) {
         last.x = pos.x;
         last.z = pos.z;
       } else {

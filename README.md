@@ -365,6 +365,15 @@ What a model has to be:
   verandah and a balcony in green cast-iron lace to the harbour, three dormers in a steep roof. Its inside has the three levels of its
   plans, a glass stair to the first floor and a straight one to the attic. The `school-st` scenario walks up from the parking onto the
   terrace, in at the front door, sits by the fireplace, goes up to the balcony and on to the attic.
+- **A waterfront house at Point Piper** (`wolseley-rd`), at the foot of the slope from Wolseley Rd to Double Bay: three floors in white
+  render, their verandahs to the harbour in white bands and planters on rough-cast columns, a round stairwell out of its east side; the
+  garden and the pool behind a sandstone sea wall, the jetty out along the map's pier to a boat shed of turquoise boards, a pontoon and a
+  boat. Its inside has the three floors of its plans, the rooms round a spiral stair that winds round an open well through all three
+  (`spiral_stair()` in the models' kit: every tread its own sloped floor in the inside's JSON). The first floor is at grade on the east,
+  where the front doors are off a paved court; the site's `cut` takes in the house, the court and the garden, inside the map's lawn (the
+  map paves the shore). A walker on a model's floor isn't held off the water (`js/controllers.js`), so the jetty can be walked. The
+  `wolseley-rd` scenario walks in from the court, sits in the dining room, goes up the spiral stair to the master bedroom and down to the
+  entertaining area, out to the pool, down the sea wall's steps and along the jetty into the boat shed.
 - **What a big inside adds:** `instances` in its JSON draw a node many times from one (the hall's seats: a node, the room it's in, and
   `[x, y, z, yaw]` for each), as one InstancedMesh for each of its materials; each seat to sit in is in `seats` as well. A room can say
   how far it shuts out the sky (`shelter`, 0.85 unless it says: a glazed foyer less, a concert hall all of it) and how much its own colours

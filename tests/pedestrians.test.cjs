@@ -408,7 +408,7 @@ const { PersonCrowd, PersonRig, buildPersonGeometry, createPersonMaterial } = lo
     'three/webgpu': { Vector3, Quaternion, Matrix4, BufferAttribute, BufferGeometry, Float32BufferAttribute, MeshStandardNodeMaterial, Mesh },
     'three/tsl': tslStub,
     'three/addons/utils/BufferGeometryUtils.js': { mergeGeometries },
-    './surfaces.js': { edgeHeight: () => 0, groundHeight: () => 0, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), structureAt: () => null, structuresAt: () => [], LINKS: [] }
+    './surfaces.js': { edgeHeight: () => 0, groundHeight: () => 0, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), moveOver: (sid, y, fx, fz, x, z) => ({ x, z, sid: 0, y: 0, held: false }), structureAt: () => null, structuresAt: () => [], LINKS: [] }
   }
 });
 const STRIDE = 31;
@@ -662,7 +662,7 @@ test('poseCharacters skips stationary inactive cyclist IK/uploads and culls park
       './city-config.js': { SPAWN: { x: 0, z: 0, heading: 0 }, landAt: () => true, isTypingInField: () => false },
       './bridge.js': { DECK_SID: 0 },
       './arrivals.js': { FLY: { AREA: 200 }, arrivalFor: () => null, holdOnFootway: () => null },
-      './surfaces.js': { edgeHeight: () => 0, groundHeight: () => 0, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), structureAt: () => null, structuresAt: () => [], LINKS: [] },
+      './surfaces.js': { edgeHeight: () => 0, groundHeight: () => 0, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), moveOver: (sid, y, fx, fz, x, z) => ({ x, z, sid: 0, y: 0, held: false }), structureAt: () => null, structuresAt: () => [], LINKS: [] },
       './terrain.js': { terrainHeight: () => 0, terrainSlope: () => 0 },
       './tsl-materials.js': {},
       './cars.js': {},
@@ -759,7 +759,7 @@ test('A rider is drawn on the saddle, on whatever the bike stands on, whatever t
       'three/webgpu': { Vector3, Quaternion, Matrix4, BufferAttribute, BufferGeometry, Float32BufferAttribute, MeshStandardNodeMaterial, Mesh },
       'three/tsl': tslStub,
       'three/addons/utils/BufferGeometryUtils.js': { mergeGeometries },
-      './surfaces.js': { edgeHeight: () => 0, groundHeight, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), structureAt: () => null, structuresAt: () => [], LINKS: [] }
+      './surfaces.js': { edgeHeight: () => 0, groundHeight, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), moveOver: (sid, y, fx, fz, x, z) => ({ x, z, sid: 0, y: 0, held: false }), structureAt: () => null, structuresAt: () => [], LINKS: [] }
     }
   });
   const frame = { seat: new Vector3(0, 0.98, -0.28), bars: new Vector3(0, 0.98, 0.4), gripHalf: 0.22, bracket: new Vector3(0, 0.34, -0.145), crankLength: 0.17 };

@@ -15,13 +15,17 @@
 //             while the camera's in a tube (js/main.js), so this is where to look, not a fault
 //   decks     buildings rising into a deck, and trees taller than the room under one
 //   walls     a raised road's barrier or wall standing in another road's lane at its level, where the two run side by side
+//   joins     roads drawn as one deck or one tunnel, driven across from one's lanes to the other's: where a car drops through to
+//             the ground, or is stopped where nothing's drawn; medians, where a car drops through or gets past; and decks' starts,
+//             a car driven on from the road on the ground near its kerbs, that never gets on or drops off beside it
 // usage: node tools/check-roads.mjs [--json] [--strict] [--list] [--tiles=0_-2,1_-2]
 console.info = () => {};
 const { heldList, heldTiles } = await import('../js/geodata.js');
-const { DECK_DEPTH, KIND, LINKS, TUNNEL_HEIGHT, chooseSurface, clearOfWater, edgeNeighbour, groundHeight, laneAt, linkById, onGroundRoad, roadHeight, tunnelCovered } = await import('../js/surfaces.js');
+const { DECK_DEPTH, DECK_STRUCTURE, KIND, LINKS, TUNNEL_HEIGHT, chooseSurface, clearOfWater, edgeNeighbour, groundHeight, groundRoadAt, laneAt, linkById, linkEdges, moveOver, onGroundRoad, roadHeight, tunnelCovered } = await import('../js/surfaces.js');
 const { GroundCells, SIDEWALK_TOP, addSurface, groundLinks, wheelContacts } = await import('../js/ground-geometry.js');
 const { CITY_BOUNDS, blockAt } = await import('../js/city-config.js');
 const { buildRoadNetworkSteps } = await import('../js/road-network.js');
+const { onDeckSpan } = await import('../js/bridge.js');
 
 const started = performance.now();
 const json = process.argv.includes('--json');
@@ -462,6 +466,121 @@ const over = (places, limit) => places.all.filter((w) => w[0] > limit).length;
   }
   report.walls = { ...walls.summary(), metres: walls.metres * 2, everyEdge: before * 2 };
 }
+// --- Roads drawn as one, medians and decks' starts, driven by the game's own step (js/surfaces.js moveOver()) ------------------
+{
+  const CAR = 1.0; // a car's margin (js/controllers.js)
+  // The nearest point on a link's centre line to (x, z)
+  const nearestOn = (link, x, z) => {
+    let best = null;
+    for (let i = 1; i < link.pts.length; i++) {
+      const a = link.pts[i - 1], b = link.pts[i], dx = b.x - a.x, dz = b.z - a.z;
+      const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / (dx * dx + dz * dz || 1)));
+      const px = a.x + dx * t, pz = a.z + dz * t, d = Math.hypot(px - x, pz - z);
+      if (!best || d < best.d) best = { x: px, z: pz, d };
+    }
+    return best;
+  };
+  // A car on `sid` at height y at (x, z), driven straight at (tx, tz) 0.1 m a step: where it ends, and the lowest it was on the ground
+  // `past(x, z)`: whether the ground there counts
+  const driveAt = (sid, y, x, z, tx, tz, limit = 400, past = () => true) => {
+    let ground = Infinity, stopped = false;
+    for (let i = 0; i < limit; i++) {
+      const dx = tx - x, dz = tz - z, L = Math.hypot(dx, dz);
+      if (L < 0.05) break;
+      const m = moveOver(sid, y, x, z, x + (dx / L) * Math.min(0.1, L), z + (dz / L) * Math.min(0.1, L), CAR);
+      if (Math.hypot(m.x - x, m.z - z) < 0.002) { stopped = true; break; }
+      ({ x, z, sid, y } = m);
+      if (!sid && past(x, z)) ground = Math.min(ground, y);
+    }
+    return { x, z, sid, y, ground, stopped, left: Math.hypot(tx - x, tz - z) };
+  };
+  const drops = new Places(), stops = new Places(), medianDrops = new Places(), medianPast = new Places();
+  let held = 0, medians = 0;
+  // Every 2 m of each stretch between stations js/structures.js draws open to the road beside (js/surfaces.js linkEdges()), from the
+  // road that draws what's between them: the gap filled across to a road going the same way, or a median
+  for (const l of LINKS) {
+    if (!l.kind || l.deck || !l.pts.some((p) => wanted(p.x, p.z))) continue;
+    const E = linkEdges(l);
+    for (const side of [1, -1]) {
+      const one = E.sides.get(side);
+      for (let j = 0; j + 1 < E.st.length; j++) {
+        const a = one.open[j], b = one.open[j + 1];
+        if (!a || !b) continue;
+        const median = a.opposite && b.opposite;
+        if ((!median && (a.opposite || b.opposite)) || !one.owns[j] || !one.owns[j + 1]) continue;
+        const p = E.st[j], q = E.st[j + 1], L = q.s - p.s;
+        if (L < 1e-6) continue;
+        const ux = (q.x - p.x) / L, uz = (q.z - p.z) / L, nx = -uz * side, nz = ux * side;
+        // Not where a nose at either end holds a car back
+        const noses = [one.nose[j - 1]?.i === j ? 0 : null, one.nose[j + 1]?.i === j + 1 ? L : null].filter((v) => v !== null);
+        for (let d = 1; d < L; d += 2) {
+          if (noses.some((at) => Math.abs(d - at) < 1.3)) continue;
+          const x = p.x + ux * d, z = p.z + uz * d, y = p.y + ((q.y - p.y) * d) / L;
+          // Not on the Harbour Bridge's deck, which js/harbour-bridge.js draws
+          if (!wanted(x, z) || (l.sid === DECK_STRUCTURE && onDeckSpan(x, z))) continue;
+          const other = (d < L / 2 ? a : b).link;
+          // From the middle of this one's nearer lanes to the other's centre line: not where the other takes in this one's edge,
+          // with nothing to cross to
+          const o = nearestOn(other, x + nx * l.half, z + nz * l.half), out = (o.x - x) * nx + (o.z - z) * nz;
+          if (out < l.half) continue;
+          // A median holds a car its margin from its face: none where that leaves this road no lane on its own side
+          const face = median ? one.line[j][0] + ((one.line[j][1] - one.line[j][0]) * d) / L : Infinity;
+          const from = Math.min(l.half * 0.5, 2, face - CAR - 0.2), to = Math.max(l.half + 0.5, out);
+          if (from < 0) continue;
+          const r = driveAt(l.sid, y, x + nx * from, z + nz * from, x + nx * to, z + nz * to);
+          const name = `${l.name || '-'} | ${other.name || '-'}`;
+          const low = Math.min(y, other.kind ? y : roadHeight(other, x + nx * to, z + nz * to)) - 0.3;
+          if (median) {
+            medians++;
+            if (r.ground < low) medianDrops.add(x, z, name, y - r.ground);
+            else if (r.left < 0.3) medianPast.add(x, z, name);
+          } else if (r.ground < low) drops.add(x, z, name, y - r.ground);
+          else if (r.left > 0.3) stops.add(x, z, name, r.left);
+          else held++;
+        }
+      }
+    }
+  }
+  // Decks' starts: where a road on the ground runs on onto a bridge, a car driven on near its kerbs and on its centre line
+  const byNode = new Map();
+  for (const l of LINKS) for (const n of [l.a, l.b]) (byNode.get(n) || byNode.set(n, []).get(n)).push(l);
+  const along = (l, n) => { const P = l.a === n ? l.pts : [...l.pts].reverse(); const L = Math.hypot(P[1].x - P[0].x, P[1].z - P[0].z) || 1; return { x: P[0].x, z: P[0].z, y: P[0].y, ux: (P[1].x - P[0].x) / L, uz: (P[1].z - P[0].z) / L, L }; };
+  const missed = new Places(), fell = new Places();
+  let starts = 0;
+  for (const l of LINKS) {
+    if (l.kind !== KIND.BRIDGE || l.sid === DECK_STRUCTURE) continue;
+    for (const n of [l.a, l.b]) {
+      const on = byNode.get(n) || [];
+      if (on.some((o) => o !== l && o.kind)) continue; // carries on from another of its structure
+      const deck = along(l, n);
+      if (!wanted(deck.x, deck.z) || deck.L < 6) continue;
+      const road = on.filter((o) => !o.kind).map((o) => ({ o, a: along(o, n) })).find(({ a }) => -(a.ux * deck.ux + a.uz * deck.uz) > 0.9);
+      if (!road) continue;
+      starts++;
+      const w = Math.min(road.o.width, l.width);
+      for (const off of [0, w / 2 - 0.3, -(w / 2 - 0.3)]) {
+        // 12 m back along the road on the ground to 6 m on along the deck, `off` m to the left
+        const sx = deck.x - deck.ux * 12 - deck.uz * off, sz = deck.z - deck.uz * 12 + deck.ux * off;
+        const ex = deck.x + deck.ux * 6 - deck.uz * off, ez = deck.z + deck.uz * 6 + deck.ux * off;
+        // On the road that runs on onto it: not another road beside it, where it starts
+        const g = roadHeight(road.o, sx, sz);
+        const start = chooseSurface(0, g, sx, sz, CAR);
+        if (!start || start.sid || groundRoadAt(sx, sz, g) !== road.o) continue;
+        // On the ground past the deck's start, more than a step down from it: dropped off beside it. Ending on the ground: never got on.
+        // On another structure at its level, drawn as one with it, it got on
+        const r = driveAt(start.sid, start.y, sx, sz, ex, ez, 300, (x, z) => (x - deck.x) * deck.ux + (z - deck.z) * deck.uz > 0);
+        const name = `${road.o.name || '-'} -> ${l.name || '-'} (${off.toFixed(1)})`;
+        if (r.ground < deck.y - 0.6) fell.add(deck.x, deck.z, name, deck.y - r.ground);
+        else if (!r.sid) missed.add(deck.x, deck.z, name);
+      }
+    }
+  }
+  report.joins = {
+    held: held * 2, drops: drops.summary(), stops: stops.summary(),
+    medians: medians * 2, medianDrops: medianDrops.summary(), medianPast: medianPast.summary(),
+    starts, startsMissed: missed.summary(), startsFell: fell.summary()
+  };
+}
 report.seconds = +((performance.now() - started) / 1000).toFixed(1);
 
 if (json) console.log(JSON.stringify(report, null, 1));
@@ -486,6 +605,11 @@ else {
   console.log(`decks     ${r.decks.buildings} buildings rising into a deck${where(r.decks.into)}`);
   console.log(`          ${r.decks.trees} trees taller than the room under a deck${where(r.decks.under)}`);
   console.log(`walls     ${r.walls.metres} m of barrier or wall in another road's lane at its level (${r.walls.everyEdge} m if every edge had one)${where(r.walls)}`);
+  const j = r.joins;
+  console.log(`joins     roads drawn as one, ${j.held + j.drops.metres * 2 + j.stops.metres * 2} m: a car drops through ${j.drops.metres * 2} m at ${j.drops.places} places${where(j.drops)}`);
+  console.log(`          stopped where nothing's drawn ${j.stops.metres * 2} m at ${j.stops.places} places${where(j.stops)}`);
+  console.log(`          medians, ${j.medians} m: dropped through ${j.medianDrops.metres * 2} m${where(j.medianDrops)}; got past ${j.medianPast.metres * 2} m${where(j.medianPast)}`);
+  console.log(`          decks' starts, ${j.starts}: a car near a kerb never gets on at ${j.startsMissed.metres}${where(j.startsMissed)}; drops off beside it at ${j.startsFell.metres}${where(j.startsFell)}`);
   console.log(`          in ${r.seconds} s`);
   if (r.byTile) {
     console.log(`by tile   ${r.byTile.passing} of ${r.byTile.tiles} pass, ${r.byTile.share}% (limits, in metres of lane: ${JSON.stringify(TILE_LIMITS)})`);
@@ -518,7 +642,17 @@ if (strict) {
     [r.decks.trees, 6, 'trees taller than the room under a deck'],
     // Plan 5, Phase B: 4,070 m before roads side by side shared a deck. What's left is in the data: opposite carriageways drawn
     // overlapping, so their median stands in a lane, and roads meeting 0.35-0.5 m apart in height
-    [r.walls.metres, 1260, 'metres of barrier or wall in another road\'s lane']
+    [r.walls.metres, 1260, 'metres of barrier or wall in another road\'s lane'],
+    // What's drawn as one deck is one deck, a median holds, and a deck's start takes a car on across its width. What's left is where
+    // three roads meet at a node and the gap's filled towards one of them, not the other (Fig St, -409, 157; the Cahill's on-ramp from
+    // Sir John Young Crescent), roads on the ground beside a deck's start at its level (Darling Dr, Pier St), and Dalgety Rd's start,
+    // where the ground beside its road falls 0.6 m
+    [r.joins.drops.metres * 2, 0, 'metres of roads drawn as one where a car drops through'],
+    [r.joins.stops.metres * 2, 6, 'metres of roads drawn as one where a car is stopped by nothing drawn'],
+    [r.joins.medianDrops.metres * 2, 0, 'metres of median a car drops through'],
+    [r.joins.medianPast.metres * 2, 0, 'metres of median a car gets past'],
+    [r.joins.startsMissed.metres, 2, 'decks\' starts a car near a kerb never gets on'],
+    [r.joins.startsFell.metres, 1, 'decks\' starts a car drops off beside']
   ];
   let failed = false;
   for (const [value, limit, label] of limits) {

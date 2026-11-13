@@ -287,3 +287,102 @@ test('a road over a creek with no bridge on the map doesn\'t stop you, and the w
   assert.equal(clearOfWater(x, z), true);
   assert.equal(clearOfWater(1000, -1700), false, 'the middle of the harbour');
 });
+
+// Roads drawn as one deck (js/structures.js, from js/surfaces.js linkEdges()) are one deck to whatever stands on them. Each body
+// is driven as js/controllers.js moves the player, 0.1 m a step (js/surfaces.js moveOver()), with a car's margin, a cyclist's and a
+// walker's
+const MARGINS = [['a car', 1.0], ['a cyclist', 0.39], ['a walker', 0.29]];
+// Where a link's centre line crosses x
+const centreAt = (id, x) => {
+  const l = LINKS.find((o) => o.id === id);
+  for (let i = 1; i < l.pts.length; i++) {
+    const a = l.pts[i - 1], b = l.pts[i];
+    if ((a.x - x) * (b.x - x) <= 0 && a.x !== b.x) return a.z + ((b.z - a.z) * (x - a.x)) / (b.x - a.x);
+  }
+  return null;
+};
+async function drive(sid, y, points, margin) {
+  const { moveOver } = await import('../js/surfaces.js');
+  let [x, z] = points[0], held = 0, lowest = Infinity, ground = false;
+  for (const [tx, tz] of points.slice(1)) {
+    for (let i = 0; i < 2000; i++) {
+      const dx = tx - x, dz = tz - z, L = Math.hypot(dx, dz);
+      if (L < 0.05) break;
+      const m = moveOver(sid, y, x, z, x + (dx / L) * Math.min(0.1, L), z + (dz / L) * Math.min(0.1, L), margin);
+      if (m.held) held++;
+      const stopped = Math.hypot(m.x - x, m.z - z) < 0.002;
+      ({ x, z, sid, y } = m);
+      lowest = Math.min(lowest, y);
+      if (!sid) ground = true;
+      if (stopped) break;
+    }
+  }
+  const [ex, ez] = points[points.length - 1];
+  return { x, z, sid, y, held, lowest, ground, left: Math.hypot(ex - x, ez - z) };
+}
+
+test('the Cahill\'s westbound deck past the on-ramp\'s island is one deck, as drawn: nothing drops through the middle of it', async () => {
+  // The first video's place: past the island's nose the ramp (link 94751) and the Cahill (94748) are 7-8 m apart, drawn as one deck,
+  // with the top of Macquarie St's cutting bank 0.1-1.5 m under the middle. A car steered into the middle sank down the bank onto
+  // Macquarie St at 11 m
+  for (const [body, margin] of MARGINS) {
+    assert.equal(chooseSurface(94, 16.95, 402.5, -1333.4, margin)?.sid, 94, `${body} in the middle by the island's nose`);
+    const r = await drive(0, groundHeight(409, -1325.5), [[409, -1325.5], [402.8, -1333.2], [400, -1334.7], [397, -1335.75], [394, -1336.5], [390, -1337.75]], margin);
+    assert.equal(r.sid, 94, `${body} steered into the middle ends on ${r.sid} at ${r.y.toFixed(1)} m`);
+    assert.ok(r.lowest > 16.5, `${body} steered into the middle sank to ${r.lowest.toFixed(1)} m`);
+    // ...and across it, from the ramp's centre line to the Cahill's, where the middle was an invisible wall
+    for (const x of [396, 390]) {
+      const from = centreAt(94751, x);
+      const across = await drive(94, surfaceHeight(94, x, from), [[x, from], [x, centreAt(94748, x)]], margin);
+      assert.equal(across.held, 0, `${body} held ${across.held} times crossing at x ${x}`);
+      assert.ok(across.sid === 94 && across.left < 0.1, `${body} crossing at x ${x} ends ${across.left.toFixed(1)} m short, on ${across.sid}`);
+    }
+  }
+});
+
+test('a deck\'s start takes a body on across its whole width: the Cahill\'s on-ramp, along its kerbs', async () => {
+  // 2.5 m off the ramp's centre line a car never got onto the deck, and rolled 6 m down the bank beside it
+  const ramp = LINKS.find((l) => l.id === 94751);
+  const [a, b] = ramp.pts, L = Math.hypot(b.x - a.x, b.z - a.z), ux = (b.x - a.x) / L, uz = (b.z - a.z) / L;
+  for (const [body, margin] of MARGINS) {
+    for (const off of [-2.5, 2.5]) {
+      const P = [-15, 0, 25].map((s) => [a.x + ux * s - uz * off, a.z + uz * s + ux * off]);
+      const r = await drive(0, groundHeight(...P[0]), P, margin);
+      assert.equal(r.sid, 94, `${body} ${off} m off the ramp's line ends on ${r.sid}`);
+      assert.ok(r.lowest > 16.5, `${body} ${off} m off the ramp's line dropped to ${r.lowest.toFixed(1)} m`);
+    }
+  }
+});
+
+test('a median holds: between the Cahill\'s two carriageways, nothing drops through it or gets past it', async () => {
+  // At (400, -1341) the ground under the median is within a step of the decks: a car dropped through to it
+  for (const [body, margin] of MARGINS) {
+    for (const [sid, from, to] of [[94, [400, -1338.5], [400, -1344]], [355, [400, -1346], [400, -1338]]]) {
+      const r = await drive(sid, surfaceHeight(sid, ...from), [from, to], margin);
+      assert.equal(r.ground, false, `${body} from structure ${sid} dropped through the median`);
+      assert.equal(r.sid, sid, `${body} from structure ${sid} got past the median onto ${r.sid}`);
+      assert.ok(r.left > 1, `${body} from structure ${sid} got past the median`);
+    }
+  }
+});
+
+test('the gap between two roads drawn as one is drawn, and filled, right up to where they meet', async () => {
+  const { linkEdges } = await import('../js/surfaces.js');
+  // By the island's nose, the Cahill's deck starts 0.6 m from the ramp's and meets it 4.6 m on: that stretch was left unfilled, a
+  // triangle of nothing at the deck's level between the two (the first video, 27.5 s)
+  const cahill = LINKS.find((l) => l.id === 94748);
+  assert.equal(linkEdges(cahill).sides.get(-1).filled[0], true);
+  assert.equal(chooseSurface(94, 16.95, 402.6, -1334.0, 0)?.sid, 94);
+});
+
+test('two tunnels\' roads drawn as one are one road: across from the M4 East Tunnel to the Iron Cove Link\'s, under cover', async () => {
+  // Links 79226 and 117856, 1.7-2 m apart, no wall between them as drawn. The middle was a wall, or a way down to the ground
+  const m4 = LINKS.find((l) => l.id === 79226), link = LINKS.find((l) => l.id === 117856);
+  if (!m4 || !link) return; // not held
+  const p = m4.pts.reduce((best, q) => (Math.hypot(q.x + 3063.4, q.z - 26.9) < Math.hypot(best.x + 3063.4, best.z - 26.9) ? q : best));
+  const o = link.pts.reduce((best, q) => (Math.hypot(q.x - p.x, q.z - p.z) < Math.hypot(best.x - p.x, best.z - p.z) ? q : best));
+  for (const [body, margin] of MARGINS) {
+    const r = await drive(m4.sid, p.y, [[p.x, p.z], [o.x, o.z]], margin);
+    assert.ok(!r.ground && r.left < 0.5 && r.held === 0, `${body}: ${JSON.stringify(r)}`);
+  }
+});

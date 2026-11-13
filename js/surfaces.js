@@ -87,6 +87,7 @@ const segCells = new Map();
 const lowCells = new Map(); // segments of structures low over the ground
 const cutCells = new Map(); // segments of streets sunk into cuttings
 const SEGMENTS = [];
+const edgesKept = new Set(); // structure links whose edges have been worked out (linkEdges())
 let onCutRoad = false, cutRoad = null; // set by cutGround()
 
 // The floors of the buildings with models of their own that are here at the moment (js/interiors.js): { minX, maxX, minZ, maxZ, at(x, z) },
@@ -132,7 +133,8 @@ function placeLink(l) {
     const p = l.pts[i - 1], q = l.pts[i];
     const len = Math.hypot(q.x - p.x, q.z - p.z);
     if (len < 1e-6) continue;
-    const seg = { link: l, ax: p.x, az: p.z, ay: p.y, bx: q.x, bz: q.z, by: q.y, len, ux: (q.x - p.x) / len, uz: (q.z - p.z) / len, s0 };
+    const seg = { link: l, ax: p.x, az: p.z, ay: p.y, bx: q.x, bz: q.z, by: q.y, len, ux: (q.x - p.x) / len, uz: (q.z - p.z) / len, s0, prev: segs[segs.length - 1] ?? null, next: null };
+    if (seg.prev) seg.prev.next = seg;
     segs.push(seg);
     SEGMENTS.push(seg);
     addToCells(segCells, seg, l.half + 2, added);
@@ -143,6 +145,7 @@ function placeLink(l) {
     s0 += len;
   }
   placed.set(l.id, { added, segs });
+  edgesChanged(l);
 }
 function unplaceLink(l) {
   for (const n of [l.a, l.b]) {
@@ -169,6 +172,7 @@ function unplaceLink(l) {
     SEGMENTS[i] = SEGMENTS[SEGMENTS.length - 1];
     SEGMENTS.pop();
   }
+  edgesChanged(l);
 }
 
 onMap({
@@ -728,7 +732,8 @@ const surfaceOn = (seg, p, x, z) => (seg.link.kind ? seg.ay + (seg.by - seg.ay) 
 
 /**
  * Another road beside the edge of `link` at (x, z), its edge's own point, at height y, across from it in direction (nx, nz):
- * { gap, link, y, opposite }, where gap is how far out the other road's surface begins (0 where they overlap), or null where
+ * { gap, out, link, y, opposite }, where gap is how far out the other road's surface begins (0 where they overlap, and `out`
+ * less than 0 by how far they do), or null where
  * nothing at this level is within EDGE_GAP. `opposite`: its traffic comes the other way, a divided road's other carriageway,
  * which has a median barrier between the two rather than nothing. The Harbour Bridge's deck and what joins it are drawn by
  * js/harbour-bridge.js. `ux, uz`: the way `link` runs at that point.
@@ -744,11 +749,12 @@ function edgeNeighbour(link, x, z, nx, nz, y, ux, uz) {
       if (p.d > other.half) continue;
       const oy = surfaceOn(seg, p, px, pz);
       if (Math.abs(oy - y) > EDGE_LEVEL) continue;
-      // How far out its surface begins, from the edge
-      const gap = Math.max(0, project(seg, x, z).d - other.half);
+      // How far out its surface begins, from the edge; and `out`, the same with a sign, less than 0 where the two overlap
+      const q = project(seg, x, z);
+      const gap = Math.max(0, q.d - other.half), out = (q.px - x) * nx + (q.pz - z) * nz - other.half;
       // Traffic each way on each: one-way roads running opposite ways
       const opposite = link.dir !== 0 && other.dir !== 0 && (seg.ux * ux + seg.uz * uz) * link.dir * other.dir < -0.5;
-      if (!best || gap < best.gap) best = { gap, link: other, y: oy, opposite };
+      if (!best || gap < best.gap) best = { gap, out, link: other, y: oy, opposite };
     }
     if (best) return best;
   }
@@ -801,6 +807,323 @@ function structuresAt(x, z, margin = 0) {
     else if (p.d < known.d) Object.assign(known, { y, d: p.d });
   }
   return out;
+}
+
+// --- Decks as drawn, for what stands on them -------------------------------------------------------------------------
+// js/structures.js draws each raised road's edges from these stations and the same test, edgeNeighbour(): a barrier or a wall
+// where nothing at its level is beside it, a median where the road beside carries traffic the other way, and the gap to a
+// road going the same way filled with deck. What stands on a deck is held by what's drawn. The margin that keeps a body's
+// middle in from the edge (js/controllers.js) is kept from a barrier, a wall or a median, not from an edge open to the road
+// beside; the gap between two roads drawn as one is deck; and the ground under a deck as drawn, at its level, isn't a way off.
+// Worked out for a link the first time something comes near it, so the tile build, which never asks, never pays for it.
+const STATION_STEP = 6; // m between stations
+const RAISED = 1; // m over the ground at its edge, where a deck has a barrier rather than a kerb
+const FLARE = 4; // m over which a barrier's hold comes in from nothing at its end, as a barrier's end is flared into the verge
+const MEDIAN_HALF = 0.25; // m: half a median barrier's width (js/structures.js)
+const FILL_PAST = 0.1; // m the deck across a gap is drawn past the other road's edge
+const NOSE = 0.4; // m: a nose's thickness, a barrier's (js/structures.js)
+
+/** Stations along a link: { x, z, y, s }, every STATION_STEP or less, heights from its profile */
+function linkStations(link) {
+  const out = [];
+  let s = 0;
+  for (let i = 0; i + 1 < link.pts.length; i++) {
+    const p = link.pts[i], q = link.pts[i + 1];
+    const L = Math.hypot(q.x - p.x, q.z - p.z);
+    const n = Math.max(1, Math.ceil(L / STATION_STEP));
+    for (let k = 0; k < n; k++) out.push({ x: p.x + ((q.x - p.x) * k) / n, z: p.z + ((q.z - p.z) * k) / n, y: p.y + ((q.y - p.y) * k) / n, s: s + (L * k) / n });
+    s += L;
+  }
+  const last = link.pts[link.pts.length - 1];
+  out.push({ x: last.x, z: last.z, y: last.y, s });
+  return out;
+}
+
+// A polyline offset `r` to its left (+) or right (-), mitred at the bends so the ribbon keeps its width round them
+function offsetLine(pts, r) {
+  return pts.map((p, i) => {
+    const b = pts[Math.min(pts.length - 1, i + 1)];
+    const n1 = i > 0 ? leftOf(pts[i - 1], p) : leftOf(p, b);
+    const n2 = i < pts.length - 1 ? leftOf(p, pts[i + 1]) : n1;
+    let mx = n1.x + n2.x, mz = n1.z + n2.z;
+    const ml = Math.hypot(mx, mz) || 1;
+    mx /= ml; mz /= ml;
+    const k = r / Math.max(0.35, mx * n1.x + mz * n1.z);
+    return { x: p.x + mx * k, z: p.z + mz * k };
+  });
+}
+function leftOf(p, q) {
+  const L = Math.hypot(q.x - p.x, q.z - p.z) || 1;
+  return { x: -(q.z - p.z) / L, z: (q.x - p.x) / L };
+}
+
+/** Whether a structure link's end at node n meets nothing else off the ground: a deck's start off a road on the ground, square there */
+const freeEnd = (link, n) => !(linksAtNode.get(n) || []).some((o) => o !== link && o.kind);
+
+// Links with their edges worked out (edgesKept, at the top, as links are placed from the first tile): a link placed or taken out
+// near one changes what's beside it
+function edgesChanged(l) {
+  if (!edgesKept.size) return;
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const p of l.pts) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z); }
+  for (const m of edgesKept) {
+    const b = m.edges.box;
+    if (m === l || (x0 <= b[1] && x1 >= b[0] && z0 <= b[3] && z1 >= b[2])) {
+      m.edges = null;
+      edgesKept.delete(m);
+    }
+  }
+}
+
+/**
+ * Each side of a structure link as js/structures.js draws it, from the same stations and edgeNeighbour(). Station by station:
+ * `open`, the road beside at its level, if any; `raised`, high enough over the ground for a barrier; `owns`, what's between the
+ * two is this link's to draw: `fills`, the gap, and `median`, its median barrier, `mid` out from the edge. Stretch by stretch,
+ * between stations j and j + 1:
+ *   - `barrier`: a barrier or wall along the edge, where either end has nothing beside it. It's carried on to where the gap beside
+ *     is filled, so no stretch is left with neither, but for where the road beside draws what's between them;
+ *   - `line`: how far from the centre line the face of what holds a body stands at each end (the barrier where it's raised, a
+ *     wall, or a median's face: its middle is MEDIAN_HALF further), or null;
+ *   - `filled`: the gap beside drawn as deck, by this link;
+ *   - `strip`: the road going the same way the gap is filled to, with the gap at each end, where this link fills it;
+ *   - `reach`: how far out the deck as drawn reaches, at each end;
+ *   - `nose`: where a filled gap ends beside a raised barrier, the nose drawn across the gap there, on the barrier's stretch:
+ *     { i, s, gap, nx, nz }, its station, how far along, how far across and the way out. Each side's `noses` lists them.
+ * `runs`: each side's stretches held, by a barrier or by a median, with whether the hold flares in at each end: not where the
+ * link carries on into another of its structure, whose barrier carries on with it. `stations`: the stations to draw from, where
+ * they aren't the link's own (js/structures.js on the Harbour Bridge's ramps): worked out afresh, not kept.
+ */
+function linkEdges(link, stations = null) {
+  if (!stations && link.edges) return link.edges;
+  const st = stations || linkStations(link);
+  const n = st.length;
+  const free = [freeEnd(link, link.a), freeEnd(link, link.b)];
+  const pad = link.half + EDGE_GAP + 30;
+  const box = [Infinity, -Infinity, Infinity, -Infinity];
+  for (const p of st) { box[0] = Math.min(box[0], p.x - pad); box[1] = Math.max(box[1], p.x + pad); box[2] = Math.min(box[2], p.z - pad); box[3] = Math.max(box[3], p.z + pad); }
+  const sides = new Map();
+  for (const side of [1, -1]) {
+    const row = offsetLine(st, link.half * side);
+    const normal = [];
+    const open = row.map((p, i) => {
+      const a = st[Math.max(0, i - 1)], b = st[Math.min(n - 1, i + 1)], L = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+      const ux = (b.x - a.x) / L, uz = (b.z - a.z) / L;
+      normal.push({ x: -uz * side, z: ux * side });
+      return edgeNeighbour(link, p.x, p.z, -uz * side, ux * side, st[i].y, ux, uz);
+    });
+    // A deck has a barrier a station either side of where it's raised; a tunnel has walls all along
+    const bare = row.map((p, i) => link.kind === KIND.TUNNEL || st[i].y - groundHeight(p.x, p.z) > RAISED);
+    const raised = bare.map((v, i) => v || !!bare[i - 1] || !!bare[i + 1]);
+    const owns = open.map((o) => !!o && (!o.link.kind || link.id < o.link.id));
+    const fills = open.map((o, i) => owns[i] && o.gap > 0.05);
+    const median = open.map((o, i) => owns[i] && o.opposite);
+    // A median barrier's middle, from this edge: halfway between the two roads' edges, in the middle of the gap or of the overlap
+    const mid = open.map((o) => (o?.opposite ? o.out / 2 : 0));
+    const middle = (i) => link.half + mid[i];
+    const barrier = [], line = [], filled = [], strip = [], reach = [], kind = [], nose = [];
+    // Where the road beside draws what's between the two (it fills the gap to this one, or stands its median in it), its fill, its nose
+    // and its median close it: this one's barrier isn't carried on beside them
+    const filledBeside = (i) => !!open[i] && !owns[i] && (open[i].opposite || open[i].gap > 0.05);
+    for (let j = 0; j + 1 < n; j++) {
+      const a = open[j], b = open[j + 1];
+      barrier.push(!(a && b) && !filledBeside(j) && !filledBeside(j + 1));
+      if (barrier[j]) {
+        line.push(raised[j] || raised[j + 1] ? [link.half, link.half] : null);
+        kind.push(line[j] ? 1 : 0);
+      } else if (median[j] && median[j + 1]) {
+        // The road that draws a median is what holds by it, on both its sides (decksAt())
+        line.push([Math.max(0, middle(j) - MEDIAN_HALF), Math.max(0, middle(j + 1) - MEDIAN_HALF)]);
+        kind.push(2);
+      } else {
+        line.push(null);
+        kind.push(0);
+      }
+      // Filled where the gap is this link's to draw at both ends and open at either: tapering to nothing where the two meet
+      filled.push(owns[j] && owns[j + 1] && (fills[j] || fills[j + 1]));
+      strip.push(filled[j] && !a.opposite && !b.opposite ? { link: (a.link === b.link ? a : b).link, gap: [a.gap, b.gap] } : null);
+      reach.push(a && b ? [link.half + a.gap + FILL_PAST, link.half + b.gap + FILL_PAST] : [link.half, link.half]);
+      nose.push(null);
+    }
+    // The noses: a filled gap's end beside a raised barrier
+    const isFilled = (j) => j >= 0 && j < n - 1 && filled[j];
+    const noses = [];
+    for (let i = 0; i < n; i++) {
+      if (!fills[i] || isFilled(i - 1) === isFilled(i)) continue;
+      const j = isFilled(i) ? i - 1 : i; // the stretch on the barrier's side
+      if (j < 0 || j >= n - 1 || !barrier[j] || !line[j]) continue;
+      const at = { i, s: st[i].s, gap: open[i].gap + FILL_PAST, nx: normal[i].x, nz: normal[i].z };
+      nose[j] = at;
+      noses.push(at);
+    }
+    const runs = [];
+    for (let j = 0; j < n - 1; j++) {
+      if (!kind[j]) continue;
+      const lastRun = runs[runs.length - 1];
+      if (lastRun && lastRun.to === j && lastRun.kind === kind[j]) { lastRun.to = j + 1; continue; }
+      runs.push({ from: j, to: j + 1, kind: kind[j] });
+    }
+    sides.set(side, {
+      open, raised, owns, fills, median, mid, normal, barrier, line, filled, strip, reach, nose, noses,
+      runs: runs.map((r) => ({ s0: st[r.from].s, s1: st[r.to].s, flare0: r.from > 0 || free[0], flare1: r.to < n - 1 || free[1] }))
+    });
+  }
+  const edges = { st, s: Float64Array.from(st, (p) => p.s), free, sides, box };
+  if (stations) return edges;
+  link.edges = edges;
+  edgesKept.add(link);
+  return edges;
+}
+
+// One side of a link `s` metres along it, between two stations: what holds a body there, how far the deck reaches (linkEdges())
+const edgeHere = { line: null, median: false, flare: 1, strip: null, gap: 0, reach: 0, opens: 0, other: null, nose: null, stripNose: null };
+function edgeAt(E, side, s) {
+  const S = E.s;
+  let lo = 0, hi = S.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (S[mid] <= s) lo = mid;
+    else hi = mid;
+  }
+  const j = lo, f = S[hi] > S[lo] ? Math.max(0, Math.min(1, (s - S[lo]) / (S[hi] - S[lo]))) : 0;
+  const one = E.sides.get(side);
+  const lerp = ([a, b]) => a + (b - a) * f;
+  const out = edgeHere;
+  const line = one.line[j];
+  out.line = line ? lerp(line) : null;
+  out.median = !!line && !one.barrier[j];
+  out.flare = 1;
+  if (line) {
+    for (const r of one.runs) {
+      if (s < r.s0 - 1e-6 || s > r.s1 + 1e-6) continue;
+      if (r.flare0) out.flare = Math.min(out.flare, (s - r.s0) / FLARE);
+      if (r.flare1) out.flare = Math.min(out.flare, (r.s1 - s) / FLARE);
+    }
+    out.flare = Math.max(0, Math.min(1, out.flare));
+  }
+  const strip = one.strip[j];
+  out.strip = strip ? strip.link : null;
+  const a = one.open[j], b = one.open[hi];
+  out.gap = a && b ? a.gap + (b.gap - a.gap) * f : 0;
+  out.reach = lerp(one.reach[j]);
+  out.opens = a?.link.kind ? a.link.sid : b?.link.kind ? b.link.sid : 0;
+  out.other = a?.link ?? b?.link ?? null;
+  out.nose = one.nose[j];
+  // A filled gap ending in a nose at either end of this stretch
+  out.stripNose = strip ? (one.nose[j - 1]?.i === j ? one.nose[j - 1] : one.nose[j + 1]?.i === hi ? one.nose[j + 1] : null) : null;
+  return out;
+}
+
+/** The height of `link`'s own surface at its nearest point to (x, z) */
+function heightOnLink(link, x, z) {
+  if (!link.kind) return roadHeight(link, x, z);
+  let best = null;
+  for (const seg of segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || []) {
+    if (seg.link !== link) continue;
+    const p = project(seg, x, z);
+    if (!best || p.d < best.d) best = { d: p.d, y: seg.ay + (seg.by - seg.ay) * p.t };
+  }
+  return best ? best.y : edgeHeight({ link: link.id }, x, z);
+}
+
+/**
+ * Every level of every structure a body's middle can be at (x, z), the body kept `margin` in from what holds it, as drawn:
+ * { levels: [{ sid, y, d, push, joins }], covers: [y], medians: [y] }. `push`: the place the body is held back to, in from a barrier
+ * it's pressed into (a barrier's flared end, a median); `joins`, a structure it's drawn as one with here. `covers`: the heights
+ * of every deck drawn over (x, z), what a body at that level can't step down through to the ground; `medians`, of the decks
+ * whose median (x, z) is in, where the ground isn't a way through either, even off a road on the ground. The Harbour Bridge's
+ * deck keeps to its own (structuresAt()).
+ */
+const decksHere = { levels: [], covers: [], medians: [] };
+const found = [], passedOver = [];
+function decksAt(x, z, margin = 0) {
+  const levels = (decksHere.levels = []), covers = (decksHere.covers = []), medians = (decksHere.medians = []);
+  found.length = 0;
+  passedOver.length = 0;
+  const segs = segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || [];
+  let onDeck = null;
+  let link = null;
+  let claim = false; // in a median's hold, what's added is the median's say
+  const add = (sid, y, d, push = null, joins = 0, from = link) => found.push({ from, sid, y, d, push, joins, claim });
+  for (const seg of segs) {
+    link = seg.link;
+    claim = false;
+    if (!link.kind) continue;
+    if (link.sid === DECK_STRUCTURE) {
+      const p = project(seg, x, z);
+      if (!link.deck) {
+        onDeck ??= segs.some((other) => other.link.deck && project(other, x, z).d <= other.link.half - margin);
+        if (onDeck) continue;
+      } else {
+        if (p.d <= link.half - margin) add(link.sid, seg.ay + (seg.by - seg.ay) * p.t, p.d);
+        continue;
+      }
+    }
+    const E = linkEdges(link);
+    // How far along the segment, a centimetre past either end counting as on it. Past the link's end where it starts off a road on
+    // the ground, nothing: it's square there, and the road beyond is the ground's. Past a bend, or a joint with the next of its
+    // structure's links, round the corner, as the bend is drawn mitred and the joint as a disc
+    const run = (x - seg.ax) * seg.ux + (z - seg.az) * seg.uz;
+    if ((run < -0.01 && seg.s0 < 1e-6 && E.free[0]) || (run > seg.len + 0.01 && seg.s0 + seg.len > E.s[E.s.length - 1] - 1e-3 && E.free[1])) continue;
+    // Round a bend only outside it, where neither segment reaches
+    const before = run < -0.01, past = run > seg.len + 0.01;
+    if (before && seg.prev && (x - seg.prev.ax) * seg.prev.ux + (z - seg.prev.az) * seg.prev.uz <= seg.prev.len + 0.01) continue;
+    if (past && seg.next && (x - seg.next.ax) * seg.next.ux + (z - seg.next.az) * seg.next.uz >= -0.01) continue;
+    const t = Math.max(0, Math.min(1, run / seg.len));
+    const fx = seg.ax + seg.ux * seg.len * t, fz = seg.az + seg.uz * seg.len * t;
+    const off = -(x - fx) * seg.uz + (z - fz) * seg.ux, side = off >= 0 ? 1 : -1, e = Math.hypot(x - fx, z - fz);
+    // The way out from the road, to hold a body back along
+    const ox = e > 1e-6 ? (x - fx) / e : -seg.uz * side, oz = e > 1e-6 ? (z - fz) / e : seg.ux * side;
+    const y = seg.ay + (seg.by - seg.ay) * t;
+    const s = seg.s0 + t * seg.len;
+    const edge = edgeAt(E, side, s);
+    const half = link.half;
+    const hold = edge.line === null ? Infinity : Math.max(0, edge.line - margin * edge.flare);
+    // A median has its say beside it, not round a corner, where it's past its end and the next road's lanes are
+    if (edge.median && !before && !past) {
+      // A median, which this link draws, holds a body either side of it: neither road's lanes count within it, or within the body's
+      // margin of it on the other's side, where it's held out to that margin on the other road. The two can overlap far more than
+      // their gap says (it's 0 where they do), so the other's own lanes don't say where the median is
+      const middle = edge.line + MEDIAN_HALF, away = middle + MEDIAN_HALF + margin * edge.flare;
+      if (e <= away) {
+        passedOver.push(edge.other);
+        medians.push(y);
+        claim = true;
+      }
+      if (e > middle) {
+        if (e <= edge.reach) covers.push(y);
+        if (e < away) {
+          const px = fx + ox * away, pz = fz + oz * away, other = edge.other;
+          add(other.kind ? other.sid : 0, heightOnLink(other, px, pz), away, { x: px, z: pz, by: away - e }, edge.opens, null);
+        }
+        continue;
+      }
+    }
+    // Behind a nose, between the barrier and the road beside: nothing to stand on, and not the ground either
+    const reach = edge.nose && Math.abs(s - edge.nose.s) <= FLARE ? Math.max(edge.reach, half + edge.nose.gap) : edge.reach;
+    if (e > reach) continue;
+    covers.push(y);
+    // How far out the body's middle may be, and how far this link takes it: across the gap to the road beside, but not within the
+    // body's margin of a nose
+    let top = edge.line !== null ? (edge.median ? edge.line + MEDIAN_HALF : half) : edge.strip ? half + edge.gap + FILL_PAST : half;
+    if (edge.stripNose && Math.abs(s - edge.stripNose.s) < margin + NOSE / 2) top = half;
+    if (e <= Math.min(hold, top)) {
+      // On its own road, or the deck across the gap to the next, straight across from one's height to the other's
+      const level = e > half && edge.strip ? y + (heightOnLink(edge.strip, x, z) - y) * Math.min(1, (e - half) / Math.max(edge.gap, FILL_PAST)) : y;
+      add(link.sid, level, e, null, edge.opens);
+    } else if (e <= top) {
+      const back = hold - 1e-4;
+      add(link.sid, y, back, { x: fx + ox * back, z: fz + oz * back, by: e - back }, edge.opens);
+    }
+  }
+  // One level of each structure, the nearest centre line's, and where it's held back only if nothing holds it there unhindered. In a
+  // median's hold, at its level, only what the median says: not another of the structure's links at a joint or a bend
+  for (const f of found) {
+    if (passedOver.includes(f.from) || (!f.claim && found.some((c) => c.claim && Math.abs(c.y - f.y) < STEP))) continue;
+    const known = levels.find((o) => o.sid === f.sid && Math.abs(o.y - f.y) < STEP);
+    if (!known) levels.push({ sid: f.sid, y: f.y, d: f.d, push: f.push, joins: f.joins });
+    else if ((known.push && !f.push) || (!known.push === !f.push && f.d < known.d)) Object.assign(known, { y: f.y, d: f.d, push: f.push, joins: f.joins });
+  }
+  return decksHere;
 }
 
 /**
@@ -890,36 +1213,43 @@ function groundRoadDistance(x, z, limit = 30) {
 
 /**
  * The surface under (x, z) for something now at height `y` on surface `current`: the nearest road within STEP of that
- * height, the ground counting as a road where it's nearest. `margin` keeps a body's edge on a structure. Returns
- * { sid, y } or null when every surface there is out of reach: the edge of a deck, a tunnel's wall.
+ * height, the ground counting as a road where it's nearest. `margin` keeps a body's middle in from a structure's barriers
+ * and walls (decksAt()). Returns { sid, y }, with { x, z } as well where a barrier holds the body back to there, or null
+ * when every surface there is out of reach: the edge of a deck, a tunnel's wall.
  */
 function chooseSurface(current, y, x, z, margin = 0) {
   const candidates = [];
-  const consider = (sid, height, d) => {
+  const consider = (sid, height, d, push = null, joins = 0) => {
     const gap = Math.abs(height - y);
-    if (gap < STEP) candidates.push({ sid, y: height, d, gap });
+    if (gap < STEP) candidates.push({ sid, y: height, d, gap, push, joins });
   };
   // On a structure the ground beside it is only a way off at its ends, where the two meet
-  for (const s of structuresAt(x, z, margin)) consider(s.sid, s.y, s.d);
-  const roadDistance = groundRoadDistance(x, z);
-  const ground = groundHeight(x, z);
-  consider(0, ground, roadDistance);
+  const { levels, covers, medians } = decksAt(x, z, margin);
+  for (const s of levels) consider(s.sid, s.y, s.d, s.push, s.joins);
   // ...and on the ground, the road at this height, where another passes over it with nothing but its own surface. Past its
   // carriageway's edge only while the ground there is still at its level: where the ground beside it is another road's, at
   // another height (a cutting beside a deeper one, the Harbour Tunnel's approach beside the Cahill), its edge is a wall, or a
   // car held at its own road's height would be drawn under that other road. Not in a junction, where a turn's curve cuts
   // across the corner between two roads and a wall would stop it
   const road = groundRoadAt(x, z, y);
-  if (road) {
-    const own = roadHeight(road, x, z);
-    if (Math.abs(ground - own) < STEP || linkDistance(road, x, z) <= road.width / 2 || inJunction(road, x, z)) consider(0, own, roadDistance);
+  // Not the ground under a deck as drawn, at the deck's level, but for a road on it: the gap between two roads drawn as one, a
+  // deck's first metres off the road it carries on from. What's drawn there is the deck. Nor in a median, road or not
+  if (!medians.some((my) => Math.abs(my - y) < STEP) && (road || !covers.some((cy) => Math.abs(cy - y) < SWITCH))) {
+    const roadDistance = groundRoadDistance(x, z);
+    const ground = groundHeight(x, z);
+    consider(0, ground, roadDistance);
+    if (road) {
+      const own = roadHeight(road, x, z);
+      if (Math.abs(ground - own) < STEP || linkDistance(road, x, z) <= road.width / 2 || inJunction(road, x, z)) consider(0, own, roadDistance);
+    }
   }
   // A tunnel's walls hold: nothing moves sideways from one tunnel into another, even where the two run so close their roads touch.
-  // Two tunnels never share a node, or they'd be one structure, so there's no way from one to the other but through a wall.
+  // Two tunnels never share a node, or they'd be one structure, so there's no way from one to the other but through a wall. Where
+  // their roads are drawn as one, with no wall between, they're one road
   if (current && STRUCTURES[current]?.kind === KIND.TUNNEL) {
     for (let i = candidates.length - 1; i >= 0; i--) {
       const c = candidates[i];
-      if (c.sid !== current && c.sid && STRUCTURES[c.sid]?.kind === KIND.TUNNEL) candidates.splice(i, 1);
+      if (c.sid !== current && c.sid && STRUCTURES[c.sid]?.kind === KIND.TUNNEL && c.joins !== current) candidates.splice(i, 1);
     }
   }
   // Something only moves to another surface at about the same height, where a ramp joins a road. Passing close to a road a metre below
@@ -933,11 +1263,36 @@ function chooseSurface(current, y, x, z, margin = 0) {
   }
   let best = null, bestRank = Infinity;
   for (const c of pool) {
-    // The nearest to level first, then the nearest centre line. A near tie keeps you where you are.
-    const rank = c.d + 3 * c.gap - (c.sid === current ? 0.75 : 0);
+    // The nearest to level first, then the nearest centre line, then the least held back. A near tie keeps you where you are.
+    const rank = c.d + 3 * c.gap - (c.sid === current ? 0.75 : 0) + (c.push ? 3 * c.push.by : 0);
     if (rank < bestRank) { best = c; bestRank = rank; }
   }
-  return best && { sid: best.sid, y: best.y };
+  if (!best) return null;
+  return best.push ? { sid: best.sid, y: best.y, x: best.push.x, z: best.push.z } : { sid: best.sid, y: best.y };
+}
+
+/**
+ * A body at (fx, fz) on surface `sid` at height `y`, moved towards (tx, tz) with its middle kept `margin` in from what holds it:
+ * where it ends, and on what. Held back to a barrier's line where it's pressed into one; where nothing is in reach (over a
+ * deck's edge, into a tunnel's wall), stopped at the edge and slid along it as along a wall. { x, z, sid, y, held }. The
+ * player's every step (js/controllers.js), and what the checks drive by.
+ */
+function moveOver(sid, y, fx, fz, tx, tz, margin = 0) {
+  let here = chooseSurface(sid, y, tx, tz, margin), x = tx, z = tz;
+  const held = !here || here.x !== undefined;
+  if (!here) {
+    // Along the wall where we know which way it runs, a structure's edge: keeping one axis of the move instead would cost a car
+    // skimming a diagonal barrier most of its speed, every frame, and stop it dead for no reason it can see
+    const along = sid ? structureAt(sid, fx, fz, 2)?.seg : null;
+    const run = along ? (tx - fx) * along.ux + (tz - fz) * along.uz : 0;
+    const sx = along ? fx + along.ux * run : 0, sz = along ? fz + along.uz * run : 0;
+    if (along && (here = chooseSurface(sid, y, sx, sz, margin))) { x = sx; z = sz; }
+    else if ((here = chooseSurface(sid, y, tx, fz, margin))) z = fz;
+    else if ((here = chooseSurface(sid, y, fx, tz, margin))) x = fx;
+    else { x = fx; z = fz; here = { sid, y }; }
+  }
+  if (here.x !== undefined) { x = here.x; z = here.z; }
+  return { x, z, sid: here.sid, y: here.y, held };
 }
 
 /** Whether two things at heights ya and yb are on one level, so they can meet */
@@ -1018,7 +1373,7 @@ function roadRoute(waypoints, step = 8) {
 }
 
 export {
-  setFloor, clearFloor, onFloor, DECK_DEPTH, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, ROAD_CLASS, ROAD_CLASSES, deriveTunnels, linkById, roadClass, SAME_LEVEL, SEGMENTS, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
-  clearOfWater, EDGE_GAP, edgeHeight, edgeNeighbour, floorBelow, laneAt, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, ownLaneOffsets, roadHeight, roadRoute, roomUnderDeck, sameLevel,
+  setFloor, clearFloor, onFloor, decksAt, DECK_DEPTH, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, ROAD_CLASS, ROAD_CLASSES, deriveTunnels, linkById, roadClass, SAME_LEVEL, SEGMENTS, STATION_STEP, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
+  clearOfWater, EDGE_GAP, edgeHeight, edgeNeighbour, floorBelow, laneAt, linkEdges, linkStations, moveOver, offsetLine, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, ownLaneOffsets, roadHeight, roadRoute, roomUnderDeck, sameLevel,
   structureAt, structuresAt, surfaceHeight, surfaceSlope, tunnelCovered
 };

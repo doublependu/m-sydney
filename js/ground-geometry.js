@@ -1,7 +1,7 @@
 import { ShapeUtils, Vector2 } from 'three/webgpu';
 import { GEO, heldTiles, onMap } from './geodata.js';
 import { landAt, blockAt } from './city-config.js';
-import { LINKS, STEP, groundHeight, groundRoadAt, roadHeight, surfaceHeight } from './surfaces.js';
+import { LINKS, STEP, groundHeight, groundRoadAt, offsetLine, roadHeight, surfaceHeight } from './surfaces.js';
 import { groundMoved } from './terrain.js';
 
 // The ground's geometry as plain arrays: the road deck, kerbs, footpaths, lawns and the base under them all.
@@ -349,25 +349,6 @@ function allLinks() {
   return linksCache;
 }
 const groundLinks = () => allLinks().filter((l) => !l.kind);
-
-// A polyline offset `r` to its left (+) or right (-), mitred at the bends so the ribbon keeps its width round them
-function offsetLine(pts, r) {
-  return pts.map((p, i) => {
-    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
-    const n1 = i > 0 ? norm(pts[i - 1], p) : norm(p, b);
-    const n2 = i < pts.length - 1 ? norm(p, pts[i + 1]) : n1;
-    let mx = n1.x + n2.x, mz = n1.z + n2.z;
-    const ml = Math.hypot(mx, mz) || 1;
-    mx /= ml; mz /= ml;
-    const k = r / Math.max(0.35, mx * n1.x + mz * n1.z);
-    void a;
-    return { x: p.x + mx * k, z: p.z + mz * k };
-  });
-}
-function norm(p, q) {
-  const L = Math.hypot(q.x - p.x, q.z - p.z) || 1;
-  return { x: -(q.z - p.z) / L, z: (q.x - p.x) / L };
-}
 
 // The road surface: a ribbon down every street on the ground, capped at each junction by the circle the curbs were cut
 // with. Roads off the ground (bridges, tunnels) are built by js/structures.js.

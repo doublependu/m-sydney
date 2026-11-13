@@ -174,7 +174,7 @@ const { buildRoadPaint, createRoadPaintChunkBuilder } = loadModule(roadPaintSrc,
     './road-network.js': { CROSSWALK: 3.8 },
     './bridge.js': { bridgeAt: () => null, deckLines: () => [] },
     './road-tags.js': { ROAD_TAGS: { buses: [], cycles: [], cycleways: [], speeds: [], zebras: [] } },
-      './surfaces.js': { groundRoadAt: () => null, edgeHeight: () => 0, groundHeight: () => 0, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), structureAt: () => null, structuresAt: () => [], LINKS: [] },
+      './surfaces.js': { groundRoadAt: () => null, edgeHeight: () => 0, groundHeight: () => 0, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), moveOver: (sid, y, fx, fz, x, z) => ({ x, z, sid: 0, y: 0, held: false }), structureAt: () => null, structuresAt: () => [], LINKS: [] },
     './tsl-materials.js': { createRoadPaintMaterial: () => sharedMat }
   }
 });

@@ -22,7 +22,7 @@ import { anchorToOrigin } from './world-origin.js';
 import { polygonContact, polygonContains } from './building-collision.js';
 import { DECK_SID } from './bridge.js';
 import { FLY, arrivalFor, holdOnFootway } from './arrivals.js';
-import { STRUCTURES, chooseSurface, clearOfWater, floorBelow, groundHeight, onFloor, structureAt, surfaceHeight } from './surfaces.js';
+import { STRUCTURES, clearOfWater, floorBelow, groundHeight, moveOver, onFloor, structureAt, surfaceHeight } from './surfaces.js';
 import { WALKER } from './interior-data.js';
 import { MODEL_SITES } from './model-sites.js';
 
@@ -1138,9 +1138,9 @@ class ThirdPersonControllerManager {
     pos.x = Math.max(CITY_BOUNDS.minX - m, Math.min(CITY_BOUNDS.maxX + m, pos.x));
     pos.z = Math.max(CITY_BOUNDS.minZ - m, Math.min(CITY_BOUNDS.maxZ + m, pos.z));
     if (!heli) {
-      // Which surface is under the player now (js/surfaces.js): the nearest road within a step of where they were.
+      // Which surface is under the player now (js/surfaces.js moveOver()): the nearest road within a step of where they were.
       // Where every surface is out of reach (over a deck's edge, into a tunnel's wall), the move stops at the edge, and
-      // slides along it as it would along a wall: a car driven into it loses speed as squarely as it hit.
+      // slides along it as it would along a wall; pressed into a barrier, it's held back to its line.
       const active = this.getActiveEntity();
       const last = (pos.landed ??= { x: pos.x, z: pos.z });
       // Through a door off the footway (the Pylon Lookout's, js/model-sites.js): pressing on past the footway's edge onto a model's
@@ -1181,24 +1181,14 @@ class ThirdPersonControllerManager {
       const sid = active.surface || 0;
       const y = active.surfaceY ?? surfaceHeight(sid, last.x, last.z);
       const margin = carEntity ? 1.0 : radius * 0.6;
-      let here = chooseSurface(sid, y, pos.x, pos.z, margin);
-      if (!here) {
-        const intoX = pos.x - last.x, intoZ = pos.z - last.z;
-        // Along the wall where we know which way it runs, a structure's edge: keeping one axis of the move instead would
-        // cost a car skimming a diagonal barrier most of its speed, every frame, and stop it dead for no reason it can see
-        const along = sid ? structureAt(sid, last.x, last.z, 2)?.seg : null;
-        const run = along ? intoX * along.ux + intoZ * along.uz : 0;
-        const slideX = along ? last.x + along.ux * run : 0, slideZ = along ? last.z + along.uz * run : 0;
-        if (along && (here = chooseSurface(sid, y, slideX, slideZ, margin))) { pos.x = slideX; pos.z = slideZ; }
-        else if ((here = chooseSurface(sid, y, pos.x, last.z, margin))) pos.z = last.z;
-        else if ((here = chooseSurface(sid, y, last.x, pos.z, margin))) pos.x = last.x;
-        else { pos.x = last.x; pos.z = last.z; here = { sid, y }; }
-        if (carEntity && carEntity.speed) {
-          const moved = Math.hypot(intoX, intoZ) || 1;
-          const kept = Math.hypot(pos.x - last.x, pos.z - last.z) / moved;
-          carEntity.speed *= 0.5 + 0.5 * kept;
-        }
+      // A car driven into what holds it loses speed as squarely as it hit
+      const here = moveOver(sid, y, last.x, last.z, pos.x, pos.z, margin);
+      if (here.held && carEntity && carEntity.speed) {
+        const moved = Math.hypot(pos.x - last.x, pos.z - last.z) || 1;
+        carEntity.speed *= 0.5 + 0.5 * Math.hypot(here.x - last.x, here.z - last.z) / moved;
       }
+      pos.x = here.x;
+      pos.z = here.z;
       active.surface = here.sid;
       active.surfaceY = here.y;
       active.deck = onDeck(here.sid); // the Harbour Bridge, for the scripts that ask

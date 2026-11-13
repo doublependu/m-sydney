@@ -1471,6 +1471,83 @@ export const SCENARIOS = {
 
   // Along both barriers of the deck, past both pairs of pylons: nothing the driver can't see may stop the car. The
   // barriers are where the game holds cars, and the pylons stand outside the deck.
+  // The Cahill's westbound deck past the Conservatorium Rd on-ramp's island, where the ramp and the Cahill are drawn as one deck (js/structures.js,
+  // from js/surfaces.js linkEdges()): into the middle at walking pace, as a player did and sank through it onto Macquarie St; across from
+  // the ramp's lanes to the Cahill's; along the kerb onto the deck from the road on the ground; and at the median beside it. Then on foot
+  // and by bike over the same strips
+  'deck-seams': {
+    minutes: 6,
+    async run({ human, page, metric, expect }) {
+      await human.wait(1000);
+      const DECK = 94, DECK_Y = 16.5; // the structure's id, and lower than its road anywhere past the island's nose
+      // Along `points`, steered at each in turn at up to `limit` m/s: every 120 ms its surface and height, past x `from`
+      const along = async (points, limit, from) => {
+        const r = { off: 0, low: Infinity, samples: 0, stuck: false, end: null };
+        for (const target of points) {
+          const started = human.now();
+          let moved = human.now(), last = await human.state();
+          for (;;) {
+            const state = await human.state();
+            if (state.x < from) {
+              r.samples++;
+              if (state.surface !== DECK) r.off++;
+              r.low = Math.min(r.low, state.surfaceY);
+            }
+            if (Math.hypot(target.x - state.x, target.z - state.z) < 1.2) break;
+            if (Math.hypot(state.x - last.x, state.z - last.z) > 0.3) { moved = human.now(); last = state; }
+            if (human.now() - moved > 4000 || human.now() - started > 30000) { r.stuck = true; break; }
+            const error = await human.steerTowards(state, target, 0.05);
+            const speed = Math.abs(state.speed ?? 0);
+            await human.setKey('KeyW', speed < limit && Math.abs(error) < 1);
+            await human.setKey('KeyS', speed > limit + 1.5);
+            await human.wait(120);
+          }
+          await human.releaseAll();
+          if (r.stuck) break;
+        }
+        r.end = await human.state();
+        return r;
+      };
+      const heading = (a, b) => Math.atan2(b.x - a.x, b.z - a.z);
+      const ramp = [{ x: 415.6, z: -1318.8 }, { x: 409, z: -1325.5 }];
+      const middle = [{ x: 402.8, z: -1333.2 }, { x: 400, z: -1334.7 }, { x: 397, z: -1335.75 }, { x: 394, z: -1336.5 }, { x: 390, z: -1337.75 }, { x: 382, z: -1339.5 }];
+      const kerb = [{ x: 403.6, z: -1326.8 }, { x: 394.9, z: -1330.6 }, { x: 386, z: -1333 }];
+      const legs = [];
+      for (const [mode, limit] of [['car', 2.8], ['person', 8], ['cyclist', 4]]) {
+        // Down the ramp and into the middle past the island's nose, at walking pace in the car
+        await page.evaluate(([x, z, h, m]) => window.__gameDebug.goto(x, z, h, m), [ramp[0].x, ramp[0].z, heading(ramp[0], ramp[1]), mode]);
+        await human.wait(800);
+        // Counted from 4 m past the deck's start, where whatever comes off the road on the ground has taken it
+        const into = await along([ramp[1], ...middle], limit, 401);
+        legs.push({ leg: `${mode} into the middle`, ...into });
+        // Along the kerb as the ramp becomes the bridge
+        await page.evaluate(([x, z, h, m]) => window.__gameDebug.goto(x, z, h, m), [ramp[0].x, ramp[0].z, heading(ramp[0], kerb[0]), mode]);
+        await human.wait(800);
+        legs.push({ leg: `${mode} along the kerb`, ...await along(kerb, mode === 'car' ? 6 : limit, 401) });
+      }
+      // In the car from the ramp's lanes across to the Cahill's, changing lanes from x 397 to x 385, where the middle was an invisible wall
+      const lanes = [{ x: 397, z: -1333.4 }, { x: 385, z: -1340.6 }, { x: 375, z: -1341 }];
+      await page.evaluate(([x, z, h]) => window.__gameDebug.goto(x, z, h, 'car', true), [lanes[0].x, lanes[0].z, heading(lanes[0], lanes[1])]);
+      await human.wait(800);
+      legs.push({ leg: 'car across the lanes', ...await along(lanes.slice(1), 5, 398) });
+      for (const l of legs) {
+        metric(l.leg, { samples: l.samples, offDeck: l.off, lowest: +l.low.toFixed(2), stuck: l.stuck, end: [+l.end.x.toFixed(1), +l.end.z.toFixed(1)] });
+        expect(!l.stuck, `${l.leg}: stopped at ${l.end.x.toFixed(1)}, ${l.end.z.toFixed(1)}`);
+        expect(l.samples > 3 && l.off === 0, `${l.leg}: off the deck ${l.off} times of ${l.samples}`);
+        expect(l.low > DECK_Y, `${l.leg}: down to ${l.low.toFixed(1)} m`);
+      }
+      // At the median between the Cahill's two carriageways, pressing into it: held there, on the deck, never through to the ground
+      await page.evaluate(([x, z, h]) => window.__gameDebug.goto(x, z, h, 'car', true), [400, -1338.6, Math.PI]);
+      await human.wait(800);
+      await human.down('KeyW');
+      await human.wait(3000);
+      await human.releaseAll();
+      const held = await human.state();
+      metric('median', { surface: held.surface, y: +held.surfaceY.toFixed(2), z: +held.z.toFixed(2) });
+      expect(held.surface === DECK && held.surfaceY > DECK_Y, `at the median: on ${held.surface} at ${held.surfaceY.toFixed(1)} m`);
+      expect(held.z > -1341.6, `got past the median to ${held.z.toFixed(2)}`);
+    }
+  },
   'bridge-edges': {
     minutes: 5,
     async run({ human, page, metric, expect }) {

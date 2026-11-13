@@ -374,6 +374,15 @@ What a model has to be:
   map paves the shore). A walker on a model's floor isn't held off the water (`js/controllers.js`), so the jetty can be walked. The
   `wolseley-rd` scenario walks in from the court, sits in the dining room, goes up the spiral stair to the master bedroom and down to the
   entertaining area, out to the pool, down the sea wall's steps and along the jetty into the boat shed.
+- **A new house in South Coogee** (`denning-st`), on Denning St's sea side, in the gap the map leaves between its neighbours' boxes: four
+  levels stepping down the slope from the street, the garage and the entry court under a white canopy with a rounded corner at the top,
+  glass levels down the back with balconies on white slabs under battened timber soffits, the third level's terrace on a band of crazy-paved
+  stone over the pool level's covered deck, the pool and a lawn, and a lower lawn down a flight. Its site's `cut` takes in the lot from
+  behind the garage's front to the lower lawn, and the model draws the ground in it, the side stair down the north boundary among it. The
+  listing has no floor plan, so the inside is laid out from its photos: a stacked straight stair and a lift (drawn with its doors shut)
+  through all four levels, the kitchen, dining and living room at the street, the bedrooms below, a second living room onto the terrace,
+  a second kitchen onto the deck. The `denning-st` scenario walks in at the front door, sits by the fire, goes out onto the balcony, down
+  through each level and out to the pool, and back up the side stair to the street.
 - **What a big inside adds:** `instances` in its JSON draw a node many times from one (the hall's seats: a node, the room it's in, and
   `[x, y, z, yaw]` for each), as one InstancedMesh for each of its materials; each seat to sit in is in `seats` as well. A room can say
   how far it shuts out the sky (`shelter`, 0.85 unless it says: a glazed foyer less, a concert hall all of it) and how much its own colours

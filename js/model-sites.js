@@ -234,6 +234,20 @@ const MODEL_SITES = [
         [9.4, 1.35], [9.4, 0.05], [7.8, 0.05]]],
       [3.6, [[-23.85, 8.07], [-31.67, 5.62], [-29.81, -0.29], [-21.99, 2.16]]]
     ]
+  },
+  // 51 Denning St, South Coogee: a new house of four levels down the slope from the street to the sea, on the east side of Denning St
+  // between the boxes the map has for its neighbours (it has none of its own); its garage and entry at the street under a curved white
+  // canopy, glass levels stepping down to a pool deck and a lawn. Its frame: +x from its front boundary down the lot to the east, +z
+  // from its north boundary to the south; the street level's floor. Its cut takes in the lot from behind the garage's front to the
+  // lower lawn: the levels below the street, the side stair down the north boundary, the pool deck.
+  {
+    id: 'denning-st', file: 'models/denning-st', x: 5627.5, z: 5773.65, yaw: 0, y: 45.4, far: true, replaces: [], reach: 80,
+    cut: { poly: [[5.0, 0.0], [54.0, 0.0], [54.0, 10.35], [5.6, 10.35]], y: -12.2 },
+    clear: [[3.5, 3.6, 2.5]],
+    outline: [
+      [10.0, [[10.85, 1.2], [36.1, 1.2], [36.1, 10.25], [10.85, 10.25]]],
+      [3.2, [[5.0, 0.0], [10.85, 0.0], [10.85, 10.25], [5.0, 10.25]]]
+    ]
   }
 ];
 

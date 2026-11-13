@@ -74,7 +74,8 @@ const HOUSES = {
   'cove-st-41': { doors: ['front', 'back'], cut: false },
   'cove-st-43': { doors: ['front', 'back'], cut: false },
   'school-st': { doors: ['front', 'side', 'courtyard', 'balcony-1', 'balcony-2', 'balcony-3'], cut: false },
-  'wolseley-rd': { doors: ['front', 'terrace', 'dining-verandah', 'living-verandah', 'bed4-verandah', 'master-verandah'], cut: true }
+  'wolseley-rd': { doors: ['front', 'terrace', 'dining-verandah', 'living-verandah', 'bed4-verandah', 'master-verandah'], cut: true },
+  'denning-st': { doors: ['front', 'living-balcony', 'master-balcony', 'bed4-court', 'bed3-terrace', 'living2-terrace', 'kitchen-deck'], cut: true }
 };
 
 for (const [id, want] of Object.entries(HOUSES)) {

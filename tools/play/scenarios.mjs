@@ -834,6 +834,49 @@ const wolseleyScenario = () => houseScenario('wolseley-rd', {
   ]
 });
 
+// 51 Denning St, South Coogee (denning-st): through the gate and along the court in at the front door; through the kitchen to the
+// living room's sofa by the fire, out onto the balcony; down the stair to the bedroom level, through bed 4 and out onto the side stair's
+// court, back in and through the robe to the master bedroom; down to the terrace level, round the second living room's sofa and out
+// onto the terrace; down to the pool level, to the kitchen's island and out onto the covered deck, past the pool and down to the lower
+// lawn; and back up the side stair along the north boundary to the court at the street
+const denningDown = (to) => [
+  ['walk', 26.0, 3.7, 'to the head of the stair'], ['walk', 25.9, 2.2, 'onto its landing'], ['walk', 20.2, 2.2, 'down the flight'],
+  ['walk', 19.0, 2.2, 'off it'], ['level', to]
+];
+const denningScenario = () => houseScenario('denning-st', {
+  start: [2.0, 3.3], toward: [5.7, 3.3], inside: 'denning-st-i',
+  steps: [
+    ['walk', 5.7, 3.3, 'in at the gate'], ['level', 0], ['walk', 10.1, 2.5, 'along the court to the front door'], ['open', 11.0, 2.5, 'front'],
+    ['walk', 12.6, 2.6, 'in at the front door'], ['room', 'entry'], ['fetched'], ['walk', 18.4, 3.65, 'along the hall'],
+    ['walk', 20.8, 4.0, 'into the kitchen'], ['room', 'living'], ['walk', 26.0, 5.8, 'past the island'], ['walk', 28.55, 4.05, 'to the sofa'],
+    ['sit', 29.24, 4.7], ['fps', 'fpsInLiving'],
+    ['walk', 28.3, 5.95, 'round the sofa'], ['walk', 32.2, 5.95, 'past the dining table'], ['walk', 32.2, 4.8, 'to the balcony\'s doors'],
+    ['open', 33.0, 4.6, 'living-balcony'], ['walk', 34.2, 4.6, 'out onto the balcony'], ['level', 0], ['fps', 'fpsOnBalcony'],
+    ['walk', 32.2, 4.8, 'back in'], ['walk', 32.2, 5.95, 'past the table'], ['walk', 26.0, 5.95, 'back past the island'],
+    ...denningDown(-3.35), ['room', 'hall3'], ['walk', 19.0, 3.8, 'along the hall'], ['walk', 16.6, 3.8, 'into bed 4'], ['room', 'bed4'],
+    ['walk', 16.3, 2.4, 'to its doors'], ['open', 16.3, 1.35, 'bed4-court'], ['walk', 16.3, 0.6, 'out onto the side stair\'s court'],
+    ['level', -3.35], ['walk', 16.3, 2.4, 'back in'], ['walk', 16.6, 3.8, 'across the room'], ['walk', 18.6, 3.8, 'out to the hall'],
+    ['walk', 24.0, 4.0, 'along it'], ['walk', 28.2, 4.0, 'to the robe'], ['walk', 29.4, 4.2, 'into it'], ['room', 'robe'],
+    ['walk', 31.6, 4.75, 'into the master bedroom'], ['room', 'master'], ['walk', 31.67, 4.15, 'to the bed'], ['sit', 31.67, 3.37], ['fps', 'fpsInMaster'],
+    ['walk', 31.6, 4.8, 'off the bed to the arch'], ['walk', 29.7, 4.25, 'back through the robe'], ['walk', 28.2, 4.0, 'out to the hall'],
+    ...denningDown(-6.7), ['room', 'hall2'], ['walk', 19.0, 3.7, 'along the hall'], ['walk', 26.6, 4.0, 'to the second living room'],
+    ['walk', 27.2, 5.4, 'into it'], ['room', 'living2'], ['walk', 27.3, 9.45, 'past the armchair'], ['walk', 32.6, 9.45, 'behind the sofa'],
+    ['walk', 32.6, 7.8, 'to the terrace\'s doors'], ['open', 34.0, 7.8, 'living2-terrace'], ['walk', 35.4, 7.8, 'out onto the terrace'],
+    ['level', -6.7], ['fps', 'fpsOnTerrace'],
+    ['walk', 32.6, 7.8, 'back in'], ['walk', 32.6, 9.45, 'behind the sofa'], ['walk', 27.3, 9.45, 'past it'], ['walk', 27.2, 5.4, 'out of the room'],
+    ['walk', 26.6, 4.0, 'to the hall'],
+    ...denningDown(-10.05), ['room', 'hall1'], ['walk', 19.0, 3.7, 'along the hall'], ['walk', 28.0, 4.05, 'to the kitchen'],
+    ['walk', 29.1, 4.05, 'through the arch'], ['walk', 29.2, 5.4, 'into it'], ['room', 'family'], ['walk', 31.2, 5.45, 'to the island'], ['sit', 31.2, 4.65], ['fps', 'fpsInKitchen'],
+    ['walk', 33.6, 5.2, 'to the deck\'s doors'], ['open', 34.5, 5.2, 'kitchen-deck'], ['walk', 35.6, 5.2, 'out onto the covered deck'],
+    ['level', -10.05], ['walk', 38.5, 3.2, 'past the table'], ['walk', 40.0, 1.45, 'to the lawn'], ['fps', 'fpsByPool'],
+    ['walk', 47.6, 1.65, 'along it to the steps'], ['walk', 51.4, 1.65, 'down them to the lower lawn'], ['level', -12.2],
+    ['walk', 47.6, 1.65, 'back up the steps'], ['walk', 40.0, 1.45, 'along the lawn'], ['walk', 37.6, 0.6, 'to the side stair'],
+    ['walk', 35.2, 0.6, 'to its foot'], ['walk', 29.2, 0.6, 'up the first flight'], ['level', -6.7], ['walk', 24.6, 0.6, 'along its landing'],
+    ['walk', 18.7, 0.6, 'up the next'], ['level', -3.35], ['walk', 11.6, 0.6, 'past bed 4\'s doors'], ['walk', 6.2, 0.6, 'up the last'],
+    ['walk', 5.6, 0.6, 'to its head'], ['level', 0], ['walk', 5.6, 2.2, 'out into the court']
+  ]
+});
+
 // A house on three levels over Bronte beach (js/model-sites.js, bronte-pacific): from Pacific St in at the front door, through to the
 // living room and out onto its terrace to sit; down the stair to the family room and out onto the deck; down again to the rumpus room
 // and out onto the pool's terrace. Its inside isn't fetched until the front door opens.
@@ -1660,6 +1703,8 @@ export const SCENARIOS = {
   'school-st': schoolScenario(),
   'wolseley-rd': { ...wolseleyScenario(), minutes: 8 },
   'wolseley-rd-phone': { ...wolseleyScenario(), profile: 'phone', minutes: 10 },
+  'denning-st': { ...denningScenario(), minutes: 8 },
+  'denning-st-phone': { ...denningScenario(), profile: 'phone', minutes: 10 },
   'pylon-lookout': lookoutScenario(),
   'pylon-lookout-phone': { ...lookoutScenario(), profile: 'phone' },
   'sydney-tower': towerScenario(),

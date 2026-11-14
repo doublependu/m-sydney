@@ -457,9 +457,12 @@ function houseWall(box, wall, normal, table = HOUSE_TABLE) {
   const pier = min(float(HOUSE_PIER), box.x.mul(0.2));
   const bays = max(floor(box.x.sub(pier.mul(2.0)).div(mix(spacing.y, spacing.x, isFront)).add(0.50005)), 1.0);
   const last = bays.sub(1.0);
-  // The house's own choices, the same on each of its walls
+  // The house's own choices, the same on each of its walls. Where its door and garage door go is from the bits of its digits, exactly:
+  // the game works out the same on the CPU for its driveway and path (js/house-entry.js), which a hash through sin() wouldn't let it,
+  // as each GPU rounds sin() of a large number its own way. h1: its low six bits, h2: its seventh, as 0.25 or 0.75.
   const house = floor(seed);
-  const h1 = hash2D(vec2(house, 41.3)), h2 = hash2D(vec2(house, 7.9)), h3 = hash2D(vec2(house, 3.3));
+  const h1 = fract(house.mul(0.015625)).add(0.0078125), h2 = fract(floor(house.mul(0.015625)).mul(0.5)).add(0.25);
+  const h3 = hash2D(vec2(house, 3.3));
   // A double garage door two bays wide at one end of a project home's front, with its door beside it
   const garage = kinds.y.mul(step(2.5, bays)).mul(isFront);
   const garageAt = mix(last.sub(1.0), 0.0, step(h2, 0.5));
@@ -2807,6 +2810,51 @@ function createContactShadowMaterial() {
   return mat;
 }
 
+// The fences between houses' lots (js/lot-details.js): one material for every panel, each an instance of a quad from (-0.5, 0) to (0.5, 1),
+// seen from both sides. Each instance's `fence` attribute: [its length (m), its height (m), 0 Colorbond or 1 timber palings, its colour (0-3,
+// Colorbond's four) + a number in 0-1 of its own in the fraction]. Colorbond: steel sheet in its colour, its ribs, a capping rail along the
+// top and a post at each end; palings: boards of weathered timber, each a little different, with a slit of shade between them. Each
+// pattern settles to its mean as it shrinks under a pixel.
+const FENCE_COLOURS = [0x7c846a, 0xc9bea2, 0x4f514b, 0x6c6153]; // Colorbond's Pale Eucalypt, Paperbark, Woodland Grey and Jasper
+function createFenceMaterial() {
+  const m = new THREE.MeshStandardNodeMaterial({ side: THREE.DoubleSide, roughness: 0.6 });
+  const data = attribute('fence', 'vec4');
+  const u = positionGeometry.x.add(0.5).mul(data.x); // m along the panel
+  const v = positionGeometry.y.mul(data.y); // m up it
+  const timber = step(0.5, data.z), id = floor(data.w), roll = fract(data.w);
+  const fu = fwidth(u).max(0.0005), fv = fwidth(v).max(0.0005);
+  // Colorbond: ribs every 0.2 m, a rail 0.06 m deep along the top, and the posts' 0.05 m at the ends
+  let sheet = color(FENCE_COLOURS[0]);
+  for (let k = 1; k < 4; k++) sheet = mix(sheet, color(FENCE_COLOURS[k]), step(k - 0.5, id));
+  const rib = filteredPulse(u.div(0.2), 0.0, 0.22, fu.div(0.2));
+  const rail = boxCoverage(v, data.y.sub(0.06), data.y.add(1.0), fv);
+  const post = max(boxCoverage(u, -1.0, 0.05, fu), boxCoverage(u, data.x.sub(0.05), data.x.add(1.0), fu));
+  const steel = sheet.mul(float(1.0).sub(rib.mul(0.12)).sub(rail.mul(0.1)).sub(post.mul(0.16)));
+  // Palings 0.15 m across, a slit of 0.012 m between them; each board its own shade, the whole fence weathered from brown to grey
+  const board = floor(u.div(0.15));
+  const shade = hash2D(vec2(board, roll.mul(97.0).add(1.3))).sub(0.5).mul(0.22);
+  const far = smoothstep(0.25, 0.9, fu.div(0.15));
+  const wood = mix(color(0x8a7254), color(0x77736a), roll).mul(float(1.0).add(shade.mul(float(1.0).sub(far))));
+  const slit = filteredPulse(u.div(0.15), 0.0, 0.08, fu.div(0.15));
+  const paling = wood.mul(float(1.0).sub(slit.mul(0.55))).mul(float(1.0).sub(post.mul(0.25)));
+  m.colorNode = mix(steel, paling, timber);
+  m.roughnessNode = mix(float(0.45), float(0.9), timber);
+  m.metalnessNode = mix(float(0.2), float(0.0), timber);
+  return m;
+}
+
+// Driveways, crossovers and laybacks: concrete, each slab's shade in its instance colour, laid over the lawn or the footpath with the
+// polygon offset the garden's paths have, so the two never fight for a pixel
+function createConcreteMaterial() {
+  const m = new THREE.MeshStandardNodeMaterial({ color: 0xc4bfb4, roughness: 0.92 });
+  // A little mottling, broad enough not to sparkle
+  m.colorNode = color(0xc4bfb4).mul(float(0.94).add(steadyHash2D(floor(patternXZ.mul(0.7))).mul(0.08)));
+  m.polygonOffset = true;
+  m.polygonOffsetFactor = -2;
+  m.polygonOffsetUnits = -2;
+  return m;
+}
+
 export {
   cityUniforms,
   WALL_KINDS,
@@ -2831,5 +2879,7 @@ export {
   createWaterMaterial,
   createParkLawnMaterial,
   createGardenBedMaterial,
-  createContactShadowMaterial
+  createContactShadowMaterial,
+  createFenceMaterial,
+  createConcreteMaterial
 };

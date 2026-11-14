@@ -243,6 +243,9 @@ class ThirdPersonControllerManager {
     this.scene = scene;
     this.colliders = colliders;
     this._colliderCells = null; // built on first use, see nearColliders()
+    // What holds the walker and nothing else, the fences between houses' lots (js/lot-details.js): cars keep to the roads, and the street
+    // furniture, traffic and sounds never see these
+    this._walkerCells = new Map();
     this.activeMode = 'car'; // 'person' | 'car' | 'cyclist' | 'helicopter'
 
     this.jumpQueued = 0;
@@ -423,7 +426,43 @@ class ThirdPersonControllerManager {
     for (const c of this.nearColliders(x, z, Math.max(body.extX, body.extZ))) {
       if (buildingContact(c, x, baseY, z, body)) return false;
     }
+    if (mode === 'person') for (const c of this.nearWalkerColliders(x, z, body.radius)) if (buildingContact(c, x, baseY, z, body)) return false;
     return true;
+  }
+
+  // The fences, made and dropped as they're drawn near you
+  addWalkerColliders(list) {
+    this._walkerCells ??= new Map();
+    for (const c of list) this._eachWalkerCell(c, (key) => (this._walkerCells.get(key) || this._walkerCells.set(key, []).get(key)).push(c));
+  }
+
+  removeWalkerColliders(list) {
+    if (!list.length || !this._walkerCells) return;
+    const gone = new Set(list);
+    for (const c of list) {
+      this._eachWalkerCell(c, (key) => {
+        const kept = (this._walkerCells.get(key) || []).filter((o) => !gone.has(o));
+        if (kept.length) this._walkerCells.set(key, kept);
+        else this._walkerCells.delete(key);
+      });
+    }
+  }
+
+  _eachWalkerCell(c, fn) {
+    for (let ix = Math.floor(c.minX / COLLIDER_CELL); ix <= Math.floor(c.maxX / COLLIDER_CELL); ix++) {
+      for (let iz = Math.floor(c.minZ / COLLIDER_CELL); iz <= Math.floor(c.maxZ / COLLIDER_CELL); iz++) fn(colliderKey(ix, iz));
+    }
+  }
+
+  nearWalkerColliders(x, z, r) {
+    if (!this._walkerCells?.size) return [];
+    const out = new Set();
+    for (let ix = Math.floor((x - r) / COLLIDER_CELL); ix <= Math.floor((x + r) / COLLIDER_CELL); ix++) {
+      for (let iz = Math.floor((z - r) / COLLIDER_CELL); iz <= Math.floor((z + r) / COLLIDER_CELL); iz++) {
+        for (const c of this._walkerCells.get(colliderKey(ix, iz)) || []) out.add(c);
+      }
+    }
+    return [...out];
   }
 
   // The roofs around (x, z), as high above sea level as they're drawn, and how far away each is
@@ -1338,6 +1377,17 @@ class ThirdPersonControllerManager {
           near = this.nearColliders(gx, gz, reach);
           i = -1;
           while (i + 1 < near.length && near[i + 1]._order <= order) i++;
+        }
+      }
+    }
+    // The walker against the fences: twice, for a corner where two meet
+    if (this.activeMode === 'person' && !entity) {
+      const fences = this.nearWalkerColliders(pos.x, pos.z, reach);
+      for (let pass = 0; pass < 2 && fences.length; pass++) {
+        for (const c of fences) {
+          if (!buildingContact(c, pos.x, pos.y, pos.z, body, contact)) continue;
+          pos.x += contact.nx * contact.depth;
+          pos.z += contact.nz * contact.depth;
         }
       }
     }

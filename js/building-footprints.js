@@ -269,7 +269,7 @@ function wallSeed(record, index) {
 // groundAt(x, z, floor): the ground's height under a wall, to stand it on. storey: { width, height } of the facade's window bays.
 // A house (record.house: its style) has one front, its other outer walls are sides; record.front is the street it faces ({ x, z }; null
 // where there's none near, and it fronts with its longest wall; false where another piece of it has the front). record.fascia: the colour
-// of the board along its eaves.
+// of the board along its eaves. A house's front wall is left on its record as `frontWall` (js/house-entry.js).
 function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMaterials = null, { groundAt = null, storey = null } = {}) {
   const cells = new Map();
   for (const [index, record] of records.entries()) {
@@ -322,6 +322,10 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
           const exposedHeight = adjacentHeight ? Math.max(0, height + 0.22 - adjacentHeight) : height;
           // Match the positive-world-axis tangent used by the shared interior-map view ray.
           const reverse = (Math.abs(dz) >= Math.abs(dx) ? dz : dx) < 0;
+          // Kept for whatever needs to know where its door is (js/house-entry.js): the wall, which end its bays count from, its digits
+          if (kind === WALL_KINDS.front && record.house) {
+            record.frontWall = { ax: a.x, az: a.y, bx: b.x, bz: b.y, reverse, width, digits: Math.floor(seed) % 1000 };
+          }
           cell.positions.push(a.x, base + bottom, a.y, b.x, base + bottom, b.y, a.x, top, a.y, b.x, top, b.y);
           for (let k = 0; k < 4; k++) {
             cell.normals.push(-dz / width, 0, dx / width);

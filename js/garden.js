@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { groundHeight } from './surfaces.js';
 import { createGardenBedMaterial, createPondMaterial, createSandstoneWallMaterial } from './tsl-materials.js';
-import { CITY_BOUNDS, LAWNS } from './city-config.js';
+import { CITY_BOUNDS, LAWNS, PAVEMENTS } from './city-config.js';
 import { GroundCells, SIDEWALK_TOP, addSurface } from './ground-geometry.js';
 import { TILE } from './geodata.js';
 
@@ -85,11 +85,14 @@ class TintedCells extends GroundCells {
  * it (the tiles' own were drawn in parts, some before the garden), and kept while the lawn is.
  */
 const lawnTriangles = new WeakMap();
-function lawnSurface(tile) {
+const lawnSurface = (tile) => drawnSurface(LAWNS, tile);
+/** The same for the footpaths' paving (js/city-config.js PAVEMENTS), which is laid the same way: for a driveway's crossover */
+const pavingSurface = (tile) => drawnSurface(PAVEMENTS, tile);
+function drawnSurface(list, tile) {
   const BOX = 32, CELL = 4, NEAR = 300;
   const x0 = tile.ix * TILE - NEAR, x1 = (tile.ix + 1) * TILE + NEAR, z0 = tile.iz * TILE - NEAR, z1 = (tile.iz + 1) * TILE + NEAR;
   const index = new Map();
-  for (const rings of LAWNS) {
+  for (const rings of list) {
     let lawn = lawnTriangles.get(rings);
     if (!lawn) {
       let a = Infinity, b = -Infinity, c = Infinity, d = -Infinity;
@@ -436,4 +439,4 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   return colliders;
 }
 
-export { PATH_TOP, buildTileGarden, gardenMaterials };
+export { PATH_TOP, buildTileGarden, gardenMaterials, lawnSurface, pavingSurface };

@@ -5,7 +5,7 @@ const test = require('node:test');
 const { loadModule } = require('./helpers/module.cjs');
 
 const source = readFileSync(join(__dirname, '../js/quality.js'), 'utf8');
-const { FrameWatcher, guessLevel, pickLevel, pixelRatioFor } = loadModule(source, { globals: { Math, JSON, Number, URLSearchParams } });
+const { FrameWatcher, LEVELS, guessLevel, pickLevel, pixelRatioFor } = loadModule(source, { globals: { Math, JSON, Number, URLSearchParams } });
 
 const desktop = { backend: 'webgpu', vendor: 'intel', isFallback: false, cores: 8, memory: 8, coarse: false, saveData: false, pixels: 2073600 };
 
@@ -73,4 +73,8 @@ test('smooth frames and manual choices change nothing', () => {
   for (let t = 0; t < 30; t += 0.016) smooth.update(0.016);
   assert.equal(scales.length, 0);
   assert.equal(storage.map.size, 0);
+});
+
+test('houses\' lots are drawn nearer on lower levels', () => {
+  assert.deepEqual(['low', 'medium', 'high'].map((level) => LEVELS[level].houseDetail), [100, 180, 260]);
 });

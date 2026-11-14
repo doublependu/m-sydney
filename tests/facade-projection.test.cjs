@@ -255,7 +255,7 @@ Node.prototype.toInt = function () { return new Node(this.values.map(Math.trunc)
 Node.prototype.greaterThanEqual = function (v) { return new Node(binary(this, v, (a, b) => (a >= b ? 1 : 0))); };
 Node.prototype.assign = function (v) { this.values = values(v).map(f); return this; };
 const tsl = {
-  float: v => new Node(v), floor: unary(Math.floor), abs: unary(Math.abs),
+  float: v => new Node(v), floor: unary(Math.floor), abs: unary(Math.abs), fract: unary((v) => v - Math.floor(v)),
   max: (a, b) => binary(a, b, Math.max), min: (a, b) => binary(a, b, Math.min),
   step: (edge, v) => binary(edge, v, (a, b) => b < a ? 0 : 1),
   mix: (a, b, t) => binary(binary(a, t, (v, t) => v * (1 - t)), binary(b, t, (v, t) => v * t), (a, b) => a + b),
@@ -327,4 +327,25 @@ test('a house\'s front has one door, in one of its bays, and a project home\'s g
       }
     }
   }
+});
+
+test('the game finds a house\'s door and garage door where its facade draws them (js/house-entry.js)', async () => {
+  const { houseEntry } = await import('../js/house-entry.js');
+  let garages = 0;
+  for (const [style, { look }] of HOUSES) {
+    for (let width = 2; width <= 40; width += 0.37) {
+      for (const seed of [0.5, 3.5, 63.7, 64.2, 140.5, 517.3, 888.9, 999.9]) {
+        const shader = houseOf(width, style, WALL_KINDS.front, { seed });
+        const cpu = houseEntry({ ax: 0, az: 0, bx: width, bz: 0, reverse: false, width, digits: Math.floor(seed) }, style);
+        assert.equal(cpu.bays, shader.bays, `${look ? HOUSE_STYLES[style].name : style} ${width} m: bays`);
+        assert.equal(cpu.doorBay, shader.door, `${HOUSE_STYLES[style].name} ${width} m, seed ${seed}: the door's bay`);
+        assert.equal(cpu.garageBay, shader.garage, `${HOUSE_STYLES[style].name} ${width} m, seed ${seed}: the garage door's`);
+        if (cpu.garage) garages++;
+      }
+    }
+  }
+  assert.ok(garages > 0, 'some have garage doors');
+  // Reversed, its bays count from b
+  const cpu = houseEntry({ ax: 10, az: 0, bx: 0, bz: 0, reverse: true, width: 10, digits: 140 }, HOUSES[0][0]);
+  assert.ok(Math.abs(cpu.door.x - cpu.door.s) < 1e-9, 'a reversed wall\'s bays start at b');
 });

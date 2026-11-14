@@ -201,6 +201,7 @@ async function initApp() {
   let movingScenery = null;
   let streetDetails = null;
   let trafficSystem = null;
+  let lotDetails = null; // js/lot-details.js: houses' fences and driveways near you, once the city is complete
   // ?debug=1&cars=0: the streets to yourself, for the scenarios that need to know nobody else is there
   const debugCars = new URLSearchParams(location.search).get('debug') === '1' && new URLSearchParams(location.search).has('cars') ? Number(new URLSearchParams(location.search).get('cars')) : null;
 
@@ -1439,7 +1440,7 @@ async function initApp() {
     download.begin();
     yield Promise.all([
       loadFar(),
-      Promise.all([import('./horizon.js'), import('./street-details.js'), import('./traffic.js'), import('./road-network.js'), import('./road-paint.js'), import('./road-paint-tags.js'), import('./far-level.js')])
+      Promise.all([import('./horizon.js'), import('./street-details.js'), import('./traffic.js'), import('./road-network.js'), import('./road-paint.js'), import('./road-paint-tags.js'), import('./far-level.js'), import('./lot-details.js')])
         .then((modules) => { city = Object.assign({}, ...modules); })
     ]).then(() => download.done());
     cityCode = city;
@@ -1515,6 +1516,26 @@ async function initApp() {
     console.log(`[world] complete at ${Math.round(worldCompleteAt)} ms`);
     if (debugFrames) console.log(`[world] steps: ${progress.timings().map(([label, ms]) => `${label} ${ms}ms`).join(', ')}`);
 
+    // Houses' lots near you, from here on: their fences hold the walker, and nothing else (js/lot-details.js)
+    {
+      const made = city.createLotDetails({
+        level: quality.level, reach: () => quality.houseDetail, built: (key) => builtTiles.get(key)?.done === true, shadows: quality.shadowTile > 0,
+        walker: { add: (list) => controllerManager.addWalkerColliders(list), remove: (list) => controllerManager.removeWalkerColliders(list) }
+      });
+      // One instance of each, out of sight, so their shaders compile before they're needed
+      for (const mesh of made.group.children) {
+        mesh.count = 1;
+        mesh.setMatrixAt(0, new THREE.Matrix4().makeScale(0, 0, 0));
+      }
+      // Anchored before it's revealed, so it isn't moved round its middle, and again after: the origin can move while it compiles
+      made.anchor();
+      yield revealStage(made.group);
+      made.anchor();
+      made.group.updateMatrixWorld(true);
+      for (const mesh of made.group.children) mesh.count = 0;
+      lotDetails = made;
+    }
+
     // From here on, keep up with the player. One thing at a time, the ground under them first, so a frame never pays for much.
     let detailsAt = { x: startX, z: startZ };
     let detailsDoneAt = detailsAt; // where street furniture was last put out round, once it's done: null while it's being done
@@ -1547,6 +1568,8 @@ async function initApp() {
         yield* groundFirst(rebuildTraffic(x, z));
       } else if (Math.hypot(x - windowAt.x, z - windowAt.z) > TRAFFIC_RADIUS * (flying() ? 0.75 : 0.4)) {
         yield* groundFirst(rebuildTraffic(x, z));
+      } else if (lotDetails && !flying() && (yield* lotDetails.work(x, z))) {
+        // a square's lots worked out, or what's drawn of them chosen again
       } else if (next.load.length) {
         yield* buildTile(next.load[0]);
       } else if (!(yield* nextFarSquare(x, z))) {
@@ -1995,6 +2018,27 @@ async function initApp() {
         };
         walk(scene);
         return [...byName.values()].sort((a, b) => b.triangles - a.triangles).slice(0, 30);
+      },
+      // The houses' lots near you (js/lot-details.js): how many are worked out and drawn, and with `lines` true, their lines drawn over the
+      // ground (lots yellow, their fronts cyan, fences red, driveways white); false takes them away
+      lots(lines = null) {
+        if (!lotDetails) return null;
+        if (lines !== null) lotDetails.debugLines(lines);
+        const { squares, lots, fences, drives, panels, slabs, colliders } = lotDetails.state();
+        return { squares, lots: lots.length, fences: fences.length, drives: drives.length, panels, slabs, colliders, reach: quality.houseDetail };
+      },
+      // Fences and driveways drawn or not, for measuring what they cost
+      lotsShown: (on) => lotDetails?.setShown(on),
+      // The lots within r of (x, z), for scripts that walk among them: each house's middle, its lot, its driveway, and the fences
+      lotsNear(x, z, r = 60) {
+        if (!lotDetails) return null;
+        const { lots, fences } = lotDetails.state(x, z, r);
+        const xz = (p) => [+p.x.toFixed(2), +p.z.toFixed(2)];
+        return {
+          lots: lots.map((l) => ({ x: +l.home.cx.toFixed(1), z: +l.home.cz.toFixed(1), style: l.style, front: +l.front.toFixed(2), frame: l.frame, ext: l.home.ext,
+            pts: l.pts.map(xz), drive: l.drive })),
+          fences: fences.map((f) => [...xz(f.a), ...xz(f.b), f.kind])
+        };
       },
       renderInfo() {
         const { render } = renderer.info;

@@ -783,3 +783,25 @@ test('a car only turns to the view within 90 degrees: further round is a look', 
   const walk = followView('Person', 3, { seconds: 3 });
   assert.ok(Math.abs(walk.offset) < 0.052);
 });
+
+test('a fence between houses\' lots holds the walker, and not a car, a bike or the helicopter', () => {
+  const { controller } = keyboardHarness({ CITY_BOUNDS: { minX: -1e5, maxX: 1e5, minZ: -1e5, maxZ: 1e5, sidewalkHeight: 0.22 }, blockAt: () => null });
+  Object.assign(controller, { colliders: [], _colliderCells: null, _walkerCells: new Map() });
+  // A fence 10 m long along x, 0.1 m thick, 1.8 m tall (js/lot-details.js colliderOf())
+  const fence = { minX: -5, maxX: 5, minZ: -0.05, maxZ: 0.05, minY: 0, maxY: 1.8, fence: true, obb: { cx: 0, cz: 0, cs: 1, sn: 0, hx: 5, hz: 0.05 } };
+  controller.addWalkerColliders([fence]);
+  const step = (mode, z, radius, car = null, entity = car) => {
+    controller.activeMode = mode;
+    const position = { x: 0, y: 0, z, landed: { x: 0, z } };
+    controller.entities = { [mode]: { position, heading: 0, speed: 0 } };
+    controller.resolveHorizontalCollision(position, radius, car, entity);
+    return position.z;
+  };
+  assert.ok(step('person', 0.2, 0.48) >= 0.05 + 0.48 - 1e-9, 'the walker is pushed out to its side of the fence');
+  assert.ok(step('person', -0.2, 0.48) <= -0.05 - 0.48 + 1e-9, 'from either side');
+  assert.equal(step('cyclist', 0.2, 0.65, null, {}), 0.2, 'a bike rides through it');
+  assert.ok(controller.spotClear('car', 0, 0.2, 0), 'a car is never held by it');
+  assert.equal(controller.spotClear('person', 0, 0.2, 0), false, 'a walker can\'t be put in it');
+  controller.removeWalkerColliders([fence]);
+  assert.equal(step('person', 0.2, 0.48), 0.2, 'once dropped it holds nothing');
+});

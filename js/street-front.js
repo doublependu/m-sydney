@@ -32,7 +32,7 @@ function streetIndex(links) {
   return cells;
 }
 
-/** The nearest point of a street in `index` to (x, z), within `limit`: { x, z, d, link }, or null */
+/** The nearest point of a street in `index` to (x, z), within `limit`: { x, z, d, link, ux, uz }, (ux, uz) the way its segment runs there; or null */
 function streetFront(index, x, z, limit = REACH) {
   let best = null;
   const r = Math.ceil(limit / CELL), cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
@@ -42,7 +42,7 @@ function streetFront(index, x, z, limit = REACH) {
         const t = Math.max(0, Math.min(seg.L, (x - seg.x) * seg.ux + (z - seg.z) * seg.uz));
         const px = seg.x + seg.ux * t, pz = seg.z + seg.uz * t, d = Math.hypot(px - x, pz - z);
         // Ties go to the first found, whichever order the cells hold them in: nearer by a millimetre to win
-        if (d <= limit && (!best || d < best.d - 1e-3)) best = { x: px, z: pz, d, link: seg.link };
+        if (d <= limit && (!best || d < best.d - 1e-3)) best = { x: px, z: pz, d, link: seg.link, ux: seg.ux, uz: seg.uz };
       }
     }
   }

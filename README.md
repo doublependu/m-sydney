@@ -223,6 +223,15 @@ what it did.
   sides, with a window in about one bay in three. The style rides on the walls' seed, 1000 times it, and each wall's layout is worked out
   once in the vertex stage (`houseWall()`, `js/tsl-materials.js`), so a house costs no new attribute, material or draw. At night about
   one house window in five is lit.
+- **Houses near you have lots** (`js/house-lots.js`, `js/lot-details.js`), worked out from the map, which has no property lines: each
+  house's front line where its street's footpath meets the lawn, one line between each pair of neighbours (square to their street, halfway
+  across the gap), and a back line halfway to the house behind. Along every side but the front, from 2 m behind the front line, a 1.8 m
+  fence: Colorbond in one of four colours where either house is post-war or newer, timber palings otherwise; never through a building, into
+  a model's site or on a footpath, and none where houses are less than 1.2 m apart. Each fence steps down a slope panel by panel, and holds
+  the walker (`addWalkerColliders()`, `js/controllers.js`) but nothing else. A driveway runs up a side gap of 3 m or more (two wheel
+  strips on some older houses'), or to a project home's garage door (`js/house-entry.js` finds it where the facade draws it), with a
+  concrete crossover and a layback over the kerb. All of it is two instanced meshes, worked out in 500 m squares as the world's jobs have
+  time once the city round you is complete, and drawn within the level's `houseDetail` of you: 100 m on low, 180 on medium, 260 on high.
 - **A garden is drawn over its lawn** (`js/garden.js`): its paths as strips in their surfaces' colours, its beds speckled with what's
   planted in them, so they read as planted from further off than the plants are drawn, its hedges, ponds and gates, and the parapets
   along its shore, which you can't walk or jump over. All of it lies on the lawn as the lawn is drawn, not on the ground under it, which

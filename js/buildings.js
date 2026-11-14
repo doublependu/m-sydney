@@ -710,6 +710,7 @@ function createCityBlocks(scene, { fascia: withFascia = true } = {}) {
     const colliders = [];
     const surveyedBuckets = materials.map(() => []);
     const detailsToPlace = [];
+    const houses = []; // [what the walls were built from, the tile's building]
     for (const b of buildings) {
       // The pieces of one building share its look and its floor
       const whole = b.group ? wholes.get(b.group) : b;
@@ -725,6 +726,7 @@ function createCityBlocks(scene, { fascia: withFascia = true } = {}) {
       const style = houseOf(b);
       if (style) {
         Object.assign(item, { house: style, front: streetOf(tile, b, whole), fascia: withFascia ? FASCIAS[mulberry32(seed ^ 0x46415343)() < 0.65 ? 0 : 1] : null });
+        houses.push([item, b]);
       }
       surveyedBuckets[mat].push(item);
       const detail = {
@@ -759,6 +761,8 @@ function createCityBlocks(scene, { fascia: withFascia = true } = {}) {
       for (const mesh of [...made.children]) target.add(mesh);
       yield;
     }
+    // Each house's front wall, as its walls have it, for its lot (js/house-lots.js): where its door and garage door are
+    for (const [item, b] of houses) b.frontWall = item.frontWall ?? null;
     record.colliders.push(...colliders);
     return colliders;
   }

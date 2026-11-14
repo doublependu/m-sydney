@@ -335,12 +335,13 @@ for (const r of buildings) {
       if ((partsOf.get(r.b.id) || []).some((q) => q.top > r.height + 1)) r.keepGroup = true;
       r.height = edit.height;
       r.guess = false;
+      r.edit = `tools/local/${area.file}: the building at (${x}, ${z})`;
     }
   }
 }
 
-// Each part taller than its building stands on top of it, starting where the building's own walls stop, so no two walls
-// share a plane. Parts of a building share its floor and its group number.
+// Each part taller than its building stands on top of it, starting where the building's own walls stop (and above any part it
+// stands inside, further down), so no two walls share a plane. Parts of a building share its floor and its group number.
 const pieces = [];
 let groups = 0;
 for (const r of buildings) {
@@ -436,6 +437,79 @@ buildings.push(...pieces);
   console.log(`[buildings] ${trimmed} footprints trimmed clear of a road, ${dropped} of them dropped, ${whole - buildings.length} buildings gone`);
 }
 
+// No two pieces in one plane. Overture draws most of a tower's parts as whole outlines from the podium up, one inside the next, and some
+// buildings inside others, so their walls met in a plane: two window grids at once, and a shorter one's coping through the taller one's
+// wall. Shortest first, a piece inside another that covers its bottom starts at that piece's top, and one inside a piece that covers all
+// of its heights is left out (tools/stack-pieces.mjs). Separate buildings count only where their walls meet in a plane: one taller than
+// the building it's inside becomes a piece of it, sharing its floor, look and group. Group numbers were handed out above, and new ones
+// come after them, so no other building's number moves.
+{
+  // A separate building taller than the one it stands in, with walls in its planes, becomes a piece of it and takes its look. False
+  // leaves those as they are, their walls still fighting the outer one's; one hidden in another is left out either way.
+  const JOIN_SEPARATE = true;
+  const { stackPieces } = await import('./stack-pieces.mjs');
+  const records = buildings.map((r) => ({
+    polygons: r.polygons.map((polygon) => polygon.map((ring) => ring.map(([qx, qz]) => [qx * PRECISION, qz * PRECISION]))),
+    bottom: Math.round(r.bottom || 0), top: Math.max(1, Math.round(r.height))
+  }));
+  const together = (i, j) => !!buildings[i].group && buildings[i].group === buildings[j].group;
+  const { bottom, out, on, splits } = stackPieces(records, { wallsOnly: (i, j) => !together(i, j), mayStack: (i, j) => JOIN_SEPARATE || together(i, j) });
+  // Buildings joined: by group, or by the record for one in a single piece
+  const keyOf = (i) => (buildings[i].group ? `g${buildings[i].group}` : `r${i}`);
+  const link = new Map();
+  const find = (k) => { while (link.has(k)) k = link.get(k); return k; };
+  const join = (i, j) => { const a = find(keyOf(i)), b = find(keyOf(j)); if (a !== b) link.set(a, b); };
+  const count = { stacked: 0, hidden: 0, joined: 0, out: 0 };
+  buildings.forEach((r, i) => {
+    if (out[i] >= 0) {
+      if (together(i, out[i])) count.hidden++;
+      else {
+        count.out++;
+        // A building's lowest piece hidden in another building: the rest of it stands on that one
+        if (r.group && !r.bottom) join(i, out[i]);
+      }
+    } else if (on[i].length) {
+      if (on[i].every((j) => together(i, j))) count.stacked++;
+      else {
+        count.joined++;
+        for (const j of on[i]) if (!together(i, j)) join(i, j);
+        // A piece of the building it stands on, as its parts are: of its kind, in its house style if it has one, with no awning
+        const under = buildings[on[i].at(-1)];
+        r.kind = under.kind;
+        r.style = under.style;
+        r.joined = true;
+      }
+    }
+    if (r.edit && (out[i] >= 0 || on[i].length)) {
+      throw new Error(`${r.edit} is ${out[i] >= 0 ? 'left out' : 'now a piece of another'}: it stands inside another building, over the same heights (tools/stack-pieces.mjs). Move the edit to that one`);
+    }
+    if (bottom[i] !== records[i].bottom) r.bottom = bottom[i];
+  });
+  // One group for each set of buildings joined: the lowest number among theirs, or a new one
+  const sets = new Map(), joined = new Set([...link.keys(), ...link.values()]);
+  buildings.forEach((r, i) => {
+    if (!joined.has(keyOf(i))) return;
+    const root = find(keyOf(i));
+    if (!sets.has(root)) sets.set(root, []);
+    sets.get(root).push(i);
+  });
+  let fresh = 0, merged = 0;
+  for (const members of sets.values()) {
+    const numbers = [...new Set(members.map((i) => buildings[i].group).filter(Boolean))];
+    if (numbers.length > 1) merged++;
+    const group = numbers.length ? Math.min(...numbers) : (fresh++, ++groups);
+    for (const i of members) {
+      if (buildings[i].edit) throw new Error(`${buildings[i].edit} now has another building as a piece of it (tools/stack-pieces.mjs): check the edit`);
+      buildings[i].group = group;
+    }
+  }
+  const whole = buildings.length;
+  for (let i = buildings.length - 1; i >= 0; i--) if (out[i] >= 0) buildings.splice(i, 1);
+  console.log(`[buildings] pieces in one another: ${count.stacked} stacked on a piece of their own building, ${count.hidden} hidden in one and left out;`
+    + ` separate buildings: ${count.joined} made pieces of the one they stand in (${fresh} new groups, ${merged} groups merged), ${count.out} left out;`
+    + ` ${whole - buildings.length} records gone; ${splits.length} inside a piece that starts partway up them`);
+}
+
 // Real awnings: the City of Sydney's plan of them. A building fronted by one gets it (js/street-details.js), not a made-up one
 const AWNING_REACH = 4;
 const awningCells = new Map();
@@ -491,7 +565,7 @@ for (const r of buildings) {
   const pitched = !r.group && (r.styledByHand ? !!style?.roofs : shape ? /gabled|hipped|pyramidal|mansard|gambrel|half/.test(shape)
     : style ? !!style.roofs : (r.kind === KIND.house && r.height < 13) || (r.kind === KIND.shed && r.area > 30) || (r.height < 10 && r.kind === KIND.civic));
   uint(meta, Math.max(1, Math.round(r.height)));
-  uint(meta, r.kind | (pitched ? 8 : 0) | (r.group ? 16 : 0) | (!r.part && frontsAwning(r) ? 32 : 0) | (r.guess ? 64 : 0) | ((r.part ? 0 : r.style || 0) << 7));
+  uint(meta, r.kind | (pitched ? 8 : 0) | (r.group ? 16 : 0) | (!r.part && !r.joined && frontsAwning(r) ? 32 : 0) | (r.guess ? 64 : 0) | ((r.part ? 0 : r.style || 0) << 7));
   if (r.group) {
     uint(meta, r.group);
     uint(meta, Math.round(r.bottom || 0));

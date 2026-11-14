@@ -187,7 +187,8 @@ async function initApp() {
   markInit('controllers');
 
   await showLoadingStage('Raising the nearest buildings...');
-  const cityBlocks = createCityBlocks(scene);
+  // A house's fascia is about 22 triangles: not on the lowest level, a phone's
+  const cityBlocks = createCityBlocks(scene, { fascia: quality.level !== 'low' });
   for (const record of builtTiles.values()) {
     const colliders = runToEnd(cityBlocks.addBuildings(record.tile, record.tile.buildings.filter((b) => inStart(b.cx, b.cz)), record.stages[0]));
     record.colliders.push(...colliders);

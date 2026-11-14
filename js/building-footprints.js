@@ -109,8 +109,11 @@ function grown(ring, by) {
   return out;
 }
 
-/** Adds the roof's triangles, in its colour, to `roofs` ({ positions, colors }) */
-function addPitchedRoof(roofs, ring, top, f, colour) {
+const FASCIA = 0.2; // m: the board along a house's eaves, down from the roof's edge
+
+/** Adds the roof's triangles, in its colour, to `roofs` ({ positions, colors }); and with `fascia` (a colour), a board that colour
+ * along its edge, as a house has under its gutter */
+function addPitchedRoof(roofs, ring, top, f, colour, fascia = null) {
   const planes = planesOf(f, f.eaves);
   const base = top - f.eaves * f.tan;
   const outline = grown(ring, f.eaves).map((p) => toFrame(f, p));
@@ -134,6 +137,41 @@ function addPitchedRoof(roofs, ring, top, f, colour) {
         roofs.positions.push(w.x, height(v), w.y);
         roofs.colors.push(colour.r, colour.g, colour.b);
       }
+    }
+  }
+  if (fascia) addFascia(roofs, outline, base, f, fascia);
+}
+
+// The fascia: a band hanging FASCIA under the roof's edge all round, following it up a gable's rake. `outline` is the eaves' outline in
+// the roof's frame; the roof's edge over it is where its planes are lowest.
+function addFascia(roofs, outline, base, f, colour) {
+  const W = f.W + f.eaves, L = f.L + f.eaves;
+  const edgeAt = (u, v) => base + f.tan * Math.max(0, Math.min(W - Math.abs(v), f.gabled ? Infinity : L - Math.abs(u)));
+  const push = (p, y) => {
+    const w = fromFrame(f, p.x, p.y);
+    roofs.positions.push(w.x, y, w.y);
+    roofs.colors.push(colour.r, colour.g, colour.b);
+  };
+  for (let i = 0; i < outline.length; i++) {
+    const p = outline[i], q = outline[(i + 1) % outline.length];
+    const du = q.x - p.x, dv = q.y - p.y;
+    // Cut where the edge's height turns: the ridge's line, and each hip's, in its own quarter of the roof
+    const cuts = [0, 1];
+    const lines = [[0, 1, 0, 0, 0]];
+    if (!f.gabled) for (const su of [1, -1]) for (const sv of [1, -1]) lines.push([-su, sv, L - W, su, sv]);
+    for (const [a, b, c, su, sv] of lines) {
+      const d = a * du + b * dv;
+      if (Math.abs(d) < 1e-9) continue;
+      const t = -(a * p.x + b * p.y + c) / d;
+      if (t <= 1e-4 || t >= 1 - 1e-4 || (p.x + du * t) * su < 0 || (p.y + dv * t) * sv < 0) continue;
+      cuts.push(t);
+    }
+    cuts.sort((x, y) => x - y);
+    for (let k = 1; k < cuts.length; k++) {
+      const a = { x: p.x + du * cuts[k - 1], y: p.y + dv * cuts[k - 1] }, b = { x: p.x + du * cuts[k], y: p.y + dv * cuts[k] };
+      const ya = edgeAt(a.x, a.y), yb = edgeAt(b.x, b.y);
+      push(a, ya); push(b, yb - FASCIA); push(b, yb);
+      push(a, ya); push(a, ya - FASCIA); push(b, yb - FASCIA);
     }
   }
 }
@@ -197,7 +235,41 @@ function addWallFoot(cell, a, b, width, height, base, seed, reverse, groundAt, s
   }
 }
 
+/**
+ * A house's front: of its outer walls not against a neighbour, the one facing most nearly towards `street` ({ x, z }) from its middle, of
+ * those at least half as long as its longest (or 2.5 m); with no street (null), its longest. `walls`: [{ a, b, width, adjacentHeight }]
+ * of its outer rings. The wall itself, or null where it has none to face the street with.
+ */
+function houseFront(walls, street, cx, cz) {
+  const open = walls.filter((w) => w.width > 0 && !w.adjacentHeight);
+  if (!open.length) return null;
+  const longest = Math.max(...open.map((w) => w.width));
+  if (!street) return open.find((w) => w.width === longest);
+  const dx = street.x - cx, dz = street.z - cz, d = Math.hypot(dx, dz) || 1;
+  let best = null, bestScore = -Infinity;
+  for (const w of open) {
+    if (w.width < Math.min(2.5, longest * 0.5)) continue;
+    // Outward, as the walls' normals are (clockwise rings)
+    const nx = -(w.b.y - w.a.y) / w.width, nz = (w.b.x - w.a.x) / w.width;
+    const score = (nx * dx + nz * dz) / d;
+    if (score > bestScore + 1e-9) { best = w; bestScore = score; }
+  }
+  return best;
+}
+
+// The seed a wall carries (the `box` attribute's w): its building's seed's last three digits, and the tone in its fraction (0.1-0.9,
+// never near a whole number, so floor() is steady on inexact values). A house adds 1000 times its style (js/house-styles.js, 1-15), which
+// the facade splits off again (js/tsl-materials.js houseWall()); its digits are kept positive, so the style comes off whole.
+function wallSeed(record, index) {
+  const digits = Math.floor(record.seed ?? index * 29) % 1000;
+  if (!record.house) return digits + 0.1 + 0.8 * (record.tone ?? 0.5);
+  return ((digits + 1000) % 1000) + 1000 * record.house + 0.1 + 0.8 * (record.tone ?? 0.5);
+}
+
 // groundAt(x, z, floor): the ground's height under a wall, to stand it on. storey: { width, height } of the facade's window bays.
+// A house (record.house: its style) has one front, its other outer walls are sides; record.front is the street it faces ({ x, z }; null
+// where there's none near, and it fronts with its longest wall; false where another piece of it has the front). record.fascia: the colour
+// of the board along its eaves.
 function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMaterials = null, { groundAt = null, storey = null } = {}) {
   const cells = new Map();
   for (const [index, record] of records.entries()) {
@@ -209,9 +281,11 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
     const height = record.height, base = (record.base ?? 0) + 0.22, top = height + base;
     // A piece standing on another starts this far up. Its floors count from the building's floor all the same.
     const bottom = record.bottom || 0;
-    const seed = Math.floor(record.seed ?? index * 29) % 1000 + 0.1 + 0.8 * (record.tone ?? 0.5);
+    const seed = wallSeed(record, index);
     const neighbours = getNeighbours && height <= 60 && !record.group ? getNeighbours(record) : [];
 
+    // Each polygon's rings and walls first: a house's front is one of all its walls
+    const shapes = [];
     for (const polygon of record.polygons) {
       const rings = [polygon.outer, ...(polygon.holes || [])].map((ring, i) => {
         const points = ring.map(p => new THREE.Vector2(p.x, p.z));
@@ -221,19 +295,30 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
         return points;
       });
       if (rings[0].length < 3) continue;
+      const walls = rings.map((ring, i) => ring.map((a, j) => {
+        const b = ring[(j + 1) % ring.length];
+        const width = Math.hypot(b.x - a.x, b.y - a.y);
+        return { a, b, width, adjacentHeight: width && !i && neighbours.length ? partyWallHeight(record, a, b, neighbours) : 0 };
+      }));
+      shapes.push({ rings, walls });
+    }
+    const front = record.house && record.front !== false
+      ? houseFront(shapes.flatMap((s) => s.walls[0]), record.front ?? null, record.cx, record.cz) : null;
+
+    for (const { rings, walls } of shapes) {
       // A pitched roof over a footprint with no courtyard, simple enough for one
       const frame = record.pitched && roofMaterials && rings.length === 1 && !bottom ? roofFrame(rings[0], record) : null;
       rings.forEach((ring, i) => {
         for (let j = 0; j < ring.length; j++) {
-          const a = ring[j], b = ring[(j + 1) % ring.length];
-          const dx = b.x - a.x, dz = b.y - a.y, width = Math.hypot(dx, dz);
+          const wall = walls[i][j], { a, b, width, adjacentHeight } = wall;
+          const dx = b.x - a.x, dz = b.y - a.y;
           if (width === 0) continue;
           const offset = cell.positions.length / 3;
-          const adjacentHeight = !i && neighbours.length ? partyWallHeight(record, a, b, neighbours) : 0;
           // A shopfront only where the wall meets the pavement
           const meetsGround = !bottom && (!groundAt || base - groundAt((a.x + b.x) / 2, (a.y + b.y) / 2) <= NO_SHOP_ABOVE);
           const kind = i ? WALL_KINDS.rear : adjacentHeight ? WALL_KINDS.lotLine
-            : record.storefronts && meetsGround ? WALL_KINDS.shop : WALL_KINDS.front;
+            : record.house ? (wall === front ? WALL_KINDS.front : WALL_KINDS.side)
+              : record.storefronts && meetsGround ? WALL_KINDS.shop : WALL_KINDS.front;
           const exposedHeight = adjacentHeight ? Math.max(0, height + 0.22 - adjacentHeight) : height;
           // Match the positive-world-axis tangent used by the shared interior-map view ray.
           const reverse = (Math.abs(dz) >= Math.abs(dx) ? dz : dx) < 0;
@@ -268,7 +353,7 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
         }
       });
       if (frame) {
-        addPitchedRoof(cell.roofs, rings[0], top, frame, roofMaterials.colours[record.roof ?? 4] || roofMaterials.colours[4]);
+        addPitchedRoof(cell.roofs, rings[0], top, frame, roofMaterials.colours[record.roof ?? 4] || roofMaterials.colours[4], record.fascia || null);
         continue;
       }
       const triangles = THREE.ShapeUtils.triangulateShape(rings[0], rings.slice(1));

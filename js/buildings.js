@@ -29,6 +29,8 @@ import { wallFootAt } from './wall-foot.js';
 import { polygonContains, polygonBoxOverlaps } from './building-collision.js';
 import { anchorToOrigin, onOriginMove, origin } from './world-origin.js';
 import { buildingLook, mulberry32 } from './building-look.js';
+import { HOUSE_STYLES } from './house-styles.js';
+import { streetFront, tileStreets } from './street-front.js';
 
 // Surveyed footprints define buildings and collisions; architectural details stream around the player.
 
@@ -128,6 +130,7 @@ const FACADES = [
     windowWidth: 3.0,
     floorHeight: 3.0,
     groundWindows: 1,
+    houseBrick: 1,
     litProbability: 0.5,
     warmth: 0.9,
     seed: 71.3
@@ -151,10 +154,12 @@ const FACADES = [
 const FACADE_TONES = FACADES.map(([create, o]) => create === createCurtainWallMaterial
   ? new THREE.Color(o.glassTint).lerp(new THREE.Color(o.frameTint), 0.25).multiplyScalar(1.5)
   : new THREE.Color(o.stoneColor).lerp(new THREE.Color(o.stoneColor2 ?? o.stoneColor), 0.5).lerp(new THREE.Color(o.windowGlassColor), o.groundWindows ? 0.18 : 0.28));
-// The far level's tones of the house facades, each at a few of its tones (js/building-look.js farMat): 9-11 brick, 12-13 painted
+// The far level's tones of the house facades, each at a few of its tones (js/building-look.js farMat): 9-11 brick, 12-13 painted. Most
+// buildings with them are houses, whose walls are about a tenth glass (js/tsl-materials.js houseWall()); the flats among them, more.
+const HOUSE_GLASS = 0.1;
 for (const [mat, tones] of [[7, [0.12, 0.5, 0.88]], [8, [0.15, 0.7]]]) {
   const o = FACADES[mat][1];
-  for (const t of tones) FACADE_TONES.push(new THREE.Color(o.stoneColor).lerp(new THREE.Color(o.stoneColor2), t).lerp(new THREE.Color(o.windowGlassColor), 0.18));
+  for (const t of tones) FACADE_TONES.push(new THREE.Color(o.stoneColor).lerp(new THREE.Color(o.stoneColor2), t).lerp(new THREE.Color(o.windowGlassColor), HOUSE_GLASS));
 }
 // Roofs: the flat ones' four greys (js/building-look.js ROOF_TONES), then the pitched ones' terracotta, slate, concrete tile and
 // Colorbond (js/house-styles.js picks them). Near and far alike.
@@ -170,6 +175,8 @@ const ROOF_COLOURS = [
   0x3b3d3f, // 11 Colorbond Monument
   0x9aa0a2 // 12 galvanised iron
 ].map((c) => new THREE.Color(c));
+// The board along a house's eaves: white, or cream
+const FASCIAS = [0xf0eee6, 0xe2d6b8].map((c) => new THREE.Color(c));
 
 /**
  * Spatial 2D quadtree for range queries around the active player/camera position.
@@ -266,8 +273,9 @@ class Quadtree {
 }
 
 // The buildings of the tiles held, each tile's added and removed as a piece, on materials they all share so a new tile
-// compiles nothing. The roof and street-front details are pools in `group`, filled around the player.
-function createCityBlocks(scene) {
+// compiles nothing. The roof and street-front details are pools in `group`, filled around the player. fascia: the board along a
+// house's eaves, about 22 triangles a house (left off at the lowest graphics level).
+function createCityBlocks(scene, { fascia: withFascia = true } = {}) {
   const group = new THREE.Group();
   group.name = 'CityBlocks';
   anchorToOrigin(group);
@@ -659,13 +667,30 @@ function createCityBlocks(scene) {
     for (const b of tile.buildings) {
       if (!b.group) continue;
       const w = tile.wholes.get(b.group);
-      if (!w) tile.wholes.set(b.group, { cx: b.cx, cz: b.cz, height: b.height, floor: b.floor, low: b.low });
+      if (!w) tile.wholes.set(b.group, { cx: b.cx, cz: b.cz, height: b.height, floor: b.floor, low: b.low, pieces: [b] });
       else {
         w.height = Math.max(w.height, b.height);
+        w.pieces.push(b);
         if (!b.bottom) { w.cx = b.cx; w.cz = b.cz; }
       }
     }
     return tile.wholes;
+  }
+
+  // The style of a building that's a house (js/house-styles.js look), or 0
+  const houseOf = (b) => (HOUSE_STYLES[b.houseStyle || 0]?.look ? b.houseStyle : 0);
+  // The street a house faces (js/street-front.js), from its middle, for its walls to put its front to: { x, z }, null where there's none
+  // near, or false for a piece of a house whose front another piece has (the piece on the ground nearest the street)
+  function streetOf(tile, b, whole) {
+    const found = streetFront(tileStreets(tile), whole.cx, whole.cz);
+    const street = found && { x: found.x, z: found.z };
+    if (!b.group) return street;
+    if (whole.frontPiece === undefined) {
+      const onGround = whole.pieces.filter((p) => !p.bottom);
+      const at = street || whole;
+      whole.frontPiece = onGround.reduce((best, p) => (!best || Math.hypot(p.cx - at.x, p.cz - at.z) < Math.hypot(best.cx - at.x, best.cz - at.z) ? p : best), null);
+    }
+    return whole.frontPiece === b ? street : false;
   }
 
   function recordOf(tile) {
@@ -696,6 +721,11 @@ function createCityBlocks(scene) {
       // Level, on the highest ground along its walls: no wall starts underground (js/building-floor.js, when the tile was made)
       const base = whole.floor;
       const item = { ...b, tone, storefronts, base, roof, pitch, gabled, eaves };
+      // A house's walls by its style: the style rides on their seed (js/building-footprints.js), its front faces its street
+      const style = houseOf(b);
+      if (style) {
+        Object.assign(item, { house: style, front: streetOf(tile, b, whole), fascia: withFascia ? FASCIAS[mulberry32(seed ^ 0x46415343)() < 0.65 ? 0 : 1] : null });
+      }
       surveyedBuckets[mat].push(item);
       const detail = {
         cx: b.cx, cz: b.cz, minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ, base,

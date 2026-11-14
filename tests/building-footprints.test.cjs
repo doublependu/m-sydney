@@ -38,8 +38,9 @@ const THREE = {
   }
 };
 const collision = loadModule(readFileSync(join(__dirname, '../js/building-collision.js'), 'utf8'));
+const WALL_KINDS = { shop: 0, front: 1, rear: 2, lotLine: 3, side: 4, below: 5 };
 const { createBuildingFootprints } = loadModule(readFileSync(join(__dirname, '../js/building-footprints.js'), 'utf8'), {
-  imports: { 'three/webgpu': THREE, './tsl-materials.js': { WALL_KINDS: { shop: 0, front: 1, rear: 2, lotLine: 3, below: 4 } },
+  imports: { 'three/webgpu': THREE, './tsl-materials.js': { WALL_KINDS },
     './building-collision.js': collision }
 });
 const p = (x, z) => ({ x, z });
@@ -200,7 +201,7 @@ test('a wall on a slope runs from its roof down to the ground, with its floors c
     const fromTop = attrs.facadeWall.array[i * 3 + 1], kind = attrs.facadeWall.array[i * 3 + 2];
     if (attrs.normal.array[i * 3 + 1] > 0.5) continue; // the roof
     close(y + fromTop, top); // height on the wall and distance below its top always agree
-    if (kind >= 4) {
+    if (kind >= WALL_KINDS.below) {
       if (y < 8.22 - 1e-6) { foot++; close(y, slope(x) - 0.3); }
     } else {
       assert.ok(y >= 8.22 - 1e-6, 'nothing but the stone goes below the floor');
@@ -215,8 +216,8 @@ test('a wall on a slope runs from its roof down to the ground, with its floors c
 test('a storey of windows only fits where the wall stands that far clear of the ground', () => {
   const b = record([p(0, 0), p(40, 0), p(40, 10), p(0, 10)], { height: 12, base: 8 });
   const group = createBuildingFootprints({}, [b], undefined, null, { groundAt: (x) => x * 0.2, storey: { width: 2.5, height: 3.5 } });
-  const kinds = Array.from(group.children[0].geometry.attributes.facadeWall.array).filter((_, i) => i % 3 === 2).filter((k) => k >= 4);
-  const clear = kinds.map((k) => k - 4);
+  const kinds = Array.from(group.children[0].geometry.attributes.facadeWall.array).filter((_, i) => i % 3 === 2).filter((k) => k >= WALL_KINDS.below);
+  const clear = kinds.map((k) => k - WALL_KINDS.below);
   assert.ok(Math.max(...clear) > 7 && Math.min(...clear) < 1, `clearances ${Math.min(...clear)} to ${Math.max(...clear)}`);
 });
 
@@ -255,5 +256,82 @@ test('a pitched roof covers the house and its eaves at its pitch, and a gable en
     for (let v = 0; v < wall.length / 3; v++) if (wall[v * 3 + 1] < -0.01) raised.push(walls.attributes.position.array[v * 3 + 1]);
     if (gabled) close(Math.max(...raised), 0.22 + 3.2 + 4 * tan30);
     else assert.equal(raised.length, 0);
+  }
+});
+
+// A house: its style rides on its walls' seed, it has one front, to its street, and its other outer walls are sides
+const wallsOf = (mesh) => {
+  const a = mesh.geometry.attributes, out = [];
+  for (let i = 0; i < a.position.array.length / 3; i += 4) {
+    if (a.normal.array[i * 3 + 1] > 0.5) continue; // the roof
+    out.push({ kind: a.facadeWall.array[i * 3 + 2], seed: a.box.array[i * 4 + 3], nx: a.normal.array[i * 3], nz: a.normal.array[i * 3 + 2], width: a.box.array[i * 4] });
+  }
+  return out;
+};
+const house = (outer, extra = {}) => record(outer, { height: 3, storefronts: false, house: 9, ...extra });
+
+test('a house\'s seed carries 1000 times its style, its digits kept positive; any other building\'s is as it was', () => {
+  for (const seed of [123, -123, 4567, -4567]) {
+    const [city] = wallsOf(build([record(square(), { seed })]).children[0]);
+    close(city.seed, Math.fround((Math.floor(seed) % 1000) + 0.1 + 0.8 * 0.75));
+    const [home] = wallsOf(build([house(square(), { seed })]).children[0]);
+    assert.ok(Math.abs(home.seed - (9000 + (((seed % 1000) + 1000) % 1000) + 0.7)) < 2e-3, `${home.seed}, in float32`);
+    assert.equal(Math.floor(home.seed / 1000), 9, 'the style comes off whole');
+  }
+});
+
+test('a house beside a road has one front, facing it, and its other walls are sides', () => {
+  // 12 m along the street (z = -8, south of it), 9 m deep
+  const outer = [p(0, 0), p(12, 0), p(12, 9), p(0, 9)];
+  for (const [street, nx, nz] of [[{ x: 6, z: -8 }, 0, -1], [{ x: 20, z: 4.5 }, 1, 0], [{ x: 6, z: 17 }, 0, 1]]) {
+    const walls = wallsOf(build([house(outer, { front: street })]).children[0]);
+    const fronts = walls.filter((w) => w.kind === WALL_KINDS.front);
+    assert.equal(fronts.length, 1);
+    close(fronts[0].nx, nx); close(fronts[0].nz, nz);
+    assert.equal(walls.filter((w) => w.kind === WALL_KINDS.side).length, 3);
+  }
+});
+
+test('a house with no street near fronts with its longest wall; a piece of a house whose front another piece has has none', () => {
+  const outer = [p(0, 0), p(15, 0), p(15, 8), p(0, 8)];
+  const fronts = wallsOf(build([house(outer, { front: null })]).children[0]).filter((w) => w.kind === WALL_KINDS.front);
+  assert.equal(fronts.length, 1);
+  close(fronts[0].width, 15);
+  const none = wallsOf(build([house(outer, { front: false })]).children[0]);
+  assert.deepEqual(none.map((w) => w.kind), [4, 4, 4, 4]);
+});
+
+test('a house\'s wall against its neighbour stays a lot line, and a short wall facing the street doesn\'t take the front', () => {
+  const b = house(square(), { front: { x: 5, z: -10 } }), neighbour = record(square(10), { height: 12 });
+  const walls = wallsOf(build([b], () => [reserve(b), reserve(neighbour)]).children[0]);
+  assert.equal(walls.filter((w) => w.kind === WALL_KINDS.lotLine).length, 1);
+  assert.equal(walls.filter((w) => w.kind === WALL_KINDS.front).length, 1);
+  // An L whose 1 m step faces the street square on: the long wall beside it is the front
+  const L = [p(0, 0), p(10, 0), p(10, 1), p(12, 1), p(12, 10), p(0, 10)];
+  const front = wallsOf(build([house(L, { front: { x: 30, z: 0.5 } })]).children[0]).find((w) => w.kind === WALL_KINDS.front);
+  close(front.width, 9);
+});
+
+test('a house\'s fascia hangs under its roof\'s edge all round, up a gable\'s rake too', () => {
+  Geometry.prototype.computeVertexNormals ??= function () {};
+  const colours = Array.from({ length: 13 }, (_, i) => ({ r: i / 12, g: 0.5, b: 0.25 }));
+  const fascia = { r: 1, g: 1, b: 1 };
+  for (const gabled of [false, true]) {
+    const roofOf = (extra) => {
+      const b = house([p(0, 0), p(12, 0), p(12, 8), p(0, 8)], { height: 3.2, pitched: true, pitch: 30, gabled, eaves: 0.5, roof: 4, ...extra });
+      return createBuildingFootprints({}, [b], undefined, { material: 'roof', colours }).children.find((m) => m.material === 'roof').geometry.attributes;
+    };
+    const plain = roofOf({}), boarded = roofOf({ fascia });
+    const added = (boarded.position.array.length - plain.position.array.length) / 9;
+    assert.equal(added, 12, 'two triangles for each side, the ends in two at the ridge\'s line');
+    const ys = [], white = [];
+    for (let i = plain.position.array.length / 3; i < boarded.position.array.length / 3; i++) {
+      ys.push(boarded.position.array[i * 3 + 1]);
+      white.push(boarded.color.array[i * 3]);
+    }
+    const tan30 = Math.tan(Math.PI / 6), edge = 0.22 + 3.2 - 0.5 * tan30;
+    close(Math.min(...ys), edge - 0.2);
+    close(Math.max(...ys), gabled ? 0.22 + 3.2 + 4 * tan30 : edge);
+    assert.ok(white.every((c) => c === 1));
   }
 });

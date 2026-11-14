@@ -237,3 +237,94 @@ test('a wall\'s whole-bay offset, and a box\'s walls along either axis', () => {
   assert.equal(countsOf(11.5, 2.6, 1.2, { normal: [1, 0, 0], footprintLocal: false, depth: 24.5 })[0], exactBays(24.5, 2.6, 1.2).bays);
   assert.equal(countsOf(11.5, 2.6, 1.2, { normal: [0, 0, 1], footprintLocal: false, depth: 24.5 })[0], 4);
 });
+
+// A house's wall (js/tsl-materials.js houseWall()): its style rides on its seed, 1000 times it, and its own counts are worked out once in
+// the vertex stage, as a city wall's are. The table and the hash as the shader has them, in float32.
+const houseSource = source.match(/function houseWall\([\s\S]*?\n}\n/);
+const { HOUSE_STYLES } = require('./helpers/house-styles.cjs');
+const kindsSource = source.match(/const WALL_KINDS = (\{[^}]*\})/);
+const WALL_KINDS = kindsSource && vm.runInNewContext(`(${kindsSource[1]})`);
+const fract = (x) => f(x - Math.floor(x));
+const hash = (p) => fract(f(Math.sin(f(f(p[0] * f(127.1)) + f(p[1] * f(311.7)))) * f(43758.5453)));
+const ROWS = (look) => look ? [
+  [look.bay[0], look.bay[1], look.share[0], look.share[1]], look.window.slice(0, 4), look.side.slice(0, 4),
+  [look.window[4], look.side[4], look.frame, look.door], [look.painted, look.garage ? 1 : 0, look.terrace ? 1 : 0, 1]
+] : Array.from({ length: 5 }, () => [0, 0, 0, 0]);
+const table = { element: (i) => new Node(Array.from({ length: 16 }, (_, s) => ROWS(HOUSE_STYLES[s]?.look)).flat()[scalar(i)]) };
+Node.prototype.toInt = function () { return new Node(this.values.map(Math.trunc)); };
+Node.prototype.greaterThanEqual = function (v) { return new Node(binary(this, v, (a, b) => (a >= b ? 1 : 0))); };
+Node.prototype.assign = function (v) { this.values = values(v).map(f); return this; };
+const tsl = {
+  float: v => new Node(v), floor: unary(Math.floor), abs: unary(Math.abs),
+  max: (a, b) => binary(a, b, Math.max), min: (a, b) => binary(a, b, Math.min),
+  step: (edge, v) => binary(edge, v, (a, b) => b < a ? 0 : 1),
+  mix: (a, b, t) => binary(binary(a, t, (v, t) => v * (1 - t)), binary(b, t, (v, t) => v * t), (a, b) => a + b),
+  dot: (a, b) => new Node(values(a).reduce((sum, v, i) => f(sum + f(v * values(b)[i])), 0)),
+  vec2: (...v) => new Node(v.flatMap(values)), vec3: (...v) => new Node(v.flatMap(values)), vec4: (...v) => new Node(v.flatMap(values)),
+  hash2D: (p) => new Node(hash(values(p))), HOUSE_TABLE: table, HOUSE_ROWS: 5, HOUSE_PIER: 0.45, WALL_KINDS,
+  Fn: (fn) => () => fn(), If: (cond, fn) => { if (scalar(cond)) fn(); }
+};
+const houseWall = houseSource && vm.runInNewContext(`(function () { ${houseSource[0]} return houseWall; })()`, tsl);
+const houseCounts = countsSource && vm.runInNewContext(`(function () { ${houseSource?.[0] ?? ''} ${countsSource[0]} return facadeCounts; })()`, tsl);
+// A house's wall as the vertex stage gets it: [bays, wall seed, window width, door + 1 + 64 (garage + 1) + 4096 style], decoded
+function houseOf(width, style, kind, { seed = 140.5, normal = [0, 0, -1] } = {}) {
+  const [bays, wallSeed, windowWidth, packed] = houseWall(new Node([width, 6, 6, 1000 * style + seed]), new Node([0.5, 3, kind]), new Node(normal)).values;
+  const rest = packed % 4096, garage = Math.floor(rest / 64) - 1;
+  return { bays, wallSeed, windowWidth, style: Math.floor(packed / 4096), garage, door: rest - (garage + 1) * 64 - 1 };
+}
+const HOUSES = HOUSE_STYLES.map((s, i) => [i, s]).filter(([, s]) => s?.look);
+
+test('the wall kinds keep their values, and a house\'s sides come before what\'s under the floor', () => {
+  assert.deepEqual({ ...WALL_KINDS }, { shop: 0, front: 1, rear: 2, lotLine: 3, side: 4, below: 5 });
+});
+
+test('a house\'s wall splits its style off its seed, and hashes the rest as a city wall would', () => {
+  assert.ok(houseWall, 'houseWall() must work out a house\'s wall once, from its own attributes');
+  for (const [style] of HOUSES) {
+    for (const seed of [0.1, 140.5, 999.9]) {
+      const normal = [Math.SQRT1_2, 0, -Math.SQRT1_2].map(f);
+      const house = houseOf(10, style, WALL_KINDS.front, { seed, normal });
+      assert.equal(house.style, style);
+      assert.equal(house.wallSeed, Math.floor(f(f(f(1000 * style + seed) - f(1000 * style)) + f(f(normal[0] * 17) + f(normal[2] * 37)))));
+    }
+  }
+  // A city wall's seed never reaches 1000, and facadeCounts() leaves it as it was
+  const city = countsOf(11.5, 2.6, 1.2);
+  assert.deepEqual(houseCounts(new Node([11.5, 34, 30, 140.5]), new Node([0, 0, -1]), new Node(2.6), 1.2, true, new Node([0.5, 3, 1])).values, city);
+});
+
+test('each house style\'s bays are what exact arithmetic gives, a half rounding up, on its fronts and its sides', () => {
+  let ties = 0;
+  for (const [style, { look }] of HOUSES) {
+    for (const [kind, spacing] of [[WALL_KINDS.front, look.bay[0]], [WALL_KINDS.side, look.bay[1]]]) {
+      const s100 = Math.round(spacing * 100);
+      for (let width = 0.5; width <= 300; width += 0.5) {
+        const w100 = Math.round(width * 100), inner100 = w100 - 2 * Math.min(45, w100 / 5);
+        const exact = Math.max(Math.floor((2 * inner100 + s100) / (2 * s100)), 1);
+        if ((2 * inner100 + s100) % (2 * s100) === 0) ties++;
+        for (const s of [-1, 0, 1]) assert.equal(houseOf(nextFloat(width, s), style, kind).bays, exact, `${HOUSE_STYLES[style].name}: ${width} m of ${spacing} m bays, ${s} steps off`);
+      }
+    }
+  }
+  assert.ok(ties > 0, 'the lengths must include ties');
+});
+
+test('a house\'s front has one door, in one of its bays, and a project home\'s garage door beside it; its sides have neither', () => {
+  for (const [style, { look }] of HOUSES) {
+    for (let width = 2; width <= 40; width += 0.7) {
+      for (const seed of [3.5, 140.5, 517.3, 888.9]) {
+        const front = houseOf(width, style, WALL_KINDS.front, { seed });
+        assert.ok(front.door >= 0 && front.door < front.bays, `${HOUSE_STYLES[style].name} ${width} m: door ${front.door} of ${front.bays}`);
+        if (look.terrace) assert.ok(front.door === 0 || front.door === front.bays - 1, 'a terrace\'s door is at an end');
+        if (look.garage && front.bays >= 3) {
+          assert.ok(front.garage >= 0 && front.garage + 1 < front.bays, 'two bays of garage');
+          assert.ok(front.door !== front.garage && front.door !== front.garage + 1 && Math.min(Math.abs(front.door - front.garage), Math.abs(front.door - front.garage - 1)) === 1, 'the door beside it');
+        } else assert.equal(front.garage, -1);
+        assert.ok(front.windowWidth <= look.window[0] + 1e-6 && front.windowWidth >= look.window[0] * 0.85 - 1e-6);
+        const side = houseOf(width, style, WALL_KINDS.side, { seed });
+        assert.deepEqual([side.door, side.garage], [-1, -1]);
+        assert.ok(side.windowWidth <= look.side[0] + 1e-6);
+      }
+    }
+  }
+});

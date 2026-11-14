@@ -216,7 +216,13 @@ what it did.
   shop by its Mesh Block and zoning, and gives a house a style by its group of suburbs: Victorian terrace, Federation, California
   bungalow, post-war fibro, brick veneer, project home, beach house, walk-ups (`js/house-styles.js`). A style says its walls, roof
   colours, pitch, gables and eaves. The walls are two more sets of uniforms for the masonry facade, so the GPU compiles nothing more,
-  and every pitched roof is one vertex-coloured material.
+  and every pitched roof is one vertex-coloured material, with a white or cream fascia along a house's eaves (not at the low level).
+- **A house has its era's walls and one front** (`js/house-styles.js` `look`): bricks at a brick's size, weatherboards, fibro sheets or
+  render; a few windows of its style's size and panes; and one door, on the wall facing its street (`js/street-front.js`: the nearest
+  street on the ground within 60 m, never a service lane behind), with a project home's garage door beside it. Its other walls are
+  sides, with a window in about one bay in three. The style rides on the walls' seed, 1000 times it, and each wall's layout is worked out
+  once in the vertex stage (`houseWall()`, `js/tsl-materials.js`), so a house costs no new attribute, material or draw. At night about
+  one house window in five is lit.
 - **A garden is drawn over its lawn** (`js/garden.js`): its paths as strips in their surfaces' colours, its beds speckled with what's
   planted in them, so they read as planted from further off than the plants are drawn, its hedges, ponds and gates, and the parapets
   along its shore, which you can't walk or jump over. All of it lies on the lawn as the lawn is drawn, not on the ground under it, which

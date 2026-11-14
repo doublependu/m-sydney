@@ -16,9 +16,11 @@ class Node {
   get x() { return new Node(this.values[0]); }
   get y() { return new Node(this.values[1]); }
   get z() { return new Node(this.values[2]); }
+  get w() { return new Node(this.values[3]); }
   add(v) { return binary(this, v, (a, b) => a + b); }
   sub(v) { return binary(this, v, (a, b) => a - b); }
   mul(v) { return binary(this, v, (a, b) => a * b); }
+  div(v) { return binary(this, v, (a, b) => a / b); }
   negate() { return this.mul(-1); }
   normalize() { const length = Math.hypot(...this.values); return new Node(this.values.map(v => v / length)); }
   toVar() { return this; }
@@ -145,4 +147,93 @@ test('surveyed storefronts remain glazed above the sidewalk while cut-off storey
   assert.equal(partial(8, 0.22, 10, true), 1, 'the roof still masks an incomplete top storey');
   assert.equal(partial(6, 5.4, 10, false), 1, 'a raised authored box masks its incomplete bottom storey');
   assert.equal(partial(8, 5.4, 10, false), 0, 'complete storeys in raised boxes remain glazed');
+});
+
+// A wall's counts: its window bays, its whole-bay offset, its entrances and its shopfronts. Worked out in every pixel from the
+// interpolated wall width, a wall whose sum landed on a half (11.5 m of sandstone: 9.1 m between its piers, 3.5 bays of 2.6 m)
+// rounded one way or the other pixel by pixel, and showed two window layouts at once.
+const countsSource = source.match(/function facadeCounts\([\s\S]*?\n}\n/);
+const facadeCounts = countsSource && vm.runInNewContext(`(function () { ${countsSource[0]} return facadeCounts; })()`, {
+  float: v => new Node(v), floor: unary(Math.floor), abs: unary(Math.abs),
+  max: (a, b) => binary(a, b, Math.max), min: (a, b) => binary(a, b, Math.min),
+  step: (edge, v) => binary(edge, v, (a, b) => b < a ? 0 : 1),
+  mix: (a, b, t) => binary(binary(a, t, (v, t) => v * (1 - t)), binary(b, t, (v, t) => v * t), (a, b) => a + b),
+  dot: (a, b) => new Node(values(a).reduce((sum, v, i) => f(sum + f(v * values(b)[i])), 0)),
+  vec3: (...v) => new Node(v.flatMap(values)), vec4: (...v) => new Node(v.flatMap(values))
+});
+// One float32 step up or down
+function nextFloat(x, steps) {
+  const buffer = new Float32Array([x]), bits = new Int32Array(buffer.buffer);
+  bits[0] += steps;
+  return buffer[0];
+}
+// [bays, wall seed, entrances, shopfronts] for a footprint wall `width` long, as the vertex stage gets them
+function countsOf(width, windowWidth, cornerPier, { seed = 140.5, normal = [0, 0, -1], footprintLocal = true, depth = 30 } = {}) {
+  assert.ok(facadeCounts, 'facadeCounts() must work out each wall\'s counts once, from its own attributes');
+  return facadeCounts(new Node([width, 34, depth, seed]), new Node(normal), new Node(windowWidth), cornerPier, footprintLocal).values;
+}
+// What exact arithmetic gives, a half rounding up: in tenths of a metre, so every length here is a whole number
+const exactCount = (length10, spacing10) => Math.max(Math.floor((2 * length10 + spacing10) / (2 * spacing10)), 1);
+function exactBays(width, windowWidth, cornerPier) {
+  const w10 = Math.round(width * 10), ww10 = Math.round(windowWidth * 10), pier10 = Math.round(cornerPier * 10);
+  const inner10 = cornerPier > 0 ? w10 - 2 * Math.min(pier10, w10 / 5) : w10;
+  return { bays: exactCount(inner10, ww10), tie: (2 * inner10 + ww10) % (2 * ww10) === 0 };
+}
+// The bays as every pixel worked them out before, in float32
+function perPixelBays(width, windowWidth, cornerPier) {
+  const pier = Math.min(f(cornerPier), f(width * f(0.2)));
+  const inner = cornerPier > 0 ? f(width - f(pier * 2)) : width;
+  return Math.max(Math.floor(f(f(inner / f(windowWidth)) + 0.5)), 1);
+}
+const facades = [...readFileSync(join(__dirname, '../js/buildings.js'), 'utf8').matchAll(/\[(create\w+Material), \{([\s\S]*?)\}\]/g)]
+  .map(([, material, body]) => ({
+    windowWidth: Number(body.match(/windowWidth: ([\d.]+)/)[1]),
+    // createPreWarBuildingMaterial()'s piers are 1.2 m unless a facade says otherwise; curtain walls have none
+    cornerPier: material === 'createCurtainWallMaterial' ? 0 : Number(body.match(/cornerPier: ([\d.]+)/)?.[1] ?? 1.2)
+  }));
+
+test('a wall\'s counts are worked out once, in the vertex stage, and every pixel gets them unchanged', () => {
+  assert.ok(countsSource, 'facadeCounts() must exist');
+  const cell = source.slice(projectionStart, source.indexOf('\n}\n', projectionStart));
+  assert.match(cell, /varying\(\s*facadeCounts\([^;]*?\)\s*,\s*'\w+'\s*\)\s*\.setInterpolation\(\s*THREE\.InterpolationSamplingType\.FLAT,\s*THREE\.InterpolationSamplingMode\.EITHER\s*\)/,
+    'facadeCell() must pass the counts with flat interpolation, as facadeAlongZ is');
+  // Nothing rounds a wall's width to a count in the pixels any more
+  assert.doesNotMatch(source, /floor\(\s*(inner|wallWidth|wallW)\.div\(/, 'a count worked out per pixel can tie');
+});
+
+test('the George St wall, 11.5 m of sandstone, has one window layout: 4 bays', () => {
+  const steps = [-2, -1, 0, 1, 2];
+  // The fixture: every pixel worked it out from a width a step or so either side, and got 3 bays or 4
+  assert.deepEqual(new Set(steps.map(s => perPixelBays(nextFloat(11.5, s), 2.6, 1.2))), new Set([3, 4]));
+  for (const s of steps) assert.equal(countsOf(nextFloat(11.5, s), 2.6, 1.2)[0], 4, `11.5 m ${s} float32 steps off`);
+});
+
+test('every facade\'s bays, entrances and shopfronts are what exact arithmetic gives, a half rounding up', () => {
+  assert.ok(facades.length >= 9, 'js/buildings.js FACADES');
+  let ties = 0;
+  for (const { windowWidth, cornerPier } of facades) {
+    for (let width = 0.5; width <= 300; width += 0.5) {
+      const { bays, tie } = exactBays(width, windowWidth, cornerPier);
+      const w10 = Math.round(width * 10);
+      for (const s of [-1, 0, 1]) {
+        const [count, , entrances, shopfronts] = countsOf(nextFloat(width, s), windowWidth, cornerPier);
+        assert.equal(count, bays, `${width} m of ${windowWidth} m bays (piers ${cornerPier} m), ${s} steps off`);
+        assert.equal(entrances, exactCount(w10, 280), `entrances on ${width} m`);
+        assert.equal(shopfronts, exactCount(w10, 75), `shopfronts on ${width} m`);
+      }
+      // Off a tie, a wall keeps the layout it always had
+      if (tie) ties++;
+      else assert.equal(bays, perPixelBays(width, windowWidth, cornerPier), `${width} m of ${windowWidth} m bays, off a tie`);
+    }
+  }
+  assert.ok(ties > 0, 'the lengths must include ties');
+});
+
+test('a wall\'s whole-bay offset, and a box\'s walls along either axis', () => {
+  // floor(seed + n . (17, 0, 37)), from the wall's own normal
+  const normal = [Math.SQRT1_2, 0, -Math.SQRT1_2].map(f);
+  assert.equal(countsOf(11.5, 2.6, 1.2, { seed: 140.5, normal })[1], Math.floor(f(140.5 + f(f(normal[0] * 17) + f(normal[2] * 37)))));
+  // A box's walls facing x run along z, and measure its depth
+  assert.equal(countsOf(11.5, 2.6, 1.2, { normal: [1, 0, 0], footprintLocal: false, depth: 24.5 })[0], exactBays(24.5, 2.6, 1.2).bays);
+  assert.equal(countsOf(11.5, 2.6, 1.2, { normal: [0, 0, 1], footprintLocal: false, depth: 24.5 })[0], 4);
 });

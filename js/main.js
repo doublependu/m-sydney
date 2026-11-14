@@ -2022,9 +2022,11 @@ async function initApp() {
     // Two frames stay in flight: the completion signal arrives late, so waiting for every frame halves the frame rate.
     if (framesInFlight >= MAX_FRAMES_IN_FLIGHT) return;
 
-    // Scripts looking for flicker draw the same moment over and over (tools/play/flicker.mjs)
+    // Scripts looking for flicker draw the same moment over and over (tools/play/flicker.mjs), from wherever a view put by hand
+    // has moved to since (its --drift)
     if (holdStill) {
       lastTime = now;
+      if (cameraSystem.fixedView) cameraSystem.update(0, 0);
       renderFrame();
       if (grabWanted) {
         grabWanted(renderer.domElement.toDataURL('image/jpeg', 0.85));

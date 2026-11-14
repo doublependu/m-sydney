@@ -392,6 +392,24 @@ const evaluateApartmentInterior = Fn(([uCoord, vCoord, winUV, cellId, winWNode, 
 const WALL_KINDS = { shop: 0, front: 1, rear: 2, lotLine: 3, below: 4 }; // below: under the floor, plus metres clear of the ground
 
 /**
+ * A wall's counts, from its own attributes: its window bays between the corner piers, its whole-bay offset, and how many
+ * entrances (about 28 m apart) and shopfronts (7.5 m) it has. facadeCell() works them out in the vertex stage and passes them
+ * flat, so every pixel of a wall has the same ones. Worked out in each pixel from the interpolated width, a wall whose sum came
+ * to a half (11.5 m of 2.6 m bays inside 1.2 m piers is 3.5 bays) rounded either way pixel by pixel: two window layouts at once.
+ * 0.50005 rounds a half up, as exact arithmetic would, whatever a GPU's division gives; no wall off a half is that near one.
+ */
+function facadeCounts(box, normal, windowWidth, cornerPier, footprintLocal) {
+  const nW = abs(normal);
+  const wallWidth = footprintLocal ? box.x : mix(box.x, box.z, step(nW.z, nW.x));
+  const count = (length, spacing) => max(floor(length.div(spacing).add(0.50005)), 1.0);
+  const pier = min(float(cornerPier), wallWidth.mul(0.2));
+  const bays = count(cornerPier > 0 ? wallWidth.sub(pier.mul(2.0)) : wallWidth, windowWidth);
+  // Whole-bay offset per wall so walls don't repeat each other's windows
+  const wallSeed = floor(box.w.add(dot(normal, vec3(17.0, 0.0, 37.0))));
+  return vec4(bays, wallSeed, count(wallWidth, 28.0), count(wallWidth, 7.5));
+}
+
+/**
  * Shared facade coordinates and masks. World-space by default; createFacadeBoxes and createBuildingFootprints
  * supply wall dimensions to fit whole window bays between the corners. `cornerPier` reserves solid masonry
  * at each end above the ground-floor shops. Partial storeys and the coping remain solid at each wall's top.
@@ -415,6 +433,8 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
   let exposedHeight = float(1.0);
   let fromTop = float(0.0);
   let boxSeed = float(0.0);
+  let entrances = float(1.0);
+  let shopfronts = float(1.0);
 
   if (boxLocal) {
     const box = attribute('box', 'vec4'); // width, height, depth (exposed height for footprints), seed + tone
@@ -425,8 +445,11 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
     // The seed's fraction (0.1..0.9, never near an integer so floor() is stable on inexact varyings) is the tone
     tone = fract(box.w).sub(0.1).div(0.8);
     boxSeed = floor(box.w);
-    // Whole-bay offset per wall so walls don't repeat each other's windows
-    const wallSeed = floor(box.w.add(dot(nWall, vec3(17.0, 0.0, 37.0))));
+    const counts = varying(facadeCounts(box, normalGeometry, windowWidth, cornerPier, footprintLocal), 'vFacadeCounts')
+      .setInterpolation(THREE.InterpolationSamplingType.FLAT, THREE.InterpolationSamplingMode.EITHER);
+    const wallSeed = counts.y;
+    entrances = counts.z;
+    shopfronts = counts.w;
     const along = footprintLocal ? wall.x : mix(positionGeometry.x, positionGeometry.z, alongZ).add(0.5); // 0..1 along the wall
     wallW = wallWidth;
     // Read painted signs left to right when facing the wall.
@@ -435,16 +458,15 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
     wallH = box.y;
     exposedHeight = footprintLocal ? box.z : box.y;
     fromTop = footprintLocal ? wall.y : float(0.5).sub(positionGeometry.y).mul(box.y);
+    const bays = counts.x;
     if (cornerPier > 0) {
       const pier = min(float(cornerPier), wallWidth.mul(0.2));
       const inner = wallWidth.sub(pier.mul(2.0));
-      const bays = max(floor(inner.div(windowWidth).add(0.5)), 1.0);
       const s = along.mul(wallWidth); // metres from the wall's corner
       bayWidth = inner.div(bays);
       gridU = s.sub(pier).div(bayWidth).add(wallSeed);
       inPier = float(1.0).sub(step(pier, s).mul(step(s, wallWidth.sub(pier))));
     } else {
-      const bays = max(floor(wallWidth.div(windowWidth).add(0.5)), 1.0);
       bayWidth = wallWidth.div(bays);
       gridU = along.mul(bays).add(wallSeed);
     }
@@ -489,7 +511,7 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
   const solid = max(max(max(inPier.mul(float(1.0).sub(isGroundFloor)), blank), max(partial, baseWall)), plinth);
   return {
     isRoof, uCoord, vCoord, gridV, cellId, cellUV, fw, bayWidth, isGroundFloor, solid, back, blank, tone,
-    wallS, wallW, wallH, exposedHeight, fromTop, boxSeed, partial, coping, kind, plinth
+    wallS, wallW, wallH, exposedHeight, fromTop, boxSeed, partial, coping, kind, plinth, entrances, shopfronts
   };
 }
 
@@ -523,8 +545,8 @@ function plinthStone({ uCoord, vCoord }) {
 
 // Shops span several upstairs bays; every material output shares their glazing and door layout.
 function createStorefront(facade, seed, local) {
-  const { wallS, wallW, boxSeed, uCoord, vCoord, isGroundFloor, isRoof, solid, coping } = facade;
-  const width = local ? wallW.div(max(floor(wallW.div(7.5).add(0.5)), 1)) : float(7.5);
+  const { wallS, wallW, boxSeed, uCoord, vCoord, isGroundFloor, isRoof, solid, coping, shopfronts } = facade;
+  const width = local ? wallW.div(shopfronts) : float(7.5);
   const horizontal = local ? wallS : uCoord.mul(mix(sign(facadeWorldNormal.z), sign(facadeWorldNormal.x).negate(), facadeAlongZ));
   const grid = horizontal.div(width);
   const x = fract(grid).mul(width), y = vCoord;
@@ -630,8 +652,8 @@ function createStorefront(facade, seed, local) {
 
 // Entrances share the facade surface, including its lighting, shadows and distance filtering.
 function createBuildingEntrance(facade, trim, local, modern = false) {
-  const { wallS, wallW, wallH, fromTop, boxSeed, uCoord, vCoord, back, isRoof, coping, kind } = facade;
-  const width = local ? wallW.div(max(floor(wallW.div(28).add(0.5)), 1)) : float(28);
+  const { wallS, wallW, wallH, fromTop, boxSeed, uCoord, vCoord, back, isRoof, coping, kind, entrances } = facade;
+  const width = local ? wallW.div(entrances) : float(28);
   const horizontal = local ? wallS : uCoord.mul(mix(sign(facadeWorldNormal.z), sign(facadeWorldNormal.x).negate(), facadeAlongZ));
   const grid = horizontal.div(width);
   const x = fract(grid).sub(0.5).mul(width), y = vCoord.sub(0.22);

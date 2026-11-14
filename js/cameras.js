@@ -25,6 +25,31 @@ const CHASE_LEAD = 5.2;
 const CHASE_LOOK_DOWN = 0.45;
 const DEFAULT_PITCH = 0.09;
 
+// The drag: rad of orbit, or in first person on foot of turn and look, for each pixel across and up or down
+const DRAG_TURN = 0.0065;
+const DRAG_TILT = 0.005;
+
+// First person on foot (`firstPerson`): the mouse, locked to the game, turns the walker (js/controllers.js look()) and looks up and
+// down by its own pitch, as far as LOOK_LIMIT. MOUSE_TURN is rad for each count of the mouse at the speed set to 1 (`mouseSpeed`,
+// js/pause-menu.js); a single event's count is cut to MOUSE_SPIKE, as some browsers report a jump now and then.
+const LOOK_LIMIT = 70 * Math.PI / 180;
+const MOUSE_TURN = 0.002;
+const MOUSE_SPIKE = 400;
+// The eye, m: up from the feet standing, over the seat sitting, and ahead of the body's centre. With the near plane at 0.1 m
+// (js/main.js), the view stays inside the walker's 0.22 m round, so it never reaches through a wall you're up against.
+const STANDING_EYE = 1.68;
+const SEATED_EYE = 0.75;
+const EYE_AHEAD = 0.1;
+// s from where a follow camera was into the eye, on a switch to first person on foot
+const GLIDE = 0.3;
+// The eye's height over a step (a kerb, a threshold, sitting down): eased back up or down at no more than STEP_RATE m/s, 2 cm in a
+// frame at 60 fps. A height that moves faster than STEP_SPEED counts as a step, and so does the first STEP_DROP of a drop off an edge
+// (down a kerb the walker falls); a jump, a slope or the rest of a fall it follows at once, and anything of STEP_MAX or more (a teleport).
+const STEP_RATE = 1.2;
+const STEP_SPEED = 2.5;
+const STEP_MAX = 0.8;
+const STEP_DROP = 0.5;
+
 const wrapAngle = (a) => a - Math.round(a / (Math.PI * 2)) * Math.PI * 2;
 // The cameras that orbit round what they follow, and so the ones you can steer by (js/controllers.js, steerToView())
 const ORBITING = new Set(['chase', 'pov']);
@@ -57,6 +82,16 @@ class CameraSystem {
     this.userOrbitTimer = 0;
     this.indoors = false; // set by js/main.js
     this.indoorPull = 0;
+    this.lookPitch = 0; // rad up (+) or down that first person on foot looks
+    this.mouseSpeed = 1; // times MOUSE_TURN, for the locked mouse (js/pause-menu.js)
+    this.unlockedAt = -Infinity; // performance.now() when the pointer lock last ended, for the Esc that ended it (js/main.js)
+    this.onLockChange = null; // (locked) => {}, set by js/main.js
+    this._firstPerson = false;
+    this.glide = null;
+    this._eyeY = null;
+    this._eyeLag = 0;
+    this._eyeGrounded = true;
+    this._drop = Infinity;
 
     this.fixedView = null;
     this.currentPos = new THREE.Vector3(0, 10, 380);
@@ -81,6 +116,9 @@ class CameraSystem {
     canvas.style.touchAction = 'none';
 
     canvas.addEventListener('pointerdown', (e) => {
+      // In first person on foot, a click locks the mouse to the game, to look round with; until it's locked, a drag looks round
+      if (e.button === 0 && e.pointerType === 'mouse' && this.firstPerson) this.lockPointer();
+      if (this.pointerLocked) return;
       if (e.button !== 0 || pointers.size >= 2) return;
       // Only two touch pointers may share a gesture; mouse and pen drags stay independent.
       if (pointers.size && (e.pointerType !== 'touch' || pointers.values().next().value.type !== 'touch')) return;
@@ -92,6 +130,14 @@ class CameraSystem {
     });
 
     canvas.addEventListener('pointermove', (e) => {
+      if (this.pointerLocked) {
+        // Locked: the mouse's own counts, which go on past the screen's edge
+        if (!this.firstPerson) return;
+        const spike = (v) => Math.max(-MOUSE_SPIKE, Math.min(MOUSE_SPIKE, Number(v) || 0));
+        const turn = MOUSE_TURN * this.mouseSpeed;
+        this.look(spike(e.movementX) * turn, -spike(e.movementY) * turn);
+        return;
+      }
       const pointer = pointers.get(e.pointerId);
       if (!pointer) return;
       e.preventDefault();
@@ -107,9 +153,11 @@ class CameraSystem {
         if (previousDistance > 1 && distance > 1) {
           this.zoomMultiplier = Math.max(0.45, Math.min(2.4, this.zoomMultiplier * previousDistance / distance));
         }
+      } else if (this.firstPerson) {
+        this.look(dx * DRAG_TURN, -dy * DRAG_TILT);
       } else {
-        this.orbitYawOffset -= dx * 0.0065;
-        this.orbitPitchOffset = Math.max(-0.32, Math.min(0.68, this.orbitPitchOffset + dy * 0.005));
+        this.orbitYawOffset -= dx * DRAG_TURN;
+        this.orbitPitchOffset = Math.max(-0.32, Math.min(0.68, this.orbitPitchOffset + dy * DRAG_TILT));
       }
       this.userOrbitTimer = 4.0;
     });
@@ -135,21 +183,132 @@ class CameraSystem {
       e.preventDefault();
       this.zoomMultiplier = Math.max(0.45, Math.min(2.4, this.zoomMultiplier + e.deltaY * 0.001));
     }, { passive: false });
+
+    document.addEventListener('pointerlockchange', () => {
+      const locked = this.pointerLocked;
+      if (!locked) this.unlockedAt = performance.now();
+      this.onLockChange?.(locked);
+    });
+  }
+
+  /** On foot in the first-person camera: where the mouse looks round, and the controls change (js/controllers.js setFirstPerson()) */
+  get firstPerson() {
+    return this.activePresetId === 'pov' && this.controllerManager.getActiveEntity()?.type === 'person';
+  }
+
+  get pointerLocked() {
+    return !!this.domElement && document.pointerLockElement === this.domElement;
+  }
+
+  // Raw input where the browser has it, so the system's mouse acceleration doesn't count; the plain lock where it doesn't (Linux's
+  // Chrome refuses the raw one). Asked for on a click or a key press: browsers lock only on a gesture.
+  lockPointer() {
+    const canvas = this.domElement;
+    if (!canvas?.requestPointerLock || this.pointerLocked) return;
+    const plain = () => {
+      try {
+        canvas.requestPointerLock()?.catch?.(() => {});
+      } catch { /* refused: a drag looks round instead */ }
+    };
+    let asked;
+    try {
+      asked = canvas.requestPointerLock({ unadjustedMovement: true });
+    } catch {
+      plain();
+      return;
+    }
+    asked?.catch?.((error) => {
+      if (error?.name === 'NotSupportedError') plain();
+    });
+  }
+
+  unlockPointer() {
+    if (this.pointerLocked) document.exitPointerLock?.();
+  }
+
+  /**
+   * Looks round in first person on foot: `dx` rad to the right, which turns the walker, and `dy` rad up, to LOOK_LIMIT. From the locked
+   * mouse, a drag, the gamepad's right stick, and __gameDebug.look().
+   */
+  look(dx, dy) {
+    if (!this.firstPerson) return;
+    if (Number.isFinite(dy)) this.lookPitch = Math.max(-LOOK_LIMIT, Math.min(LOOK_LIMIT, this.lookPitch + dy));
+    if (dx) this.controllerManager.look?.(dx);
+  }
+
+  // Into first person on foot, you face where the camera looked, level, and it glides from where it was into your eye (`glide`, from a
+  // follow camera that was in place). Out of it, the chase camera starts behind you, where you looked. Called whenever the camera or the
+  // mode may have changed; true in first person on foot.
+  syncFirstPerson(glideFrom = null) {
+    const on = this.firstPerson;
+    if (on === this._firstPerson) return on;
+    this._firstPerson = on;
+    const entity = this.controllerManager.getActiveEntity();
+    if (on && entity) entity.heading += this.orbitYawOffset;
+    this.lookPitch = 0;
+    this.orbitYawOffset = 0;
+    if (!on) {
+      this.orbitPitchOffset = DEFAULT_PITCH;
+      this.unlockPointer();
+    }
+    this.glide = on && glideFrom ? { t: 0, from: glideFrom.pos, look: glideFrom.look } : null;
+    this._eyeY = null;
+    return on;
+  }
+
+  /** The glide into first person is mostly done: the body can go */
+  get bodyHidden() {
+    return this.firstPerson && (!this.glide || this.glide.t > GLIDE * 0.6);
+  }
+
+  /**
+   * The eye's height in the world, in first person on foot, eased over a step: given where it would be (m, the world's heights), whether
+   * the walker's on the ground and how fast it's going up (m/s), and dt. Returns where to draw it.
+   */
+  easeEye(y, grounded, vy, dt) {
+    const last = this._eyeY, wasGrounded = this._eyeGrounded;
+    this._eyeY = y;
+    this._eyeGrounded = grounded;
+    // (Gliding in from another camera, it's on its way down to the eye already)
+    if (last === null || !(dt > 0) || this.glide) {
+      this._eyeLag = 0;
+      return y;
+    }
+    const rise = y - last;
+    // Off the ground: off an edge, or a jump. A frame in the air, or landing, is part of the drop.
+    if (!grounded && wasGrounded) this._drop = vy <= 0 ? 0 : Infinity;
+    const offEdge = (!grounded || !wasGrounded) && rise < 0 && (this._drop -= rise) <= STEP_DROP;
+    const step = offEdge || (grounded && wasGrounded && Math.abs(rise) > Math.max(0.03, STEP_SPEED * dt));
+    if (Math.abs(rise) >= STEP_MAX) this._eyeLag = 0;
+    else if (step) this._eyeLag = Math.max(-0.5, Math.min(0.5, this._eyeLag - rise));
+    const lag = this._eyeLag;
+    const back = Math.min(Math.abs(lag), STEP_RATE * dt, Math.max(0.3 * dt, Math.abs(lag) * (1 - Math.exp(-12 * dt))));
+    this._eyeLag = lag - Math.sign(lag) * back;
+    return y + this._eyeLag;
   }
 
   setCameraPreset(presetId, snapImmediately = false) {
     const preset = CAMERA_PRESETS.find((p) => p.id === presetId);
     if (!preset) return;
+    // From a follow camera in place, first person glides in from where it was
+    const from = this.initialized && !this.fixedView && this.getActivePreset().category === 'follow'
+      ? { pos: this.currentPos.clone?.() ?? null, look: this.currentLookAt.clone?.() ?? null } : null;
     this.activePresetId = preset.id;
     this.camera.fov = fittedFov(preset.fov, this.camera.aspect);
     this.camera.updateProjectionMatrix();
     if (snapImmediately) {
       this.initialized = false;
     }
+    this.syncFirstPerson(from?.pos && from.look ? from : null);
   }
 
   applyGamepadInput(lookX, lookY, zoom, dt) {
     if (!(dt > 0) || !Number.isFinite(dt)) return;
+    // In first person on foot, the right stick turns you and looks up and down
+    if (this.firstPerson) {
+      if (lookX || lookY) this.look(lookX * 2.0 * dt, -lookY * 1.25 * dt);
+      return;
+    }
     if (this.activePresetId !== 'chase' && this.activePresetId !== 'pov') return;
     // POV uses the orbit angles, but only chase renders a zoomed camera distance.
     if (this.activePresetId !== 'chase') zoom = 0;
@@ -163,6 +322,7 @@ class CameraSystem {
   resetOrbit() {
     this.orbitYawOffset = 0;
     this.orbitPitchOffset = DEFAULT_PITCH;
+    this.lookPitch = 0;
     this.zoomMultiplier = 1;
     this.userOrbitTimer = 0;
   }
@@ -185,6 +345,8 @@ class CameraSystem {
     this.followLookOffset.set(0, 0, 0);
     this.followBaseY = 0;
     this._turnEntity = null;
+    this.glide = null;
+    this._eyeY = null;
     this.setCameraPreset('chase', true);
   }
 
@@ -210,6 +372,8 @@ class CameraSystem {
     }
     const desiredPos = this._desiredPos;
     const desiredLook = this._desiredLook;
+    // A mode switch can take you in or out of first person on foot as well as a camera switch
+    const firstPerson = this.syncFirstPerson();
 
     if (this.userOrbitTimer > 0 && !this.isDragging) {
       this.userOrbitTimer = Math.max(0, this.userOrbitTimer - dt);
@@ -286,6 +450,15 @@ class CameraSystem {
       }
 
       case 'pov': {
+        if (firstPerson) {
+          // On foot: the eye just ahead of the body's centre, looking the way you face, up or down by its own pitch
+          const sin = Math.sin(entity.heading), cos = Math.cos(entity.heading);
+          const eyeY = entity.seat ? entity.seat.seatY + SEATED_EYE : STANDING_EYE;
+          const level = Math.cos(this.lookPitch) * 10, up = Math.sin(this.lookPitch) * 10;
+          desiredPos.set(entity.position.x + sin * EYE_AHEAD, entity.position.y + eyeY, entity.position.z + cos * EYE_AHEAD);
+          desiredLook.set(desiredPos.x + sin * level, desiredPos.y + up, desiredPos.z + cos * level);
+          break;
+        }
         let fwdOffset = 0.35;
         let eyeY = 1.68;
         let seatOffset = 0; // Right-hand drive: the driver sits to the right of the car's centre line
@@ -379,7 +552,16 @@ class CameraSystem {
       }
     }
 
-    if (!this.initialized || this.activePresetId === 'pov') {
+    if (this.glide && firstPerson) {
+      // Into the eye from where the camera was, eased in and out, then fixed to it
+      this.glide.t += dt;
+      const t = Math.min(1, this.glide.t / GLIDE), k = t * t * (3 - 2 * t);
+      this.currentPos.copy(this.glide.from).lerp(desiredPos, k);
+      this.currentLookAt.copy(this.glide.look).lerp(desiredLook, k);
+      if (t >= 1) this.glide = null;
+      this.initialized = true;
+      this.followEntity = null;
+    } else if (!this.initialized || this.activePresetId === 'pov') {
       this.currentPos.copy(desiredPos);
       this.currentLookAt.copy(desiredLook);
       this.initialized = true;
@@ -412,7 +594,8 @@ class CameraSystem {
     }
 
     // How far round the camera is from the heading, for steering by it, where the camera orbits
-    this.controllerManager.viewOffset = ORBITING.has(this.activePresetId) ? wrapAngle(this.orbitYawOffset) : null;
+    // (In first person on foot the view is your heading: nothing to steer by)
+    this.controllerManager.viewOffset = ORBITING.has(this.activePresetId) && !firstPerson ? wrapAngle(this.orbitYawOffset) : null;
 
     this.camera.position.copy(this.currentPos);
     // lookAt() goes by the drawn frame

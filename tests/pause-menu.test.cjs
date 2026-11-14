@@ -55,3 +55,28 @@ test('toggle flips between the two states', () => {
   menu.toggle();
   assert.equal(menu.isOpen, false);
 });
+
+test('the mouse speed slider sets the speed at once, from a quarter to four times, and keeps it', () => {
+  const listeners = new Map();
+  const slider = { value: '', addEventListener: (type, listener) => listeners.set(type, listener) };
+  const shown = { textContent: '' };
+  const elements = { 'pause-mouse-speed': slider, 'pause-mouse-value': shown };
+  const { PauseMenu, readMouseSpeed } = loadModule(source, { globals: { document: { getElementById: (id) => elements[id] } } });
+  const kept = new Map();
+  const storage = { getItem: (k) => kept.get(k) ?? null, setItem: (k, v) => kept.set(k, v) };
+  assert.equal(readMouseSpeed(storage), 1, 'nothing kept: the default');
+  const speeds = [];
+  new PauseMenu({ mouseSpeed: 2, onMouseSpeed: (m) => speeds.push(m), storage });
+  assert.equal(slider.value, '1');
+  assert.equal(shown.textContent, '2.0×');
+  slider.value = '-2';
+  listeners.get('input')();
+  slider.value = '0.5';
+  listeners.get('input')();
+  assert.deepEqual(speeds.map((m) => +m.toFixed(3)), [0.25, 1.414]);
+  assert.equal(shown.textContent, '1.4×');
+  assert.ok(Math.abs(readMouseSpeed(storage) - Math.SQRT2) < 1e-9, 'kept for the next load');
+  kept.set('sydney-mouse-speed', '99');
+  assert.equal(readMouseSpeed(storage), 4, 'held to four times');
+  assert.equal(readMouseSpeed({ getItem() { throw new Error('blocked'); } }), 1, 'storage refused: the default');
+});

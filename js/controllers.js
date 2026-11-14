@@ -40,6 +40,24 @@ const ON_FOOT = {
   inside: { walk: 1.2, run: 2.4, turn: 1.6 }
 };
 const STICK_WALK = 0.6; // of a stick's travel that gives a full walk
+const ASIDE = 0.65; // of the pace, walking back or stepping aside
+
+// What each key does. The arrows turn you. A and D turn you too, except in first person on foot (`firstPerson`), where they step you
+// aside, as the touch stick's sideways and the gamepad's left stick do there.
+const BINDINGS = {
+  forward: ['KeyW', 'ArrowUp'],
+  backward: ['KeyS', 'ArrowDown'],
+  left: ['ArrowLeft'],
+  right: ['ArrowRight'],
+  sideLeft: ['KeyA'],
+  sideRight: ['KeyD'],
+  up: ['Space', 'KeyE'],
+  down: ['KeyQ', 'KeyC'],
+  run: ['ShiftLeft', 'ShiftRight']
+};
+const SIDES = { left: 'left', sideLeft: 'left', right: 'right', sideRight: 'right' };
+// The strongest of several inputs for one action: a key or a button held (true) wins, or the furthest a stick is pushed
+const strongest = (...values) => (values.includes(true) ? true : Math.max(0, ...values.map((v) => Number(v) || 0)) || false);
 
 const CAR_DRIVE = {
   speed: 36, reverseSpeed: 10.5, acceleration: 4.5,
@@ -229,15 +247,9 @@ class ThirdPersonControllerManager {
 
     this.jumpQueued = 0;
     this.viewOffset = null; // how far round the camera's been turned from your heading (rad, + to the left), or null
-    this.keys = {
-      forward: false,
-      backward: false,
-      left: false,
-      right: false,
-      up: false,
-      down: false,
-      run: false
-    };
+    this.firstPerson = false; // on foot in the first-person camera (js/main.js says): A and D step aside, and the mouse turns you
+    this.lookTurn = 0; // rad to the right that the mouse, a drag or a stick has turned you since the last step, in first person
+    this.keys = Object.fromEntries(Object.keys(BINDINGS).map((action) => [action, false]));
 
     this.entities = {
       person: this.createPersonEntity(),
@@ -281,16 +293,7 @@ class ThirdPersonControllerManager {
   }
 
   bindKeyboard() {
-    const bindings = {
-      forward: ['KeyW', 'ArrowUp'],
-      backward: ['KeyS', 'ArrowDown'],
-      left: ['KeyA', 'ArrowLeft'],
-      right: ['KeyD', 'ArrowRight'],
-      up: ['Space', 'KeyE'],
-      down: ['KeyQ', 'KeyC'],
-      run: ['ShiftLeft', 'ShiftRight']
-    };
-    const actionsByCode = new Map(Object.entries(bindings).flatMap(([action, codes]) => codes.map((code) => [code, action])));
+    const actionsByCode = new Map(Object.entries(BINDINGS).flatMap(([action, codes]) => codes.map((code) => [code, action])));
     this._pressedCodes = new Set();
     this._keyboardKeys = {};
     this._touchKeys = {};
@@ -304,7 +307,7 @@ class ThirdPersonControllerManager {
       if (isDown) this._pressedCodes.add(e.code);
       else this._pressedCodes.delete(e.code);
       // Releasing one binding must not cancel another key held for the same action.
-      this._keyboardKeys[action] = bindings[action].some((code) => this._pressedCodes.has(code));
+      this._keyboardKeys[action] = BINDINGS[action].some((code) => this._pressedCodes.has(code));
       this._blendInput(action);
     };
 
@@ -317,6 +320,10 @@ class ThirdPersonControllerManager {
   }
 
   _blendInput(action) {
+    if (SIDES[action]) {
+      this._blendSide(SIDES[action]);
+      return;
+    }
     const wasUp = this.keys.up;
     const keyboard = this._keyboardKeys[action] || false;
     const touch = this._touchKeys[action] || false;
@@ -326,6 +333,31 @@ class ThirdPersonControllerManager {
     this.keys[action] = keyboard === true || touch === true || gamepad === true ? true : strength || false;
     // A press can start and end between two frames, or land just as the feet leave a kerb: it counts for a moment
     if (action === 'up' && this.keys.up && !wasUp) this.jumpQueued = JUMP_QUEUE;
+  }
+
+  // Left or right: the arrows turn you; A or D, the touch stick and the gamepad's stick turn you too, or in first person on foot step
+  // you aside. The touch stick and the gamepad say `left` and `right` for their sideways, whichever it does.
+  _blendSide(side) {
+    const aside = side === 'left' ? 'sideLeft' : 'sideRight';
+    const keyboard = this._keyboardKeys ?? {};
+    const sideways = [keyboard[aside], this._touchKeys?.[side], this._gamepadKeys?.[side]];
+    this.keys[side] = this.firstPerson ? strongest(keyboard[side]) : strongest(keyboard[side], ...sideways);
+    this.keys[aside] = this.firstPerson ? strongest(...sideways) : false;
+  }
+
+  /** On foot in the first-person camera, or not: what A, D and the sticks' sideways do changes, even while held */
+  setFirstPerson(on) {
+    on = !!on;
+    if (on === this.firstPerson) return;
+    this.firstPerson = on;
+    this.lookTurn = 0;
+    this._blendSide('left');
+    this._blendSide('right');
+  }
+
+  /** Turns you `dx` rad to the right at the next step, in first person on foot (js/cameras.js look()): the mouse, a drag or a stick */
+  look(dx) {
+    if (this.firstPerson && Number.isFinite(dx)) this.lookTurn += dx;
   }
 
   _setAnalogInput(source, action, value) {
@@ -360,6 +392,7 @@ class ThirdPersonControllerManager {
     this._gamepadKeys = {};
     for (const action of Object.keys(this.keys)) this.keys[action] = false;
     this.jumpQueued = 0;
+    this.lookTurn = 0;
   }
 
   setMode(mode) {
@@ -1432,11 +1465,15 @@ class ThirdPersonControllerManager {
     const p = this.entities.person;
     const pace = this.indoors ? ON_FOOT.inside : ON_FOOT.outside;
     const turnRate = pace.turn;
+    const k = this.keys;
+    // In first person, where you look is where you face: the mouse's turn since the last step (seated too: you look round from the seat)
+    if (this.firstPerson) p.heading -= this.lookTurn;
+    this.lookTurn = 0;
     if (p.seat) {
       // Seated: where the seat is, until you move, or jump
-      const k = this.keys;
-      if (!(k.forward || k.backward || k.left || k.right || this.jumpQueued > 0)) {
+      if (!(k.forward || k.backward || k.left || k.right || k.sideLeft || k.sideRight || this.jumpQueued > 0)) {
         p.speed = 0;
+        p.sideSpeed = 0;
         this.jumpQueued = 0;
         return;
       }
@@ -1445,23 +1482,40 @@ class ThirdPersonControllerManager {
       this.onStand?.();
     }
 
-    // A key held is a walk, or a run with Shift; a stick walks slower short of STICK_WALK, and runs pushed nearly all the way out
-    const paceOf = (held) => (this.keys.run ? pace.run : pace.walk * (held === true ? 1 : Math.min(1, held / STICK_WALK)));
+    // A key held is a walk, or a run with Shift; a stick walks slower short of STICK_WALK, and runs pushed nearly all the way out.
+    // Back, or aside, at ASIDE of that; forward and aside together no faster than the faster of the two.
+    const paceOf = (held) => (k.run ? pace.run : pace.walk * (held === true ? 1 : Math.min(1, held / STICK_WALK)));
     let targetSpeed = 0;
-    if (this.keys.forward) targetSpeed = paceOf(this.keys.forward);
-    else if (this.keys.backward) targetSpeed = -paceOf(this.keys.backward) * 0.65;
+    if (k.forward) targetSpeed = paceOf(k.forward);
+    else if (k.backward) targetSpeed = -paceOf(k.backward) * ASIDE;
+    let targetSide = 0;
+    if (k.sideLeft) targetSide += paceOf(k.sideLeft) * ASIDE;
+    if (k.sideRight) targetSide -= paceOf(k.sideRight) * ASIDE;
+    const both = Math.hypot(targetSpeed, targetSide), cap = Math.max(Math.abs(targetSpeed), Math.abs(targetSide));
+    if (both > cap) {
+      targetSpeed *= cap / both;
+      targetSide *= cap / both;
+    }
 
-    if (this.keys.left) p.heading += turnRate * dt * this.keys.left;
-    if (this.keys.right) p.heading -= turnRate * dt * this.keys.right;
-    p.heading += turnRate * dt * this.steerToView(p);
+    if (k.left) p.heading += turnRate * dt * k.left;
+    if (k.right) p.heading -= turnRate * dt * k.right;
+    // Turning to a camera that's been dragged round: not in first person, where the view is your heading
+    if (this.firstPerson) p.followingView = false;
+    else p.heading += turnRate * dt * this.steerToView(p);
 
     // Up to a walk in about half a second, to a run in a second
-    const accelerating = Math.abs(targetSpeed) > Math.abs(p.speed) && p.speed * targetSpeed >= 0;
-    const acceleration = accelerating ? 2 + 3.5 * Math.abs(targetSpeed) / pace.run : 12;
-    p.speed += Math.max(-acceleration * dt, Math.min(acceleration * dt, targetSpeed - p.speed));
+    const towards = (speed, target) => {
+      const accelerating = Math.abs(target) > Math.abs(speed) && speed * target >= 0;
+      const acceleration = accelerating ? 2 + 3.5 * Math.abs(target) / pace.run : 12;
+      return speed + Math.max(-acceleration * dt, Math.min(acceleration * dt, target - speed));
+    };
+    p.speed = towards(p.speed, targetSpeed);
+    p.sideSpeed = towards(p.sideSpeed || 0, targetSide);
 
-    p.position.x += Math.sin(p.heading) * p.speed * dt;
-    p.position.z += Math.cos(p.heading) * p.speed * dt;
+    // Forward along the heading, and aside to its left (+) or right
+    const sin = Math.sin(p.heading), cos = Math.cos(p.heading);
+    p.position.x += (sin * p.speed + cos * p.sideSpeed) * dt;
+    p.position.z += (cos * p.speed - sin * p.sideSpeed) * dt;
     // Through a house's doorways, between its furniture and up its stair: inside, or on a model's floors, the walker is narrower
     this.resolveHorizontalCollision(p.position, this.indoors || onFloor(p.position.x, p.position.z) ? WALKER : 0.48);
 

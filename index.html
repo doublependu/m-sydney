@@ -90,6 +90,12 @@
       </div>
       <span class="pause-note">Changing this reloads the game. Your position is saved.</span>
     </div>
+    <!-- For the mouse locked to the game, in first person on foot (js/pause-menu.js) -->
+    <div class="pause-graphics pause-mouse">
+      <label for="pause-mouse-speed">Mouse speed <output id="pause-mouse-value" for="pause-mouse-speed">1.0×</output></label>
+      <input id="pause-mouse-speed" type="range" min="-2" max="2" step="0.25" value="0" aria-describedby="pause-mouse-note">
+      <span id="pause-mouse-note" class="pause-note">For looking round in first person on foot (7), once a click has locked the mouse to the game.</span>
+    </div>
     <nav class="project-links" aria-label="Project links">
       <a href="https://github.com/doublependu/m-sydney" target="_blank" rel="noopener noreferrer">Fork me on GitHub</a>
       <a href="https://maize.live" target="_blank" rel="noopener noreferrer">More games on Maize.Live</a>
@@ -267,6 +273,8 @@
     </div>
   </section>
   <div id="use-prompt" class="use-prompt" aria-live="polite" hidden><kbd>F</kbd><span id="use-prompt-label">Open</span></div>
+  <!-- In first person on foot, until a click locks the mouse to the game (js/main.js) -->
+  <div id="look-hint" class="use-prompt look-hint" hidden><kbd>Click</kbd><span>to look round</span></div>
 
   <!-- All Cameras: 3 Follow Cameras + 7 Sydney Vantage Cameras + Auto-Director Drone -->
   <div id="camera-popover" class="popover" popover data-side="above" data-anchor="hud-cluster" data-align="hud-cluster" aria-label="Multiple Camera Angles">

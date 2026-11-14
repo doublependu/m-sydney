@@ -16,8 +16,8 @@ const shift = args.includes('--shift');
 // Each walk: where it starts, which way it faces, and what's held when (ms from the start, key, down or up)
 const WALKS = [
   { name: 'straight', x: 9, z: -42, heading: 0, seconds: 7, keys: [[0, 'KeyW', 1]] },
-  { name: 'turn', x: 9, z: -42, heading: 0, seconds: 7, keys: [[0, 'KeyW', 1], [0, 'KeyA', 1]] },
-  { name: 'kerb', x: 9, z: -42, heading: 0, seconds: 7, keys: [[0, 'KeyW', 1], [1500, 'KeyA', 1], [2200, 'KeyA', 0], [4000, 'KeyD', 1], [4900, 'KeyD', 0]] },
+  { name: 'turn', x: 9, z: -42, heading: 0, seconds: 7, keys: [[0, 'KeyW', 1], [0, 'ArrowLeft', 1]] },
+  { name: 'kerb', x: 9, z: -42, heading: 0, seconds: 7, keys: [[0, 'KeyW', 1], [1500, 'ArrowLeft', 1], [2200, 'ArrowLeft', 0], [4000, 'ArrowRight', 1], [4900, 'ArrowRight', 0]] },
   { name: 'park', x: 283, z: -39, heading: Math.PI, seconds: 7, keys: [[0, 'KeyW', 1]] },
   { name: 'slope', x: 700, z: -1000, heading: Math.PI, seconds: 7, keys: [[0, 'KeyW', 1]] },
   { name: 'stand', x: 9, z: -42, heading: 0, seconds: 4, keys: [] }

@@ -45,7 +45,8 @@ last three runs stay in `recordings/`; put a file called `KEEP` in a run's folde
 Play options: `--only=first-minute,harbour-bridge --video --fast --realtime --repeat=3 --no-rerun --headed --soak=10
 --seed=6 --gap=3 --jobs=3 --tiles=0_-2,1_-2`. `--fast` steps the simulation as fast as it can instead of in real time, about 7
 times quicker on the long drives; scenarios that measure frames stay in real time. Those, and the ones that need a clean GPU,
-run one at a time after the rest (`ALONE` in `tools/play/run.mjs`).
+run one at a time after the rest (`ALONE` in `tools/play/run.mjs`). Scenarios steer with the arrows (`steerTowards()` in
+`tools/play/human.mjs`), as in first person on foot A and D step aside; the mouse locks to the game in their headless Chrome too.
 
 Three checks need no browser. `node tools/check-roads.mjs [--list] [--tiles=0_-2,1_-2]` walks every lane of every road by the
 game's own rules and says what would slant, jolt or stop a car: lean, change of grade, steps, roll, dead stops, buildings and
@@ -259,6 +260,19 @@ what it did.
 
 Graphics levels live in `js/quality.js`. Auto picks one from the device and steps down if frames run slow. Add `?quality=low`,
 `medium` or `high` to the URL to force one, or choose in the pause menu.
+
+**First person on foot** (7, or V to it) has controls of its own (`js/cameras.js`, `js/controllers.js`). Everywhere else, the chase
+camera on foot and every vehicle in any camera, they're as they were: A and D turn, a drag orbits the camera, and W turns you to it.
+- **Looking round:** a click on the view, or the key that chose the camera, locks the mouse to the game (raw input where the browser has
+  it). The mouse turns you, and looks up and down as far as 70 degrees. Esc lets the mouse go and the game runs on; a second Esc pauses,
+  and so does P. Until the mouse is locked, a drag looks round instead. On a phone a drag on the right side looks round, and the
+  gamepad's right stick does.
+- **Moving:** W and S walk forward and back, A and D step aside (as do the touch stick's and the gamepad's left stick's sideways), and the
+  arrows still turn you. Aside and back go at 0.65 of the pace, and forward and aside together no faster than forward.
+- **Mouse speed:** in the pause screen, a quarter to four times the default (2 mrad a count), kept in the browser.
+- **The view:** the eye is 1.68 m up, 0.1 m ahead of your middle, with the near plane at 0.1 m, so it stays inside the walker's 0.22 m
+  round and never sees through a wall you're against. Seated, it's 0.75 m over the seat. Up or down a kerb, a threshold or a seat it eases
+  at 1.2 m/s. You aren't drawn, nor is your shadow. Into first person from another follow camera, it glides into the eye in 0.3 s.
 
 ## Building models
 

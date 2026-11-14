@@ -100,11 +100,12 @@ export class Human {
     await this.wait(600);
   }
 
-  // Steers by looking at where the target is, the way a player eyes a street corner.
+  // Steers by looking at where the target is, the way a player eyes a street corner. With the arrows: in a vehicle they're A and D,
+  // and on foot in first person A and D step aside, while the arrows still turn.
   async steerTowards(state, target, deadZone = 0.09) {
     const error = wrapAngle(Math.atan2(target.x - state.x, target.z - state.z) - state.heading);
-    await this.setKey('KeyA', error > deadZone);
-    await this.setKey('KeyD', error < -deadZone);
+    await this.setKey('ArrowLeft', error > deadZone);
+    await this.setKey('ArrowRight', error < -deadZone);
     return error;
   }
 

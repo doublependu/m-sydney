@@ -20,7 +20,7 @@ import { CityMapSystem } from './city-map.js';
 import { removeSceneCulling, setDrawDistance, setupSceneCullingSteps, updateSceneCulling } from './scene-culling.js';
 import { Progress } from './progress.js';
 import { CityAudioSystem } from './audio-system.js';
-import { PauseMenu } from './pause-menu.js';
+import { PauseMenu, readMouseSpeed } from './pause-menu.js';
 import { CHOICES, FrameWatcher, detectQuality, saveChoice } from './quality.js';
 import { FrameStats, cacheShare } from './frame-stats.js';
 import { createLightPools } from './light-pools.js';
@@ -350,16 +350,22 @@ async function initApp() {
     onUse: () => controllerManager.onUse?.()
   });
 
+  cameraSystem.mouseSpeed = readMouseSpeed();
   const pauseMenu = new PauseMenu({
     canOpen: () => !graphicsLost, // Esc, and a phone hiding the tab, would otherwise stack it over Reload
+    mouseSpeed: cameraSystem.mouseSpeed,
+    onMouseSpeed: (m) => { cameraSystem.mouseSpeed = m; },
     onOpen() {
       closePopovers();
+      cameraSystem.unlockPointer();
       controllerManager.resetInput();
       touchControls.setEnabled(false);
       gamepadControls.setEnabled(false);
       audioSystem.setPaused(true);
     },
     onClose() {
+      // Resume, clicked, is a gesture the mouse can be locked on again
+      if (cameraSystem.firstPerson && finePointer.matches && !mapSystem.isFullMapOpen) cameraSystem.lockPointer();
       touchControls.setEnabled(!mapSystem.isFullMapOpen);
       gamepadControls.setEnabled(!mapSystem.isFullMapOpen);
       audioSystem.setPaused(false);
@@ -398,9 +404,11 @@ async function initApp() {
     });
   }
 
-  // Keyboard guide for each mode: [keys, action]
+  // Keyboard guide for each mode: [keys, action]. In first person on foot, A and D step aside and the mouse looks round
   const controlHints = {
     person: [[['W', 'S'], 'Walk'], [['Shift'], 'Run'], [['A', 'D'], 'Turn'], [['Space'], 'Jump'], [['Drag'], 'Orbit']],
+    firstPerson: [[['W', 'S'], 'Walk'], [['A', 'D'], 'Step aside'], [['←', '→'], 'Turn'], [['Mouse'], 'Look'], [['Shift'], 'Run'], [['Space'], 'Jump']],
+    firstPersonLocked: [[['W', 'S'], 'Walk'], [['A', 'D'], 'Step aside'], [['←', '→'], 'Turn'], [['Mouse'], 'Look'], [['Shift'], 'Run'], [['Space'], 'Jump'], [['Esc'], 'Free the mouse']],
     car: [[['W', 'S'], 'Drive / Reverse'], [['A', 'D'], 'Steer'], [['B'], 'Horn'], [['Drag'], 'Orbit']],
     cyclist: [[['W', 'S'], 'Pedal / Brake'], [['A', 'D'], 'Lean & Turn'], [['Drag'], 'Orbit']],
     helicopter: [[['W', 'S'], 'Pitch'], [['A', 'D'], 'Yaw'], [['Space', 'E'], 'Ascend'], [['Q', 'C'], 'Descend']]
@@ -410,6 +418,9 @@ async function initApp() {
 
   function renderControlHints(mode) {
     if (!elControlsHint) return;
+    if (mode === 'person' && cameraSystem.firstPerson) mode = cameraSystem.pointerLocked ? 'firstPersonLocked' : 'firstPerson';
+    if (elControlsHint.dataset.shows === mode) return;
+    elControlsHint.dataset.shows = mode;
     const items = (controlHints[mode] || []).map(([keys, action]) => {
       const item = document.createElement('span');
       item.className = 'hint';
@@ -435,10 +446,12 @@ async function initApp() {
     modeSwitch.style.setProperty('--ind-w', `${active.offsetWidth}px`);
   }
 
-  // The player changing how they travel: the new mode starts from where this one is, with a short fade over a long move
-  function switchTravelMode(mode) {
+  // The player changing how they travel: the new mode starts from where this one is, with a short fade over a long move. `gesture`: by a
+  // key press or a click, which can lock the mouse, onto your feet in the first-person camera
+  function switchTravelMode(mode, gesture = false) {
     const moved = controllerManager.switchMode(mode);
     selectMode(mode);
+    if (gesture && cameraSystem.firstPerson && finePointer.matches) cameraSystem.lockPointer();
     if (moved > 50) {
       cameraSystem.snap();
       const fade = document.getElementById('mode-fade');
@@ -464,23 +477,42 @@ async function initApp() {
     if (currentCam.category !== 'follow') {
       selectCamera('chase', false);
     }
+    syncFirstPerson();
   }
 
-  function selectCamera(camId, snap = false) {
+  // `gesture`: chosen by a key press or a click, which the browser lets the page lock the mouse on
+  function selectCamera(camId, snap = false, gesture = false) {
     cameraSystem.setCameraPreset(camId, snap);
     cameraButtons.forEach((btn) => {
       btn.classList.toggle('active', btn.getAttribute('data-camera') === camId);
     });
     const preset = cameraSystem.getActivePreset();
     if (elCamera) elCamera.textContent = preset.name;
+    if (syncFirstPerson() && gesture && finePointer.matches) cameraSystem.lockPointer();
   }
 
   // Steps through CAMERA_PRESETS (V / Shift+V, and the arrows either side of the camera name)
-  function cycleCamera(step) {
+  function cycleCamera(step, gesture = false) {
     const n = CAMERA_PRESETS.length;
     const idx = CAMERA_PRESETS.findIndex((p) => p.id === cameraSystem.activePresetId);
-    selectCamera(CAMERA_PRESETS[(idx + step + n) % n].id, true);
+    selectCamera(CAMERA_PRESETS[(idx + step + n) % n].id, true, gesture);
   }
+
+  // First person on foot, or not: the controls (js/controllers.js), the hints, the touch stick's label and the mouse go with the camera.
+  // Called on every change of camera or mode, and each frame. True in first person on foot.
+  const finePointer = window.matchMedia('(any-pointer: fine)');
+  const lookHint = document.getElementById('look-hint');
+  function syncFirstPerson() {
+    const on = cameraSystem.syncFirstPerson();
+    controllerManager.setFirstPerson(on);
+    touchControls.setFirstPerson(on);
+    renderControlHints(controllerManager.activeMode);
+    // Until a click locks the mouse to the game: where the browser can lock it, and there's a mouse to lock
+    const hint = on && interactive && !cameraSystem.pointerLocked && finePointer.matches && !!renderer.domElement.requestPointerLock && !pauseMenu.isOpen;
+    if (lookHint && lookHint.hidden === hint) lookHint.hidden = !hint;
+    return on;
+  }
+  cameraSystem.onLockChange = () => syncFirstPerson();
 
   function selectTime(timeId) {
     // Baking the sky takes over the renderer. A compile under way steps aside for it, or the sky's pipeline is built
@@ -537,21 +569,21 @@ async function initApp() {
 
   modeButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
-      switchTravelMode(btn.getAttribute('data-mode'));
+      switchTravelMode(btn.getAttribute('data-mode'), true);
     });
   });
 
   cameraButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
-      selectCamera(btn.getAttribute('data-camera'), true);
       closePopovers();
+      selectCamera(btn.getAttribute('data-camera'), true, true);
     });
   });
 
   const camPrevBtn = document.getElementById('cam-prev');
   const camNextBtn = document.getElementById('cam-next');
-  if (camPrevBtn) camPrevBtn.addEventListener('click', () => cycleCamera(-1));
-  if (camNextBtn) camNextBtn.addEventListener('click', () => cycleCamera(1));
+  if (camPrevBtn) camPrevBtn.addEventListener('click', () => cycleCamera(-1, true));
+  if (camNextBtn) camNextBtn.addEventListener('click', () => cycleCamera(1, true));
 
   timeButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -617,6 +649,12 @@ async function initApp() {
       pauseMenu.toggle();
     } else if (e.code === 'Escape' && !pauseMenu.isOpen && !mapSystem.isFullMapOpen) {
       if (supportsPopover && document.querySelector('.popover:popover-open')) return;
+      // With the mouse locked to the game, Esc frees it and the game runs on: the next Esc pauses. Some browsers send the page the Esc
+      // that ended the lock, a moment after it ended, and some don't.
+      if (cameraSystem.pointerLocked || performance.now() - cameraSystem.unlockedAt < 300) {
+        cameraSystem.unlockPointer();
+        return;
+      }
       e.preventDefault(); // the dialog opens during this very key press, which must not count as closing it too
       pauseMenu.open();
     }
@@ -662,6 +700,7 @@ async function initApp() {
     cameraSystem,
     // A copy, because the map redraws its footprint layers whenever this list grows. It gets the full city in one go.
     onToggle: (open) => {
+      if (open) cameraSystem.unlockPointer();
       controllerManager.resetInput();
       touchControls.setEnabled(!open);
       gamepadControls.setEnabled(!open);
@@ -704,7 +743,7 @@ async function initApp() {
     if (isTypingInField(e) || pauseMenu.isOpen) return;
     switch (e.code) {
       case 'Digit1':
-        switchTravelMode('person');
+        switchTravelMode('person', true);
         break;
       case 'Digit2':
         switchTravelMode('car');
@@ -722,7 +761,7 @@ async function initApp() {
         selectCamera('action', true);
         break;
       case 'Digit7':
-        selectCamera('pov', true);
+        selectCamera('pov', true, true);
         break;
       case 'Digit8':
         selectCamera('quay', true);
@@ -734,7 +773,7 @@ async function initApp() {
         selectCamera('observatory', true);
         break;
       case 'KeyV':
-        cycleCamera(e.shiftKey ? -1 : 1);
+        cycleCamera(e.shiftKey ? -1 : 1, true);
         break;
       case 'KeyH':
         if (hudToggleBtn) hudToggleBtn.click();
@@ -1823,16 +1862,27 @@ async function initApp() {
           camera: [camera.position.x + origin.x, camera.position.y, camera.position.z + origin.z]
         };
       },
-      // The camera as drawn, on the ground or structure under the player
+      // The camera as drawn, on the ground or structure under the player: which, which way it looks (rad of yaw, and of pitch up), and in
+      // first person on foot, its own pitch and whether the mouse is locked
       camera: () => {
         const { x, y, z } = cameraSystem.camera.position;
         const player = controllerManager.getActiveEntity();
         const sid = player.surface || 0;
         const bodyY = surfaceHeight(sid, player.position.x, player.position.z, player.surfaceY ?? null) + Math.max(0, player.position.y);
+        const look = cameraSystem.camera.getWorldDirection(new THREE.Vector3());
         return {
-          aspect: cameraSystem.camera.aspect, fov: cameraSystem.camera.fov, x, y, z, shelter: lightingSystem.shelter,
-          ceiling: Math.min(ceilingOver(sid, bodyY, player.position.x, player.position.z), ceilingOver(sid, bodyY, x, z))
+          aspect: cameraSystem.camera.aspect, fov: cameraSystem.camera.fov, near: cameraSystem.camera.near, x, y, z, shelter: lightingSystem.shelter,
+          ceiling: Math.min(ceilingOver(sid, bodyY, player.position.x, player.position.z), ceilingOver(sid, bodyY, x, z)),
+          preset: cameraSystem.activePresetId, firstPerson: cameraSystem.firstPerson, lookPitch: cameraSystem.lookPitch,
+          locked: cameraSystem.pointerLocked, mouseSpeed: cameraSystem.mouseSpeed, eyeLag: cameraSystem._eyeLag,
+          yaw: Math.atan2(look.x, look.z), pitch: Math.asin(Math.max(-1, Math.min(1, look.y))),
+          bodyShown: !!(player.crowd?.meshes ?? [player.mesh]).some((m) => m?.visible)
         };
+      },
+      // Looks round in first person on foot, as the mouse does: dx rad to the right, dy rad up (js/cameras.js look())
+      look(dx, dy = 0) {
+        cameraSystem.look(dx, dy);
+        return { lookPitch: cameraSystem.lookPitch };
       },
       // A route can run past the tiles held
       route: (waypoints) => window.__gameDebug.withMapAround(waypoints, () => roadRoute(waypoints)),
@@ -1976,7 +2026,7 @@ async function initApp() {
 
       const activeEnt = controllerManager.getActiveEntity();
       const mode = controllerManager.activeMode;
-      const kmh = Math.round(Math.abs(activeEnt.speed) * 3.6);
+      const kmh = Math.round(Math.hypot(activeEnt.speed, activeEnt.sideSpeed || 0) * 3.6); // stepping aside, on foot, counts too
       const altitude = Math.max(0, Math.round(activeEnt.position.y + surfaceHeight(activeEnt.surface || 0, activeEnt.position.x, activeEnt.position.z)));
 
       if (elFps) {
@@ -2033,6 +2083,7 @@ async function initApp() {
 
     // Update 3rd-person controllers, camera, signals, traffic & vehicle collisions, building LODs, and dynamic shadow focus
     gamepadControls.update(dt);
+    syncFirstPerson();
     if (!awaitingGround) controllerManager.update(dt, elapsed, cameraSystem.initialized ? cameraSystem.currentPos : null);
     // Outrunning the map: slow down near the edge of what's drawn, rather than drive off it
     if (worldCompleteAt !== null && controllerManager.activeMode !== 'helicopter') {
@@ -2078,22 +2129,29 @@ async function initApp() {
     // A view put somewhere by hand (__gameDebug.view()) is where it was put, in the world's own heights
     const eyeGround = cameraSystem.fixedView ? 0 : follows ? groundUnder(followed) : groundHeight(eye.x, eye.z);
     eye.y += eyeGround;
+    // In first person on foot, the eye eases over a kerb or a threshold, and as you sit or stand
+    const firstPerson = follows && cameraSystem.firstPerson;
+    if (firstPerson) eye.y = cameraSystem.easeEye(eye.y, !followed.verticalVel, followed.verticalVel ?? 0, dt);
     const bodyY = eyeGround + Math.max(0, followed.position.y);
     {
       // Doors, seats and the rooms seen from the camera, now it's where it'll be drawn from. In a building or beside one, a following
       // camera is kept clear of its walls, floors and ceilings, looking on from over your head, and comes in as near as 0.1 m to them.
-      const head = follows ? { x: followed.position.x, y: bodyY + 1.8, z: followed.position.z } : null;
+      // (In first person on foot, from the eye's own height: up against a wall it comes back to over your centre, never up or down)
+      const head = follows ? { x: followed.position.x, y: firstPerson ? eye.y : bodyY + 1.8, z: followed.position.z } : null;
       const here = interiors.update(dt, followed, controllerManager.activeMode, eye, cameraSystem.camera.getWorldDirection(lookDirection), head);
       setIndoors(here.indoors);
       indoorShelter = here.shelter ?? 0.85;
       showPrompt(here.prompt);
-      const near = here.kept ? 0.1 : 0.35;
+      const near = here.kept || firstPerson ? 0.1 : 0.35;
       if (cameraSystem.camera.near !== near) {
         cameraSystem.camera.near = near;
         cameraSystem.camera.updateProjectionMatrix();
       }
-      // Right over your head, you'd fill the view: you aren't drawn (your crowd of one shows you again next frame, js/pedestrians.js)
-      if (here.close && controllerManager.activeMode === 'person') for (const m of followed.crowd?.meshes ?? []) m.visible = false;
+      // Right over your head, you'd fill the view: you aren't drawn (your crowd of one shows you again next frame, js/pedestrians.js).
+      // Nor in first person on foot, or your shadow under you.
+      const unseen = here.close || (firstPerson && cameraSystem.bodyHidden);
+      if (unseen && controllerManager.activeMode === 'person') for (const m of followed.crowd?.meshes ?? []) m.visible = false;
+      if (firstPerson && cameraSystem.bodyHidden && followed.mesh) followed.mesh.visible = false;
     }
     if (follows) {
       // Under a tunnel's roof or a deck, the camera stays under it too, over the player and where it is itself

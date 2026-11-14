@@ -382,6 +382,28 @@ body::after {
   color: var(--text-3);
 }
 
+.pause-mouse label {
+  display: flex;
+  justify-content: space-between;
+}
+
+.pause-mouse output {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.pause-mouse input[type='range'] {
+  width: 100%;
+  min-height: 32px;
+  margin: 0;
+  accent-color: var(--taxi);
+}
+
+/* Only where there's a mouse to lock */
+@media not (any-pointer: fine) {
+  .pause-mouse { display: none; }
+}
+
 .pause-foot {
   font-size: 11px;
   color: var(--text-3);
@@ -1640,6 +1662,9 @@ body[data-mode='helicopter'] .gauge-alt {
   pointer-events: none;
 }
 .use-prompt[hidden], body.touch-enabled .use-prompt { display: none; }
+/* Over the use prompt, where both show */
+.look-hint { bottom: calc(max(var(--edge), env(safe-area-inset-bottom)) + 136px); padding-right: 14px; }
+.look-hint kbd { padding: 0 8px; }
 .use-prompt kbd {
   min-width: 24px;
   height: 24px;

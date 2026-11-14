@@ -14,6 +14,7 @@ class Vector3 {
   sub(v) { return this.set(this.x - v.x, this.y - v.y, this.z - v.z); }
   subVectors(a, b) { return this.copy(a).sub(b); }
   lerp(v, t) { return this.set(this.x + (v.x - this.x) * t, this.y + (v.y - this.y) * t, this.z + (v.z - this.z) * t); }
+  clone() { return new Vector3(this.x, this.y, this.z); }
 }
 
 class PerspectiveCamera {
@@ -332,4 +333,155 @@ test('turning to the view: the camera turns back by what you turned, and stops s
   camera.setCameraPreset('quay');
   camera.update(1 / 60, 0);
   assert.equal(manager.viewOffset, null);
+});
+
+// First person on foot: the view looks up and down by its own pitch, and the mouse turns the walker (js/controllers.js look())
+function firstPersonHarness() {
+  const entity = { position: new Vector3(0, 0, 0), heading: 0, speed: 0, type: 'person', chaseDistance: 4.3, chaseHeight: 1.95, cameraTargetOffset: new Vector3(0, 1.55, 0) };
+  const h = cameraHarness(entity);
+  const turns = [];
+  h.camera.controllerManager.look = (dx) => turns.push(dx);
+  h.camera.setCameraPreset('pov', true);
+  h.camera.update(1 / 60, 0);
+  const pitch = () => {
+    const from = h.camera.camera.position, to = h.camera.camera.target;
+    return Math.atan2(to.y - from.y, Math.hypot(to.x - from.x, to.z - from.z));
+  };
+  return { ...h, turns, pitch };
+}
+
+test('first person on foot looks up and down by its own pitch, as far as 70 degrees', () => {
+  const h = firstPersonHarness();
+  close(h.pitch(), 0);
+  h.camera.look(0, 1.2);
+  h.camera.update(1 / 60, 0);
+  assert.ok(Math.abs(h.pitch() - 1.2) < 1e-6, `looks ${h.pitch()} rad up`);
+  h.camera.look(0, 1);
+  h.camera.update(1 / 60, 0);
+  assert.ok(Math.abs(h.pitch() - 70 * Math.PI / 180) < 1e-6, `stops at ${(h.pitch() * 180 / Math.PI).toFixed(2)} degrees`);
+  h.camera.look(0, -3);
+  h.camera.update(1 / 60, 0);
+  assert.ok(Math.abs(h.pitch() + 70 * Math.PI / 180) < 1e-6, `and down: ${(h.pitch() * 180 / Math.PI).toFixed(2)} degrees`);
+  // The chase camera's orbit isn't touched, and back in chase the look is level again
+  close(h.camera.orbitPitchOffset, 0.09);
+  h.camera.setCameraPreset('chase', true);
+  close(h.camera.lookPitch, 0);
+  // In a car, the cockpit's look is as it was: the orbit, through a point 40 m ahead
+  const car = cameraHarness();
+  car.camera.setCameraPreset('pov', true);
+  car.camera.look(0, 1);
+  close(car.camera.lookPitch, 0);
+});
+
+test('first person on foot: a drag turns you and looks, the eye is 0.1 m ahead, and it never orbits', () => {
+  const h = firstPersonHarness();
+  close(h.camera.camera.position.z, 0.1);
+  close(h.camera.camera.position.y, 1.68);
+  h.pointer(h.canvas, 'pointerdown', 1, 100, 100, 'mouse');
+  h.pointer(h.canvas, 'pointermove', 1, 110, 80, 'mouse');
+  assert.deepEqual(h.turns.map((t) => +t.toFixed(6)), [0.065]);
+  close(h.camera.lookPitch, 0.1);
+  close(h.camera.orbitYawOffset, 0);
+  h.camera.update(1 / 60, 0);
+  assert.equal(h.camera.controllerManager.viewOffset, null, 'nothing to steer by');
+});
+
+test('first person on foot, locked: the mouse counts turn you at the speed set, and a spike is cut short', () => {
+  const h = firstPersonHarness();
+  h.document.pointerLockElement = h.canvas;
+  h.canvas.dispatch('pointermove', { pointerId: 1, pointerType: 'mouse', movementX: 100, movementY: 50, clientX: 0, clientY: 0, preventDefault() {} });
+  close(h.turns[0], 0.2);
+  close(h.camera.lookPitch, -0.1);
+  h.camera.mouseSpeed = 2;
+  h.canvas.dispatch('pointermove', { pointerId: 1, pointerType: 'mouse', movementX: 5000, movementY: 0, clientX: 0, clientY: 0, preventDefault() {} });
+  assert.ok(h.turns[1] > 0 && h.turns[1] < 2.5, `a spike turns ${h.turns[1]} rad`);
+  // In a car the locked mouse does nothing (the lock is let go of there)
+  const car = cameraHarness();
+  car.document.pointerLockElement = car.canvas;
+  car.canvas.dispatch('pointermove', { pointerId: 1, pointerType: 'mouse', movementX: 100, movementY: 0, clientX: 0, clientY: 0, preventDefault() {} });
+  close(car.camera.orbitYawOffset, 0);
+});
+
+test('first person on foot: the eye eases up a kerb and down off one at 1.2 m/s, and follows a jump and a long fall at once', () => {
+  const { camera } = cameraHarness();
+  const dt = 1 / 60;
+  const run = (heights, grounded, vys) => heights.map((y, i) => camera.easeEye(y, grounded[i], vys[i], dt));
+  const fastest = (ys) => Math.max(...ys.slice(1).map((y, i) => Math.abs(y - ys[i]) / dt));
+  // Up a kerb: the feet snap up 0.22 m
+  camera._eyeY = null;
+  const kerb = [1.68, 1.68, ...Array(24).fill(1.9)]; // 0.4 s
+  const up = run(kerb, kerb.map(() => true), kerb.map(() => 0));
+  assert.ok(fastest(up) <= 1.2 + 1e-9, `up a kerb at ${fastest(up).toFixed(2)} m/s`);
+  assert.ok(Math.abs(up.at(-1) - 1.9) < 0.005, `there in 0.4 s: ${up.at(-1)}`);
+  // Off one: a fall of 0.22 m, at 14.5 m/s/s
+  camera._eyeY = null;
+  const ys = [1.9, 1.9], grounded = [true, true], vys = [0, 0];
+  for (let v = 0, y = 1.9; y > 1.68;) {
+    v -= 14.5 * dt;
+    y = Math.max(1.68, y + v * dt);
+    ys.push(y); grounded.push(y <= 1.68); vys.push(y <= 1.68 ? 0 : v);
+  }
+  for (let i = 0; i < 20; i++) { ys.push(1.68); grounded.push(true); vys.push(0); }
+  const down = run(ys, grounded, vys);
+  assert.ok(fastest(down) <= 1.2 + 1e-9, `down off it at ${fastest(down).toFixed(2)} m/s`);
+  assert.ok(Math.abs(down.at(-1) - 1.68) < 0.005);
+  // A jump: followed exactly
+  camera._eyeY = null;
+  const jump = [1.68, 1.68];
+  for (let v = 5.2, y = 1.68; ; ) {
+    v -= 14.5 * dt;
+    y += v * dt;
+    if (y <= 1.68) break;
+    jump.push(y);
+  }
+  const jumped = run(jump, jump.map((y, i) => i < 2), jump.map((y, i) => (i < 2 ? 0 : 1)));
+  assert.deepEqual(jumped, jump);
+  // A long fall off an edge: no more than half a metre behind, and caught up soon after
+  camera._eyeY = null;
+  const fall = [10, 10], fg = [true, true], fv = [0, 0];
+  for (let v = 0, y = 10; y > 5;) {
+    v -= 14.5 * dt;
+    y = Math.max(5, y + v * dt);
+    fall.push(y); fg.push(y <= 5); fv.push(y <= 5 ? 0 : v);
+  }
+  for (let i = 0; i < 30; i++) { fall.push(5); fg.push(true); fv.push(0); }
+  const fell = run(fall, fg, fv);
+  assert.ok(Math.max(...fell.map((y, i) => y - fall[i])) <= 0.5 + 1e-9, 'the eye trails a long fall by half a metre at most');
+  assert.ok(Math.abs(fell.at(-1) - 5) < 0.005);
+});
+
+test("first person on foot: the gamepad's right stick turns you and looks up and down, and its recentre levels the look", () => {
+  const h = firstPersonHarness();
+  h.camera.applyGamepadInput(0.5, -1, 0, 0.1);
+  close(h.turns[0], 0.1);
+  close(h.camera.lookPitch, 0.125);
+  close(h.camera.orbitYawOffset, 0);
+  h.camera.resetOrbit();
+  close(h.camera.lookPitch, 0);
+});
+
+test('into first person on foot from the chase camera: a 0.3 s glide into the eye, facing where the chase camera looked', () => {
+  const entity = { position: new Vector3(0, 0, 0), heading: 0, speed: 0, type: 'person', chaseDistance: 4.3, chaseHeight: 1.95, cameraTargetOffset: new Vector3(0, 1.55, 0) };
+  const { camera } = cameraHarness(entity);
+  camera.controllerManager.look = () => {};
+  for (let i = 0; i < 60; i++) camera.update(1 / 60, i / 60);
+  camera.orbitYawOffset = 0.4; // dragged round to the left
+  for (let i = 0; i < 60; i++) camera.update(1 / 60, i / 60);
+  const from = camera.camera.position.clone();
+  camera.setCameraPreset('pov', true);
+  close(entity.heading, 0.4);
+  close(camera.orbitYawOffset, 0);
+  camera.update(0.15, 1);
+  const half = camera.camera.position.clone();
+  const eye = { x: Math.sin(0.4) * 0.1, y: 1.68, z: Math.cos(0.4) * 0.1 };
+  const toEye = (p) => Math.hypot(p.x - eye.x, p.y - eye.y, p.z - eye.z);
+  assert.ok(toEye(half) > 0.3 * toEye(from) && toEye(half) < 0.7 * toEye(from), `half way: ${toEye(half).toFixed(2)} m from the eye, from ${toEye(from).toFixed(2)}`);
+  assert.equal(camera.bodyHidden, false, 'still drawn half way');
+  camera.update(0.16, 1.2);
+  assert.ok(toEye(camera.camera.position) < 1e-9, 'in the eye at 0.3 s');
+  assert.equal(camera.bodyHidden, true);
+  // and back to chase: behind you, level
+  camera.setCameraPreset('chase', true);
+  close(camera.orbitYawOffset, 0);
+  close(camera.orbitPitchOffset, 0.09);
 });

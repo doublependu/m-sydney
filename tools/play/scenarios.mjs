@@ -1186,6 +1186,249 @@ function walkInScenario() {
   };
 }
 
+// First person on foot (js/cameras.js, js/controllers.js): the mouse, locked to the game, turns you and looks up and down, or on a phone a
+// drag on the right side does; A and D, or the stick's sideways, step you aside. On Macquarie St: looking 60 degrees up and down, a half
+// turn, three metres aside each way and a circle walked with the view turning. In chase, A turns you as before. Then into the test
+// interior (?debug=1): stepping aside into its doorway, and up its stair looking up it.
+function firstPersonScenario(profile) {
+  const phone = profile === 'phone';
+  return {
+    profile,
+    query: 'debug=1',
+    async run({ human, game, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const camera = () => debug(() => window.__gameDebug.camera());
+      const deg = (r) => +(r * 180 / Math.PI).toFixed(1);
+      const size = page.viewportSize();
+      // Fingers on a phone's screen: each touch event lists every finger still down, so the stick can be held while dragging
+      // (A finger is lifted by a touchEnd that lists it alone: left out of a touchMove it stays down, with no pointerup.)
+      const fingers = new Map();
+      const touch = (type, points = [...fingers.values()]) => game.cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points });
+      const fingerDown = (id, x, y) => { fingers.set(id, { id, x, y }); return touch('touchStart'); };
+      const fingerMove = (id, x, y) => { fingers.set(id, { id, x, y }); return touch('touchMove'); };
+      const fingerUp = (id) => {
+        const lifted = fingers.get(id);
+        fingers.delete(id);
+        return touch('touchEnd', [lifted]);
+      };
+      // Until what's been sent has been taken in: the heading and the pitch hold still over a couple of frames. Under load the page can
+      // take a drag's last moves a few hundred ms after they're sent.
+      const settle = async () => {
+        let last = null;
+        for (let i = 0; i < 40; i++) {
+          const at = await debug(() => ({ h: window.__gameDebug.player().heading, p: window.__gameDebug.camera().lookPitch, f: window.__gameDebug.player().frame }));
+          if (last && at.h === last.h && at.p === last.p && at.f >= last.f + 2) return;
+          last = at;
+          await human.wait(80);
+        }
+      };
+      // Looking round: the mouse's counts (2 mrad each at the default speed, 8 at the 4 times this sets), or a finger dragged on the right
+      // half of a phone (6.5 mrad a pixel across, 5 up or down). dx to the right, dy up, in rad. The mouse Playwright moves can't leave the
+      // window, as a real one locked to the game can, so its moves are kept to it.
+      let mouse = { x: size.width / 2, y: size.height / 2 };
+      let mouseTurn = 0.002;
+      // The stick is finger 1; a drag takes 2 to 9 by turns (a stroke is done before the next starts). Ids in the hundreds hung Chrome's
+      // touch input after a dozen strokes.
+      let strokes = 0;
+      const look = async (dx, dy) => {
+        if (phone) {
+          // From the right half's near side dragging right, or its far side dragging left
+          const from = { x: size.width * (dx > 0 ? 0.55 : 0.95), y: size.height * 0.5 };
+          const px = dx / 0.0065, py = -dy / 0.005, n = Math.max(1, Math.ceil(Math.max(Math.abs(px), Math.abs(py)) / 25));
+          // In strokes a thumb could make: no more than 150 px each
+          const count = Math.max(1, Math.ceil(Math.max(Math.abs(px), Math.abs(py)) / 150));
+          for (let s = 0; s < count; s++) {
+            const id = 2 + (strokes++ % 8);
+            await fingerDown(id, from.x, from.y);
+            for (let i = 1; i <= Math.ceil(n / count); i++) {
+              const k = i / Math.ceil(n / count);
+              await fingerMove(id, from.x + (px / count) * k, from.y + (py / count) * k);
+            }
+            await fingerUp(id);
+            await human.wait(40);
+          }
+        } else {
+          const cx = dx / mouseTurn, cy = -dy / mouseTurn;
+          const steps = Math.max(1, Math.ceil(Math.max(Math.abs(cx), Math.abs(cy)) / 30));
+          mouse = { x: mouse.x + cx, y: mouse.y + cy };
+          expect(mouse.x > 0 && mouse.x < size.width && mouse.y > 0 && mouse.y < size.height, `the scenario's mouse left the window, at ${mouse.x.toFixed(0)}, ${mouse.y.toFixed(0)}`);
+          await page.mouse.move(mouse.x, mouse.y, { steps });
+        }
+        await settle();
+      };
+      // The stick: pushed `x` across and `y` up (-1..1) of its travel; a third short of the run
+      const stick = { x: size.width * 0.25, y: size.height * 0.7 };
+      const hold = (x, y) => fingerDown(1, stick.x, stick.y).then(() => fingerMove(1, stick.x + x * 30, stick.y - y * 30));
+      const letGo = () => fingerUp(1);
+      const now = () => debug(() => ({ ...window.__gameDebug.player(), clock: window.__gameDebug.clock() }));
+      const aside = async (key, x, ms) => {
+        if (phone) {
+          await hold(x, 0);
+          await human.wait(ms);
+          await letGo();
+        } else await human.hold(key, ms);
+      };
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+
+      // Macquarie St, wide and open, facing north
+      await debug(() => window.__gameDebug.goto(397, -1000, Math.PI, 'person'));
+      await human.wait(800);
+      if (!phone) await page.mouse.move(mouse.x, mouse.y);
+      await human.press('Digit7');
+      await human.wait(400);
+      let c = await camera();
+      expect(c.firstPerson && c.preset === 'pov', `7 on foot gave ${c.preset}`);
+      if (!phone) {
+        if (!c.locked) {
+          // The key press is a gesture the lock is asked for on; a click on the view is the other
+          await page.mouse.click(mouse.x, mouse.y);
+          await human.wait(300);
+          c = await camera();
+        }
+        expect(c.locked, 'the mouse never locked to the game');
+        // The mouse speed, from the pause screen: four times, at once and kept. Pausing lets the mouse go; a click on the view locks it again
+        await human.press('KeyP');
+        await human.wait(300);
+        expect(!(await camera()).locked, 'paused with the mouse still locked');
+        await page.locator('#pause-mouse-speed').fill('2');
+        await page.keyboard.press('Escape');
+        await human.wait(300);
+        await page.mouse.click(mouse.x, mouse.y);
+        await human.wait(300);
+        c = await camera();
+        const kept = await debug(() => localStorage.getItem('sydney-mouse-speed'));
+        expect(c.mouseSpeed === 4 && kept === '4', `the slider set ${c.mouseSpeed}, kept ${kept}`);
+        expect(c.locked, 'a click on the view never locked the mouse again');
+        mouseTurn = 0.002 * c.mouseSpeed;
+      } else expect(!c.locked, 'locked on a phone');
+      expect(c.near === 0.1 && !c.bodyShown, `in first person: near ${c.near}, body drawn ${c.bodyShown}`);
+
+      // 60 degrees up and down, and level again
+      const start = await human.state();
+      await look(0, 60 * Math.PI / 180);
+      const up = await camera();
+      await look(0, -120 * Math.PI / 180);
+      const down = await camera();
+      await look(0, 60 * Math.PI / 180);
+      const level = await camera();
+      metric('looked', { up: deg(up.pitch), down: deg(down.pitch), level: deg(level.pitch) });
+      expect(Math.abs(deg(up.pitch) - 60) < 2 && Math.abs(deg(down.pitch) + 60) < 2 && Math.abs(deg(level.pitch)) < 2,
+        `looked ${deg(up.pitch)} up, ${deg(down.pitch)} down, back to ${deg(level.pitch)}`);
+      // Half way round, to the right
+      await look(Math.PI, 0);
+      const turned = await human.state();
+      const turn = wrapTurn(start.heading - turned.heading);
+      metric('halfTurn', deg(Math.abs(turn)));
+      expect(Math.abs(Math.abs(turn) - Math.PI) < 0.06, `a half turn by the ${phone ? 'drag' : 'mouse'} turned you ${deg(turn)} degrees`);
+      expect(Math.abs(wrapTurn((await camera()).yaw - turned.heading)) < 0.02, 'the view looks where you face');
+
+      // Three metres aside each way, facing the same way: A then D, or the stick's sideways
+      const sides = {};
+      for (const [key, x, name] of [['KeyA', -1, 'left'], ['KeyD', 1, 'right']]) {
+        const a = await human.state();
+        await aside(key, x, 3400);
+        await human.wait(500);
+        const b = await human.state();
+        const dx = b.x - a.x, dz = b.z - a.z;
+        // Your left, facing `heading`: (cos, -sin) of it
+        const left = dx * Math.cos(a.heading) - dz * Math.sin(a.heading);
+        const ahead = dx * Math.sin(a.heading) + dz * Math.cos(a.heading);
+        sides[name] = { aside: +left.toFixed(2), ahead: +ahead.toFixed(2), turned: deg(wrapTurn(b.heading - a.heading)) };
+        expect(Math.sign(left) === -x && Math.abs(left) > 2.5 && Math.abs(left) < 4, `${name}: ${left.toFixed(2)} m to the left`);
+        expect(Math.abs(ahead) < 0.3 && Math.abs(wrapTurn(b.heading - a.heading)) < 0.01, `${name}: ${ahead.toFixed(2)} m ahead, turned ${deg(b.heading - a.heading)}`);
+      }
+      metric('aside', sides);
+      // The pace aside: 0.65 of the walk
+      if (!phone) await human.down('KeyA');
+      else await hold(-1, 0);
+      await human.wait(1200);
+      const a1 = await now();
+      await human.wait(1000);
+      const a2 = await now();
+      if (!phone) await human.up('KeyA'); else await letGo();
+      const asideSpeed = Math.hypot(a2.x - a1.x, a2.z - a1.z) / Math.max(0.1, a2.clock - a1.clock);
+      metric('asidePace', +asideSpeed.toFixed(2));
+      expect(Math.abs(asideSpeed - 0.65 * 1.5) < 0.1, `aside at ${asideSpeed.toFixed(2)} m/s, not 0.65 of the walk's 1.5`);
+
+      // A circle: forward held, the view turning round to the left
+      const before = await human.state();
+      if (phone) await hold(0, 1); else await human.down('KeyW');
+      let round = 0, path = 0, last = before;
+      for (let i = 0; i < 16; i++) {
+        await look(-Math.PI / 8, 0);
+        await human.wait(250);
+        const here = await human.state();
+        round += wrapTurn(here.heading - last.heading);
+        path += Math.hypot(here.x - last.x, here.z - last.z);
+        last = here;
+      }
+      if (phone) await letGo(); else await human.up('KeyW');
+      metric('circle', { turned: deg(round), walked: +path.toFixed(1), endsFromStart: +Math.hypot(last.x - before.x, last.z - before.z).toFixed(1) });
+      expect(round > 5.8 && path > 6, `a circle turned ${deg(round)} degrees and walked ${path.toFixed(1)} m`);
+
+      // Chase: A turns you, the mouse is let go of, and the view's behind you
+      await human.press('Digit5');
+      await human.wait(500);
+      c = await camera();
+      expect(!c.firstPerson && !c.locked && c.preset === 'chase', `in chase: first person ${c.firstPerson}, locked ${c.locked}`);
+      const t0 = await human.state();
+      if (phone) { await hold(-1, 0); await human.wait(1000); await letGo(); } else await human.hold('KeyA', 1000);
+      await human.wait(300);
+      const t1 = await human.state();
+      expect(wrapTurn(t1.heading - t0.heading) > 1 && Math.hypot(t1.x - t0.x, t1.z - t0.z) < 0.3,
+        `chase, A: turned ${deg(wrapTurn(t1.heading - t0.heading))} and moved ${Math.hypot(t1.x - t0.x, t1.z - t0.z).toFixed(2)} m`);
+      expect(c.bodyShown, 'in chase you are drawn');
+
+      // The test interior: first person again outside its door, aside into the doorway, in, and up the stair looking up it
+      const SITE = { x: 440, z: -300 };
+      const at = (x, z) => ({ x: SITE.x + x, z: SITE.z + z });
+      await debug(({ x, z }) => window.__gameDebug.goto(x, z, Math.PI, 'person'), at(-2.4, 6.2));
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'test-interior')?.out, null, { timeout: 30000, polling: 200 });
+      await human.press('Digit7');
+      await human.wait(400);
+      if (!phone && !(await camera()).locked) await page.mouse.click(mouse.x, mouse.y);
+      expect(await walkTo(human, at(-2.4, 4.95)), 'never got to the front, beside the door');
+      await face(human, at(-2.4, 0));
+      // Facing in, along -z, your left is -x: the door's middle is 0.6 m that way, so A, or the stick to the left
+      const startAside = human.now();
+      const doorAside = async () => {
+        const s = await human.state();
+        return s.x - at(-3, 0).x;
+      };
+      for (let k = 0; k < 40 && Math.abs(await doorAside()) > 0.08; k++) {
+        const off = await doorAside();
+        const key = off > 0 ? 'KeyA' : 'KeyD';
+        if (phone) {
+          await hold((off > 0 ? -1 : 1) * 0.67, 0);
+          await human.wait(Math.min(400, Math.abs(off) * 600));
+          await letGo();
+        } else await human.hold(key, Math.min(400, Math.abs(off) * 600));
+        await human.wait(100);
+      }
+      metric('intoDoorway', { seconds: +((human.now() - startAside) / 1000).toFixed(1), off: +(await doorAside()).toFixed(2) });
+      expect(Math.abs(await doorAside()) < 0.12, `stepped aside to ${(await doorAside()).toFixed(2)} m off the door's middle`);
+      await human.wait(300);
+      expect((await debug(() => window.__gameDebug.interior())).prompt === 'Open', 'no door to open in front');
+      await human.press('KeyF');
+      expect(await page.waitForFunction(() => window.__gameDebug.interior().doors.find((d) => d.site === 'test-interior' && d.id === 'front')?.angle >= 1.59,
+        null, { timeout: 20000, polling: 200 }).then(() => true, () => false), 'the door never opened');
+      const inAt = human.now();
+      expect(await walkTo(human, at(-3, 3.0)), 'never got through the door');
+      expect(await walkTo(human, at(-4.3, 3.6)), 'never reached the foot of the stair');
+      await face(human, at(-4.3, -2.1));
+      await look(0, 0.5);
+      expect(await walkTo(human, at(-4.3, -2.1)), 'never got up the stair');
+      const i = await debug(() => window.__gameDebug.interior());
+      const p = await human.state();
+      c = await camera();
+      metric('inAndUpSeconds', +((human.now() - inAt) / 1000).toFixed(1));
+      expect(i.room === 'landing', `up the stair, in ${i.room}`);
+      expect(c.firstPerson && Math.abs(deg(c.lookPitch) - 28.6) < 2, `still looking up the stair: ${deg(c.lookPitch)}`);
+      expect(Math.abs(c.y - p.surfaceY - 1.68) < 0.05, `the eye ${(c.y - p.surfaceY).toFixed(2)} m over the floor`);
+    }
+  };
+}
+
 // The origin moving can't be seen, and nothing big gets near a shader. Done on the line between two origins, where either one will do.
 function originScenario(query) {
   return {
@@ -1859,6 +2102,8 @@ export const SCENARIOS = {
 
   'walk-in': walkInScenario(),
   'walk-in-phone': { ...walkInScenario(), profile: 'phone' },
+  'first-person': firstPersonScenario('laptop'),
+  'first-person-phone': firstPersonScenario('phone'),
   'lower-fort-55': lowerFortScenario(),
   'bronte-pacific': bronteScenario(),
   'bronte-pacific-phone': { ...bronteScenario(), profile: 'phone' },
@@ -2114,9 +2359,9 @@ export const SCENARIOS = {
       await human.until((s) => s.y <= before.y + 0.05, { timeout: 3000, every: 30 });
 
       // Over the kerb and back
-      await human.hold('KeyA', 700);
+      await human.hold('ArrowLeft', 700);
       await human.wait(1500);
-      await human.hold('KeyD', 900);
+      await human.hold('ArrowRight', 900);
       await human.wait(1500);
       await human.releaseAll();
 
@@ -2474,6 +2719,33 @@ export const SCENARIOS = {
       await human.press('Escape');
       await human.wait(400);
       expect(!(await snapshot()).paused, 'Esc did not close the pause screen');
+
+      // In first person on foot, with the mouse locked to the game: the first Esc lets the mouse go and the game runs on, the next pauses
+      await human.press('Digit1');
+      await human.wait(600);
+      await human.press('Digit7');
+      await human.wait(400);
+      const locked = () => page.evaluate(() => document.pointerLockElement !== null);
+      if (!(await locked())) await page.mouse.click(640, 360);
+      await human.wait(300);
+      expect(await locked(), 'the mouse never locked in first person');
+      await human.press('Escape');
+      await human.wait(400);
+      const freed = await snapshot();
+      expect(!(await locked()) && !freed.paused, `the first Esc: locked ${await locked()}, paused ${freed.paused}`);
+      expect(await page.locator('#look-hint').isVisible(), 'no hint to click to look round once the mouse is free');
+      await human.wait(400);
+      await human.press('Escape');
+      await human.wait(400);
+      expect((await snapshot()).paused, 'the second Esc did not pause');
+      await page.locator('#pause-resume').click();
+      await human.wait(500);
+      expect(!(await snapshot()).paused && (await locked()), 'Resume did not lock the mouse again');
+      // P pauses at once, and lets the mouse go
+      await human.press('KeyP');
+      await human.wait(400);
+      expect((await snapshot()).paused && !(await locked()), 'P with the mouse locked');
+      await human.press('Escape');
     }
   },
 
@@ -2687,7 +2959,7 @@ export const SCENARIOS = {
           for (const end = human.now() + human.between(2000, 5000); human.now() < end;) {
             await human.wait(800);
             const now = await human.state();
-            if (Math.hypot(now.x - last.x, now.z - last.z) < 0.5) await human.hold('KeyA', 500);
+            if (Math.hypot(now.x - last.x, now.z - last.z) < 0.5) await human.hold('ArrowLeft', 500);
             last = now;
           }
           await human.releaseAll();

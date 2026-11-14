@@ -62,6 +62,8 @@ export const COVERS = {
   'mode-switch': { files: /^js\/(controllers|arrivals|surfaces|bridge|main)\.js$/, area: null },
   touch: { files: /^js\/(touch-controls|controllers)\.js$|^css\//, area: null },
   'orbit-follow': { files: /^js\/(cameras|controllers|pedestrians)\.js$/, area: null },
+  'first-person': { files: /^js\/(cameras|controllers|interiors|interior-data|pause-menu|main)\.js$|^index\.html$/, area: null },
+  'first-person-phone': { files: /^js\/(cameras|controllers|touch-controls|interiors|interior-data|main)\.js$/, area: null },
   'orbit-follow-phone': { files: /^js\/(cameras|controllers|touch-controls)\.js$/, area: null },
   pause: { files: /^js\/(pause-menu|main)\.js$|^index\.html$/, area: null },
   'auto-steps-down': { files: /^js\/quality\.js$/, area: null },

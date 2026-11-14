@@ -15,6 +15,7 @@ class TouchControls {
     this.stickPointer = null;
     this.enabled = true;
     this.available = false;
+    this.firstPerson = false;
     this.touchSeen = false;
     this.onAvailabilityChange = null;
     this.onStickPressed = null;
@@ -110,6 +111,14 @@ class TouchControls {
       const label = this.root.querySelector(`[data-touch-label="${action}"]`);
       if (label) label.textContent = labels[action];
     }
+  }
+
+  // In first person on foot the stick's sideways steps you aside (js/controllers.js), and a drag on the right side turns you
+  setFirstPerson(on) {
+    on = !!on;
+    if (on === this.firstPerson) return;
+    this.firstPerson = on;
+    this.zone?.setAttribute('aria-label', `Movement: touch and drag up or down to move, left or right to ${on ? 'step aside' : 'turn'}`);
   }
 
   moveStick(event) {

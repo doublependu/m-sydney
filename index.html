@@ -270,11 +270,24 @@
       <button id="touch-use" class="touch-action" type="button" aria-label="Open" hidden>
         <span aria-hidden="true">✋</span><span id="touch-use-label">Open</span>
       </button>
+      <!-- In a building on foot: out to the footpath in front (js/main.js exitBuilding()) -->
+      <button id="touch-exit" class="touch-action" type="button" aria-label="Exit building" hidden>
+        <span aria-hidden="true">⇥</span><span>Exit</span>
+      </button>
     </div>
   </section>
-  <div id="use-prompt" class="use-prompt" aria-live="polite" hidden><kbd>F</kbd><span id="use-prompt-label">Open</span></div>
+  <div class="prompt-row">
+    <div id="use-prompt" class="use-prompt" aria-live="polite" hidden><kbd>F</kbd><span id="use-prompt-label">Open</span></div>
+    <!-- In a building on foot: out to the footpath in front (js/main.js exitBuilding()) -->
+    <button id="exit-building" class="use-prompt exit-building" type="button" title="Out to the footpath in front [X]" hidden><kbd>X</kbd><span>Exit building</span></button>
+  </div>
   <!-- In first person on foot, until a click locks the mouse to the game (js/main.js) -->
   <div id="look-hint" class="use-prompt look-hint" hidden><kbd>Click</kbd><span>to look round</span></div>
+  <!-- For a few seconds after going into a building puts you in first person (js/main.js setInBuilding()) -->
+  <div id="view-hint" class="view-hint" role="status" hidden>
+    <span class="view-hint-keys">First person: <kbd>A</kbd> <kbd>D</kbd> step aside, <kbd>5</kbd> for the chase camera</span>
+    <span class="view-hint-touch">First person: drag the right side to turn</span>
+  </div>
 
   <!-- All Cameras: 3 Follow Cameras + 7 Sydney Vantage Cameras + Auto-Director Drone -->
   <div id="camera-popover" class="popover" popover data-side="above" data-anchor="hud-cluster" data-align="hud-cluster" aria-label="Multiple Camera Angles">

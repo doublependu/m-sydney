@@ -5,8 +5,8 @@ import { MODEL_SITES } from './model-sites.js';
 import { clearFloor, groundHeight, setFloor } from './surfaces.js';
 import { cityUniforms } from './tsl-materials.js';
 import {
-  DOOR_TIME, doorCollider, doorInReach, eyeReach, floorAt, leafAt, roomAt, seatInReach, standSpot, toLocal, toWorld, visibleRooms,
-  wallCollider
+  DOOR_TIME, doorCollider, doorInReach, exitSpot as findExit, eyeReach, floorAt, leafAt, roomAt, seatInReach, standSpot, toLocal, toWorld,
+  visibleRooms, wallCollider
 } from './interior-data.js';
 
 // Buildings drawn from models of their own (js/model-sites.js), and the insides of those that have one.
@@ -172,7 +172,11 @@ function instance(scene, list = []) {
  * the model comes. `shown(id, on)` hears when a site's outside starts or stops being drawn, for what it takes the place of.
  * `farReach()`: m from the camera that far versions are wanted, 0 while the city round you is still coming. `debug`: the debug sites too.
  */
-function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () => false, shown = () => {}, farReach = () => 0, debug = false }) {
+/**
+ * `footpath(x, z, y, heading)`: the footpath in front of a door's step there, out from it along `heading` (js/arrivals.js footpathFrom()),
+ * with what's clear for a walker, for the way out (exitSpot()).
+ */
+function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () => false, shown = () => {}, farReach = () => 0, footpath = null, debug = false }) {
   const sites = MODEL_SITES.filter((s) => debug || !s.debug).map((s) => ({
     ...s, y: s.y ?? null, reach: s.reach ?? RELEASE, near: s.near ?? NEAR, out: null, inside: null, loading: false, failed: false, ref: null,
     drawn: false, far: s.far ? { group: null, loading: false, failed: false } : null
@@ -180,6 +184,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
   let here = null; // { site, room } the player is in
   let prompt = null; // { kind: 'door' | 'seat', site, door | seat, label }
   let seated = null;
+  let exit = null; // { site, spot }: the way out of the inside you're in, worked out once a visit
   let held = Infinity; // m from over your head the camera can be, eased back out (holdEye())
   const lightsOn = [];
 
@@ -448,8 +453,9 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
   /**
    * `player`: the active entity, `mode` the controllers' mode, `eye` the camera's position and `look` its direction (the game's
    * frame), and `head` the point over the player's head a following camera looks on from, or null for one that doesn't follow. The eye
-   * is moved in, if a wall's in its way. Returns whether the player's inside a building, what F would do, whether the camera was kept
-   * clear of a building (`kept`), and whether that brought it so near that the player shouldn't be drawn (`close`).
+   * is moved in, if a wall's in its way. Returns whether the player's in a room of an inside (`indoors`), and in one under a roof
+   * (`building`: not a courtyard, a terrace or a balcony, which are `outdoor`), what F would do, whether the camera was kept clear of a
+   * building (`kept`), and whether that brought it so near that the player shouldn't be drawn (`close`).
    */
   function update(dt, player, mode, eye, look, head = null) {
     const { x, z } = player.position;
@@ -489,6 +495,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
 
     // Where the player is
     here = null;
+    if (exit && !exit.site.inside) exit = null;
     if (mode === 'person') {
       for (const site of sites) {
         if (site.inside?.state !== 'ready') continue;
@@ -525,7 +532,8 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     // How much the inside's own colours glow (its room's `glow`, or its own, a house's 0.1 unless they say), and how sheltered from the
     // sky its room is
     indoorLight.value = here?.room.glow ?? here?.site.inside.data.glow ?? 0.1;
-    return { indoors: here !== null, prompt: prompt && prompt.label, kept, close: kept && held < EYE_CLOSE, shelter: here?.room.shelter ?? null };
+    return { indoors: here !== null, building: here !== null && !here.room.outdoor, prompt: prompt && prompt.label, kept, close: kept && held < EYE_CLOSE,
+      shelter: here?.room.shelter ?? null };
   }
 
   /**
@@ -656,24 +664,20 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     seated = null;
   }
 
-  /** Where to put the player back on a reload, if they were inside: outside the door they'd have come in by */
-  function returnSpot() {
+  /**
+   * The way out of the inside you're in (X, js/main.js): the footpath in front of its front door, facing it, or its site's own (js/interior-data.js
+   * exitSpot()). { x, z, heading, y, via, door } in the world's frame, or null when you aren't in one.
+   */
+  function exitSpot() {
     if (!here) return null;
     const { site } = here;
-    const door = [...site.out.doors.values()].find((dd) => dd.d.inside) ?? [...site.out.doors.values()][0];
-    if (!door) return null;
-    const { hinge, latch } = door.d;
-    const cx = (hinge[0] + latch[0]) / 2, cz = (hinge[1] + latch[1]) / 2;
-    const L = Math.hypot(latch[0] - hinge[0], latch[1] - hinge[1]);
-    const nx = -(latch[1] - hinge[1]) / L, nz = (latch[0] - hinge[0]) / L;
-    for (const side of [1, -1]) {
-      const px = cx + nx * side * 1.4, pz = cz + nz * side * 1.4;
-      if (!roomAt(site.inside.data.rooms, px, door.d.y0 + 0.1, pz)) {
-        const at = toWorld(site, px, pz);
-        return { x: at.x, z: at.z, heading: Math.atan2(-nx * side, -nz * side) + site.yaw };
-      }
-    }
-    return null;
+    if (exit?.site !== site) exit = { site, spot: findExit(site, [...site.out.doors.values()].map((dd) => dd.d), site.inside.data.rooms, footpath) };
+    return exit.spot;
+  }
+
+  /** Where to put the player back on a reload, if they were inside: where the way out goes */
+  function returnSpot() {
+    return exitSpot();
   }
 
   function state() {
@@ -684,6 +688,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       inside: here?.site.id ?? null,
       room: here?.room.id ?? null,
       floor: here ? here.site.ref : null,
+      exit: here ? exitSpot() : null,
       seated: !!seated,
       prompt: prompt?.label ?? null,
       eye: Number.isFinite(held) ? +held.toFixed(2) : null, // m from over your head the camera's kept to, beside a building
@@ -693,7 +698,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     };
   }
 
-  return { update, use, stood, returnSpot, state, indoorLight };
+  return { update, use, stood, exitSpot, returnSpot, state, indoorLight };
 }
 
 export { createInteriors };

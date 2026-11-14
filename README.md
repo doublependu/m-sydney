@@ -273,6 +273,11 @@ camera on foot and every vehicle in any camera, they're as they were: A and D tu
 - **The view:** the eye is 1.68 m up, 0.1 m ahead of your middle, with the near plane at 0.1 m, so it stays inside the walker's 0.22 m
   round and never sees through a wall you're against. Seated, it's 0.75 m over the seat. Up or down a kerb, a threshold or a seat it eases
   at 1.2 m/s. You aren't drawn, nor is your shadow. Into first person from another follow camera, it glides into the eye in 0.3 s.
+- **Going into a building** on foot in the chase or action camera puts you in first person, and a hint says what A and D do now. It's
+  going into a room of a model's inside under a roof: a courtyard, a terrace or a balcony that's part of its inside (`outdoor` in its JSON)
+  isn't. First person stays on outside, so nothing flicks back and forth at the door. 5, V or the camera buttons choose another, which
+  holds till you next go in, a second or more after coming out; getting into a car, onto a bike or into the helicopter puts back the camera
+  going in replaced. A teleport on foot keeps first person, looking level (in any other camera, or a vehicle, it's the chase camera).
 
 ## Building models
 
@@ -315,6 +320,16 @@ What a model has to be:
   every wall and door leaf, 0.7 m under a ceiling and 0.25 m over a floor, and the line it sees you along goes through no floor or stair.
   It comes in at once and eases back out. Its near plane is 0.1 m there (0.35 m elsewhere), so it never cuts into a wall. Nearer than
   0.7 m to your head, you aren't drawn.
+- **The way out:** in a building on foot, X (or the "Exit building" button beside the F prompt, or the Exit button beside the hand button
+  on touch) takes you out to the footpath in front of it, behind a short fade, facing the door, in the camera you had, up off a seat
+  first. Where to (`exitSpot()`, `js/interior-data.js`): a site's own `exit` in `js/model-sites.js` (`[x, z, heading, y]` in its frame, or
+  `'door'`); otherwise 1.4 m out from its `front` door (or the first that leads in), then in from the nearest street on the ground within
+  40 m of that, and within 4 m of the door's height, to a metre past its kerb (`footpathFrom()`, `js/arrivals.js`; a lane, OSM's
+  `service`, doesn't count). No street that near, it's that step outside the door: a tower's forecourt, a house at the end of a long
+  drive. The Opera House's Concert Hall and the Pylon Lookout say `'door'`: the podium, and the Harbour Bridge's footway, which holds you.
+  A game saved inside comes back there on a reload. `tests/model-sites.test.mjs` lists every site's way out and checks it: outside its
+  rooms, on a footpath, its own floor or the footway, clear for a walker, within 50 m of its door and facing it. A new site with an inside
+  goes in that list.
 - **Budgets:** an outside under 150 KB; an inside under 2 MB and 40,000 triangles on a phone. Nothing of either is in the first view, which
   doesn't hold the loader.
 - **Glass:** each pane's vertex colour isn't its colour but numbers: whether it's lit at night (red, under 0.5) and how warm (green), the

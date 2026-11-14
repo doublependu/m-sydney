@@ -1,4 +1,6 @@
 // Each scenario plays one stretch of the game. `metric` records feel numbers; `expect` fails the run.
+import { readFileSync } from 'node:fs';
+import { doorStep } from '../../js/interior-data.js';
 import { MODEL_SITES } from '../../js/model-sites.js';
 
 const MPH_60 = 26.82;
@@ -1186,6 +1188,164 @@ function walkInScenario() {
   };
 }
 
+// Out of a building (X, js/main.js exitBuilding()): into each of six by its front door, which puts you in first person, then X, or on a
+// phone the exit button: outside within a second, on the footpath in front (the footway at the Pylon Lookout, the podium at the Opera
+// House's Concert Hall, the patio at 86 Quarry Rd, the lawn at the test interior), facing the door, in first person still, and walking on.
+// Then at 55 Lower Fort St, X from a chair; and a reload inside, which comes back on the footpath. Started at Dural, as a teleport of
+// 20 km out there from the default start throws WebGPU validation errors (houseScenario()).
+function exitBuildingScenario(profile) {
+  const phone = profile === 'phone';
+  const site = (id) => MODEL_SITES.find((s) => s.id === id);
+  const at = (S, x, z) => ({ x: S.x + x * Math.cos(S.yaw) + z * Math.sin(S.yaw), z: S.z - x * Math.sin(S.yaw) + z * Math.cos(S.yaw) });
+  const quarry = at(site('quarry-rd'), 24.0, 7.5);
+  // Where each comes out, by its front door (js/interior-data.js exitSpot(), tests/model-sites.test.mjs), and the way on from there, in
+  // its frame: at Quarry Rd off the patio to the carport, at the Opera House down the flight off the upper podium (quarryScenario(),
+  // operaHouseScenario())
+  const VISITS = [
+    { id: 'quarry-rd', door: 'front', where: 'floor', on: [[20.4, 4.45], [24.0, 7.5]] },
+    { id: 'test-interior', door: 'front', where: 'footpath', on: [[-3, 14]] },
+    { id: 'sydney-tower', door: 'tower', where: 'footpath', on: [[-8, 21.5]] },
+    { id: 'opera-house', door: 'south0', where: 'floor', on: [[-9.2, 42.5], [-9.5, 56]] },
+    { id: 'pylon-lookout', door: 'lookout', where: 'footway', on: [[-6, 5.4]] },
+    { id: 'lfs-west', door: 'front', where: 'footpath', on: [[-6, 10.9]] }
+  ];
+  const json = (name) => JSON.parse(readFileSync(new URL(`../../public/models/${name}.json`, import.meta.url), 'utf8'));
+  // A door's middle, the step outside it (doorStep()) and its floor, in the world
+  const doorOf = (id, doorId) => {
+    const S = site(id);
+    const d = json(S.file.replace('models/', '')).doors.find((dd) => dd.id === doorId);
+    const step = doorStep(d, json(d.inside).rooms);
+    return { mid: at(S, (d.hinge[0] + d.latch[0]) / 2, (d.hinge[1] + d.latch[1]) / 2), step: at(S, step.x, step.z), y: (S.y ?? 0) + d.y0 };
+  };
+  return {
+    profile,
+    query: 'debug=1',
+    minutes: phone ? 14 : 11,
+    // Started there on the first load only: the reload at the end keeps what the game saved (`storage` would be put back on it)
+    initScript: `if (!sessionStorage.getItem('started')) {
+      sessionStorage.setItem('started', '1');
+      localStorage.setItem('sydney-player-state', ${JSON.stringify(JSON.stringify({ version: 1, activeMode: 'person', entities: { person: { x: quarry.x, y: 0, z: quarry.z, heading: 0, surface: 0 } } }))});
+    }`,
+    async run({ human, game, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const camera = () => debug(() => window.__gameDebug.camera());
+      const player = () => debug(() => window.__gameDebug.player());
+      const shown = (selector) => page.locator(selector).isVisible();
+      // X, or a tap on the phone's exit button
+      const exit = async () => {
+        if (!phone) return human.press('KeyX');
+        const box = await page.locator('#touch-exit').boundingBox();
+        const point = { x: box.x + box.width / 2, y: box.y + box.height / 2, id: 3 };
+        await game.cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
+        await human.wait(60);
+        await game.cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [point] });
+      };
+      // From the step outside a door: open it if it's shut, and in until X is offered. True if in.
+      const goIn = async (id, doorId, mid) => {
+        await face(human, mid);
+        await human.wait(400);
+        const shut = ((await interior()).doors.find((d) => d.site === id && d.id === doorId)?.angle ?? 0) < 1.5;
+        const prompt = (await interior()).prompt;
+        expect(prompt === (shut ? 'Open' : 'Close'), `${id}: at its door the prompt is ${prompt}`);
+        if (shut) await human.press('KeyF');
+        const opened = await page.waitForFunction(({ id, doorId }) => window.__gameDebug.interior().doors.find((d) => d.site === id && d.id === doorId)?.angle >= 1.5
+          && window.__gameDebug.interior().held.includes(id), { id, doorId }, { timeout: 20000, polling: 200 }).then(() => true, () => false);
+        expect(opened, `${id}: its door never opened, or its inside never came`);
+        const s = await human.state(), ux = mid.x - s.x, uz = mid.z - s.z, L = Math.hypot(ux, uz);
+        await walkTo(human, { x: mid.x + (ux / L) * 1.5, z: mid.z + (uz / L) * 1.5 }, { timeout: 8000 });
+        return page.waitForFunction(() => window.__gameDebug.interior().inside && window.__gameDebug.camera().preset === 'pov', null, { timeout: 3000, polling: 100 })
+          .then(() => true, () => false);
+      };
+      const times = {};
+
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      for (const visit of VISITS) {
+        const S = site(visit.id);
+        const { mid, step, y } = doorOf(visit.id, visit.door);
+        // To the step outside its door
+        if (visit.id === 'pylon-lookout') {
+          // A walker can't be put on the footway: in a car in the corridor's lanes, then on foot (lookoutScenario())
+          await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'car', true), { ...at(S, -16.0, 26.8), h: S.yaw + Math.PI / 2 });
+          await page.waitForFunction((id) => window.__gameDebug.interior().sites.find((s) => s.id === id)?.out, visit.id, { timeout: 60000, polling: 250 });
+          await human.press('Digit1');
+          await human.wait(1500);
+          await walkTo(human, at(S, 0, 5.0));
+          expect(await walkTo(human, at(S, 0, 4.3)), 'never got onto the lookout\'s step');
+        } else {
+          // ...and again once it's in, onto its floors: a teleport onto a model's floor before it's there is pushed off by what's under it
+          const h = Math.atan2(mid.x - step.x, mid.z - step.z);
+          await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...step, h });
+          await page.waitForFunction((id) => window.__gameDebug.interior().sites.find((s) => s.id === id)?.out, visit.id, { timeout: 90000, polling: 250 });
+          await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...step, h });
+        }
+        // First person stays on outside, and through a teleport on foot: back to chase, to go in in it
+        await human.press('Digit5');
+        expect((await camera()).preset === 'chase', `${visit.id}: not in chase before going in, but ${(await camera()).preset}`);
+        expect(await goIn(visit.id, visit.door, mid), `${visit.id}: not in first person going in: ${(await interior()).inside} ${(await interior()).room}, ${(await camera()).preset}`);
+        expect(await shown(phone ? '#touch-exit' : '#exit-building'), `${visit.id}: no exit button inside`);
+        // A look up, which X levels
+        await debug(() => window.__gameDebug.look(0, 0.4));
+        const pressed = human.now();
+        await exit();
+        const out = await page.waitForFunction(() => window.__gameDebug.interior().inside === null, null, { timeout: 1000, polling: 50 }).then(() => true, () => false);
+        times[visit.id] = human.now() - pressed;
+        expect(out, `${visit.id}: still inside 1 s after X`);
+        await human.wait(300);
+        const p = await player(), s = await human.state(), c = await camera();
+        const spot = { x: +(s.x - S.x).toFixed(1), z: +(s.z - S.z).toFixed(1), y: +s.surfaceY.toFixed(2) };
+        if (visit.where === 'footpath') expect(p.footpath, `${visit.id}: not on a footpath, at ${JSON.stringify(spot)}`);
+        if (visit.where === 'footway') expect(p.onFootway, `${visit.id}: not on the footway, at ${JSON.stringify(spot)}`);
+        if (visit.where === 'floor') expect(Math.abs(s.surfaceY - y) < 0.1, `${visit.id}: at ${s.surfaceY.toFixed(2)} m, not on its door's floor at ${y.toFixed(2)}`);
+        const toDoor = Math.atan2(mid.x - s.x, mid.z - s.z);
+        expect(Math.abs(wrapTurn(toDoor - s.heading)) < 0.05, `${visit.id}: facing ${wrapTurn(toDoor - s.heading).toFixed(2)} rad off the door`);
+        expect(c.firstPerson && Math.abs(c.lookPitch) < 0.01, `${visit.id}: out in ${c.preset}, looking ${c.lookPitch.toFixed(2)} rad up`);
+        expect(!(await shown(phone ? '#touch-exit' : '#exit-building')), `${visit.id}: the exit button's still there outside`);
+        // And on: away from the door
+        for (const point of visit.on) await walkTo(human, at(S, ...point), { arrive: 0.5, timeout: 12000 });
+        const moved = Math.hypot((await human.state()).x - s.x, (await human.state()).z - s.z);
+        expect(moved >= 5, `${visit.id}: walked only ${moved.toFixed(1)} m on from the way out`);
+      }
+      metric('msToOutside', times);
+
+      // 55 Lower Fort St again: in, to a chair at the dining table, sat on it, and X
+      const L = site('lfs-west');
+      const front = doorOf('lfs-west', 'front');
+      expect(await walkTo(human, at(L, 2.8, 10.2)) && await walkTo(human, at(L, 2.8, 6.6)), 'never got back to 55\'s door');
+      expect(await goIn('lfs-west', 'front', front.mid), 'never got back into 55');
+      for (const [x, z, why] of [[2.8, 3.4, 'along its entry'], [3.2, 0.3, 'into its hall'], [1.0, 0.3, 'along its hall'], [0.25, -0.45, 'to the dining door']]) {
+        expect(await walkTo(human, at(L, x, z)), `never got ${why}`);
+      }
+      if (((await interior()).doors.find((d) => d.site === 'lfs-west' && d.id === 'dining')?.angle ?? 0) < 1.5) {
+        await face(human, at(L, 0.25, -2));
+        await human.press('KeyF');
+      }
+      for (const [x, z, why] of [[0.25, -2.0, 'into the dining room'], [-0.45, -2.7, 'to the chair']]) expect(await walkTo(human, at(L, x, z)), `never got ${why}`);
+      await face(human, at(L, -1.03, -2.7));
+      await human.wait(300);
+      expect((await interior()).prompt === 'Sit', `at the chair the prompt is ${(await interior()).prompt}`);
+      await human.press('KeyF');
+      await human.wait(1200);
+      expect((await interior()).seated, 'not sitting at the dining table');
+      await exit();
+      const fromSeat = await page.waitForFunction(() => window.__gameDebug.interior().inside === null, null, { timeout: 1000, polling: 50 }).then(() => true, () => false);
+      expect(fromSeat, 'still inside 1 s after X from the chair');
+      expect(!(await interior()).seated && (await player()).footpath, 'not up and out on the footpath from the chair');
+
+      // A reload inside: back on the footpath, where X would have put you
+      expect(await walkTo(human, at(L, 2.8, 6.6)), 'never got back to 55\'s door for the reload');
+      expect(await goIn('lfs-west', 'front', front.mid), 'never got into 55 for the reload');
+      const expected = (await interior()).exit;
+      await page.reload({ waitUntil: 'commit' });
+      await page.waitForFunction(() => document.getElementById('loading-overlay')?.classList.contains('hidden'), null, { timeout: 120000, polling: 200 });
+      await human.wait(1500);
+      const back = await human.state();
+      expect(Math.hypot(back.x - expected.x, back.z - expected.z) < 1.5 && (await player()).footpath,
+        `the reload came back at ${Math.hypot(back.x - expected.x, back.z - expected.z).toFixed(1)} m from the way out, on a footpath: ${(await player()).footpath}`);
+    }
+  };
+}
+
 // First person on foot (js/cameras.js, js/controllers.js): the mouse, locked to the game, turns you and looks up and down, or on a phone a
 // drag on the right side does; A and D, or the stick's sideways, step you aside. On Macquarie St: looking 60 degrees up and down, a half
 // turn, three metres aside each way and a circle walked with the view turning. In chase, A turns you as before. Then into the test
@@ -2104,6 +2264,8 @@ export const SCENARIOS = {
   'walk-in-phone': { ...walkInScenario(), profile: 'phone' },
   'first-person': firstPersonScenario('laptop'),
   'first-person-phone': firstPersonScenario('phone'),
+  'exit-building': exitBuildingScenario('laptop'),
+  'exit-building-phone': exitBuildingScenario('phone'),
   'lower-fort-55': lowerFortScenario(),
   'bronte-pacific': bronteScenario(),
   'bronte-pacific-phone': { ...bronteScenario(), profile: 'phone' },

@@ -1662,6 +1662,42 @@ body[data-mode='helicopter'] .gauge-alt {
   pointer-events: none;
 }
 .use-prompt[hidden], body.touch-enabled .use-prompt { display: none; }
+/* The use prompt and the exit button side by side */
+.prompt-row {
+  position: fixed;
+  z-index: 12;
+  left: 50%;
+  bottom: calc(max(var(--edge), env(safe-area-inset-bottom)) + 96px);
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
+.prompt-row .use-prompt { position: static; transform: none; white-space: nowrap; }
+.exit-building { pointer-events: auto; cursor: pointer; font-family: inherit; line-height: inherit; }
+.exit-building:hover { border-color: rgba(255, 255, 255, 0.4); }
+.exit-building:focus-visible { outline: 2px solid var(--taxi); outline-offset: 2px; }
+/* Going into a building: what first person does, for a few seconds */
+.view-hint {
+  position: fixed;
+  z-index: 12;
+  left: 50%;
+  bottom: calc(max(var(--edge), env(safe-area-inset-bottom)) + 176px);
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: var(--glass-strong);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 13px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.view-hint[hidden], .view-hint-touch, body.touch-enabled .view-hint-keys { display: none; }
+body.touch-enabled .view-hint-touch { display: inline; }
+body.touch-enabled .view-hint { bottom: auto; top: calc(max(var(--edge), env(safe-area-inset-top)) + 64px); white-space: normal; max-width: calc(100vw - 32px); text-align: center; }
+.view-hint kbd { padding: 0 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.16); font: inherit; font-weight: 600; }
 /* Over the use prompt, where both show */
 .look-hint { bottom: calc(max(var(--edge), env(safe-area-inset-bottom)) + 136px); padding-right: 14px; }
 .look-hint kbd { padding: 0 8px; }

@@ -334,8 +334,10 @@ class CameraSystem {
     this._turnEntity = null;
   }
 
-  resetForTeleport() {
-    // Arrive with a fresh chase view, without carrying a previous drive or gesture into the destination.
+  // Arrive with a fresh chase view, without carrying a previous drive or gesture into the destination. On foot in first person, if
+  // `keepFirstPerson`, it stays first person, looking level.
+  resetForTeleport(keepFirstPerson = false) {
+    const keep = keepFirstPerson && this.firstPerson;
     this._clearPointers();
     this.isDragging = false;
     this.resetOrbit();
@@ -347,7 +349,8 @@ class CameraSystem {
     this._turnEntity = null;
     this.glide = null;
     this._eyeY = null;
-    this.setCameraPreset('chase', true);
+    if (keep) this.initialized = false;
+    else this.setCameraPreset('chase', true);
   }
 
   getActivePreset() {

@@ -17,6 +17,8 @@
 //   outline: [[h, [[x, z], ...]], ...] in its frame: what the map draws for it (js/city-map.js), as it draws the buildings in the tiles,
 //     a ring for each house or part, h m high for the map's shade. Every site that replaces the map's buildings has one, or there'd be
 //     a hole where they were. Its far version's footprint from above (tests/model-sites.test.mjs)
+//   exit: where X takes you out of its inside (js/interior-data.js exitSpot()): [x, z, heading, y] in its frame, or 'door' for the step
+//     outside its door; without it, the footpath in front of its front door, by the street nearest it, or that step if there's none
 const MODEL_SITES = [
   // A plain two-storey house on Hyde Park's lawn, for the walk-in scenario and the unit tests
   { id: 'test-interior', file: 'models/test-interior', x: 440, z: -300, yaw: 0, y: null, debug: true, replaces: [] },
@@ -39,7 +41,8 @@ const MODEL_SITES = [
   },
   // The Sydney Opera House near it: its podium, steps and glass, which the game's own (js/opera-house.js) stand in for further off; and
   // the Concert Hall, through its south doors. Unturned, its heights the world's. Further off, the game's plain version is its far one.
-  { id: 'opera-house', file: 'models/opera-house', x: 505, z: -1862, yaw: 0, y: 0, reach: 160, replaces: [] },
+  // Out of the hall, onto the podium at its doors: there's no street up there.
+  { id: 'opera-house', file: 'models/opera-house', x: 505, z: -1862, yaw: 0, y: 0, reach: 160, replaces: [], exit: 'door' },
   // The Ribbon, Darling Harbour: a curved glass slab between the Western Distributor and its on-ramp, in place of the map's box of its
   // outline. The world's frame, moved to its middle.
   {
@@ -55,6 +58,7 @@ const MODEL_SITES = [
     ]
   },
   // The Pylon Lookout, in the Harbour Bridge's south-east pylon: its door off the footway, the foyer and the floor over it, up its stair.
+  // Out onto the footway at its door.
   // In the hollow js/harbour-bridge.js leaves in the pylon's granite (lookoutPlace()): its middle, the footway's height, turned with
   // +z towards the footway. Near only: the pylon is the game's.
   // Sydney Tower and Westfield's podium round its foot, in place of the map's podium, with its foyer behind a door on Market St: built
@@ -71,7 +75,8 @@ const MODEL_SITES = [
         [53.17, -68.17]]]
     ]
   },
-  { id: 'pylon-lookout', file: 'models/pylon-lookout', x: -41.2543, z: -2066.4534, yaw: -1.91484, y: 49.0219, reach: 40, near: 150, replaces: [] },
+  { id: 'pylon-lookout', file: 'models/pylon-lookout', x: -41.2543, z: -2066.4534, yaw: -1.91484, y: 49.0219, reach: 40, near: 150, replaces: [],
+    exit: 'door' },
   // Salesforce Tower, 180 George St, Circular Quay: 263 m, in place of the map's box of its outline, its foyer behind a door on George
   // St. Its frame: 21 m in from the middle of its George St face, +z out through that face; the footpath at the door.
   {

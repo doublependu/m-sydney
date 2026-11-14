@@ -134,6 +134,51 @@ function nearestLane(x, z, heading, y, surface = 0, isClear = () => true, limit 
   return null;
 }
 
+// Out of a building to its footpath (js/interior-data.js exitSpot()): how far from its door its street can be, how far its height from the
+// door's, how far round from straight out of the door (cos: 60 degrees), and how far in from the kerb to stand. A driveway or a lane
+// behind (OSM's `service`) isn't the street in front, nor is one round the corner.
+const STREET = { NEAR: 40, LEVEL: 4, AHEAD: 0.5, KERB_IN: 1.0 };
+const SERVICE = 9; // js/surfaces.js ROAD_CLASSES
+
+/**
+ * The footpath in front of (x, z), at height y, coming out of a building whose door faces `heading` (out from it): the nearest street on
+ * the ground within `limit` (not in a tunnel, on a deck or a motorway) that's out in front, then in from its middle line towards (x, z)
+ * to where the kerbed footpath starts, and KERB_IN further (no further than (x, z) itself). `isClear(x, z)`: nothing in the way.
+ * { x, z, d (m from (x, z)), road } or null.
+ */
+function footpathFrom(x, z, y, heading, isClear = () => true, limit = STREET.NEAR) {
+  const hx = Math.sin(heading), hz = Math.cos(heading);
+  index();
+  let best = null;
+  // A ring further than the limit: a segment is indexed in the cells at points along it, which can step past a corner it cuts
+  const r = Math.ceil(limit / CELL) + 1, cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
+  for (let i = -r; i <= r; i++) {
+    for (let j = -r; j <= r; j++) {
+      for (const { link, p, ux, uz, L } of laneCells.get((cx + i) * 100000 + cz + j) || []) {
+        if (link.kind || link.deck || link.motorway || link.cls === SERVICE) continue;
+        const t = Math.max(0, Math.min(L, (x - p.x) * ux + (z - p.z) * uz));
+        const px = p.x + ux * t, pz = p.z + uz * t, d = Math.hypot(px - x, pz - z);
+        if (d > limit || (best && d >= best.d)) continue;
+        if ((px - x) * hx + (pz - z) * hz < STREET.AHEAD * d || Math.abs(roadHeight(link, px, pz) - y) > STREET.LEVEL) continue;
+        best = { px, pz, d, link };
+      }
+    }
+  }
+  if (!best || best.d < 0.5) return null;
+  const ux = (x - best.px) / best.d, uz = (z - best.pz) / best.d;
+  for (let s = 0; s <= best.d; s += 0.1) {
+    if (!walkable(best.px + ux * s, best.pz + uz * s)) continue;
+    // The kerb: a metre in, or as near that as is clear and on the footpath
+    for (const more of [0, 0.5, -0.5, 1, -0.7, 1.5, 2]) {
+      const k = Math.min(best.d, s + Math.max(0.3, STREET.KERB_IN + more));
+      const qx = best.px + ux * k, qz = best.pz + uz * k;
+      if (walkable(qx, qz) && isClear(qx, qz)) return { x: qx, z: qz, d: best.d - k, road: best.link.name ?? null };
+    }
+    return null;
+  }
+  return null;
+}
+
 /** The height to fly at over (x, z), above the ground there. `roofs`: [{ top (above sea level), away (m) }] */
 function flyingHeight(roofs, ground, least = 0) {
   const around = roofs.filter((r) => r.away <= FLY.AREA).map((r) => r.top).sort((a, b) => a - b);
@@ -227,4 +272,4 @@ function arrivalFor(mode, from, world) {
   return path && { x: path.x, z: path.z, heading, surface: 0 };
 }
 
-export { FLY, FOOTWAY, arrivalFor, flyingHeight, footwayNear, holdOnFootway, nearestFootpath, nearestLane, roadEdge, walkable };
+export { FLY, FOOTWAY, STREET, arrivalFor, flyingHeight, footpathFrom, footwayNear, holdOnFootway, nearestFootpath, nearestLane, roadEdge, walkable };

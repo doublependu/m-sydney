@@ -263,7 +263,55 @@ function seatInReach(seats, x, y, z, reach = SEAT_REACH) {
   return best;
 }
 
+const DOOR_STEP = 1.4; // m out from a door's middle that the step outside it is
+
+/**
+ * The step outside a door of a site (model frame): DOOR_STEP out from its middle, on whichever side isn't in a room of its inside, and
+ * the heading that faces the door from there. `door`: the outside's ({ hinge, latch, y0 }), `rooms` the inside's. { x, z, heading } or
+ * null.
+ */
+function doorStep(door, rooms, out = DOOR_STEP) {
+  const { hinge, latch } = door;
+  const cx = (hinge[0] + latch[0]) / 2, cz = (hinge[1] + latch[1]) / 2;
+  const L = Math.hypot(latch[0] - hinge[0], latch[1] - hinge[1]);
+  if (L < 1e-6) return null;
+  const nx = -(latch[1] - hinge[1]) / L, nz = (latch[0] - hinge[0]) / L;
+  for (const side of [1, -1]) {
+    const x = cx + nx * side * out, z = cz + nz * side * out;
+    if (!roomAt(rooms, x, door.y0 + 0.1, z)) return { x, z, heading: Math.atan2(-nx * side, -nz * side) };
+  }
+  return null;
+}
+
+/**
+ * Out of a site's inside, to the street (X, js/main.js), in the world's frame: { x, z, heading, y (the door's floor), via, door }, or
+ * null. Where to (README, "Building models"):
+ * - the site's own `exit` (js/model-sites.js): [x, z, heading, y over the site] in its frame (via 'exit'), or 'door' for the step
+ *   outside its door (via 'door');
+ * - otherwise the step outside its `front` door, or the first that leads in, and from there `footpath(x, z, y, heading)`: the footpath
+ *   in front, by the street nearest the door out in front of it (js/arrivals.js footpathFrom()), if there's one near enough (via
+ *   'footpath');
+ * facing the door, so you see the building you came out of. `doors`: the outside's, `rooms` the inside's (JSON).
+ */
+function exitSpot(site, doors, rooms, footpath = null) {
+  if (Array.isArray(site.exit)) {
+    const [x, z, heading, y = 0] = site.exit;
+    return { ...toWorld(site, x, z), heading: heading + site.yaw, y: site.y + y, via: 'exit', door: null };
+  }
+  const leads = doors.filter((d) => d.inside);
+  const door = leads.find((d) => d.id === 'front') ?? leads[0];
+  const step = door && doorStep(door, rooms);
+  if (!step) return null;
+  const at = toWorld(site, step.x, step.z);
+  const middle = toWorld(site, (door.hinge[0] + door.latch[0]) / 2, (door.hinge[1] + door.latch[1]) / 2);
+  const y = site.y + door.y0;
+  const path = site.exit !== 'door' && footpath ? footpath(at.x, at.z, y, step.heading + site.yaw + Math.PI) : null;
+  if (!path) return { ...at, heading: step.heading + site.yaw, y, via: 'door', door: door.id };
+  return { x: path.x, z: path.z, heading: Math.atan2(middle.x - path.x, middle.z - path.z), y, via: 'footpath', door: door.id };
+}
+
 export {
-  DOOR_TIME, REACH, SEAT_REACH, STEP_UP, WALKER, clearOf, doorCollider, doorInReach, doorway, eyeReach, floorAt, floorHeight, headroom, inPoly,
-  leafAt, lineToWalls, roomAt, seatInReach, segmentCollider, standSpot, toLocal, toWorld, visibleRooms, wallCollider
+  DOOR_STEP, DOOR_TIME, REACH, SEAT_REACH, STEP_UP, WALKER, clearOf, doorCollider, doorInReach, doorStep, doorway, exitSpot, eyeReach, floorAt,
+  floorHeight, headroom, inPoly, leafAt, lineToWalls, roomAt, seatInReach, segmentCollider, standSpot, toLocal, toWorld, visibleRooms,
+  wallCollider
 };

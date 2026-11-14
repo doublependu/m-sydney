@@ -9,7 +9,7 @@ import { buildTileGround, buildWater } from './city-grid.js';
 import { addHarbourBridge, addTowerSigns, buildLandmarks } from './landmarks.js';
 import { buildMovingScenery } from './moving-scenery.js';
 import { createCityBlocks } from './buildings.js';
-import { walkable } from './arrivals.js';
+import { footpathFrom, walkable } from './arrivals.js';
 import { ThirdPersonControllerManager } from './controllers.js';
 import { TouchControls } from './touch-controls.js';
 import { PhoneHud } from './phone-hud.js';
@@ -418,10 +418,14 @@ async function initApp() {
 
   function renderControlHints(mode) {
     if (!elControlsHint) return;
+    // In a building: X, out of it, in place of running and jumping, so the row still fits its 600 px
+    const out = mode === 'person' && inBuilding;
     if (mode === 'person' && cameraSystem.firstPerson) mode = cameraSystem.pointerLocked ? 'firstPersonLocked' : 'firstPerson';
-    if (elControlsHint.dataset.shows === mode) return;
-    elControlsHint.dataset.shows = mode;
-    const items = (controlHints[mode] || []).map(([keys, action]) => {
+    const shows = out ? `${mode} out` : mode;
+    if (elControlsHint.dataset.shows === shows) return;
+    elControlsHint.dataset.shows = shows;
+    const hints = controlHints[mode] || [];
+    const items = (out ? [...hints.filter(([keys]) => keys[0] !== 'Shift' && keys[0] !== 'Space'), [['X'], 'Exit']] : hints).map(([keys, action]) => {
       const item = document.createElement('span');
       item.className = 'hint';
       for (const key of keys) {
@@ -461,6 +465,12 @@ async function initApp() {
 
   function selectMode(mode) {
     controllerManager.setMode(mode);
+    // Off your feet, the camera you had before going into a building put you in first person, if you haven't chosen one since
+    if (autoFrom && controllerManager.activeMode !== 'person') {
+      const back = autoFrom;
+      if (cameraSystem.activePresetId === 'pov') selectCamera(back, false);
+      autoFrom = null;
+    }
     touchControls.setMode(controllerManager.activeMode);
     gamepadControls.reset();
     modeButtons.forEach((btn) => {
@@ -481,7 +491,10 @@ async function initApp() {
   }
 
   // `gesture`: chosen by a key press or a click, which the browser lets the page lock the mouse on
+  let autoFrom = null; // the camera going into a building took you out of (setInBuilding()), until you choose another
+  let inBuilding = false; // on foot in a room of an inside under a roof (js/interiors.js `building`)
   function selectCamera(camId, snap = false, gesture = false) {
+    autoFrom = null;
     cameraSystem.setCameraPreset(camId, snap);
     cameraButtons.forEach((btn) => {
       btn.classList.toggle('active', btn.getAttribute('data-camera') === camId);
@@ -685,8 +698,11 @@ async function initApp() {
     standOnSurfaces();
     touchControls.reset();
     gamepadControls.reset();
-    cameraSystem.resetForTeleport();
-    selectCamera('chase', true);
+    // On foot in first person, it stays, looking level; otherwise the chase camera
+    const keep = cameraSystem.firstPerson;
+    cameraSystem.resetForTeleport(keep);
+    if (!keep) selectCamera('chase', true);
+    else syncFirstPerson();
     mapSystem.waypoint = {
       x: destination.x,
       z: destination.z,
@@ -777,6 +793,9 @@ async function initApp() {
         break;
       case 'KeyH':
         if (hudToggleBtn) hudToggleBtn.click();
+        break;
+      case 'KeyX':
+        if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) exitBuilding();
         break;
       case 'KeyN':
         if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) audioSystem.setEnabled(!audioSystem.enabled);
@@ -1136,6 +1155,8 @@ async function initApp() {
     },
     // Far versions as far as the far level reaches at most: each is a draw or two, and a few KB
     farReach: () => (worldCompleteAt === null ? 0 : quality.farRange),
+    // The way out to the footpath, clear for a walker
+    footpath: (x, z, y, heading) => footpathFrom(x, z, y, heading, (px, pz) => controllerManager.spotClear('person', px, pz, 0)),
     debug: new URLSearchParams(location.search).get('debug') === '1'
   });
   let indoors = false;
@@ -1148,6 +1169,63 @@ async function initApp() {
     cameraSystem.indoors = on;
   }
   interiorReturn = () => interiors.returnSpot();
+
+  // Into a building on foot, in the chase or the action camera: first person, gliding in from where it was, and it stays outside. A
+  // camera chosen inside holds till you next go in, after a second or more outside: a step back through the doorway isn't going in.
+  const OUT_FOR = 1000; // ms
+  let outSince = -Infinity;
+  const viewHint = document.getElementById('view-hint');
+  let viewHintTimer = 0;
+  function setInBuilding(on) {
+    if (on === inBuilding) return;
+    inBuilding = on;
+    const now = performance.now();
+    if (!on) outSince = now;
+    else if (now - outSince >= OUT_FOR && controllerManager.activeMode === 'person' && !cameraSystem.fixedView
+      && (cameraSystem.activePresetId === 'chase' || cameraSystem.activePresetId === 'action')) {
+      const was = cameraSystem.activePresetId;
+      selectCamera('pov');
+      autoFrom = was;
+      if (viewHint) {
+        viewHint.hidden = false;
+        clearTimeout(viewHintTimer);
+        viewHintTimer = setTimeout(() => { viewHint.hidden = true; }, 5000);
+      }
+    }
+    if (exitButton) exitButton.hidden = !on;
+    if (touchExit) touchExit.hidden = !on;
+    renderControlHints(controllerManager.activeMode);
+  }
+
+  // X, or the exit button: out of the building to the footpath in front of it, facing it (js/interiors.js exitSpot()), behind a short fade.
+  // Up off a seat first. The camera stays as it is, looking level.
+  const exitButton = document.getElementById('exit-building');
+  const touchExit = document.getElementById('touch-exit');
+  function exitBuilding() {
+    if (!interactive || pauseMenu.isOpen || mapSystem.isFullMapOpen || !inBuilding || controllerManager.activeMode !== 'person') return null;
+    const spot = interiors.exitSpot();
+    if (!spot) return null;
+    if (controllerManager.standUp()) interiors.stood();
+    const placed = controllerManager.placeWalker(spot.x, spot.z, spot.heading, spot.y);
+    if (!placed) return null;
+    standOnSurfaces();
+    touchControls.reset();
+    gamepadControls.reset();
+    if (cameraSystem.firstPerson) cameraSystem.resetForTeleport(true);
+    else {
+      cameraSystem.resetOrbit();
+      cameraSystem.snap();
+    }
+    if (viewHint) viewHint.hidden = true;
+    document.getElementById('mode-fade')?.animate?.([{ opacity: 1 }, { opacity: 0 }], { duration: 260, easing: 'ease-out' });
+    return { ...placed, via: spot.via };
+  }
+  exitButton?.addEventListener('click', () => exitBuilding());
+  touchExit?.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    exitBuilding();
+  });
   const lookDirection = new THREE.Vector3();
   const useActions = { sit: (seat) => controllerManager.sitAt(seat), stand: () => controllerManager.standUp() };
   const useInterior = () => interiors.use(useActions);
@@ -1638,6 +1716,8 @@ async function initApp() {
       mapImage: (x0, z0, size, px, buildings) => mapSystem.renderImage(x0, z0, size, px, buildings),
       farBuildings: async (key) => (await fetchFarFile(key)).buildings,
       interior: () => interiors.state(),
+      // X, as a scenario presses it: { x, z, footway, via } where it put you, or null
+      exitBuilding: () => exitBuilding(),
       // What the walker can bump into within r of (x, z): each collider's bounds and heights, and whether it's a model's (`level`)
       collidersNear: (x, z, r) => controllerManager.nearColliders(x, z, r)
         .filter((c) => c.maxX > x - r && c.minX < x + r && c.maxZ > z - r && c.minZ < z + r)
@@ -2140,6 +2220,7 @@ async function initApp() {
       const head = follows ? { x: followed.position.x, y: firstPerson ? eye.y : bodyY + 1.8, z: followed.position.z } : null;
       const here = interiors.update(dt, followed, controllerManager.activeMode, eye, cameraSystem.camera.getWorldDirection(lookDirection), head);
       setIndoors(here.indoors);
+      setInBuilding(here.building && controllerManager.activeMode === 'person');
       indoorShelter = here.shelter ?? 0.85;
       showPrompt(here.prompt);
       const near = here.kept || firstPerson ? 0.1 : 0.35;

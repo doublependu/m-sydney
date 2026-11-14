@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import test from 'node:test';
 import { readModel, triangles } from './helpers/glb.mjs';
 
@@ -75,3 +77,54 @@ for (const site of MODEL_SITES.filter((s) => s.outline && s.far)) {
     }
   });
 }
+
+// The way out of every inside (X, js/interior-data.js exitSpot()), worked out on the tiles round each site by tests/helpers/exit-spots.mjs:
+// the sites are up to 20 km apart, so no one SYDNEY_TILES box holds them all. Each street the footpath's on, or how it gets there.
+const EXITS = {
+  'test-interior': 'door', 'lfs-west': 'Lower Fort Street', 'opera-house': 'door', 'sydney-tower': 'Market Street', 'pylon-lookout': 'door',
+  // The towers' doors open onto forecourts: the streets within reach are lanes, or behind them
+  'salesforce-tower': 'door', 'ey-centre': 'door', 'customs-house': 'door', 'crown-sydney': 'door',
+  'bronte-pacific': 'Pacific Street', 'cove-st-41': 'Cove Street', 'cove-st-43': 'Cove Street', 'school-st': 'Gallimore Avenue',
+  'denning-st': 'Denning Street',
+  // Down long drives, the street's out of reach
+  'quarry-rd': 'door', 'parklea-close': 'door', 'parklea-cottage': 'door', 'wolseley-rd': 'door'
+};
+const model = (name) => JSON.parse(fs.readFileSync(new URL(`../public/models/${name}.json`, import.meta.url), 'utf8'));
+const withInside = MODEL_SITES.filter((s) => model(s.file.replace('models/', '')).doors?.some((d) => d.inside));
+
+test('every site with an inside has its way out listed here', () => {
+  assert.deepEqual(withInside.map((s) => s.id).sort(), Object.keys(EXITS).sort());
+});
+
+test('the way out of every inside: outside it, on a footpath, its own floor or the footway, clear, near its door and facing it', () => {
+  const tile = (v) => Math.floor(v / 1000);
+  const groups = new Map(); // the sites in each 3 km box, one process each
+  for (const site of withInside) {
+    const key = `${Math.floor(tile(site.x) / 3)},${Math.floor(tile(site.z) / 3)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(site);
+  }
+  const found = {};
+  for (const sites of groups.values()) {
+    // The tiles round each, as the game holds them: a kerbed block's outline can be in the next tile's
+    const xs = sites.flatMap((s) => [tile(s.x) - 1, tile(s.x) + 1]), zs = sites.flatMap((s) => [tile(s.z) - 1, tile(s.z) + 1]);
+    const out = execFileSync('node', ['tests/helpers/exit-spots.mjs', ...sites.map((s) => s.id)], {
+      cwd: new URL('..', import.meta.url), env: { ...process.env, SYDNEY_TILES: [Math.min(...xs), Math.min(...zs), Math.max(...xs), Math.max(...zs)].join(',') }
+    });
+    Object.assign(found, JSON.parse(out.toString()));
+  }
+  for (const [id, want] of Object.entries(EXITS)) {
+    const f = found[id], where = `${id}: the way out`;
+    assert.ok(f?.spot, `${where}: none`);
+    assert.equal(f.spot.via === 'footpath' ? f.road : f.spot.via, want, `${where} (${JSON.stringify(f.spot)})`);
+    assert.equal(f.room, null, `${where} is in its room ${f.room}`);
+    assert.ok(f.land, `${where} is in the water`);
+    assert.ok(f.clear, `${where} isn't clear of its walls or the map's buildings`);
+    assert.ok(f.fromDoor <= 50, `${where} is ${f.fromDoor} m from its door`);
+    assert.ok(f.facing < 0.01, `${where} faces ${f.facing} rad off its door`);
+    if (f.spot.via === 'footpath') assert.ok(f.walkable, `${where} isn't on a footpath`);
+    else assert.ok(f.walkable || f.onFloor || f.footway, `${where} is on no footpath, floor of its own or footway`);
+  }
+  assert.ok(found['pylon-lookout'].footway, 'the Pylon Lookout\'s way out isn\'t onto the footway');
+  assert.ok(found['opera-house'].onFloor, 'the Opera House\'s way out isn\'t onto its podium');
+});

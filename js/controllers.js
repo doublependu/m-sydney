@@ -492,6 +492,24 @@ class ThirdPersonControllerManager {
     return Math.hypot(next.position.x - from.x, next.position.z - from.z);
   }
 
+  /**
+   * The walker put at (x, z), facing `heading`, just as it is: a spot found clear for it (js/interior-data.js exitSpot()), out of a
+   * building. On the Harbour Bridge's footway if that's there at about height y, as getting out of a car on the bridge puts you, and the
+   * ground otherwise. Returns { x, z, footway }, or null off your feet.
+   */
+  placeWalker(x, z, heading, y) {
+    if (this.activeMode !== 'person') return null;
+    const held = holdOnFootway(x, z);
+    const footway = !!held && Math.abs(held.y - y) < 1;
+    this.teleportActiveTo(footway ? held.x : x, footway ? held.z : z, heading, null, footway ? DECK_SID : 0, true);
+    const p = this.entities.person;
+    if (footway) {
+      p.onFootway = true;
+      p.position.y = this.getGroundHeight(p.position.x, p.position.z, 'person');
+    }
+    return { x: p.position.x, z: p.position.z, footway };
+  }
+
   // The car, if it's parked and showing: traffic goes round it
   parkedCar() {
     const car = this.entities.car;

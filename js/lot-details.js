@@ -2,11 +2,14 @@ import * as THREE from 'three/webgpu';
 import { blockAt } from './city-config.js';
 import { groundHeight, groundRoadAt, linkById, roadHeight } from './surfaces.js';
 import { streetFront, tileStreets } from './street-front.js';
-import { lawnSurface, pavingSurface } from './garden.js';
+import { PATH_SURFACES, gardenMaterials, lawnSurface, pavingSurface } from './garden.js';
 import { MODEL_SITES, toWorldOf } from './model-sites.js';
-import { TILE, heldTiles, isHeld, tileExists, tileKey } from './geodata.js';
+import { GEO, TILE, heldList, heldTiles, isHeld, tileExists, tileKey } from './geodata.js';
 import { MARGIN, squareLots } from './house-lots.js';
-import { createConcreteMaterial, createFenceMaterial } from './tsl-materials.js';
+import { lotThings } from './lot-things.js';
+import { squareVerge, walkLine } from './verge.js';
+import { createConcreteMaterial, createFenceMaterial, createLotThingMaterial, createParkLawnMaterial } from './tsl-materials.js';
+import { outsideTunnelMouths } from './tunnel-mouths.js';
 import { anchorToOrigin, onOriginMove, origin } from './world-origin.js';
 import { activity, runToEnd } from './world-jobs.js';
 
@@ -15,15 +18,25 @@ import { activity, runToEnd } from './world-jobs.js';
 // (js/controllers.js addWalkerColliders()).
 // - The map is worked out in SQUARE m squares, one at a time, as the world's jobs have time (js/main.js), each once every tile within
 //   MARGIN of it is built, and kept while those tiles are.
-// - What's drawn is two instanced meshes: every fence panel, and every slab of concrete (driveways, crossovers, laybacks). They're
-//   refilled from the squares held when you've moved REFILL m, nearest first, as many as the level has room for.
+// - What's drawn is three instanced meshes: every fence panel (front fences' too), every slab of concrete (driveways, crossovers,
+//   laybacks, paths), and every box of the lots' things (js/lot-things.js: carports, garages, brick walls, hedges, shrubs, letterboxes,
+//   verandahs), the small ones only within the level's SMALL m; and the verges (js/verge.js), the nature strips' lawn and their
+//   footpaths, as two meshes. They're refilled from the squares held when you've moved REFILL m, nearest first, as many as the level has
+//   room for. The trees the verges add go to the street furniture's tree field (js/street-details.js), within houseDetail of you.
 
 const SQUARE = 500; // m: two to a tile's side
 const REFILL = 15; // m moved before what's drawn is chosen again
 const HOLD = 120; // m round you that fences hold the walker
+const FENCE_HOLD = 1.8; // m: a fence's collider, where it doesn't say
 const KEEP = 300; // m past houseDetail that a square's lots are kept
 // Instances each level has room for: a panel is 2 triangles, a slab 10; fences cast shadows on medium and high
-const ROOM = { low: { panels: 1600, slabs: 700 }, medium: { panels: 4500, slabs: 1800 }, high: { panels: 6500, slabs: 2600 } };
+const ROOM = { low: { panels: 1600, slabs: 900, things: 1200, lawn: 30000, path: 15000 },
+  medium: { panels: 4500, slabs: 2200, things: 3000, lawn: 90000, path: 45000 },
+  high: { panels: 6500, slabs: 3000, things: 4200, lawn: 140000, path: 70000 } }; // things are boxes of 12 triangles; lawn and path in vertices
+const SMALL = { low: 50, medium: 70, high: 90 }; // m: the lots' small things (letterboxes, shrubs, posts) drawn within this of you
+const THINGS = { low: 70, medium: 110, high: 130 }; // m: and the rest of them, and the paths to the doors
+// The verges' trees planted, the nearest: each is most of a thousand triangles near, with its shadows
+const TREES = { low: 6, medium: 12, high: 16 };
 const THICK = [0.12, 0.12, 0.34]; // m of concrete under a slab's top: driveway, crossover, layback
 // The inner city, where the map paves the kerb islands right through and there's no lawn to keep a fence on (tools/geodata/region-worker.mjs
 // PAVED_AREA)
@@ -129,6 +142,43 @@ function* squareWork(square, tiles) {
       }
     }
   }
+  // The map's trees in the square's tiles, in cells, and which species its street trees are round a point
+  const TCELL = 40, treeCells = new Map();
+  for (const key of tilesFor(square)) {
+    const t = tiles.get(key)?.trees;
+    if (!t) continue;
+    for (let i = 0; i < t.kinds.length; i++) {
+      if (i % 4096 === 4095) yield;
+      const x = t.points[i * 2], z = t.points[i * 2 + 1];
+      if (x < x0 || x > x1 || z < z0 || z > z1) continue;
+      // Flat, as x, z, species: there are tens of thousands
+      const k = Math.floor(x / TCELL) * 100000 + Math.floor(z / TCELL);
+      (treeCells.get(k) || treeCells.set(k, []).get(k)).push(x, z, t.kinds[i]);
+    }
+  }
+  const treesNear = (x, z, r) => {
+    const out = [];
+    for (let ix = Math.floor((x - r) / TCELL); ix <= Math.floor((x + r) / TCELL); ix++) {
+      for (let iz = Math.floor((z - r) / TCELL); iz <= Math.floor((z + r) / TCELL); iz++) {
+        const c = treeCells.get(ix * 100000 + iz);
+        if (!c) continue;
+        for (let i = 0; i < c.length; i += 3) if (Math.hypot(c[i] - x, c[i + 1] - z) <= r) out.push({ x: c[i], z: c[i + 1], species: c[i + 2] });
+      }
+    }
+    return out;
+  };
+  // The street trees' own six species (js/trees.js): the most common round a point, or a suburb's usual mix where there are none
+  const STREET_MIX = [2, 2, 2, 5, 5, 0, 0, 1];
+  const speciesAt = (x, z, roll) => {
+    const count = new Map();
+    for (const t of treesNear(x, z, 200)) if (t.species < 6) count.set(t.species, (count.get(t.species) || 0) + 1);
+    const common = [...count].sort((p, q) => q[1] - p[1]);
+    if (common.length && roll < 0.8) return common[0][0];
+    return STREET_MIX[Math.floor(roll * STREET_MIX.length) % STREET_MIX.length];
+  };
+  const busStops = [];
+  const stops = heldList('busShelters');
+  for (let i = 0; i < stops.length; i += 2) if (stops[i] >= x0 && stops[i] <= x1 && stops[i + 1] >= z0 && stops[i + 1] <= z1) busStops.push({ x: stops[i], z: stops[i + 1] });
   const roadsNear = (x, z, r) => {
     const best = new Map();
     for (let ix = Math.floor((x - r) / CELL); ix <= Math.floor((x + r) / CELL); ix++) {
@@ -213,9 +263,58 @@ function* squareWork(square, tiles) {
       const road = groundRoadAt(x, z);
       return road ? roadHeight(road, x, z) : groundHeight(x, z);
     },
-    sites: sitesNear((square.x0 + square.x1) / 2, (square.z0 + square.z1) / 2, SQUARE + MARGIN)
+    sites: sitesNear((square.x0 + square.x1) / 2, (square.z0 + square.z1) / 2, SQUARE + MARGIN),
+    // For each lot's things and the verges
+    lotThings: (lot, near) => lotThings(lot, near, env),
+    links: [...links],
+    pavingTris: paving.trianglesIn,
+    lawnTris: lawn.trianglesIn,
+    busStops,
+    trees: { near: treesNear, species: speciesAt },
+    corner: GEO.frame.corner,
+    paved: (x, z) => x >= PAVED_AREA.x0 && x <= PAVED_AREA.x1 && z >= PAVED_AREA.z0 && z <= PAVED_AREA.z1
   };
   return { entries, env };
+}
+
+/** A unit box from (-0.5, 0, -0.5) to (0.5, 1, 0.5): each of the lots' things */
+function thingGeometry() {
+  const box = new THREE.BoxGeometry(1, 1, 1);
+  box.translate(0, 0.5, 0);
+  return box;
+}
+
+/** A mesh drawn from `capacity` vertices filled as wanted: the verges' lawn or footpath */
+function vergeMesh(capacity, material, colour = null) {
+  const g = new THREE.BufferGeometry();
+  const position = new THREE.Float32BufferAttribute(new Float32Array(capacity * 3), 3);
+  position.setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('position', position);
+  const normals = new Float32Array(capacity * 3);
+  for (let i = 1; i < normals.length; i += 3) normals[i] = 1;
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  if (colour) {
+    const colours = new Float32Array(capacity * 3);
+    for (let i = 0; i < capacity; i++) colours.set(colour, i * 3);
+    g.setAttribute('color', new THREE.Float32BufferAttribute(colours, 3));
+  }
+  g.setDrawRange(0, 0);
+  const mesh = new THREE.Mesh(g, material);
+  mesh.receiveShadow = true;
+  mesh.castShadow = false;
+  return mesh;
+}
+
+// The nature strips' lawn: the parks' lawn, over the paving as the garden's paths are
+let vergeLawn = null;
+function vergeLawnMaterial() {
+  if (vergeLawn) return vergeLawn;
+  vergeLawn = createParkLawnMaterial(false);
+  vergeLawn.polygonOffset = true;
+  vergeLawn.polygonOffsetFactor = -2;
+  vergeLawn.polygonOffsetUnits = -2;
+  vergeLawn.maskNode = outsideTunnelMouths();
+  return vergeLawn;
 }
 
 /**
@@ -223,7 +322,7 @@ function* squareWork(square, tiles) {
  * tile is built; `walker`: { add(list), remove(list) } for the fences' colliders; `shadows`: whether they cast them.
  */
 function createLotDetails({ level = 'high', reach = () => 260, built = () => false, walker = null, shadows = true } = {}) {
-  const room = ROOM[level] || ROOM.high;
+  const room = ROOM[level] || ROOM.high, small = SMALL[level] || SMALL.high, thingsReach = THINGS[level] || THINGS.high;
   const group = new THREE.Group();
   group.name = 'HouseLots';
 
@@ -242,14 +341,34 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
   slabs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   slabs.setColorAt(0, new THREE.Color(1, 1, 1));
   slabs.instanceColor.setUsage(THREE.DynamicDrawUsage);
-  for (const mesh of [fences, slabs]) {
+  const thingData = new THREE.InstancedBufferAttribute(new Float32Array(room.things * 4), 4);
+  thingData.setUsage(THREE.DynamicDrawUsage);
+  const thingGeo = thingGeometry();
+  thingGeo.setAttribute('thing', thingData);
+  const things = new THREE.InstancedMesh(thingGeo, createLotThingMaterial(), room.things);
+  things.name = 'LotThings';
+  things.castShadow = shadows;
+  things.receiveShadow = true;
+  things.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  things.setColorAt(0, new THREE.Color(1, 1, 1));
+  things.instanceColor.setUsage(THREE.DynamicDrawUsage);
+  for (const mesh of [fences, slabs, things]) {
     mesh.userData.lifted = true; // written on the ground already
     mesh.count = 0;
     group.add(mesh);
   }
+  const lawns = vergeMesh(room.lawn, vergeLawnMaterial());
+  lawns.name = 'VergeLawn';
+  const paths = vergeMesh(room.path, gardenMaterials().paths, PATH_SURFACES[1]);
+  paths.name = 'VergePath';
+  for (const mesh of [lawns, paths]) {
+    mesh.userData.lifted = true;
+    mesh.frustumCulled = false; // what's in it is chosen near you
+    group.add(mesh);
+  }
 
-  const squares = new Map(); // key -> { square, keys (the tiles it needs), result (squareLots()) }
-  let filledAt = null, changed = true, originMoved = false;
+  const squares = new Map(); // key -> { square, keys (the tiles it needs), result (squareLots(), with its verge) }
+  let filledAt = null, changed = true, originMoved = false, treesVersion = 0;
   let held = new Set(); // the colliders handed to the walker
   onOriginMove(() => { originMoved = true; });
 
@@ -281,10 +400,14 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
         if (!next || d < next.d) next = { key, square, keys, d };
       }
     }
+    pending = !!next;
     if (next) {
       activity.label = 'houses\' lots';
       const { entries, env } = yield* squareWork(next.square, heldByKey());
       const result = yield* squareLots(entries, env, next.square);
+      result.verge = yield* squareVerge(result.fronting, env, next.square);
+      result.fronting = null;
+      treesVersion++;
       // Let go of while it was worked out
       if (next.keys.every((k) => isHeld(k))) squares.set(next.key, { square: next.square, keys: next.keys, result });
       changed = true;
@@ -298,14 +421,27 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
     }
     return false;
   }
+  let pending = true;
 
   const m = new THREE.Matrix4();
+  const tint = new THREE.Color();
+  // The instance matrix of a box or slab from its middle and its vectors along, up and across, turned the right way out
+  const boxMatrix = (x, y, z, ax, ay, az, hy, bx, by, bz) => {
+    const flip = ax * bz - az * bx > 0 ? 1 : -1;
+    return m.set(ax, 0, bx * flip, x - origin.x, ay, hy, by * flip, y, az, 0, bz * flip, z - origin.z, 0, 0, 0, 1);
+  };
+  const nearest = (list, n) => (list.length > n ? list.sort((a, b) => a[0] - b[0]).slice(0, n) : list.sort((a, b) => a[0] - b[0]));
+  const update = (attribute, n, size) => {
+    attribute.clearUpdateRanges();
+    attribute.addUpdateRange(0, Math.max(1, n) * size);
+    attribute.needsUpdate = true;
+  };
   // What's drawn, from the squares held: the nearest of each kind, as many as there's room for
   function fill(x, z, r) {
     filledAt = { x, z };
     changed = false;
     originMoved = false;
-    const panels = [], concrete = [], pieces = [];
+    const panels = [], concrete = [], boxes = [], lawnChunks = [], pathChunks = [], pieces = [];
     for (const { result } of squares.values()) {
       for (const p of result.panels) {
         const d = Math.hypot(p.x - x, p.z - z);
@@ -313,19 +449,27 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
       }
       for (const s of result.slabs) {
         const d = Math.hypot(s.x - x, s.z - z);
-        if (d <= r) concrete.push([d, s]);
+        if (d <= (s.near ? Math.min(r, thingsReach) : r)) concrete.push([d, s]);
+      }
+      for (const b of result.things) {
+        const d = Math.hypot(b.x - x, b.z - z);
+        if (d <= Math.min(r, b.small ? small : thingsReach)) boxes.push([d, b]);
+      }
+      for (const [list, out] of [[result.verge.lawn, lawnChunks], [result.verge.path, pathChunks]]) {
+        for (const c of list) {
+          const d = Math.hypot(c.x - x, c.z - z);
+          if (d <= r + 12) out.push([d, c]);
+        }
       }
       for (const f of result.fences) {
         const d = Math.hypot((f.a.x + f.b.x) / 2 - x, (f.a.z + f.b.z) / 2 - z);
         if (d <= HOLD) pieces.push(f);
       }
     }
-    panels.sort((a, b) => a[0] - b[0]);
-    concrete.sort((a, b) => a[0] - b[0]);
-    const np = Math.min(panels.length, room.panels), ns = Math.min(concrete.length, room.slabs);
+    const P = nearest(panels, room.panels), S = nearest(concrete, room.slabs), B = nearest(boxes, room.things);
     const data = fenceData.array;
-    for (let i = 0; i < np; i++) {
-      const p = panels[i][1];
+    for (let i = 0; i < P.length; i++) {
+      const p = P[i][1];
       // Along the fence, up, and out of it
       m.set(p.ux * p.length, 0, -p.uz, p.x - origin.x, 0, p.height, 0, p.y, p.uz * p.length, 0, p.ux, p.z - origin.z, 0, 0, 0, 1);
       fences.setMatrixAt(i, m);
@@ -334,33 +478,53 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
       data[i * 4 + 2] = p.kind;
       data[i * 4 + 3] = p.colour + Math.min(p.roll, 0.999);
     }
-    const tint = new THREE.Color();
-    for (let i = 0; i < ns; i++) {
-      const s = concrete[i][1];
-      const t = THICK[s.kind];
-      // The across vector the way that keeps the box the right way out
-      const flip = s.ax * s.bz - s.az * s.bx > 0 ? 1 : -1;
-      m.set(s.ax, 0, s.bx * flip, s.x - origin.x, s.ay, t, s.by * flip, s.y, s.az, 0, s.bz * flip, s.z - origin.z, 0, 0, 0, 1);
-      slabs.setMatrixAt(i, m);
+    for (let i = 0; i < S.length; i++) {
+      const s = S[i][1];
+      slabs.setMatrixAt(i, boxMatrix(s.x, s.y, s.z, s.ax, s.ay, s.az, THICK[s.kind], s.bx, s.by, s.bz));
       const shade = s.kind === 2 ? s.tint * 0.96 : s.tint;
-      slabs.setColorAt(i, tint.setRGB(shade, shade, shade * 0.98));
+      if (s.rgb) slabs.setColorAt(i, tint.setRGB(s.rgb[0] * shade, s.rgb[1] * shade, s.rgb[2] * shade));
+      else slabs.setColorAt(i, tint.setRGB(shade, shade, shade * 0.98));
     }
-    fences.count = np;
-    slabs.count = ns;
-    for (const [mesh, n] of [[fences, np], [slabs, ns]]) {
-      mesh.instanceMatrix.clearUpdateRanges();
-      mesh.instanceMatrix.addUpdateRange(0, Math.max(1, n) * 16);
-      mesh.instanceMatrix.needsUpdate = true;
+    const td = thingData.array;
+    for (let i = 0; i < B.length; i++) {
+      const b = B[i][1];
+      things.setMatrixAt(i, boxMatrix(b.x, b.y, b.z, b.ax, b.ay, b.az, b.h, b.bx, b.by, b.bz));
+      things.setColorAt(i, tint.setRGB(b.colour[0], b.colour[1], b.colour[2]));
+      td[i * 4] = Math.hypot(b.ax, b.ay, b.az);
+      td[i * 4 + 1] = b.h;
+      td[i * 4 + 2] = Math.hypot(b.bx, b.by, b.bz);
+      td[i * 4 + 3] = b.kind;
+    }
+    fences.count = P.length;
+    slabs.count = S.length;
+    things.count = B.length;
+    for (const [mesh, n] of [[fences, P.length], [slabs, S.length], [things, B.length]]) {
+      update(mesh.instanceMatrix, n, 16);
       mesh.boundingSphere = null;
       if (n) mesh.computeBoundingSphere();
+      if (mesh.instanceColor) update(mesh.instanceColor, n, 3);
     }
-    fenceData.clearUpdateRanges();
-    fenceData.addUpdateRange(0, Math.max(1, np) * 4);
-    fenceData.needsUpdate = true;
-    if (slabs.instanceColor) {
-      slabs.instanceColor.clearUpdateRanges();
-      slabs.instanceColor.addUpdateRange(0, Math.max(1, ns) * 3);
-      slabs.instanceColor.needsUpdate = true;
+    update(fenceData, P.length, 4);
+    update(thingData, B.length, 4);
+    // The verges, a chunk at a time, nearest first, as many vertices as there's room for
+    for (const [mesh, chunks, capacity] of [[lawns, lawnChunks, room.lawn], [paths, pathChunks, room.path]]) {
+      chunks.sort((a, b) => a[0] - b[0]);
+      const pos = mesh.geometry.attributes.position, array = pos.array;
+      let n = 0;
+      for (const [, c] of chunks) {
+        const count = c.pos.length / 3;
+        if (n + count > capacity) break;
+        const ox = c.x - origin.x, oz = c.z - origin.z;
+        for (let i = 0; i < c.pos.length; i += 3) {
+          array[n * 3 + i] = c.pos[i] + ox;
+          array[n * 3 + i + 1] = c.pos[i + 1];
+          array[n * 3 + i + 2] = c.pos[i + 2] + oz;
+        }
+        n += count;
+      }
+      update(pos, n, 3);
+      mesh.geometry.setDrawRange(0, n);
+      mesh.visible = shown && n > 0; // a draw of nothing is still a draw
     }
     // The walker's colliders: the fences near, each piece a thin box from the ground to the fence's top
     const wanted = new Set(pieces.map(colliderOf));
@@ -376,18 +540,47 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
   function colliderOf(f) {
     let c = colliders.get(f);
     if (c) return c;
-    const L = Math.hypot(f.b.x - f.a.x, f.b.z - f.a.z), ux = (f.b.x - f.a.x) / L, uz = (f.b.z - f.a.z) / L;
-    const cx = (f.a.x + f.b.x) / 2, cz = (f.a.z + f.b.z) / 2, hz = 0.05;
-    const ex = Math.abs(ux) * L / 2 + Math.abs(uz) * hz, ez = Math.abs(uz) * L / 2 + Math.abs(ux) * hz;
-    c = { minX: cx - ex, maxX: cx + ex, minZ: cz - ez, maxZ: cz + ez, minY: 0, maxY: 1.8, fence: true,
-      obb: { cx, cz, cs: ux, sn: -uz, hx: L / 2, hz } };
+    // A garage's walls, or a fence's thin box along it
+    const o = f.box || (() => {
+      const L = Math.hypot(f.b.x - f.a.x, f.b.z - f.a.z);
+      return { cx: (f.a.x + f.b.x) / 2, cz: (f.a.z + f.b.z) / 2, ux: (f.b.x - f.a.x) / L, uz: (f.b.z - f.a.z) / L, hx: L / 2, hz: 0.05 };
+    })();
+    const ex = Math.abs(o.ux) * o.hx + Math.abs(o.uz) * o.hz, ez = Math.abs(o.uz) * o.hx + Math.abs(o.ux) * o.hz;
+    c = { minX: o.cx - ex, maxX: o.cx + ex, minZ: o.cz - ez, maxZ: o.cz + ez, minY: 0, maxY: f.hold ?? FENCE_HOLD, fence: true,
+      obb: { cx: o.cx, cz: o.cz, cs: o.ux, sn: -o.uz, hx: o.hx, hz: o.hz } };
     colliders.set(f, c);
     return c;
   }
 
+  /**
+   * The trees the verges add within r of (x, z), the nearest TREES of them, for the street furniture's tree field; and a number that changes
+   * when they might have
+   */
+  function trees(x, z, r = reach(), most = TREES[level] || TREES.high) {
+    const out = [];
+    for (const { result } of squares.values()) {
+      for (const t of result.verge.trees) {
+        const d = Math.hypot(t.x - x, t.z - z);
+        if (d <= r) out.push([d, t]);
+      }
+    }
+    return out.sort((a, b) => a[0] - b[0]).slice(0, most).map(([, t]) => t);
+  }
+  const treesState = () => ({ version: treesVersion, pending });
+  /** How far from its street's middle the crowd walks at (x, z) beside a link (its id) with a verge there, or null (js/verge.js walkLine()) */
+  function walkAt(link, x, z) {
+    for (const { square, result } of squares.values()) {
+      if (x < square.x0 - 40 || x > square.x1 + 40 || z < square.z0 - 40 || z > square.z1 + 40) continue;
+      const d = walkLine(result.verge.walks, link, x, z);
+      if (d !== null) return d;
+    }
+    return null;
+  }
+
   /** For the debug view and the scripts: what's worked out and what's drawn */
   function state(x = filledAt?.x ?? 0, z = filledAt?.z ?? 0, r = reach()) {
-    const lots = [], fenceList = [], drives = [];
+    const lots = [], fenceList = [], drives = [], sides = [];
+    let added = 0;
     for (const { result } of squares.values()) {
       for (const lot of result.lots) {
         if (Math.hypot(lot.home.cx - x, lot.home.cz - z) > r) continue;
@@ -395,13 +588,20 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
         if (lot.drive) drives.push(lot);
       }
       for (const f of result.fences) if (Math.hypot((f.a.x + f.b.x) / 2 - x, (f.a.z + f.b.z) / 2 - z) <= r) fenceList.push(f);
+      for (const sd of result.verge.sides) if (Math.hypot(sd.x - x, sd.z - z) <= r) sides.push(sd);
+      for (const t of result.verge.trees) if (Math.hypot(t.x - x, t.z - z) <= r) added++;
     }
-    return { squares: squares.size, lots, fences: fenceList, drives, panels: fences.count, slabs: slabs.count, colliders: held.size };
+    return { squares: squares.size, lots, fences: fenceList, drives, panels: fences.count, slabs: slabs.count, things: things.count,
+      lawn: lawns.geometry.drawRange.count / 3, path: paths.geometry.drawRange.count / 3, sides, trees: added, colliders: held.size };
   }
 
   /** Hidden or shown, at once (for measuring what they cost) */
+  let shown = true;
   function setShown(on) {
-    fences.visible = slabs.visible = !!on;
+    shown = !!on;
+    fences.visible = slabs.visible = things.visible = shown;
+    lawns.visible = shown && lawns.geometry.drawRange.count > 0;
+    paths.visible = shown && paths.geometry.drawRange.count > 0;
   }
 
   /** Lets go of everything: the colliders back from the walker */
@@ -409,8 +609,11 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
     squares.clear();
     if (walker) walker.remove([...held]);
     held = new Set();
-    fences.count = slabs.count = 0;
+    fences.count = slabs.count = things.count = 0;
+    lawns.geometry.setDrawRange(0, 0);
+    paths.geometry.setDrawRange(0, 0);
     changed = true;
+    treesVersion++;
   }
 
   // The debug view: each lot's outline over the ground, its front cyan and the rest yellow; the fences red, the driveways white
@@ -448,7 +651,7 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
 
   // Positions are written from the origin, as js/buildings.js writes its pools
   const anchor = () => anchorToOrigin(group);
-  return { group, anchor, work, state, setShown, clear, debugLines, squares };
+  return { group, anchor, work, state, setShown, clear, debugLines, squares, trees, treesState, walkAt };
 }
 
 export { HOLD, REFILL, SQUARE, createLotDetails, squareWork, squareWorkNow, tilesFor };

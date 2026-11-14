@@ -97,3 +97,17 @@ test('a cached route can weave between obstacles on opposite sides of the sidewa
     }
   }
 });
+
+test('along a nature strip, the two walking lines go either side of its footpath', () => {
+  const block = { poly: [{ x: 0, z: 5 }, { x: 200, z: 5 }, { x: 200, z: 40 }, { x: 0, z: 40 }] };
+  const blockAt = (x, z) => (x >= 0 && x <= 200 && z >= 5 && z <= 40 ? block : null);
+  const node = () => ({ in: [], out: [], road: [] });
+  const a = node(), b = node();
+  const edge = { from: a, to: b, sx: 5, sz: 0, dx: 1, dz: 0, rx: 0, rz: 1, half: 4, len: 90, link: 7 };
+  a.out.push(edge); b.in.push(edge);
+  // The verge's footpath along link 7 has its middle 6.85 m from the road's middle, on the +z side
+  const walkAt = (link, x, z) => (link === 7 && z > 0 ? 6.85 : null);
+  const routes = createPedestrianRoutes({ walkable: () => true, onSidewalk: (x, z) => !!blockAt(x, z), walkAt }, blockAt);
+  const lines = routes.along(edge).map((t) => t.az).sort((p, q) => p - q);
+  assert.deepEqual(lines.map((z) => +z.toFixed(2)), [6.55, 7.15]);
+});

@@ -535,3 +535,27 @@ test('createTreeField leaves scene.onBeforeRender untouched and matches per-tree
     `expected exactly 1 Math.sqrt per cell (${cellCount}, 0 per-tree Math.sqrt), got ${sqrtCalls}`
   );
 });
+
+test('trees added later take the room kept in their cell, are drawn with its kind of tree, and go again', () => {
+  const sites = [];
+  for (let i = 0; i < 40; i++) sites.push({ x: 10 + (i % 8) * 20, y: 0.2, z: 10 + Math.floor(i / 8) * 30, scale: 0.8, species: 0, tier: 1 });
+  const field = createTreeField({}, sites, [], { reserve: (cellX, cellZ) => (cellX === 0 && cellZ === 0 ? 0 : -1), slots: 4 });
+  const meshes = field.meshes.length;
+  const drawn = () => field.meshes.reduce((t, m) => t + (m.visible ? m.count : 0), 0);
+  const here = new Vector3(100, 2, 100);
+  field.update(here);
+  const base = drawn();
+  assert.equal(base, sites.length);
+  const added = [0, 1, 2, 3, 4].map((k) => ({ x: 20 + k * 30, y: 0.2, z: 25, scale: 0.6, tier: 2 }));
+  assert.equal(field.setAdded(added), 4, 'as many as there\'s room for');
+  field.update(here);
+  assert.equal(drawn(), base + 4);
+  assert.equal(field.meshes.length, meshes, 'in the meshes the cell already had');
+  assert.equal(field.setAdded(added.slice(0, 2)), 2);
+  field.update(here);
+  assert.equal(drawn(), base + 2, 'in place of those before');
+  field.setAdded([]);
+  field.update(here);
+  assert.equal(drawn(), base);
+  assert.equal(field.setAdded([{ x: 450, y: 0.2, z: 25, scale: 0.6, tier: 2 }]), 0, 'none where no room was kept');
+});

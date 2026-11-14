@@ -7,7 +7,9 @@ const PATH_REACH = 9; // m past a road's edge a path's loose end may be and stil
 const JOIN_MARGIN = 3; // m from either end of a footpath's track that no path joins it
 const WALL_CLEAR = 1.2; // m further out a footpath's tracks keep beside a tunnel's road, open between walls
 
-function createPedestrianRoutes({ walkable, onSidewalk, edges = [], paths = [] }, blockAt) {
+// walkAt(link, x, z): where there's a nature strip along a link (js/verge.js), how far from the road's middle its footpath is, or its lawn's
+// middle where there's none: the two walking lines go either side of it (lot-details.js walkAt()). Asked as each track is first laid.
+function createPedestrianRoutes({ walkable, onSidewalk, edges = [], paths = [], walkAt = null }, blockAt) {
   const sidewalks = new Map(), crossings = new Map(), junctions = new Map(), connections = new WeakMap(), edgeCells = new WeakMap();
   const point = (track, end) => ({ x: track.ax + track.ux * track.len * end, z: track.az + track.uz * track.len * end });
   // Every track says whether it's a garden path's: a walker takes on its track's fields as it goes
@@ -162,7 +164,11 @@ function createPedestrianRoutes({ walkable, onSidewalk, edges = [], paths = [] }
     // Two walking lines on each side leave room for people to pass or stop together. Beside a cutting's wall, back from the fence on
     // its top (js/structures.js), not along the edge
     for (const sign of [-1, 1]) {
-      for (const inset of [1.7, 2.8]) {
+      // Along a verge's footpath, or its lawn's middle
+      const mid = { x: e.sx + e.dx * e.len / 2 + e.rx * sign * (e.half + 2.2), z: e.sz + e.dz * e.len / 2 + e.rz * sign * (e.half + 2.2) };
+      const verge = walkAt && e.link !== undefined && !e.walled ? walkAt(e.link, mid.x, mid.z) : null;
+      const insets = verge !== null ? [verge - 0.3 - e.half, verge + 0.3 - e.half] : [1.7, 2.8];
+      for (const inset of insets) {
         const off = sign * (e.half + inset + (e.walled ? WALL_CLEAR : 0));
         const a = { x: e.sx + e.rx * off, z: e.sz + e.rz * off };
         const b = { x: a.x + e.dx * e.len, z: a.z + e.dz * e.len };

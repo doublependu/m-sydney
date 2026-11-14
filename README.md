@@ -232,6 +232,18 @@ what it did.
   strips on some older houses'), or to a project home's garage door (`js/house-entry.js` finds it where the facade draws it), with a
   concrete crossover and a layback over the kerb. All of it is two instanced meshes, worked out in 500 m squares as the world's jobs have
   time once the city round you is complete, and drawn within the level's `houseDetail` of you: 100 m on low, 180 on medium, 260 on high.
+- **Each lot has its era's things** (`js/lot-things.js`): a carport beside post-war, triple-fronted and beach houses; a garage at the back
+  of Federation houses and bungalows, their driveways taken on to it; a front fence on some lots (timber pickets, a low brick wall on
+  piers, an iron palisade or wire, by era; none for project homes and beach houses) or a low hedge, holding the walker as the side fences
+  do; a path to the door from the gate or the driveway; a letterbox; shrubs along the front wall; and a verandah, a porch or a deck. One
+  more instanced mesh of boxes, drawn within 130 m on high (the small things within 90 m), with the paths among the driveways' concrete.
+- **Streets of houses have nature strips** (`js/verge.js`): on each side of a residential street, junction to junction, whose buildings
+  are all houses (not terraces, not built up to the footpath; the inner city keeps its paving), a lawn from the kerb and, on most streets
+  by their era, a dark grey footpath in it, drawn over the map's paving exactly on its triangles as drawn, a centimetre up, round the
+  crossovers and bus stops and short of every junction. A frontage with no tree on its strip gets one, of the tree kind most common in
+  its cell of the tree field, so it's drawn with those (`js/street-details.js`); the nearest 16 on high (12, 6) are planted, again as you
+  move, into room the field keeps for them in each cell (`setAdded()`, `js/trees.js`). The crowd walks along the footpath
+  (`js/pedestrian-routes.js`, `walkAt`).
 - **A garden is drawn over its lawn** (`js/garden.js`): its paths as strips in their surfaces' colours, its beds speckled with what's
   planted in them, so they read as planted from further off than the plants are drawn, its hedges, ponds and gates, and the parapets
   along its shore, which you can't walk or jump over. All of it lies on the lawn as the lawn is drawn, not on the ground under it, which

@@ -1339,7 +1339,10 @@ async function initApp() {
     const { buildStreetDetails } = cityCode;
     const stage = new THREE.Group();
     const allColliders = controllerManager.colliders;
-    const job = buildStreetDetails(stage, allColliders, lightPools);
+    // The trees the houses' verges add, near you (js/lot-details.js)
+    const { x, z } = controllerManager.getActiveEntity().position;
+    const version = lotDetails?.treesState().version ?? -1;
+    const job = buildStreetDetails(stage, allColliders, lightPools, () => (addedTreesOn && lotDetails ? lotDetails.trees(x, z) : []));
     const built = tasks?.details ? yield* tracked(job, tasks.details, 120) : yield* job;
     yield revealStage(stage);
     const [shadow, storage] = shadowOf();
@@ -1349,7 +1352,26 @@ async function initApp() {
     detailStage = stage;
     detailCulling = culling;
     streetDetails = built;
+    plantedTrees = { version, x, z };
     return built;
+  }
+
+  // The verges' trees are planted again when the lots near you have changed, or you've moved REPLANT m: they're drawn within houseDetail
+  const REPLANT = 40; // m
+  let plantedTrees = { version: -1, x: Infinity, z: Infinity };
+  let addedTreesOn = true; // for measuring what they cost (__gameDebug.lotTrees())
+  function replantDue(x, z) {
+    if (!lotDetails || !streetDetails?.replantAdded) return false;
+    const { version, pending } = lotDetails.treesState();
+    if (pending) return false;
+    if (version !== plantedTrees.version) return true;
+    return Math.hypot(x - plantedTrees.x, z - plantedTrees.z) > REPLANT && lotDetails.trees(x, z, quality.houseDetail + REPLANT).length > 0;
+  }
+  function* replant(x, z) {
+    activity.label = 'street trees';
+    const version = lotDetails.treesState().version;
+    yield* streetDetails.replantAdded(addedTreesOn ? lotDetails.trees(x, z) : []);
+    plantedTrees = { version, x, z };
   }
 
   function* rebuildTraffic(x, z, tasks = null) {
@@ -1366,6 +1388,8 @@ async function initApp() {
       ...controllerManager.colliders.filter((c) => !c.obb && (c.minY ?? 0) < 3.5 && nearWindow(c))
     ];
     const network = yield* buildRoadNetworkSteps(obstacles, streetDetails.signalIntersections, { x, z, radius: TRAFFIC_RADIUS });
+    // The crowd along the houses' verges walks on their footpaths (js/verge.js)
+    network.walkAt = (link, px, pz) => lotDetails?.walkAt(link, px, pz) ?? null;
     tasks?.traffic.set(0.4);
     const paint = new THREE.Group();
     yield* buildRoadPaintSteps(paint, network, createRoadPaintChunkBuilder('RoadMarkings'), cityCode);
@@ -1522,8 +1546,12 @@ async function initApp() {
         level: quality.level, reach: () => quality.houseDetail, built: (key) => builtTiles.get(key)?.done === true, shadows: quality.shadowTile > 0,
         walker: { add: (list) => controllerManager.addWalkerColliders(list), remove: (list) => controllerManager.removeWalkerColliders(list) }
       });
-      // One instance of each, out of sight, so their shaders compile before they're needed
+      // One instance of each, out of sight (the verges' meshes: a triangle of nothing), so their shaders compile before they're needed
       for (const mesh of made.group.children) {
+        if (!mesh.isInstancedMesh) {
+          mesh.geometry.setDrawRange(0, 3);
+          continue;
+        }
         mesh.count = 1;
         mesh.setMatrixAt(0, new THREE.Matrix4().makeScale(0, 0, 0));
       }
@@ -1532,7 +1560,10 @@ async function initApp() {
       yield revealStage(made.group);
       made.anchor();
       made.group.updateMatrixWorld(true);
-      for (const mesh of made.group.children) mesh.count = 0;
+      for (const mesh of made.group.children) {
+        if (mesh.isInstancedMesh) mesh.count = 0;
+        else mesh.geometry.setDrawRange(0, 0);
+      }
       lotDetails = made;
     }
 
@@ -1570,6 +1601,8 @@ async function initApp() {
         yield* groundFirst(rebuildTraffic(x, z));
       } else if (lotDetails && !flying() && (yield* lotDetails.work(x, z))) {
         // a square's lots worked out, or what's drawn of them chosen again
+      } else if (!flying() && replantDue(x, z)) {
+        yield* groundFirst(replant(x, z));
       } else if (next.load.length) {
         yield* buildTile(next.load[0]);
       } else if (!(yield* nextFarSquare(x, z))) {
@@ -1724,7 +1757,7 @@ async function initApp() {
 
   // Read-only view for tools/play, which steers through real input events and only uses this to check the result.
   const debugFrames = new URLSearchParams(location.search).get('debug') === '1'
-    ? { simMs: 0, submitMs: 0, count: 0, gaps: [], lastStart: performance.now() }
+    ? { simMs: 0, submitMs: 0, count: 0, gaps: [], lastStart: performance.now(), slow: [] }
     : null;
   if (debugFrames) {
     window.__gameDebug = Object.freeze({
@@ -2024,11 +2057,35 @@ async function initApp() {
       lots(lines = null) {
         if (!lotDetails) return null;
         if (lines !== null) lotDetails.debugLines(lines);
-        const { squares, lots, fences, drives, panels, slabs, colliders } = lotDetails.state();
-        return { squares, lots: lots.length, fences: fences.length, drives: drives.length, panels, slabs, colliders, reach: quality.houseDetail };
+        const { squares, lots, fences, drives, panels, slabs, things, lawn, path, sides, trees, colliders } = lotDetails.state();
+        const strips = sides.filter((s) => s.strip);
+        return { squares, lots: lots.length, fences: fences.length, drives: drives.length, panels, slabs, things, lawn, path, colliders,
+          sides: { paving: sides.length - strips.length, strip: strips.filter((s) => !s.path).length, path: strips.filter((s) => s.path).length },
+          trees, planted: plantedTrees.version === lotDetails.treesState().version, reach: quality.houseDetail };
       },
-      // Fences and driveways drawn or not, for measuring what they cost
+      // Fences, driveways, the lots' things and the verges drawn or not, for measuring what they cost
       lotsShown: (on) => lotDetails?.setShown(on),
+      // Each frame's longest piece of work over 30 ms, as [ms since the page opened, what it was, ms]
+      slowWork: () => debugFrames.slow.slice(),
+      // The verges' trees planted or not, at once (they're in the street furniture's tree field): the number planted
+      async lotTrees(on) {
+        addedTreesOn = !!on;
+        if (!lotDetails || !streetDetails?.replantAdded) return 0;
+        const { x, z } = controllerManager.getActiveEntity().position;
+        const job = streetDetails.replantAdded(addedTreesOn ? lotDetails.trees(x, z) : []);
+        let step = job.next();
+        while (!step.done) step = job.next();
+        plantedTrees = { version: lotDetails.treesState().version, x, z };
+        // Each tree's level of detail, at once: held frames (holdStill()) don't choose them
+        streetDetails.treeField.update(cameraSystem.camera.position);
+        return step.value;
+      },
+      // The sides of the streets near (x, z) and what each has: paving, a nature strip, a strip with a footpath
+      verge(x, z, r = 260) {
+        if (!lotDetails) return null;
+        return lotDetails.state(x, z, r).sides.map((s) => ({ x: Math.round(s.x), z: Math.round(s.z), name: s.name, side: s.side,
+          length: Math.round(s.length), strip: s.strip, path: s.path }));
+      },
       // The lots within r of (x, z), for scripts that walk among them: each house's middle, its lot, its driveway, and the fences
       lotsNear(x, z, r = 60) {
         if (!lotDetails) return null;
@@ -2109,6 +2166,9 @@ async function initApp() {
     frameWork = t1 - t0 > t2 - t1 ? { label: 'simulation', ms: t1 - t0 } : { label: 'drawing', ms: t2 - t1 };
     if (worldBuilder?.longest && worldBuilder.longest.ms > frameWork.ms) frameWork = worldBuilder.longest;
     if (debugFrames) {
+      // The slow pieces of work, and what they were (__gameDebug.slowWork())
+      if (frameWork.ms > 30) debugFrames.slow.push([Math.round(performance.now()), frameWork.label, Math.round(frameWork.ms)]);
+      if (debugFrames.slow.length > 400) debugFrames.slow.shift();
       debugFrames.simMs += simEnd - frameStart;
       debugFrames.submitMs += performance.now() - simEnd;
       debugFrames.count++;

@@ -2810,18 +2810,23 @@ function createContactShadowMaterial() {
   return mat;
 }
 
-// The fences between houses' lots (js/lot-details.js): one material for every panel, each an instance of a quad from (-0.5, 0) to (0.5, 1),
-// seen from both sides. Each instance's `fence` attribute: [its length (m), its height (m), 0 Colorbond or 1 timber palings, its colour (0-3,
-// Colorbond's four) + a number in 0-1 of its own in the fraction]. Colorbond: steel sheet in its colour, its ribs, a capping rail along the
-// top and a post at each end; palings: boards of weathered timber, each a little different, with a slit of shade between them. Each
-// pattern settles to its mean as it shrinks under a pixel.
+// The fences of houses' lots (js/lot-details.js): one material for every panel, each an instance of a quad from (-0.5, 0) to (0.5, 1),
+// seen from both sides. Each instance's `fence` attribute: [its length (m), its height (m), its kind, its colour + a number in 0-1 of its
+// own in the fraction]. Kinds, between neighbours: 0 Colorbond (steel sheet in one of its four colours, its ribs, a capping rail along the
+// top and a post at each end), 1 timber palings (boards of weathered timber, each a little different, with a slit of shade between
+// them); along the front (js/lot-things.js): 2 timber pickets (white or cream, two rails behind), 3 an iron palisade (black or dark
+// green bars with spear tops between two rails), 4 wire (a galvanised frame, the mesh seen only close). Each pattern settles to its mean
+// as it shrinks under a pixel. The front fences are seen through: what isn't picket, bar or rail is left out (alphaTest). A picket fence
+// far off is a solid band of its colour; the palisade's bars and the wire's frame are kept a pixel or more wide, then go, as they would.
 const FENCE_COLOURS = [0x7c846a, 0xc9bea2, 0x4f514b, 0x6c6153]; // Colorbond's Pale Eucalypt, Paperbark, Woodland Grey and Jasper
 function createFenceMaterial() {
   const m = new THREE.MeshStandardNodeMaterial({ side: THREE.DoubleSide, roughness: 0.6 });
   const data = attribute('fence', 'vec4');
   const u = positionGeometry.x.add(0.5).mul(data.x); // m along the panel
   const v = positionGeometry.y.mul(data.y); // m up it
-  const timber = step(0.5, data.z), id = floor(data.w), roll = fract(data.w);
+  const kind = data.z, id = floor(data.w), roll = fract(data.w);
+  const timber = step(0.5, kind).mul(step(kind, 1.5));
+  const isPicket = step(1.5, kind).mul(step(kind, 2.5)), isPalisade = step(2.5, kind).mul(step(kind, 3.5)), isWire = step(3.5, kind);
   const fu = fwidth(u).max(0.0005), fv = fwidth(v).max(0.0005);
   // Colorbond: ribs every 0.2 m, a rail 0.06 m deep along the top, and the posts' 0.05 m at the ends
   let sheet = color(FENCE_COLOURS[0]);
@@ -2837,9 +2842,88 @@ function createFenceMaterial() {
   const wood = mix(color(0x8a7254), color(0x77736a), roll).mul(float(1.0).add(shade.mul(float(1.0).sub(far))));
   const slit = filteredPulse(u.div(0.15), 0.0, 0.08, fu.div(0.15));
   const paling = wood.mul(float(1.0).sub(slit.mul(0.55))).mul(float(1.0).sub(post.mul(0.25)));
-  m.colorNode = mix(steel, paling, timber);
-  m.roughnessNode = mix(float(0.45), float(0.9), timber);
-  m.metalnessNode = mix(float(0.2), float(0.0), timber);
+  // Pickets 0.09 m wide every 0.15 m, pointed over their last 0.08 m, on rails 0.25 m from the bottom and the top
+  const top = data.y;
+  const point = clamp(top.sub(v).div(0.08), 0.0, 1.0);
+  const picket = filteredPulse(u.div(0.15), float(0.3).sub(point.mul(0.3)), float(0.3).add(point.mul(0.3)), fu.div(0.15));
+  const rails = max(boxCoverage(v, 0.2, 0.3, fv), boxCoverage(v, top.sub(0.35), top.sub(0.25), fv));
+  const picketSolid = smoothstep(0.35, 0.6, fu.div(0.15));
+  const picketCover = mix(max(picket, rails), 1.0, picketSolid);
+  const paint = mix(color(0xeeeae0), color(0xe2d6b8), step(0.5, id)).mul(float(1.0).sub(rails.mul(0.06)));
+  // The palisade: bars 0.02 m every 0.12 m (no narrower than a pixel and a half), spear tops, rails at 0.15 m and 0.15 m from the top
+  const barWidth = max(0.02, fu.mul(1.5)).div(0.12);
+  const spear = clamp(top.sub(v).div(0.07), 0.0, 1.0);
+  const bar = filteredPulse(u.div(0.12), float(0.5).sub(barWidth.mul(0.5).mul(spear.mul(1.6).min(1.0))), float(0.5).add(barWidth.mul(0.5).mul(spear.mul(1.6).min(1.0))), fu.div(0.12));
+  const railWidth = max(0.04, fv.mul(1.5));
+  const ironRails = max(boxCoverage(v, float(0.15).sub(railWidth.mul(0.5)), float(0.15).add(railWidth.mul(0.5)), fv),
+    boxCoverage(v, top.sub(0.15).sub(railWidth.mul(0.5)), top.sub(0.15).add(railWidth.mul(0.5)), fv));
+  const ironGone = smoothstep(0.025, 0.045, fu);
+  const ironCover = max(bar, ironRails).mul(float(1.0).sub(ironGone));
+  const iron = mix(color(0x1b1d1e), color(0x1f2a22), step(0.5, id));
+  // Wire: posts 0.05 m at the ends and a rail along the top, kept a pixel and a half wide; the diamonds of the mesh only close
+  const wirePost = max(boxCoverage(u, -1.0, max(0.05, fu.mul(1.5)), fu), boxCoverage(u, data.x.sub(max(0.05, fu.mul(1.5))), data.x.add(1.0), fu));
+  const wireRail = boxCoverage(v, top.sub(max(0.04, fv.mul(1.5))), top.add(1.0), fv);
+  const diamonds = max(filteredPulse(u.add(v).div(0.06), 0.0, max(0.004, fu.mul(1.2)).div(0.06), fu.div(0.06)),
+    filteredPulse(u.sub(v).div(0.06), 0.0, max(0.004, fu.mul(1.2)).div(0.06), fu.div(0.06))).mul(float(1.0).sub(smoothstep(0.004, 0.008, fu)));
+  const wireCover = max(max(wirePost, wireRail), diamonds).mul(float(1.0).sub(smoothstep(0.03, 0.05, fu)));
+  const front = mix(mix(paint, iron, isPalisade), color(0x9a9c98), isWire);
+  const back = mix(steel, paling, timber);
+  const isFront = step(1.5, kind);
+  m.colorNode = mix(back, front, isFront);
+  m.opacityNode = mix(float(1.0), mix(mix(picketCover, ironCover, isPalisade), wireCover, isWire), isFront);
+  m.alphaTest = 0.5;
+  m.roughnessNode = mix(mix(float(0.45), float(0.9), timber), mix(float(0.7), float(0.5), isPalisade.add(isWire)), isFront);
+  m.metalnessNode = mix(mix(float(0.2), float(0.0), timber), mix(float(0.0), float(0.4), isPalisade.add(isWire)), isFront);
+  return m;
+}
+
+// The lots' things (js/lot-things.js): one material for every box, each an instance of a unit box standing on y = 0, its colour in the
+// instance colour and its `thing` attribute [its length along (m), its height (m), its width across (m), its kind]: 0 paint (posts, a
+// letterbox, a carport's frame), 1 face brick (a brick's courses, mortar between, each brick its own shade; the top a plain cap), 2
+// leaves (shrubs and hedges: clumps of light and shade, darker low down), 3 corrugated iron (roofs: the ribs down the slope), 4 timber
+// boards (a deck's on top; a garage's weatherboards on its sides), 5 a garage's tilt door (its panels). Patterns settle to their mean
+// under a pixel.
+function createLotThingMaterial() {
+  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.7 });
+  const data = attribute('thing', 'vec4');
+  const kind = data.w;
+  const n = normalGeometry;
+  // Which face: an end (square to its length), or the top or bottom. mix(), not select(): TSL writes a select as an if/else and builds
+  // what's inside again at each use
+  const across = step(0.5, abs(n.x)), up = step(0.5, abs(n.y));
+  // m along each face: across it and up it (on the top, along and across)
+  const along = positionGeometry.x.mul(data.x), deep = positionGeometry.z.mul(data.z), high = positionGeometry.y.mul(data.y);
+  const fa = mix(along, deep, across);
+  const fb = mix(high, deep, up);
+  const wa = fwidth(fa).max(0.0005), wb = fwidth(fb).max(0.0005);
+  const is = (k) => step(k - 0.5, kind).mul(step(kind, k + 0.5));
+  // Brick: courses 0.086 m, bricks 0.24 m in stretcher bond, 10 mm joints
+  const course = fb.div(0.086);
+  const offset = floor(course).mul(0.5);
+  const brickU = fa.div(0.24).add(offset);
+  const bed = filteredPulse(course, 0.0, 0.116, wb.div(0.086));
+  const perp = filteredPulse(brickU, 0.0, 0.042, wa.div(0.24));
+  const mortar = max(bed, perp).mul(float(1.0).sub(up));
+  const brickShade = hash2D(vec2(floor(brickU), floor(course))).sub(0.5).mul(0.14).mul(float(1.0).sub(smoothstep(0.3, 0.9, wa.div(0.24))));
+  const brick = mix(vec3(1.0).add(brickShade), vec3(1.55, 1.5, 1.4), mortar);
+  // Leaves: clumps, darker towards the foot
+  const clump = noise2D(vec2(fa.mul(3.1), fb.mul(3.1).add(positionWorld.x.mul(0.37)))).mul(0.55).add(noise2D(vec2(fa.mul(9.0), fb.mul(9.0))).mul(0.3));
+  const leaves = vec3(float(0.62).add(clump.mul(0.75)).mul(float(0.72).add(positionGeometry.y.mul(0.35))));
+  // Corrugated iron, ribs every 0.076 m along its length, on the top and underneath
+  const ribs = filteredPulse(along.div(0.076), 0.0, 0.5, fwidth(along).max(0.0005).div(0.076));
+  const ironShade = vec3(mix(float(0.85), float(0.92).add(ribs.mul(0.12)), up));
+  // Boards: 0.14 m deck boards on top, 0.18 m weatherboards on the sides, a line of shade under each
+  const boardGap = mix(filteredPulse(fb.div(0.18), 0.0, 0.1, wb.div(0.18)),
+    filteredPulse(deep.div(0.14), 0.0, 0.06, fwidth(deep).max(0.0005).div(0.14)), up);
+  const boards = vec3(float(1.0).sub(boardGap.mul(0.35)));
+  // A tilt door: horizontal panels every 0.3 m
+  const panel = filteredPulse(high.div(0.3), 0.0, 0.08, fwidth(high).max(0.0005).div(0.3));
+  const door = vec3(float(1.0).sub(panel.mul(0.18)));
+  const paint = vec3(1.0);
+  const tone = paint.mul(is(0)).add(brick.mul(is(1))).add(leaves.mul(is(2))).add(ironShade.mul(is(3))).add(boards.mul(is(4))).add(door.mul(is(5)));
+  m.colorNode = vec4(tone, 1.0);
+  m.roughnessNode = float(0.6).mul(is(0)).add(float(0.9).mul(is(1))).add(float(0.95).mul(is(2))).add(float(0.45).mul(is(3))).add(float(0.85).mul(is(4))).add(float(0.5).mul(is(5)));
+  m.metalnessNode = float(0.3).mul(is(3));
   return m;
 }
 
@@ -2881,5 +2965,6 @@ export {
   createGardenBedMaterial,
   createContactShadowMaterial,
   createFenceMaterial,
+  createLotThingMaterial,
   createConcreteMaterial
 };

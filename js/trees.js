@@ -986,6 +986,8 @@ function createTreeClearance(colliders) {
 let treeParts = null;
 // The gardens' kinds (6 on) have one variant: a cell draws each kind's variants once, and the garden has many kinds
 const variantsOf = (s) => (s >= 6 ? 1 : 2);
+/** Which of its species' variants a tree at (x, z) is grown as, unless its site says (`variant`) */
+const treeVariant = (s, x, z) => (variantsOf(s) > 1 && hashPos(x, 5.9, z) >= 0.5 ? 1 : 0);
 function* sharedTreeParts(wanted = SPECIES.map((_, s) => s)) {
   if (!treeParts) {
     const atlas = yield* createLeafAtlasSteps();
@@ -1007,7 +1009,9 @@ function* sharedTreeParts(wanted = SPECIES.map((_, s) => s)) {
   return treeParts;
 }
 
-function* createTreeFieldSteps(_scene, sites, colliders = []) {
+// `reserve(cellX, cellZ)`: a kind (species * 2 + variant) of tree that `slots` more may be added of in that cell later, or -1, for
+// setAdded(); they're drawn with the cell's own of that kind, so they cost no meshes of their own
+function* createTreeFieldSteps(_scene, sites, colliders = [], { reserve = null, slots = 0 } = {}) {
   const group = new THREE.Group();
   group.name = 'Trees';
   // Each tier's levels, [near, mid], and how far it's drawn: a small plant's as far as the graphics level has them (setPlantDistance())
@@ -1030,8 +1034,17 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
   const worldBounds = new THREE.Box3();
   const plantedSites = new Set();
 
-  // Allocate for candidate sites; N counts only trees clear of buildings.
-  const capacity = sites.length;
+  // Allocate for candidate sites, and the room kept for trees added later; N counts only trees clear of buildings.
+  const cellKeyOf = (cellX, cellZ, small) => ((cellX + 32768) * 65536 + (cellZ + 32768)) * 2 + small;
+  const reserved = new Map(); // a tree cell's key -> the kind of tree kept room for in it
+  if (reserve && slots > 0) {
+    for (const t of sites) {
+      const cellX = Math.floor(t.x / TREE_CELL_SIZE), cellZ = Math.floor(t.z / TREE_CELL_SIZE), key = cellKeyOf(cellX, cellZ, 0);
+      if (!reserved.has(key)) reserved.set(key, reserve(cellX, cellZ));
+    }
+    for (const [key, kind] of reserved) if (!(kind >= 0)) reserved.delete(key);
+  }
+  const capacity = sites.length + slots * reserved.size;
   let N = 0;
   const mats = new Float32Array(capacity * 16);
   const data = new Float32Array(capacity * 4);
@@ -1073,7 +1086,7 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
     const r1 = hashPos(t.x, 1.3, t.z);
     const r2 = hashPos(t.z, 7.1, t.x);
     const r3 = hashPos(t.x + t.z, 3.3, 0.7);
-    const variant = variantsOf(sp) > 1 && hashPos(t.x, 5.9, t.z) >= 0.5 ? 1 : 0;
+    const variant = t.variant ?? treeVariant(sp, t.x, t.z);
     const s = t.scale * (0.9 + r1 * 0.2);
     dummy.position.set(t.x, t.y || 0, t.z);
     dummy.rotation.set(0, t.yaw ?? r2 * Math.PI * 2, 0);
@@ -1097,7 +1110,7 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
     const small = tier[i] === SMALL_TIER ? 1 : 0;
     const cellX = Math.floor(t.x / TREE_CELL_SIZE);
     const cellZ = Math.floor(t.z / TREE_CELL_SIZE);
-    const cellKey = ((cellX + 32768) * 65536 + (cellZ + 32768)) * 2 + small;
+    const cellKey = cellKeyOf(cellX, cellZ, small);
     let cell = cells.get(cellKey);
     if (!cell) {
       const label = `${cellX},${cellZ}${small ? 's' : ''}`;
@@ -1125,9 +1138,30 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
     }
   }
 
+  // The room kept for added trees: slots past every site's, in the meshes of the cell's kind of tree at each level
+  const spare = new Map(); // cell -> { kind, slots: [tree indices], meshes: [index at each level] }
+  let spareAt = sites.length;
+  for (const [key, kind] of reserved) {
+    const cell = cells.get(key), mi = meshIndex[kind >> 1];
+    if (!cell || !mi) continue;
+    const variant = Math.min(kind & 1, variantsOf(kind >> 1) - 1);
+    const levels = [mi.l0[variant], mi.l1[variant], mi.l2[variant]].map((type) => {
+      let index = cell.meshes.get(type);
+      if (index === undefined) {
+        index = meshes.length;
+        meshes.push({ type, cell, name: `${type.name}_${cell.label}`, capacity: 0 });
+        cell.meshes.set(type, index);
+      }
+      meshes[index].capacity += slots;
+      return index;
+    });
+    spare.set(cell, { kind: (kind >> 1) * 2 + variant, slots: Array.from({ length: slots }, () => spareAt++), meshes: levels });
+  }
+
   // Finalize per-cell 3D bounding spheres, tier cutoffs, and typed index arrays for cell-hierarchical LOD checks.
-  const cellList = Array.from(cells.values(), (cell) => {
-    const trees = Int32Array.from(cell.trees);
+  const cellList = Array.from(cells.values(), (cell) => fit(cell, Int32Array.from(cell.trees)));
+  for (const cell of cellList) cell.baseTrees = cell.trees;
+  function fit(cell, trees) {
     let minX = Infinity, minY = Infinity, minZ = Infinity;
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
     let maxCutoffAloft = 0;
@@ -1168,7 +1202,7 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
     cell.minCutoffLow = Math.min(minCutoffAloft, lowCutoff);
     cell.uniformLod = 255;
     return cell;
-  });
+  }
 
   const instanced = meshes.map((m) => {
     const geo = new THREE.BufferGeometry();
@@ -1374,6 +1408,66 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
     return changed;
   }
 
+  /**
+   * The trees added to the field, in place of those added before: [{ x, y, z, scale, tier }], each in the room kept for its cell (as the
+   * kind of tree kept for), where it's clear of buildings as a site is. Their levels are chosen at the next update(). The number planted.
+   */
+  const addedCells = new Set();
+  function setAdded(list) {
+    for (const cell of addedCells) {
+      fit(cell, cell.baseTrees);
+      cell.uniformLod = -1;
+      dirtyCells.add(cell);
+    }
+    addedCells.clear();
+    const used = new Map();
+    let planted = 0;
+    for (const t of list) {
+      const cell = cells.get(cellKeyOf(Math.floor(t.x / TREE_CELL_SIZE), Math.floor(t.z / TREE_CELL_SIZE), 0));
+      const room = cell && spare.get(cell);
+      const n = used.get(cell) || 0;
+      if (!room || n >= room.slots.length) continue;
+      const sp = room.kind >> 1, variant = room.kind & 1;
+      // As a site is placed, above
+      const r1 = hashPos(t.x, 1.3, t.z), r2 = hashPos(t.z, 7.1, t.x), r3 = hashPos(t.x + t.z, 3.3, 0.7);
+      const sc = t.scale * (0.9 + r1 * 0.2);
+      dummy.position.set(t.x, t.y || 0, t.z);
+      dummy.rotation.set(0, r2 * Math.PI * 2, 0);
+      dummy.scale.set(sc * (0.9 + r3 * 0.2), sc * (0.88 + r1 * 0.24), sc * (0.9 + r2 * 0.2));
+      dummy.updateMatrix();
+      const tree = treeBounds[sp][variant];
+      worldBounds.copy(tree.bounds).applyMatrix4(dummy.matrix).expandByScalar(tree.margin);
+      if (!clearOfBuildings(worldBounds)) continue;
+      const i = room.slots[n];
+      used.set(cell, n + 1);
+      dummy.matrix.toArray(mats, i * 16);
+      mats[i * 16 + 12] -= baseX;
+      mats[i * 16 + 14] -= baseZ;
+      tint.setHex(SPECIES[sp].tints[Math.floor(r3 * 2.999)]).multiplyScalar(0.82 + r1 * 0.36);
+      data.set([tint.r, tint.g, tint.b, sp + r2 * 0.999], i * 4);
+      px[i] = t.x;
+      py[i] = (t.y || 0) + 6 * sc;
+      pz[i] = t.z;
+      tier[i] = Math.min(2, t.tier || 0);
+      lod[i] = 255;
+      for (let l = 0; l < 3; l++) meshOf[i * 3 + l] = room.meshes[l];
+      planted++;
+    }
+    for (const [cell, n] of used) {
+      const trees = new Int32Array(cell.baseTrees.length + n);
+      trees.set(cell.baseTrees);
+      trees.set(spare.get(cell).slots.slice(0, n), cell.baseTrees.length);
+      fit(cell, trees);
+      cell.uniformLod = -1;
+      dirtyCells.add(cell);
+      addedCells.add(cell);
+    }
+    // What's drawn of the cells changed, as it is, and their levels chosen again at the next update
+    rebuild();
+    last.set(Infinity, Infinity, Infinity);
+    return planted;
+  }
+
   // Levels for the start-up view (Macquarie St), so the precompile pass sees the tree meshes
   yield;
   update(new V3(0, 10, 140));
@@ -1398,14 +1492,14 @@ function* createTreeFieldSteps(_scene, sites, colliders = []) {
     triangles: geos.map((v) => v.map((l) => l.map((g) => g && g.userData.triangles))),
     cards: geos.map((v) => v.map((l) => l.map((g) => g && g.userData.cards)))
   };
-  return { group, material, atlas, update, meshes: instanced, stats, sites: plantedSites };
+  return { group, material, atlas, update, setAdded, meshes: instanced, stats, sites: plantedSites };
 }
 
-function createTreeField(_scene, sites, colliders = []) {
-  const job = createTreeFieldSteps(_scene, sites, colliders);
+function createTreeField(_scene, sites, colliders = [], options = {}) {
+  const job = createTreeFieldSteps(_scene, sites, colliders, options);
   let step = job.next();
   while (!step.done) step = job.next();
   return step.value;
 }
 
-export { createTreeField, createTreeFieldSteps, createLeafAtlas, buildTreeGeometries, setPlantDistance, SPECIES as TREE_SPECIES };
+export { TREE_CELL_SIZE, createTreeField, createTreeFieldSteps, createLeafAtlas, buildTreeGeometries, setPlantDistance, treeVariant, SPECIES as TREE_SPECIES };

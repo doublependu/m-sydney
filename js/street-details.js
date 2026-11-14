@@ -4,7 +4,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { blockAt, BLOCKS, nearestRoads, signalPhase, walkSignal } from './city-config.js';
 import { heldList, heldTrees } from './geodata.js';
 import { cityUniforms, createTreeGrateMaterial } from './tsl-materials.js';
-import { createTreeFieldSteps, setPlantDistance } from './trees.js';
+import { TREE_CELL_SIZE, createTreeFieldSteps, setPlantDistance, treeVariant } from './trees.js';
 import { placeStreetTreesSteps } from './tree-placements.js';
 import { groundHeight, groundRoadAt, groundRoadDistance } from './surfaces.js';
 import { roomOver, treeClear } from './deck-room.js';
@@ -191,7 +191,8 @@ function createWalkSignalMaterial(clock) {
   return mat;
 }
 
-function* buildStreetDetails(scene, allColliders = [], lightPools) {
+// `addedTrees()`: the trees the houses' verges add near you (js/lot-details.js), [{ x, z, species, scale }], planted with the rest
+function* buildStreetDetails(scene, allColliders = [], lightPools, addedTrees = () => []) {
   // Cars parked along the kerb come and go: nothing on the footpath makes way for them
   const colliders = allColliders.filter((c) => !c.parked);
   const group = new THREE.Group();
@@ -818,6 +819,7 @@ function* buildStreetDetails(scene, allColliders = [], lightPools) {
   // Surveyed street trees; parks keep their authored terrain, clearings and tree layouts.
   const realTrees = heldTrees();
   const TREE_ROOM = 12; // m: a street tree's crown, and its trunk under it
+  const ADDED_ROOM = 16; // the verges' trees one cell of the field has room for: the most planted (js/lot-details.js TREES)
   // A garden's small plants want a metre or so clear, and room for themselves under a deck. A tree's crown keeps off a deck beside it,
   // and no tree stands before a model's door (js/model-sites.js `clear`)
   let sidewalkTreePositions = yield* placeStreetTreesSteps(realTrees.points, realTrees.kinds, realTrees.heights, treePositions,
@@ -826,9 +828,51 @@ function* buildStreetDetails(scene, allColliders = [], lightPools) {
   for (const tree of sidewalkTreePositions) treePositions.push(tree);
   sidewalkTreePositions = sidewalkTreePositions.filter((t) => t.tier > 0);
   for (const t of treePositions) t.y = (t.y || 0) + groundHeight(t.x, t.z);
-  const treeField = yield* createTreeFieldSteps(scene, treePositions, [...colliders, ...subwayColliders]);
+  // The verges' trees: on a nature strip's lawn, kept from poles, decks and the model sites' doors as a street tree is, and 3 m from any
+  // other tree, as the street trees are from each other
+  const treeCells = new Map();
+  for (const t of treePositions) {
+    const k = Math.floor(t.x / 8) * 100000 + Math.floor(t.z / 8);
+    (treeCells.get(k) || treeCells.set(k, []).get(k)).push(t);
+  }
+  const roomFor = (x, z) => {
+    for (let ix = Math.floor((x - 3) / 8); ix <= Math.floor((x + 3) / 8); ix++) {
+      for (let iz = Math.floor((z - 3) / 8); iz <= Math.floor((z + 3) / 8); iz++) {
+        for (const t of treeCells.get(ix * 100000 + iz) || []) if ((t.x - x) ** 2 + (t.z - z) ** 2 < 9) return false;
+      }
+    }
+    return true;
+  };
+  // Each is grown as the kind of tree (species and variant) most common in its cell of the field, so it's drawn with those, not on its own
+  // (js/trees.js draws a cell's trees of a kind together); none where the cell has no trees to join
+  const cellOf = (x, z) => Math.floor(x / TREE_CELL_SIZE) * 100000 + Math.floor(z / TREE_CELL_SIZE);
+  const kinds = new Map();
+  for (const t of treePositions) {
+    // The street trees' kinds: planes, honey locusts, gums and jacarandas, not figs or palms
+    if (![0, 1, 2, 5].includes(t.species)) continue;
+    const k = cellOf(t.x, t.z), kind = t.species * 2 + treeVariant(t.species, t.x, t.z);
+    const counts = kinds.get(k) || kinds.set(k, new Map()).get(k);
+    counts.set(kind, (counts.get(kind) || 0) + 1);
+  }
+  const commonIn = new Map([...kinds].map(([k, counts]) => [k, [...counts].sort((p, q) => q[1] - p[1])[0][0]]));
+  const plantable = (list) => list.filter((t) => commonIn.has(cellOf(t.x, t.z)) && roomFor(t.x, t.z) && isClearOfPoles(t.x, t.z, 2.2)
+    && roomOver(t.x, t.z, 3) >= TREE_ROOM && treeClear(t.x, t.z, t.scale * 13) && clearOfSites(t.x, t.z))
+    .map((t) => {
+      const kind = commonIn.get(cellOf(t.x, t.z));
+      return { x: t.x, y: groundHeight(t.x, t.z) + 0.23, z: t.z, scale: t.scale, species: kind >> 1, variant: kind & 1, tier: 2 };
+    });
+  const fieldColliders = [...colliders, ...subwayColliders];
+  // The field keeps room in each cell for that cell's commonest kind, so the verges' trees can come and go as you move without making
+  // it again (js/trees.js setAdded())
+  const treeField = yield* createTreeFieldSteps(scene, treePositions, fieldColliders,
+    { reserve: (cellX, cellZ) => commonIn.get(cellX * 100000 + cellZ) ?? -1, slots: ADDED_ROOM });
   treeField.group.traverse((o) => { o.userData.lifted = true; }); // placed on the ground already
   group.add(treeField.group);
+  treeField.setAdded(plantable(addedTrees()));
+  /** The verges' trees as they are now, in place of those before: the number planted */
+  function* replantAdded(list) {
+    return treeField.setAdded(plantable(list));
+  }
   sidewalkTreePositions = sidewalkTreePositions.filter((t) => treeField.sites.has(t));
   console.info(`[streetDetails] ${treeField.stats.trees} trees (${sidewalkTreePositions.length} street trees)`);
 
@@ -1002,7 +1046,7 @@ function* buildStreetDetails(scene, allColliders = [], lightPools) {
 
   scene.add(group);
   const updateSignals = (elapsed, dt, traffic) => updateSignalHeads(signalJunctions, elapsed, dt, traffic);
-  return { group, footprints, signalClock, signalIntersections, audioSignals, treeField, update, updateSignals };
+  return { group, footprints, signalClock, signalIntersections, audioSignals, treeField, update, updateSignals, replantAdded };
 }
 
 // How often the board is rewritten, and how far the junctions out of traffic's reach are apart in their own slow cycle

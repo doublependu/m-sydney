@@ -128,7 +128,7 @@ function drawnSurface(list, tile) {
       }
     }
   };
-  return (x, z) => {
+  const heightAt = (x, z) => {
     for (const lawn of index.get(Math.floor(x / BOX) * 100000 + Math.floor(z / BOX)) || []) {
       if (x < lawn.x0 || x > lawn.x1 || z < lawn.z0 || z > lawn.z1) continue;
       if (!lawn.tris) build(lawn);
@@ -139,6 +139,24 @@ function drawnSurface(list, tile) {
     }
     return null;
   };
+  // The triangles themselves, as drawn (without their lift), over a box: [[x, y, z] x 3], each once. For laying something exactly on
+  // them, a piece of it in each triangle's plane (js/verge.js)
+  heightAt.trianglesIn = (bx0, bz0, bx1, bz1) => {
+    const out = new Set();
+    for (let cx = Math.floor(bx0 / BOX); cx <= Math.floor(bx1 / BOX); cx++) {
+      for (let cz = Math.floor(bz0 / BOX); cz <= Math.floor(bz1 / BOX); cz++) {
+        for (const lawn of index.get(cx * 100000 + cz) || []) {
+          if (bx1 < lawn.x0 || bx0 > lawn.x1 || bz1 < lawn.z0 || bz0 > lawn.z1) continue;
+          if (!lawn.tris) build(lawn);
+          for (let ix = Math.floor(bx0 / CELL); ix <= Math.floor(bx1 / CELL); ix++) {
+            for (let iz = Math.floor(bz0 / CELL); iz <= Math.floor(bz1 / CELL); iz++) for (const t of lawn.tris.get(ix * 100000 + iz) || []) out.add(t);
+          }
+        }
+      }
+    }
+    return [...out];
+  };
+  return heightAt;
 }
 
 /** The height at (x, z) of the triangle [[x, y, z] x 3] over it, or null if it isn't over it */
@@ -439,4 +457,4 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   return colliders;
 }
 
-export { PATH_TOP, buildTileGarden, gardenMaterials, lawnSurface, pavingSurface };
+export { PATH_TOP, SURFACES as PATH_SURFACES, buildTileGarden, gardenMaterials, lawnSurface, pavingSurface };

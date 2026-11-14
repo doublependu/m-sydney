@@ -162,6 +162,9 @@ function wholesOf(entries) {
     const styled = w.pieces.find((b) => b.frontWall) || w.pieces.find((b) => HOUSE_STYLES[b.houseStyle || 0]?.look && !b.bottom);
     w.house = styled && HOUSE_STYLES[styled.houseStyle || 0]?.look ? styled.houseStyle : 0;
     w.frontWall = styled?.frontWall ?? null;
+    // Its front walls' foot and height, as js/buildings.js stands them (its floor, the paving's height over it)
+    w.wallBase = (styled?.floor ?? 0) + 0.22;
+    w.wallHeight = styled?.height ?? 3;
   }
   return [...wholes.values()];
 }
@@ -236,7 +239,9 @@ function pairLine(a, b) {
  *   onLawn(x, z): whether (x, z) is on a lawn as drawn, rather than a footpath, or null where that's not known
  *   roadAt(x, z): the road's surface
  *   sites: [{ rings }]: the model sites, which nothing of a lot reaches into, and which bound their neighbours' lots
- * Yields as it goes; returns { lots, fences, panels, slabs }.
+ *   lotThings(lot, obstacles): what else stands in a lot (js/lot-things.js), { boxes, slabs, panels, fences }, or none
+ * Yields as it goes; returns { lots, fences, panels, slabs, things, fronting }: `fronting`, every building near that faces a street and
+ * bounds a lot, for the verges (js/verge.js squareVerge()).
  */
 const PICK_MARGIN = 160; // m: houses whose neighbours are looked for, round the square
 const LOT_MARGIN = 80; // m: houses whose lots are worked out
@@ -369,7 +374,7 @@ function* squareLots(entries, env, square) {
     return line;
   };
 
-  const lots = [];
+  const lots = [], lotOf = new Map();
   const fenceSpans = new Map(); // a pair's line -> [{ s0, s1 }] from each of the two lots
   const fences = [];
   for (const h of homes) {
@@ -397,6 +402,7 @@ function* squareLots(entries, env, square) {
     }
     const lot = { home: h, pts: poly, front: h.front, kerb: h.kerb, frame: f, style: h.house };
     lots.push(lot);
+    lotOf.set(h, lot);
 
     // The fences along it: every side but the front, from FENCE_BACK behind the front line
     for (let i = 0; i < poly.length; i++) {
@@ -512,16 +518,41 @@ function* squareLots(entries, env, square) {
   }
   yield;
 
-  // The driveways, crossovers and laybacks
-  const slabs = [];
+  // The driveways, crossovers and laybacks, and each lot's own things (env.lotThings, js/lot-things.js): a garage at the back takes
+  // its driveway on to it. A crossover just over the square's edge is known too, for the verge (js/verge.js) to leave its paving.
+  const slabs = [], things = [];
   const mine = lots.filter((lot) => owns(lot.home.cx, lot.home.cz));
-  for (const lot of mine) {
-    const drive = driveOf(lot, [...obstaclesIn(lot.home.cx - 60, lot.home.cz - 60, lot.home.cx + 60, lot.home.cz + 60)]);
-    lot.drive = drive;
-    if (drive) slabs.push(...laid(lot, drive, env));
+  const NEAR_EDGE = 20; // m
+  for (const lot of lots) {
+    const h = lot.home;
+    if (h.cx < square.x0 - NEAR_EDGE || h.cx >= square.x1 + NEAR_EDGE || h.cz < square.z0 - NEAR_EDGE || h.cz >= square.z1 + NEAR_EDGE) continue;
+    const near = [...obstaclesIn(h.cx - 60, h.cz - 60, h.cx + 60, h.cz + 60)];
+    lot.drive = driveOf(lot, near);
+    if (!owns(h.cx, h.cz)) continue;
+    const own = env.lotThings ? env.lotThings(lot, near) : null;
+    if (lot.drive) slabs.push(...laid(lot, lot.drive, env));
+    if (own) {
+      slabs.push(...own.slabs);
+      panels.push(...own.panels);
+      things.push(...own.boxes);
+      finished.push(...own.fences);
+    }
     yield;
   }
-  return { lots: mine, fences: finished, panels, slabs };
+  // Every building that faces a street and bounds a lot, for the verge: which sides of which streets are all houses
+  const fronting = [];
+  for (const h of homes) {
+    const f = h.frame, at = (a) => [f.px + f.tx * a + f.nx * h.front, f.pz + f.tz * a + f.nz * h.front];
+    fronting.push({ street: h.street, house: h.house, terrace: !!HOUSE_STYLES[h.house]?.look?.terrace, yard: h.front - h.kerb,
+      frontage: [at(h.ext.a0), at(h.ext.a1)], cx: h.cx, cz: h.cz, lot: lotOf.get(h) || null });
+  }
+  for (const [i, w] of partners.entries()) {
+    if (w.house || w.site || !within(w, PICK_MARGIN)) continue;
+    if (i % 64 === 63) yield;
+    const street = env.streetOf(w);
+    if (street) fronting.push({ street, house: 0, terrace: false, yard: 0, frontage: [[w.cx, w.cz], [w.cx, w.cz]], cx: w.cx, cz: w.cz, lot: null });
+  }
+  return { lots: mine, fences: finished, panels, slabs, things, fronting };
 }
 
 /**
@@ -554,20 +585,7 @@ function driveOf(lot, obstacles) {
     }
   }
   if (!(a1 > a0)) return null;
-  // The lot's extent across at a depth
-  const across = (d) => {
-    let lo = Infinity, hi = -Infinity;
-    const pts = lot.pts;
-    for (let i = 0; i < pts.length; i++) {
-      const p = pts[i], q = pts[(i + 1) % pts.length];
-      const dp = depthOf(f, p.x, p.z), dq = depthOf(f, q.x, q.z);
-      if ((dp - d) * (dq - d) > 0 || dp === dq) continue;
-      const t = (d - dp) / (dq - dp);
-      const a = alongOf(f, p.x + (q.x - p.x) * t, p.z + (q.z - p.z) * t);
-      if (a < lo) lo = a; if (a > hi) hi = a;
-    }
-    return [lo, hi];
-  };
+  const across = (d) => acrossAt(lot, d);
   let left = Infinity, right = Infinity, la = -Infinity, ra = Infinity;
   for (const d of [lot.front + 0.2, (lot.front + d0) / 2, d0, reach]) {
     const [lo, hi] = across(d);
@@ -603,7 +621,22 @@ function driveOf(lot, obstacles) {
   if (!sides.length) return null;
   sides.sort((p, q) => (q.shed - p.shed) || (q.gap - p.gap));
   const s = sides[0];
-  return { a: s.a, w: s.w, d0: s.d0, d1: s.d1, side: s.side, strips };
+  return { a: s.a, w: s.w, d0: s.d0, d1: s.d1, side: s.side, strips, shed: s.shed };
+}
+
+/** A lot's extent across its frame at depth d: [least, most] along its road, or [Infinity, -Infinity] where it doesn't reach that deep */
+function acrossAt(lot, d) {
+  const f = lot.frame, pts = lot.pts;
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i], q = pts[(i + 1) % pts.length];
+    const dp = depthOf(f, p.x, p.z), dq = depthOf(f, q.x, q.z);
+    if ((dp - d) * (dq - d) > 0 || dp === dq) continue;
+    const t = (d - dp) / (dq - dp);
+    const a = alongOf(f, p.x + (q.x - p.x) * t, p.z + (q.z - p.z) * t);
+    if (a < lo) lo = a; if (a > hi) hi = a;
+  }
+  return [lo, hi];
 }
 
 /** A slab whose top passes through four corners' heights as nearly as a plane can: the instance js/lot-details.js draws */
@@ -647,4 +680,7 @@ function laid(lot, drive, env) {
   return out;
 }
 
-export { BACK_MOST, DRIVE_GAP, FENCE_BACK, FENCE_HEIGHT, FOOTPATH, MARGIN, NO_FENCE, PANEL, clipHalf, insideSpans, pairLine, squareLots, wholesOf };
+export {
+  BACK_MOST, DRIVE_GAP, FENCE_BACK, FENCE_HEIGHT, FOOTPATH, LAWN_TOP, MARGIN, NO_FENCE, PANEL, PAVING_TOP, SLAB, SLAB_PIECE, acrossAt, alongOf,
+  clipHalf, depthOf, hashOf, inRing, insideSpans, keptSpans, keyOf, pairLine, slab, squareLots, wholesOf
+};

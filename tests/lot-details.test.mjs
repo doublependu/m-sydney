@@ -39,3 +39,46 @@ test('the lots of a square of Woollahra: fences off the buildings and the footpa
     assert.ok(inside, `the house at (${lot.home.cx.toFixed(1)}, ${lot.home.cz.toFixed(1)}) is in its lot`);
   }
 });
+
+// The same square's verges (js/verge.js) and the lots' things (js/lot-things.js): every bit of the strips over the paving as drawn, the
+// highest of it where two pieces overlap, and the footpath over the front yards' lawn where that comes out over it; nothing of a lot's
+// things inside a building
+test('the verges of a square of Woollahra lie over its paving, and the lots\' things stand out of the buildings', { skip: !tilesFor(SQUARE).every(isHeld) && 'its tiles aren\'t held' }, async () => {
+  const { squareVerge } = await import('../js/verge.js');
+  const tiles = new Map(heldTiles().map((t) => [t.key, t]));
+  const { entries, env } = squareWork(SQUARE, tiles);
+  const run = (job) => { let step = job.next(); while (!step.done) step = job.next(); return step.value; };
+  const result = run(squareLots(entries, env, SQUARE));
+  const verge = run(squareVerge(result.fronting, env, SQUARE));
+  assert.ok(verge.sides.some((s) => s.strip), 'some sides have a nature strip');
+  const height = (t, x, z) => {
+    const [a, b, c] = t, d = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]);
+    const l1 = ((b[2] - c[2]) * (x - c[0]) + (c[0] - b[0]) * (z - c[2])) / d, l2 = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / d;
+    return l1 >= -1e-6 && l2 >= -1e-6 && 1 - l1 - l2 >= -1e-6 ? l1 * a[1] + l2 * b[1] + (1 - l1 - l2) * c[1] : null;
+  };
+  const top = (tris, x, z) => Math.max(-Infinity, ...tris.map((t) => height(t, x, z)).filter((y) => y !== null));
+  const all = [];
+  for (const c of [...verge.lawn, ...verge.path]) for (let i = 0; i < c.pos.length; i += 9) all.push([0, 3, 6].map((k) => [c.pos[i + k] + c.x, c.pos[i + k + 1], c.pos[i + k + 2] + c.z]));
+  assert.ok(all.length > 500, `${all.length} triangles of verge`);
+  let checked = 0;
+  for (let i = 0; i < all.length; i += 7) {
+    const t = all[i], x = (t[0][0] + t[1][0] + t[2][0]) / 3, z = (t[0][2] + t[1][2] + t[2][2]) / 3;
+    const paving = top(env.pavingTris(x - 0.01, z - 0.01, x + 0.01, z + 0.01), x, z);
+    if (paving === -Infinity) continue;
+    const near = all.filter((u) => Math.abs(u[0][0] - x) < 12 && Math.abs(u[0][2] - z) < 12);
+    assert.ok(top(near, x, z) - (paving + 0.22) >= 0.009, `the verge at (${x.toFixed(1)}, ${z.toFixed(1)}) is over the paving`);
+    checked++;
+  }
+  assert.ok(checked > 50);
+  const rings = entries.flatMap(({ b }) => b.polygons.map((p) => p.outer));
+  const inside = (ring, x, z) => {
+    let c = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const a = ring[i], b = ring[j];
+      if ((a.z > z) !== (b.z > z) && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) c = !c;
+    }
+    return c;
+  };
+  assert.ok(result.things.length > 100, `${result.things.length} things`);
+  for (const b of result.things) assert.ok(!rings.some((r) => inside(r, b.x, b.z)), `a thing at (${b.x.toFixed(1)}, ${b.z.toFixed(1)}) is out of the buildings`);
+});

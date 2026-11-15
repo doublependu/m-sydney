@@ -261,16 +261,20 @@ const tsl = {
   mix: (a, b, t) => binary(binary(a, t, (v, t) => v * (1 - t)), binary(b, t, (v, t) => v * t), (a, b) => a + b),
   dot: (a, b) => new Node(values(a).reduce((sum, v, i) => f(sum + f(v * values(b)[i])), 0)),
   vec2: (...v) => new Node(v.flatMap(values)), vec3: (...v) => new Node(v.flatMap(values)), vec4: (...v) => new Node(v.flatMap(values)),
-  hash2D: (p) => new Node(hash(values(p))), HOUSE_TABLE: table, HOUSE_ROWS: 5, HOUSE_PIER: 0.45, WALL_KINDS,
+  hash2D: (p) => new Node(hash(values(p))), HOUSE_TABLE: table, HOUSE_ROWS: 5, HOUSE_PIER: 0.45, TERRACE_HOUSE: 5.5, WALL_KINDS,
   Fn: (fn) => () => fn(), If: (cond, fn) => { if (scalar(cond)) fn(); }
 };
 const houseWall = houseSource && vm.runInNewContext(`(function () { ${houseSource[0]} return houseWall; })()`, tsl);
+const rowDoorSource = source.match(/function rowDoor\([\s\S]*?\n}\n/);
+const rowDoor = rowDoorSource && vm.runInNewContext(`(function () { ${rowDoorSource[0]} return rowDoor; })()`, tsl);
 const houseCounts = countsSource && vm.runInNewContext(`(function () { ${houseSource?.[0] ?? ''} ${countsSource[0]} return facadeCounts; })()`, tsl);
-// A house's wall as the vertex stage gets it: [bays, wall seed, window width, door + 1 + 64 (garage + 1) + 4096 style], decoded
+// A house's wall as the vertex stage gets it: [bays, wall seed, window width, door + 1 + 64 (garage + 1) + 4096 style + 65536 row],
+// decoded. On a row of terraces, `door` is which bay of each house has its door (rowDoor()) rather than a bay.
 function houseOf(width, style, kind, { seed = 140.5, normal = [0, 0, -1] } = {}) {
-  const [bays, wallSeed, windowWidth, packed] = houseWall(new Node([width, 6, 6, 1000 * style + seed]), new Node([0.5, 3, kind]), new Node(normal)).values;
+  const [bays, wallSeed, windowWidth, all] = houseWall(new Node([width, 6, 6, 1000 * style + seed]), new Node([0.5, 3, kind]), new Node(normal)).values;
+  const row = Math.floor(all / 65536), packed = all - row * 65536;
   const rest = packed % 4096, garage = Math.floor(rest / 64) - 1;
-  return { bays, wallSeed, windowWidth, style: Math.floor(packed / 4096), garage, door: rest - (garage + 1) * 64 - 1 };
+  return { bays, wallSeed, windowWidth, style: Math.floor(packed / 4096), garage, door: rest - (garage + 1) * 64 - 1, row };
 }
 const HOUSES = HOUSE_STYLES.map((s, i) => [i, s]).filter(([, s]) => s?.look);
 
@@ -293,6 +297,9 @@ test('a house\'s wall splits its style off its seed, and hashes the rest as a ci
   assert.deepEqual(houseCounts(new Node([11.5, 34, 30, 140.5]), new Node([0, 0, -1]), new Node(2.6), 1.2, true, new Node([0.5, 3, 1])).values, city);
 });
 
+// A row of terraces' houses as exact arithmetic gives them, a half rounding up: its length over the nearest whole number of 5.5 m
+const exactHouses = (w100) => Math.max(Math.floor((2 * w100 + 550) / 1100), 1);
+
 test('each house style\'s bays are what exact arithmetic gives, a half rounding up, on its fronts and its sides', () => {
   let ties = 0;
   for (const [style, { look }] of HOUSES) {
@@ -300,8 +307,10 @@ test('each house style\'s bays are what exact arithmetic gives, a half rounding 
       const s100 = Math.round(spacing * 100);
       for (let width = 0.5; width <= 300; width += 0.5) {
         const w100 = Math.round(width * 100), inner100 = w100 - 2 * Math.min(45, w100 / 5);
-        const exact = Math.max(Math.floor((2 * inner100 + s100) / (2 * s100)), 1);
-        if ((2 * inner100 + s100) % (2 * s100) === 0) ties++;
+        // A terrace's front of two houses or more is two bays a house (the next test)
+        const row = look.terrace && kind === WALL_KINDS.front && exactHouses(w100) >= 2;
+        const exact = row ? 2 * exactHouses(w100) : Math.max(Math.floor((2 * inner100 + s100) / (2 * s100)), 1);
+        if (!row && (2 * inner100 + s100) % (2 * s100) === 0) ties++;
         for (const s of [-1, 0, 1]) assert.equal(houseOf(nextFloat(width, s), style, kind).bays, exact, `${HOUSE_STYLES[style].name}: ${width} m of ${spacing} m bays, ${s} steps off`);
       }
     }
@@ -314,6 +323,13 @@ test('a house\'s front has one door, in one of its bays, and a project home\'s g
     for (let width = 2; width <= 40; width += 0.7) {
       for (const seed of [3.5, 140.5, 517.3, 888.9]) {
         const front = houseOf(width, style, WALL_KINDS.front, { seed });
+        if (front.row) {
+          // A row of terraces: which of each house's two bays has its door, as rowDoor() takes it
+          assert.ok(look.terrace && front.bays >= 4 && front.bays % 2 === 0, `${HOUSE_STYLES[style].name} ${width} m: a row of ${front.bays / 2}`);
+          assert.ok([0, 1, 2, 3].includes(front.door), `the row's pattern: ${front.door}`);
+          assert.equal(front.garage, -1);
+          continue;
+        }
         assert.ok(front.door >= 0 && front.door < front.bays, `${HOUSE_STYLES[style].name} ${width} m: door ${front.door} of ${front.bays}`);
         if (look.terrace) assert.ok(front.door === 0 || front.door === front.bays - 1, 'a terrace\'s door is at an end');
         if (look.garage && front.bays >= 3) {
@@ -338,6 +354,12 @@ test('the game finds a house\'s door and garage door where its facade draws them
         const shader = houseOf(width, style, WALL_KINDS.front, { seed });
         const cpu = houseEntry({ ax: 0, az: 0, bx: width, bz: 0, reverse: false, width, digits: Math.floor(seed) }, style);
         assert.equal(cpu.bays, shader.bays, `${look ? HOUSE_STYLES[style].name : style} ${width} m: bays`);
+        assert.equal(!!cpu.row, !!shader.row, `${HOUSE_STYLES[style].name} ${width} m: a row or not`);
+        if (cpu.row) {
+          assert.equal(cpu.row.pattern, shader.door, `${HOUSE_STYLES[style].name} ${width} m, seed ${seed}: the row's pattern`);
+          assert.deepEqual(cpu.row.units.map((u) => u.doorBay), cpu.row.units.map((u, k) => scalar(rowDoor(new Node(2 * k + 1), new Node(shader.door)))));
+          continue;
+        }
         assert.equal(cpu.doorBay, shader.door, `${HOUSE_STYLES[style].name} ${width} m, seed ${seed}: the door's bay`);
         assert.equal(cpu.garageBay, shader.garage, `${HOUSE_STYLES[style].name} ${width} m, seed ${seed}: the garage door's`);
         if (cpu.garage) garages++;
@@ -348,4 +370,65 @@ test('the game finds a house\'s door and garage door where its facade draws them
   // Reversed, its bays count from b
   const cpu = houseEntry({ ax: 10, az: 0, bx: 0, bz: 0, reverse: true, width: 10, digits: 140 }, HOUSES[0][0]);
   assert.ok(Math.abs(cpu.door.x - cpu.door.s) < 1e-9, 'a reversed wall\'s bays start at b');
+});
+
+test('a terrace\'s front of two houses or more is cut into houses of its length over the nearest whole number of 5.5 m, a half rounding up', () => {
+  const terraces = HOUSES.filter(([, { look }]) => look.terrace);
+  assert.ok(terraces.length >= 2, 'Victorian and Millers Point terraces');
+  let ties = 0, rows = 0;
+  for (const [style] of terraces) {
+    for (let width = 0.25; width <= 300; width += 0.25) {
+      const w100 = Math.round(width * 100), houses = exactHouses(w100);
+      if ((2 * w100 + 550) % 1100 === 0) ties++;
+      for (const s of [-1, 0, 1]) {
+        const front = houseOf(nextFloat(width, s), style, WALL_KINDS.front);
+        assert.equal(front.row, houses >= 2 ? 1 : 0, `${HOUSE_STYLES[style].name}: ${width} m, ${s} steps off`);
+        if (houses >= 2) assert.equal(front.bays, 2 * houses, `${HOUSE_STYLES[style].name}: ${width} m is ${houses} houses, ${s} steps off`);
+        // Its sides, and any other style's front, are never a row
+        assert.equal(houseOf(nextFloat(width, s), style, WALL_KINDS.side).row, 0);
+      }
+      if (houses >= 2) rows++;
+    }
+  }
+  assert.ok(ties > 0 && rows > 0, 'the lengths must include ties and rows');
+  // Under 8.25 m it's one house, as before; at 8.25 m two of 4.125 m
+  assert.equal(houseOf(8.2, terraces[0][0], WALL_KINDS.front).row, 0);
+  assert.equal(houseOf(8.25, terraces[0][0], WALL_KINDS.front).bays, 4);
+  for (const [style] of HOUSES.filter(([, { look }]) => !look.terrace)) assert.equal(houseOf(30, style, WALL_KINDS.front).row, 0);
+});
+
+test('each house of a row has its door in one of its own two bays, every bay of it agreeing', () => {
+  assert.ok(rowDoor, 'rowDoor() must say which bay of each house of a row has its door');
+  for (const pattern of [0, 1, 2, 3]) {
+    const doors = [];
+    for (let unit = 0; unit < 12; unit++) {
+      const a = scalar(rowDoor(new Node(2 * unit), new Node(pattern))), b = scalar(rowDoor(new Node(2 * unit + 1), new Node(pattern)));
+      assert.equal(a, b, 'both its bays agree');
+      assert.ok(a === 2 * unit || a === 2 * unit + 1, `house ${unit}: door in bay ${a}`);
+      doors.push(a - 2 * unit);
+    }
+    // The first's in its second bay with pattern 1 or 3; the rest the same (0, 1), or each the other way to the last (2, 3)
+    assert.equal(doors[0], pattern % 2);
+    for (let k = 1; k < doors.length; k++) assert.equal(doors[k], pattern >= 2 ? 1 - doors[k - 1] : doors[0]);
+  }
+});
+
+test('the game finds each house of a row, and its door, where the facade draws them (js/house-entry.js)', async () => {
+  const { houseEntry } = await import('../js/house-entry.js');
+  const style = HOUSES.find(([, { look }]) => look.terrace)[0];
+  for (const width of [9, 13.75, 23, 61.3]) {
+    for (const seed of [0.5, 40.5, 64.2, 100.5, 999.9]) {
+      const cpu = houseEntry({ ax: 0, az: 0, bx: width, bz: 0, reverse: false, width, digits: Math.floor(seed) }, style);
+      const n = cpu.row.houses;
+      assert.equal(n, exactHouses(Math.round(width * 100)));
+      // One after another along the wall, from end to end, each with its door in its own stretch
+      assert.equal(cpu.row.units[0].s0, 0);
+      assert.ok(Math.abs(cpu.row.units[n - 1].s1 - width) < 1e-9);
+      for (const [k, u] of cpu.row.units.entries()) {
+        if (k) assert.equal(u.s0, cpu.row.units[k - 1].s1);
+        assert.ok(u.door.s > u.s0 + 0.5 && u.door.s < u.s1 - 0.5, `house ${k}'s door at ${u.door.s} in ${u.s0}-${u.s1}`);
+        assert.ok(u.s1 - u.s0 > 4 && u.s1 - u.s0 < 7.5, `house ${k} is ${u.s1 - u.s0} m`);
+      }
+    }
+  }
 });

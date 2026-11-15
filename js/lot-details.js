@@ -287,8 +287,9 @@ function thingGeometry() {
 /** A mesh drawn from `capacity` vertices filled as wanted: the verges' lawn or footpath */
 function vergeMesh(capacity, material, colour = null) {
   const g = new THREE.BufferGeometry();
+  // Static usage, as every buffer here: three.js uploads a DynamicDrawUsage attribute whole in every pass of every frame it's drawn in
+  // (js/trees.js has the same), where needsUpdate uploads only what a refill wrote
   const position = new THREE.Float32BufferAttribute(new Float32Array(capacity * 3), 3);
-  position.setUsage(THREE.DynamicDrawUsage);
   g.setAttribute('position', position);
   const normals = new Float32Array(capacity * 3);
   for (let i = 1; i < normals.length; i += 3) normals[i] = 1;
@@ -326,32 +327,26 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
   const group = new THREE.Group();
   group.name = 'HouseLots';
 
+  // Static usage throughout (vergeMesh()): refills upload what they write, through needsUpdate
   const fenceData = new THREE.InstancedBufferAttribute(new Float32Array(room.panels * 4), 4);
-  fenceData.setUsage(THREE.DynamicDrawUsage);
   const panelGeo = panelGeometry();
   panelGeo.setAttribute('fence', fenceData);
   const fences = new THREE.InstancedMesh(panelGeo, createFenceMaterial(), room.panels);
   fences.name = 'LotFences';
   fences.castShadow = shadows;
   fences.receiveShadow = true;
-  fences.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   const slabs = new THREE.InstancedMesh(slabGeometry(), createConcreteMaterial(), room.slabs);
   slabs.name = 'LotSlabs';
   slabs.receiveShadow = true;
-  slabs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   slabs.setColorAt(0, new THREE.Color(1, 1, 1));
-  slabs.instanceColor.setUsage(THREE.DynamicDrawUsage);
   const thingData = new THREE.InstancedBufferAttribute(new Float32Array(room.things * 4), 4);
-  thingData.setUsage(THREE.DynamicDrawUsage);
   const thingGeo = thingGeometry();
   thingGeo.setAttribute('thing', thingData);
   const things = new THREE.InstancedMesh(thingGeo, createLotThingMaterial(), room.things);
   things.name = 'LotThings';
   things.castShadow = shadows;
   things.receiveShadow = true;
-  things.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   things.setColorAt(0, new THREE.Color(1, 1, 1));
-  things.instanceColor.setUsage(THREE.DynamicDrawUsage);
   for (const mesh of [fences, slabs, things]) {
     mesh.userData.lifted = true; // written on the ground already
     mesh.count = 0;

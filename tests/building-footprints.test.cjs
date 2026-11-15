@@ -41,7 +41,7 @@ const collision = loadModule(readFileSync(join(__dirname, '../js/building-collis
 const WALL_KINDS = { shop: 0, front: 1, rear: 2, lotLine: 3, side: 4, below: 5 };
 const { createBuildingFootprints } = loadModule(readFileSync(join(__dirname, '../js/building-footprints.js'), 'utf8'), {
   imports: { 'three/webgpu': THREE, './tsl-materials.js': { WALL_KINDS },
-    './building-collision.js': collision }
+    './building-collision.js': collision, './house-styles.js': require('./helpers/house-styles.cjs') }
 });
 const p = (x, z) => ({ x, z });
 const square = (x = 0) => [p(x, 0), p(x + 10, 0), p(x + 10, 10), p(x, 10)];
@@ -310,6 +310,25 @@ test('a house\'s wall against its neighbour stays a lot line, and a short wall f
   const L = [p(0, 0), p(10, 0), p(10, 1), p(12, 1), p(12, 10), p(0, 10)];
   const front = wallsOf(build([house(L, { front: { x: 30, z: 0.5 } })]).children[0]).find((w) => w.kind === WALL_KINDS.front);
   close(front.width, 9);
+});
+
+test('a terrace\'s walls parallel to its front are fronts too: a row stepped along its street, and its back; its ends stay sides', () => {
+  // A row 33 m along its street (z = -8), 12 m deep, its middle 2 m back from the rest; Victorian terrace (style 1)
+  const outer = [p(0, 0), p(11, 0), p(11, 2), p(22, 2), p(22, 0), p(33, 0), p(33, 12), p(0, 12)];
+  const b = house(outer, { front: { x: 16, z: -8 }, house: 1 });
+  const walls = wallsOf(build([b]).children[0]);
+  const fronts = walls.filter((w) => w.kind === WALL_KINDS.front);
+  // The three stretches facing the street and the back facing away
+  assert.deepEqual(fronts.map((w) => Math.round(w.width)).sort((x, y) => x - y), [11, 11, 11, 33]);
+  assert.equal(fronts.filter((w) => w.nz < -0.99).length, 3);
+  assert.equal(fronts.filter((w) => w.nz > 0.99).length, 1);
+  // Its ends and the step's 2 m walls are sides
+  assert.ok(walls.filter((w) => w.kind === WALL_KINDS.side).every((w) => Math.abs(w.nx) > 0.99));
+  // The front the game keeps for its door and lot is the one facing its street, not the back
+  assert.ok(b.frontWall && Math.abs(b.frontWall.az + b.frontWall.bz) < 4.5, `its front wall at z = ${b.frontWall?.az}`);
+  // Any other house keeps one front
+  const other = walls.length && wallsOf(build([house(outer, { front: { x: 16, z: -8 } })]).children[0]).filter((w) => w.kind === WALL_KINDS.front);
+  assert.equal(other.length, 1);
 });
 
 test('a house\'s fascia hangs under its roof\'s edge all round, up a gable\'s rake too', () => {

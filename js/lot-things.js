@@ -50,21 +50,25 @@ const IRON_ROOFS = [0x8a8f92, 0x9a3e30, 0x6c7a6a];
 /**
  * What stands in a lot, `lot` from js/house-lots.js squareLots() (its drive worked out: a garage at the back takes it on, so this comes
  * first), `obstacles` the buildings round it ({ rings, whole }), `env` as squareLots() has it. Returns { boxes, slabs, panels, fences }.
+ * One house of a row of terraces drawn as one footprint has its own lot, `lot.unit` (squareLots()'s units: its door and its stretch of
+ * the front wall), and things of its own.
  */
 function lotThings(lot, obstacles, env) {
   const h = lot.home, f = lot.frame, style = HOUSE_STYLES[h.house], look = style?.look;
   const out = { boxes: [], slabs: [], panels: [], fences: [] };
   if (!look) return out;
   const name = style.name;
-  const roll = (k) => hashOf(keyOf(h.cx * 3 + k * 7.31, h.cz * 5 - k * 3.17));
+  const unit = lot.unit ?? null;
+  const k0 = unit ? unit.index * 13.7 : 0;
+  const roll = (k) => hashOf(keyOf(h.cx * 3 + k * 7.31 + k0, h.cz * 5 - k * 3.17 + k0));
   const pick = (list, k) => lin(list[Math.floor(roll(k) * list.length) % list.length]);
   const at = (a, d) => ({ x: f.px + f.tx * a + f.nx * d, z: f.pz + f.tz * a + f.nz * d });
   const ground = (x, z) => (env.lawnAt(x, z) ?? env.groundAt(x, z)) + LAWN_TOP;
   const others = obstacles.filter((o) => o.whole !== h);
   const blocked = (pts, list = obstacles) => pts.some((p) => list.some((o) => o.rings.some((r) => inRing(r, p.x, p.z))));
   const inLot = (p) => inRing(lot.pts, p.x, p.z);
-  const yard = h.ext.d0 - lot.front;
-  const entry = h.frontWall ? houseEntry(h.frontWall, h.house) : null;
+  const yard = unit ? Math.min(depthOf(f, unit.wall.ax, unit.wall.az), depthOf(f, unit.wall.bx, unit.wall.bz)) - lot.front : h.ext.d0 - lot.front;
+  const entry = unit ? { door: unit.door, garage: null } : h.frontWall ? houseEntry(h.frontWall, h.house) : null;
   const door = entry && { a: alongOf(f, entry.door.x, entry.door.z), d: depthOf(f, entry.door.x, entry.door.z) };
   const drive = lot.drive;
 
@@ -270,7 +274,10 @@ function lotThings(lot, obstacles, env) {
   if (yard >= 1.0) {
     let a = null;
     if (drive) a = drive.a + (door && door.a < drive.a ? -1 : 1) * (drive.w / 2 + 0.55);
-    else if (gateAt !== null) a = gateAt + (gateAt < (h.ext.a0 + h.ext.a1) / 2 ? 1 : -1) * (GATE / 2 + 0.4);
+    else if (gateAt !== null) {
+      const middle = unit ? alongOf(f, (unit.wall.ax + unit.wall.bx) / 2, (unit.wall.az + unit.wall.bz) / 2) : (h.ext.a0 + h.ext.a1) / 2;
+      a = gateAt + (gateAt < middle ? 1 : -1) * (GATE / 2 + 0.4);
+    }
     if (a !== null) {
       const d = lot.front + (fenced ? 0.45 : 0.3), p = at(a, d);
       if (inLot(p) && !blocked([p], others)) {
@@ -287,7 +294,7 @@ function lotThings(lot, obstacles, env) {
   }
 
   // --- The front wall: shrubs along it, and a verandah, a porch or a deck ----------------------------------------------------
-  const wall = h.frontWall && wallFrame(h.frontWall, h);
+  const wall = unit ? wallFrame(unit.wall, h) : h.frontWall && wallFrame(h.frontWall, h);
   if (wall && yard >= 1.6) {
     if (roll(20) < 0.5) {
       const n = Math.max(1, Math.min(3, Math.floor(wall.width / 2.8)));

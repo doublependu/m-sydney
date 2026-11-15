@@ -403,6 +403,12 @@ function* squareLots(entries, env, square) {
     const lot = { home: h, pts: poly, front: h.front, kerb: h.kerb, frame: f, style: h.house };
     lots.push(lot);
     lotOf.set(h, lot);
+    // A row of terraces drawn as one footprint: its lot cut where its facade cuts it into houses, and a fence between their back yards
+    const row = HOUSE_STYLES[h.house]?.look?.terrace && h.frontWall ? houseEntry(h.frontWall, h.house)?.row : null;
+    if (row) {
+      lot.units = unitsOf(lot, row);
+      for (const fence of rowFences(lot, row)) fences.push(fence);
+    }
 
     // The fences along it: every side but the front, from FENCE_BACK behind the front line
     for (let i = 0; i < poly.length; i++) {
@@ -529,7 +535,10 @@ function* squareLots(entries, env, square) {
     const near = [...obstaclesIn(h.cx - 60, h.cz - 60, h.cx + 60, h.cz + 60)];
     lot.drive = driveOf(lot, near);
     if (!owns(h.cx, h.cz)) continue;
-    const own = env.lotThings ? env.lotThings(lot, near) : null;
+    // A row's things house by house, each in its own stretch of the lot
+    const parts = env.lotThings ? (lot.units ? lot.units.map((unit) => env.lotThings({ ...lot, pts: unit.pts, unit }, near)) : [env.lotThings(lot, near)]).filter(Boolean) : [];
+    const own = parts.length ? { slabs: parts.flatMap((o) => o.slabs), panels: parts.flatMap((o) => o.panels), boxes: parts.flatMap((o) => o.boxes),
+      fences: parts.flatMap((o) => o.fences) } : null;
     if (lot.drive) slabs.push(...laid(lot, lot.drive, env));
     if (own) {
       slabs.push(...own.slabs);
@@ -553,6 +562,48 @@ function* squareLots(entries, env, square) {
     if (street) fronting.push({ street, house: 0, terrace: false, yard: 0, frontage: [[w.cx, w.cz], [w.cx, w.cz]], cx: w.cx, cz: w.cz, lot: null });
   }
   return { lots: mine, fences: finished, panels, slabs, things, fronting };
+}
+
+// --- A row of terraces ------------------------------------------------------------------------------------------------------------
+
+/** The way along a row's front wall, from where its houses start (js/house-entry.js), and the way into the house from it */
+function rowAxes(lot, row) {
+  const { a0 } = row.units[0], { a1 } = row.units[row.units.length - 1];
+  const L = Math.hypot(a1.x - a0.x, a1.z - a0.z) || 1, ux = (a1.x - a0.x) / L, uz = (a1.z - a0.z) / L;
+  const h = lot.home, inward = (h.cx - a0.x) * -uz + (h.cz - a0.z) * ux >= 0 ? 1 : -1;
+  return { ux, uz, wx: -uz * inward, wz: ux * inward };
+}
+
+/**
+ * A row's lot cut into its houses' (`row`: houseEntry()'s), square to its front wall where one house meets the next: [{ index, pts, door,
+ * wall: its stretch of the front wall, as js/building-footprints.js keeps a front ({ ax, az, bx, bz, width }) }]. The end houses' lots
+ * take in the rest of the row's.
+ */
+function unitsOf(lot, row) {
+  const { ux, uz } = rowAxes(lot, row), n = row.units.length;
+  const units = [];
+  row.units.forEach((u, k) => {
+    let pts = lot.pts;
+    if (k > 0) { const b = row.units[k - 1].a1; pts = clipHalf(pts, -ux, -uz, b.x * ux + b.z * uz, 'unit'); }
+    if (k < n - 1) { const b = u.a1; pts = clipHalf(pts, ux, uz, -(b.x * ux + b.z * uz), 'unit'); }
+    if (pts.length < 3) return;
+    const width = Math.hypot(u.a1.x - u.a0.x, u.a1.z - u.a0.z);
+    units.push({ index: k, pts, door: u.door, wall: { ax: u.a0.x, az: u.a0.z, bx: u.a1.x, bz: u.a1.z, width } });
+  });
+  return units;
+}
+
+/** Fences between a row's houses, from its front wall back across its lot: the house itself and the footpaths cut them as any other's */
+function rowFences(lot, row) {
+  const { wx, wz } = rowAxes(lot, row), reach = BACK_MOST + (lot.home.ext.d1 - lot.home.ext.d0) + 20;
+  const out = [];
+  for (const u of row.units.slice(0, -1)) {
+    const p = { x: u.a1.x + wx * 0.05, z: u.a1.z + wz * 0.05 }, q = { x: u.a1.x + wx * reach, z: u.a1.z + wz * reach };
+    for (const [t0, t1] of insideSpans(p, q, [lot.pts])) {
+      out.push({ a: { x: p.x + (q.x - p.x) * t0, z: p.z + (q.z - p.z) * t0 }, b: { x: p.x + (q.x - p.x) * t1, z: p.z + (q.z - p.z) * t1 }, homes: [lot.home] });
+    }
+  }
+  return out;
 }
 
 /**

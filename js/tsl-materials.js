@@ -440,11 +440,17 @@ function facadeCounts(box, normal, windowWidth, cornerPier, footprintLocal, wall
   })();
 }
 
+const TERRACE_HOUSE = 5.5; // m: a row of terraces is cut into houses of its front's length over the nearest whole number of these
+
 /**
  * A house's wall, worked out once in the vertex stage (facadeCounts()) so every pixel of it has the same: [its window bays, between
  * HOUSE_PIER at each end, at its style's spacing for a front or a side; its whole-bay offset; its windows' width (m); and the bay of
- * its door + 1, + 64 times the first of its garage door's two bays + 1, + 4096 times its style]. A wall with no door or garage has 0
- * for it. Whether each bay has a window is a hash of the bay and these (houseLayout()), so that's the same in every pixel of it too.
+ * its door + 1, + 64 times the first of its garage door's two bays + 1, + 4096 times its style, + 65536 on a row of terraces]. A wall
+ * with no door or garage has 0 for it. Whether each bay has a window is a hash of the bay and these (houseLayout()), so that's the same
+ * in every pixel of it too.
+ * A terrace's front long enough for two houses or more of TERRACE_HOUSE is a row of them (the map draws many rows as one footprint): two
+ * bays a house, a door in one and a window in the other downstairs, and in place of a door's bay, which of each house's bays has its
+ * door (rowDoor()) + 1.
  * `wall`: the facadeWall attribute (its kind in z); `table`: HOUSE_TABLE.
  */
 function houseWall(box, wall, normal, table = HOUSE_TABLE) {
@@ -455,7 +461,9 @@ function houseWall(box, wall, normal, table = HOUSE_TABLE) {
   const wallSeed = floor(seed.add(dot(normal, vec3(17.0, 0.0, 37.0))));
   const isFront = step(abs(wall.z.sub(WALL_KINDS.front)), 0.25);
   const pier = min(float(HOUSE_PIER), box.x.mul(0.2));
-  const bays = max(floor(box.x.sub(pier.mul(2.0)).div(mix(spacing.y, spacing.x, isFront)).add(0.50005)), 1.0);
+  const houses = max(floor(box.x.div(TERRACE_HOUSE).add(0.50005)), 1.0);
+  const terraces = kinds.z.mul(isFront).mul(step(1.5, houses));
+  const bays = mix(max(floor(box.x.sub(pier.mul(2.0)).div(mix(spacing.y, spacing.x, isFront)).add(0.50005)), 1.0), houses.mul(2.0), terraces);
   const last = bays.sub(1.0);
   // The house's own choices, the same on each of its walls. Where its door and garage door go is from the bits of its digits, exactly:
   // the game works out the same on the CPU for its driveway and path (js/house-entry.js), which a hash through sin() wouldn't let it,
@@ -472,11 +480,25 @@ function houseWall(box, wall, normal, table = HOUSE_TABLE) {
   const middle = floor(last.mul(0.5).add(step(0.5, h2).mul(0.5)));
   const inner = mix(mix(middle, 1.0, step(0.45, h1)), last.sub(1.0), step(0.725, h1));
   const door = mix(mix(end, inner, step(2.5, bays).mul(float(1.0).sub(kinds.z))), byGarage, garage);
-  const doorField = min(door, 62.0).add(1.0).mul(isFront);
+  // A row's houses: the first's door in its second bay or its first (h1), and the rest the same, or each the other way to the last (h2)
+  const pattern = step(0.5, h1).add(step(0.5, h2).mul(2.0));
+  const doorField = mix(min(door, 62.0), pattern, terraces).add(1.0).mul(isFront);
   const garageField = min(garageAt, 62.0).add(1.0).mul(garage);
   // Some houses' windows a little narrower than their style's
   const width = mix(side.x, front.x, isFront).mul(mix(1.0, 0.85, step(0.7, h3)));
-  return vec4(bays, wallSeed, width, doorField.add(garageField.mul(64.0)).add(style.mul(4096.0)));
+  return vec4(bays, wallSeed, width, doorField.add(garageField.mul(64.0)).add(style.mul(4096.0)).add(terraces.mul(65536.0)));
+}
+
+/**
+ * On a row of terraces (houseWall()), the bay of the door of the house a bay is in: two bays a house, from the wall's start; `pattern`,
+ * the row's: + 1 where the first house's door is in its second bay, + 2 where each house's is the other way to the last's.
+ */
+function rowDoor(slot, pattern) {
+  const unit = floor(slot.mul(0.5));
+  const first = pattern.sub(floor(pattern.mul(0.5)).mul(2.0));
+  const mirrored = floor(pattern.mul(0.5));
+  const odd = unit.sub(floor(unit.mul(0.5)).mul(2.0));
+  return unit.mul(2.0).add(mix(first, abs(odd.sub(first)), mirrored));
 }
 
 /**
@@ -528,12 +550,15 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
     entrances = counts.z;
     shopfronts = counts.w;
     if (withHouses) {
-      // A house's own counts (houseWall()): its style in the last, which no other wall's shopfronts reach
-      const style = floor(counts.w.div(4096.0));
+      // A house's own counts (houseWall()): its style in the last, which no other wall's shopfronts reach, and whether it's a row
+      const terraces = floor(counts.w.div(65536.0));
+      const packed = counts.w.sub(terraces.mul(65536.0));
+      const style = floor(packed.div(4096.0));
       const is = style.greaterThan(0.5);
-      const rest = counts.w.sub(style.mul(4096.0));
+      const rest = packed.sub(style.mul(4096.0));
       const garageField = floor(rest.div(64.0));
-      house = { is, isF: step(0.5, style), style, width: counts.z, door: rest.sub(garageField.mul(64.0)).sub(1.0), garage: garageField.sub(1.0) };
+      house = { is, isF: step(0.5, style), style, width: counts.z, door: rest.sub(garageField.mul(64.0)).sub(1.0), garage: garageField.sub(1.0),
+        terraces, bays: counts.x };
       // Its own seed, the style taken off; and no shops or entrances of a city building's
       // (mix() with the flag rather than select(): a select is a branch, and what's built in a branch is built again for each later use.
       // With the flag 0, mix() gives the other value exactly.)
@@ -607,6 +632,8 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
   const solid = max(max(max(inPier.mul(float(1.0).sub(isGroundFloor)), blank), max(partial, baseWall)), plinth);
   let wallSolid = solid;
   if (house) {
+    // On a row of terraces, the door of the house this bay is in
+    house.door = mix(house.door, rowDoor(cellId.x.sub(wallSeed), house.door), house.terraces);
     Object.assign(house, houseLayout(house, cellId.x.sub(wallSeed), cellId.y, kind, wallSeed));
     house.wallSeed = wallSeed;
     house.along = alongM;
@@ -625,11 +652,11 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
 
 /**
  * Which of a house's bays have a window, from its wall's flat counts (houseWall()) and the bay's own number, so every pixel of a bay
- * agrees: the front's bays beside its door always, and any bay by a hash at its style's share for a front or a side. On the ground
- * floor, not its door's bay or its garage door's two; upstairs, over its door too. `slot`: the bay, from 0 at the wall's start; `storey`
- * from 0. { window (0 or 1), front (1 on its front), rows: the style's rows of HOUSE_TABLE }
+ * agrees: the front's bays beside its door always, and any bay by a hash at its style's share for a front or a side; on a row of
+ * terraces, every bay. On the ground floor, not its door's bay or its garage door's two; upstairs, over its door too. `slot`: the bay,
+ * from 0 at the wall's start; `storey` from 0. { window (0 or 1), front (1 on its front), rows: the style's rows of HOUSE_TABLE }
  */
-function houseLayout({ style, door, garage }, slot, storey, kind, wallSeed, table = HOUSE_TABLE) {
+function houseLayout({ style, door, garage, terraces }, slot, storey, kind, wallSeed, table = HOUSE_TABLE) {
   const row = (k) => table.element(style.mul(HOUSE_ROWS).add(k).toInt());
   const rows = [row(0), row(1), row(2), row(3), row(4)];
   const front = step(abs(kind.sub(WALL_KINDS.front)), 0.25);
@@ -639,7 +666,7 @@ function houseLayout({ style, door, garage }, slot, storey, kind, wallSeed, tabl
   const doorBay = step(abs(slot.sub(door)), 0.25);
   const garageBay = step(-0.5, garage).mul(step(garage.sub(0.25), slot)).mul(step(slot, garage.add(1.25)));
   const ground = float(1.0).sub(step(0.5, storey));
-  const any = max(besideDoor, chance);
+  const any = max(max(besideDoor, chance), terraces);
   const window = mix(max(any, doorBay), any.mul(float(1.0).sub(max(doorBay, garageBay))), ground);
   return { window, front, rows, doorBay, garageBay };
 }
@@ -1256,8 +1283,8 @@ function createPreWarBuildingMaterial(opts = {}) {
       .mul(float(1.0).sub(isSillUnderShadow.mul(0.42)))
       .add(cityUniforms.uSunColor.mul(isSillTop.mul(0.24)))
       .add(canyonGlow);
-    // and the shade under its eaves
-    if (house) masonryWeathered = masonryWeathered.mul(houseLook.eave);
+    // and the shade under its eaves; on a row of terraces, each house's own shade and the piers between them
+    if (house) masonryWeathered = mix(masonryWeathered.mul(houseLook.shade), houseLook.pierColor, houseLook.pier).mul(houseLook.eave);
 
     // Upper apartment floors use interior mapping behind grimy soda-lime glazing.
     const pooledDirt = float(1.0).sub(smoothstep(0.0, 0.32, winUV.y)).mul(0.36);
@@ -1392,7 +1419,8 @@ function createPreWarBuildingMaterial(opts = {}) {
  * What a house's walls have that a city building's don't, from facadeCell()'s `house`: { bars (its windows' frames, panes and
  * transoms, over the window's opening), surface (vec2: how much lighter or darker its painted wall is there, and the wall's relief in
  * m: weatherboards, fibro sheets or render), eave (the shade under its eaves), room (vec4: what's behind its glass, and how lit),
- * door ({ mask, color, roughness, relief }: its front door, and a project home's garage door) }. The work is skipped on any other wall;
+ * door ({ mask, color, roughness, relief }: its front door, and a project home's garage door), shade (vec3: a row of terraces' house's
+ * own shade of the wall), pier (the piers between them) and pierColor }. The work is skipped on any other wall;
  * every derivative it needs is taken outside that, as `winUV` (the window's opening, 0-1 across and up), `uFw` and `fwV` (m a pixel
  * along the wall and up it).
  */
@@ -1520,7 +1548,22 @@ function createHouseLook(facade, { winUV, hWinH, frameColour, uFw, fwV, uCoursin
     roughness: mix(float(0.5), float(0.15), glass),
     relief: max(leaf, garageLeaf).mul(-0.02).add(float(0.01))
   };
-  return { bars, surface, eave, room, door };
+
+  // A row of terraces' houses (houseWall()): a thin rendered pier up the wall between each and the next, and each house its own shade of
+  // the wall's colour. Two bays a house from the row's start; the row's ends are its corners. The pier hides where one shade meets the next.
+  const row = house.terraces.mul(house.front).mul(float(1.0).sub(isRoof)).mul(house.isF);
+  const u = house.along.sub(house.pier).div(bayWidth).mul(0.5);
+  const toPier = abs(u.sub(floor(u.add(0.5)))).mul(bayWidth.mul(2.0));
+  const between = step(0.5, u).mul(step(u, house.bays.mul(0.5).sub(0.5)));
+  const pier = band(toPier, -1.0, 0.16, hx).mul(between).mul(row);
+  // ...standing a little proud of the wall: a line of shade down each side of it
+  const pierEdge = band(toPier, 0.16, 0.21, hx).mul(between).mul(row);
+  const unit = floor(u);
+  const light = hash2D(vec2(unit.add(0.37), boxSeed.add(41.3))).sub(0.5).mul(0.24);
+  const warm = hash2D(vec2(unit.add(3.1), boxSeed.add(7.9))).sub(0.5).mul(0.1);
+  const shade = mix(vec3(1.0), vec3(light.add(warm).add(1.0), light.add(1.0), light.sub(warm).add(1.0)), row).mul(float(1.0).sub(pierEdge.mul(0.35)));
+  const pierColor = mix(color(0xe9e2d0), color(0xd6ccb6), hash2D(vec2(boxSeed, 12.7)));
+  return { bars, surface, eave, room, door, shade, pier, pierColor };
 }
 
 // Axis-aligned landmark boxes, with dimensions and a seed for whole-bay facade layouts.

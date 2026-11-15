@@ -107,3 +107,49 @@ test('every thing stands in its own lot, and out of the house', () => {
     assert.ok(!(b.x > house.x0 + 0.05 && b.x < house.x1 - 0.05 && b.z > house.z0 + 0.05 && b.z < house.z1 - 0.05), 'not inside the house');
   }
 });
+
+// A row of six terraces the map draws as one footprint (Victorian terrace, 33 m along A St, 12 m deep, its front 11 m from the street's
+// middle, so 3.1 m of front yard): the facade cuts it into houses (js/house-entry.js), and its lot is cut the same way.
+test('a row of terraces drawn as one footprint: a lot for each house, its own front fence, gate and letterbox, and fences between their yards', () => {
+  const ring = [{ x: 0, z: 11 }, { x: 33, z: 11 }, { x: 33, z: 23 }, { x: 0, z: 23 }];
+  const row = { kind: 1, houseStyle: STYLE['Victorian terrace'], group: 0, bottom: 0, height: 6, floor: 0, polygons: [{ outer: ring, holes: [] }],
+    minX: 0, maxX: 33, minZ: 11, maxZ: 23, cx: 16.5, cz: 17, frontWall: { ax: 33, az: 11, bx: 0, bz: 11, reverse: true, width: 33, digits: 100 } };
+  const job = squareLots([{ b: row, tile }], env, SQUARE);
+  let step = job.next();
+  while (!step.done) step = job.next();
+  const { lots, things, panels, fences, slabs } = step.value;
+  assert.equal(lots.length, 1);
+  const [lot] = lots, entry = houseEntry(row.frontWall, row.houseStyle);
+  assert.equal(entry.row.houses, 6);
+  assert.equal(lot.units.length, 6);
+  assert.equal(lot.drive, null);
+  for (const [k, unit] of lot.units.entries()) {
+    // Its own stretch of the row's lot, with its door on its front
+    const { door } = entry.row.units[k];
+    assert.ok(inRing(unit.pts, door.x, door.z + 1), `house ${k}'s door is in its lot`);
+    // The end houses' lots take in what the row's lot has beyond its ends
+    const xs = unit.pts.map((p) => p.x);
+    if (k > 0 && k < 5) assert.ok(Math.max(...xs) - Math.min(...xs) < 7.5, `house ${k}'s lot is ${Math.max(...xs) - Math.min(...xs)} m wide`);
+  }
+  // Front fences (a palisade on most), each in one house's lot, with a gate at that house's door
+  const front = fences.filter((f) => f.hold === 1.2);
+  assert.ok(front.length >= 3, `${front.length} front fences`);
+  for (const f of front) {
+    const unit = lot.units.find((u) => inRing(u.pts, (f.a.x + f.b.x) / 2, (f.a.z + f.b.z) / 2 + 0.05));
+    assert.ok(unit, 'in a house\'s lot');
+    const door = entry.row.units[unit.index].door;
+    assert.ok(Math.min(f.a.x, f.b.x) >= door.x + 0.4 || Math.max(f.a.x, f.b.x) <= door.x - 0.4, 'clear of its gate');
+  }
+  // A letterbox in most of their lots, beside the gate
+  const boxes = things.filter((b) => b.small && b.h > 0.8 && b.h < 1.3);
+  assert.ok(boxes.length >= 4, `${boxes.length} letterboxes`);
+  // Timber fences between their back yards: square to the street, behind the row, never through it
+  // (the lot's back fence, 25 m behind the row, runs along the street)
+  const yards = panels.filter((p) => p.kind === 1 && Math.abs(p.ux) < 1e-6);
+  assert.ok(yards.length >= 5 * 4, `${yards.length} panels between yards`);
+  for (const p of yards) {
+    assert.ok(p.z - p.length / 2 > 23, `behind the row: ${p.x.toFixed(1)}, ${p.z.toFixed(1)}`);
+    assert.ok(lot.units.slice(0, -1).some((u, k) => Math.abs(p.x - entry.row.units[k].a1.x) < 0.01), 'where two houses meet');
+  }
+  assert.ok(!slabs.some((s) => s.kind === 1), 'no crossover: no driveway');
+});

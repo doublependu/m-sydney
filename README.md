@@ -244,6 +244,12 @@ what it did.
   its cell of the tree field, so it's drawn with those (`js/street-details.js`); the nearest 16 on high (12, 6) are planted, again as you
   move, into room the field keeps for them in each cell (`setAdded()`, `js/trees.js`). The crowd walks along the footpath
   (`js/pedestrian-routes.js`, `walkAt`).
+- **A row of terraces the map draws as one footprint shows its houses.** OSM's `terrace` buildings in the inner suburbs (SA4s 117, 118 and
+  120) take the Victorian terrace style (`tools/build-buildings.mjs` `isRow()`), and a terrace's front long enough for two houses is cut
+  into houses of its length over the nearest whole number of 5.5 m, worked out once a wall in the vertex stage (`houseWall()`,
+  `rowDoor()`): each with a door and a window downstairs and two windows up, its own shade of the wall, and a rendered pier between it and
+  the next. Its walls parallel to its front are fronts too, so its back has doors. The row's lot is cut the same way (`js/house-entry.js`
+  `row`, `js/house-lots.js` `unitsOf()`): each house its own front fence, gate and letterbox, and timber fences between their back yards.
 - **A garden is drawn over its lawn** (`js/garden.js`): its paths as strips in their surfaces' colours, its beds speckled with what's
   planted in them, so they read as planted from further off than the plants are drawn, its hedges, ponds and gates, and the parapets
   along its shore, which you can't walk or jump over. All of it lies on the lawn as the lawn is drawn, not on the ground under it, which

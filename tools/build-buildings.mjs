@@ -139,6 +139,11 @@ const HOUSE_MIX = {
 const OTHER_MIX = [[S['Triple-fronted brick veneer'], 3.5], [S['Project home'], 3.5], [S['Post-war fibro'], 1.5], [S['California bungalow'], 1.5]];
 const OLD_FLATS = new Set(['117', '118', '120', '121', '122']); // where the walk-ups are as often inter-war as 1960s
 const TERRACE_SUBURBS = new Set(['117', '118', '120', '121']);
+// Rows of terraces drawn as one footprint: OSM's `terrace`, whatever its size, in the inner suburbs. Outlines of no class that are long
+// and narrow (Microsoft's merge a row) aren't taken: beside aerial photos, nearly all of those are detached houses, deep or on a corner,
+// even those lying along their street among terraces. North Sydney and Hornsby's terraces are mostly townhouses of the 1970s on.
+const ROW_SUBURBS = new Set(['117', '118', '120']);
+const isRow = (r) => r.b.class === 'terrace';
 const SAME_STREET = 0.65; // of a block's houses, how many share its style
 // The CBD keeps the look it had: its buildings of no use stay as they were (ai/plan_4.md, Phase I)
 const CBD = new Set(['Sydney (North) - Millers Point', 'Sydney (South) - Haymarket']);
@@ -158,7 +163,7 @@ function shapeOf(r) {
   }
   return { long: Math.max(u1 - u0, v1 - v0), wide: Math.min(u1 - u0, v1 - v0) };
 }
-const placeStats = { houses: 0, flats: 0, shops: 0, civic: 0, sheds: 0, styled: {} };
+const placeStats = { houses: 0, flats: 0, shops: 0, civic: 0, sheds: 0, styled: {}, rows: {} };
 if (places) {
   const homeSized = new Map(); // Mesh Block -> buildings of a home's size in it
   for (const r of buildings) {
@@ -189,7 +194,10 @@ if (places) {
     if (r.kind === KIND.house) {
       const { long, wide } = shapeOf(r);
       if (wide < 7 && long > wide * 1.6) r.style = TERRACE_SUBURBS.has(sa4) ? S['Victorian terrace'] : S['Project home'];
-      else {
+      else if (ROW_SUBURBS.has(sa4) && isRow(r)) {
+        r.style = S['Victorian terrace'];
+        placeStats.rows[sa4] = (placeStats.rows[sa4] || 0) + 1;
+      } else {
         const mix = HOUSE_MIX[sa4] || OTHER_MIX;
         r.style = t < SAME_STREET ? pick(mix, hash(r.block, 11)) : pick(mix, hash(r.cx, r.cz, 13));
       }

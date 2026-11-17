@@ -410,7 +410,8 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
   yield* addCoast(tile, sand, rock, wanted);
   yield;
   buildCells(road, target, mats.road);
-  buildCells(curbs, target, mats.curb, { cast: true, cullDistance: GROUND_CULL.curbs });
+  // Kerbs cast no shadow: 22 cm high, their shadow is a line a few pixels wide, not worth drawing them again in each cascade
+  buildCells(curbs, target, mats.curb, { cullDistance: GROUND_CULL.curbs });
   yield;
   buildCells(paving, target, mats.sidewalk);
   buildCells(lawns, target, mats.lawn);

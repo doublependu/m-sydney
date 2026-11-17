@@ -805,3 +805,41 @@ test('a fence between houses\' lots holds the walker, and not a car, a bike or t
   controller.removeWalkerColliders([fence]);
   assert.equal(step('person', 0.2, 0.48), 0.2, 'once dropped it holds nothing');
 });
+
+test('cyclist braking stops briskly, pauses at zero before reversing, and Space brakes without reversing', () => {
+  function bikeHarness(speed = 0, colliders = []) {
+    const { controller } = keyboardHarness({ CITY_BOUNDS: { minX: -1000, maxX: 1000, minZ: -1000, maxZ: 1000, sidewalkHeight: 0.22 }, blockAt: () => null });
+    const cyclist = {
+      type: 'cyclist', position: { x: 0, y: 0, z: 0 }, heading: 0, speed,
+      leanAngle: 0, pedalPhase: 0, leanPivot: { rotation: { z: 0 } },
+      frontWheel: { rotation: { x: 0 } }, rearWheel: { rotation: { x: 0 } }, crankPivot: { rotation: { x: 0 } }, pedals: []
+    };
+    Object.assign(controller, { activeMode: 'cyclist', colliders, _colliderCells: null, entities: { cyclist } });
+    controller.getGroundHeight = () => 0;
+    return { controller, cyclist };
+  }
+
+  // Holding S from cruising speed (12 m/s) stops in about 6.5 m, and waits at 0 before backing up
+  const sBrake = bikeHarness(12);
+  sBrake.controller.keys.backward = true;
+  for (let i = 0; i < 72; i++) sBrake.controller.updateCyclist(1 / 60); // 1.2 s
+  assert.equal(sBrake.cyclist.speed, 0, 'S brings the bike to a clean stop without backing up at once');
+  assert.ok(sBrake.cyclist.position.z > 5.5 && sBrake.cyclist.position.z < 7.5, `it stops within about 6.5 m from 12 m/s (got ${sBrake.cyclist.position.z.toFixed(2)} m)`);
+  // Holding S on past the wait backs it up, gently
+  for (let i = 0; i < 30; i++) sBrake.controller.updateCyclist(1 / 60);
+  assert.ok(sBrake.cyclist.speed < -0.5, 'holding S on after stopping backs the bike up');
+
+  // Holding Space (up) brakes to a stop and never backs up
+  const handbrake = bikeHarness(15);
+  handbrake.controller.keys.up = true;
+  for (let i = 0; i < 150; i++) handbrake.controller.updateCyclist(1 / 60);
+  assert.equal(handbrake.cyclist.speed, 0, 'Space stops at zero and never backs up');
+  assert.ok(handbrake.cyclist.position.z < 11.5, 'Space stops it crisply from speed');
+
+  // Held against a wall, its speed comes down to what it moved, so braking or backing away works at once
+  const blocked = bikeHarness(0, [{ minX: -10, maxX: 10, minZ: 0.5, maxZ: 10, maxY: 30 }]);
+  blocked.controller.keys.forward = true;
+  for (let i = 0; i < 120; i++) blocked.controller.updateCyclist(1 / 60);
+  assert.ok(blocked.cyclist.speed < 0.05, `a bike held by a wall doesn't build up speed (got ${blocked.cyclist.speed})`);
+  assert.ok(blocked.cyclist.position.z < 0.5, 'and stays out of it');
+});

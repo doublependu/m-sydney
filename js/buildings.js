@@ -625,7 +625,9 @@ function createCityBlocks(scene, { fascia: withFascia = true } = {}) {
       const a = item.a;
       const dx = a.x - camX;
       const dz = a.z - camZ;
-      const d2 = dx * dx + dz * dz + camY * camY;
+      // The camera's height over the awning, not over the sea: from ground 80 m up, the pool reached only about 80 m
+      const dy = camY - (item.base + a.y);
+      const d2 = dx * dx + dz * dz + dy * dy;
       if (d2 > STORE_MAX_DIST * STORE_MAX_DIST) continue;
       const d = Math.sqrt(d2);
       const forwardDot = dx * fwdX + dz * fwdZ;

@@ -412,7 +412,7 @@ async function initApp() {
     firstPerson: [[['W', 'S'], 'Walk'], [['A', 'D'], 'Step aside'], [['←', '→'], 'Turn'], [['Mouse'], 'Look'], [['Shift'], 'Run'], [['Space'], 'Jump']],
     firstPersonLocked: [[['W', 'S'], 'Walk'], [['A', 'D'], 'Step aside'], [['←', '→'], 'Turn'], [['Mouse'], 'Look'], [['Shift'], 'Run'], [['Space'], 'Jump'], [['Esc'], 'Free the mouse']],
     car: [[['W', 'S'], 'Drive / Reverse'], [['A', 'D'], 'Steer'], [['B'], 'Horn'], [['Drag'], 'Orbit']],
-    cyclist: [[['W', 'S'], 'Pedal / Brake'], [['A', 'D'], 'Lean & Turn'], [['Drag'], 'Orbit']],
+    cyclist: [[['W', 'S'], 'Pedal / Brake'], [['Space'], 'Brake'], [['A', 'D'], 'Lean & Turn'], [['Drag'], 'Orbit']],
     helicopter: [[['W', 'S'], 'Pitch'], [['A', 'D'], 'Yaw'], [['Space', 'E'], 'Ascend'], [['Q', 'C'], 'Descend']]
   };
   // Top speeds in km/h (controllers.js caps them at 6, 36, 19 & 52 m/s): full scale of the speed meter

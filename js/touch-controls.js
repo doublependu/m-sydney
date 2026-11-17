@@ -103,13 +103,17 @@ class TouchControls {
     if (!['person', 'car', 'cyclist', 'helicopter'].includes(mode)) return;
     this.reset();
     if (!this.root) return;
-    const labels = { up: mode === 'helicopter' ? 'Ascend' : 'Jump', down: 'Descend' };
+    // On the bike, up brakes (js/controllers.js updateCyclist()). A phone shows only the icon, so it says so too.
+    const labels = { up: { helicopter: 'Ascend', cyclist: 'Brake' }[mode] || 'Jump', down: 'Descend' };
+    const icons = { up: mode === 'cyclist' ? '■' : '↑', down: '↓' };
     for (const button of this.buttons) {
       const action = button.getAttribute('data-touch-action');
-      button.hidden = (action === 'up' && mode !== 'person' && mode !== 'helicopter') || (action === 'down' && mode !== 'helicopter');
+      button.hidden = (action === 'up' && mode === 'car') || (action === 'down' && mode !== 'helicopter');
       button.setAttribute('aria-label', labels[action]);
       const label = this.root.querySelector(`[data-touch-label="${action}"]`);
       if (label) label.textContent = labels[action];
+      const icon = button.querySelector?.('[aria-hidden]');
+      if (icon) icon.textContent = icons[action];
     }
   }
 

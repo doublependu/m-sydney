@@ -166,9 +166,17 @@ test('mode changes clear touches and expose the relevant actions', () => {
   assert.equal(buttons.down.hidden, true);
   buttons.up.dispatch('pointerdown', { pointerId: 3 });
   assert.equal(input.up, 0, 'hidden actions cannot receive input');
+  // On the bike, up brakes
   controls.setMode('cyclist');
-  assert.equal(buttons.up.hidden, true);
+  assert.equal(buttons.up.hidden, false);
+  assert.equal(labels.up.textContent, 'Brake');
+  assert.equal(buttons.up.getAttribute('aria-label'), 'Brake');
   assert.equal(buttons.down.hidden, true);
+  buttons.up.dispatch('pointerdown', { pointerId: 4 });
+  assert.equal(input.up, 1, 'the brake button holds up');
+  controls.setMode('person');
+  assert.equal(input.up, 0, 'and lets go of it on leaving the bike');
+  assert.equal(labels.up.textContent, 'Jump');
 });
 
 test('disabling controls clears held input and blocks new input until enabled', () => {

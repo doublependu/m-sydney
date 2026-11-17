@@ -66,9 +66,11 @@ const CAR_DRIVE = {
   wheelbase: 2.76, grip: 9.5, cornering: 10.5 // Wheelbase (m), tire and steering acceleration limits (m/s²).
 };
 const BICYCLE_DRIVE = {
-  speed: 19, reverseSpeed: 4.5, acceleration: 9,
-  rolling: 0.08, drag: 0.004, coast: 0.2, brake: 7.5 // Backward input is scaled to 0.6, giving 4.5 m/s² braking.
+  speed: 19, reverseSpeed: 4.5, acceleration: 6.5,
+  powerSpeed: 10.5, // Above 38 km/h, rider power limits acceleration.
+  rolling: 0.1, drag: 0.004, coast: 0.45, brake: 10.5
 };
+const BRAKE_HOLD = 0.25; // s at a standstill after braking with S before it backs the bike up
 
 function driveSpeed(speed, throttle, dt, drive) {
   // Turning can project tiny sideways motion back into speed after braking to zero.
@@ -633,6 +635,7 @@ class ThirdPersonControllerManager {
       if (ent.carState) ent.carState.value.x = ent.carState.value.w = 0;
     } else if (this.activeMode === 'cyclist') {
       ent.leanAngle = ent.leanPivot.rotation.z = 0;
+      ent._brakeHold = 0;
       ent._riderHidden = false;
       ent._posedX = NaN;
       if (ent.helmet) ent.helmet.visible = true;
@@ -1697,13 +1700,31 @@ class ThirdPersonControllerManager {
   }
 
   updateCyclist(dt) {
+    if (dt <= 0) return;
     const b = this.entities.cyclist;
 
+    // Space (up) brakes while moving forward, and never backs the bike up. S brakes as hard while moving forward, and backs up
+    // gently (0.6 of its strength) from a standstill.
+    const handbrake = b.speed > 0 ? +this.keys.up : 0;
     let throttle = 0;
-    if (this.keys.forward) throttle = this.keys.forward;
-    else if (this.keys.backward) throttle = -0.6 * this.keys.backward;
+    if (handbrake) throttle = -handbrake;
+    else if (this.keys.forward) throttle = +this.keys.forward;
+    else if (this.keys.backward) throttle = b.speed > 0 ? -this.keys.backward : -0.6 * this.keys.backward;
 
-    b.speed = driveSpeed(b.speed, throttle, dt, BICYCLE_DRIVE);
+    // Braked to a stop with S, it waits a moment at zero, so holding S stops cleanly before it backs up
+    if (b.speed > 0 && throttle < 0) {
+      b.speed = driveSpeed(b.speed, throttle, dt, BICYCLE_DRIVE);
+      if (b.speed < 0.05) {
+        b.speed = 0;
+        if (!handbrake) b._brakeHold = BRAKE_HOLD;
+      }
+    } else if (!handbrake && b._brakeHold > 0 && throttle < 0) {
+      b._brakeHold = Math.max(0, b._brakeHold - dt);
+      b.speed = 0;
+    } else {
+      b._brakeHold = 0;
+      b.speed = driveSpeed(b.speed, throttle, dt, BICYCLE_DRIVE);
+    }
 
     let turnInput = 0;
     if (this.keys.left) turnInput = this.keys.left;
@@ -1715,9 +1736,19 @@ class ThirdPersonControllerManager {
       b.heading += turnInput * 2.15 * dirSign * dt;
     }
 
-    b.position.x += Math.sin(b.heading) * b.speed * dt;
-    b.position.z += Math.cos(b.heading) * b.speed * dt;
+    const prevX = b.position.x, prevZ = b.position.z;
+    const sinH = Math.sin(b.heading), cosH = Math.cos(b.heading);
+    const nextX = prevX + sinH * b.speed * dt, nextZ = prevZ + cosH * b.speed * dt;
+    b.position.x = nextX;
+    b.position.z = nextZ;
     this.resolveHorizontalCollision(b.position, 0.65, null, b);
+    // Held back (a wall, the shore, a deck's edge): its speed comes down to what it actually moved, so it doesn't build up
+    // against the wall and braking or backing away works at once
+    if (Math.abs(b.position.x - nextX) > 1e-6 || Math.abs(b.position.z - nextZ) > 1e-6) {
+      const moved = ((b.position.x - prevX) * sinH + (b.position.z - prevZ) * cosH) / dt;
+      if (b.speed > 0 && moved < b.speed) b.speed = Math.max(0, moved);
+      else if (b.speed < 0 && moved > b.speed) b.speed = Math.min(0, moved);
+    }
     b.position.y = this.getGroundHeight(b.position.x, b.position.z, 'cyclist');
 
     const targetLean = -turnInput * Math.min(1.0, Math.abs(b.speed) / 9.0) * 0.34;

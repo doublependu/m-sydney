@@ -171,7 +171,8 @@ class GamepadControls {
     this.controller.setGamepadInput('backward', Math.max(0, -drive));
     this.controller.setGamepadInput('left', Math.max(0, -movement.x));
     this.controller.setGamepadInput('right', Math.max(0, movement.x));
-    this.controller.setGamepadInput('up', mode === 'person' ? Number(Boolean(held(0))) : Math.max(0, vertical));
+    // The bottom button (0) jumps on foot and brakes on the bike; in the helicopter, up is the triggers' climb
+    this.controller.setGamepadInput('up', mode === 'person' || mode === 'cyclist' ? Number(Boolean(held(0))) : Math.max(0, vertical));
     this.controller.setGamepadInput('down', Math.max(0, -vertical));
     // On foot, the stick pushed nearly all the way out runs
     this.controller.setGamepadInput('run', !driving && Math.hypot(movement.x, movement.y) >= RUN_REACH);

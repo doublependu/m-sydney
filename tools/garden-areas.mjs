@@ -4,11 +4,12 @@
 // - formal: a park or garden, its paved paths kerbed (asphalt, paving, concrete, timber, a footway that doesn't say), its dirt, gravel,
 //   sand and trodden grass tracks: strips worn into the lawn, with no kerb;
 // - bush: every path a track.
-// `kerbedGravel`: its gravel paths are edged as its paved ones are, not tracks (the Royal Botanic Garden's, in the photos).
+// `kerbedGravel`: its gravel paths are edged as its paved ones are, not tracks (the Royal Botanic Garden's, in the photos). `kerb`: what its
+// raised lawn's kerbs are, concrete or sandstone (the Royal Botanic Garden's, in the photos).
 import { bbox, elementRings, pointInRing, ringArea } from './geo-common.mjs';
 
 export const AREAS = [
-  { name: 'Royal Botanic Garden', osm: 'Royal Botanic Garden', kind: 'formal', kerbedGravel: true },
+  { name: 'Royal Botanic Garden', osm: 'Royal Botanic Garden', kind: 'formal', kerbedGravel: true, kerb: 'sandstone' },
   { name: 'The Domain', osm: 'The Domain', kind: 'formal' },
   { name: 'Domain Crescent Precinct', osm: 'Domain Crescent Precinct', kind: 'formal' },
   { name: 'Mrs Macquaries Point', osm: 'Domain Yurong Precinct', kind: 'formal' },

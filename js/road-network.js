@@ -3,7 +3,7 @@ import { GEO, heldTiles } from './geodata.js';
 import { polygonBoxOverlaps } from './building-collision.js';
 import { KIND, ROAD_CLASS, linkById, ownLaneOffsets, roadClass } from './surfaces.js';
 import { deckLanePoints, deckLinkIds, deckRoadPoint } from './bridge.js';
-import { pathTop } from './drawn-ground.js';
+import { TRACK, pathTop, raisedLawnTest } from './drawn-ground.js';
 
 // How far either side of the Harbour Bridge's line a lane counts as on the bridge (its own height, nothing in its way)
 const DECK_REACH = 15;
@@ -1011,15 +1011,18 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
 
 /**
  * The garden paths in the tiles held (tools/build-garden.mjs), as { kind, surface, width, pts, top }: a path's cut where it crosses a tile's
- * edge; `top`, its top over the ground as drawn, for the crowd walking it
+ * edge; `top`, its top over the ground as drawn, for the crowd walking it: a track's on the raised lawn where its middle is on one
  */
 function gardenPaths() {
   const out = [];
+  let onRaised = null;
   for (const t of heldTiles()) {
     for (const [kind, surface, width, ...line] of t.garden?.paths || []) {
       const pts = [];
       for (let i = 0; i + 1 < line.length; i += 2) pts.push({ x: line[i], z: line[i + 1] });
-      out.push({ kind, surface, width, pts, top: pathTop(kind, surface) });
+      const mid = pts[pts.length >> 1];
+      const raised = kind === TRACK && (onRaised ||= raisedLawnTest())(mid.x, mid.z);
+      out.push({ kind, surface, width, pts, top: pathTop(kind, surface, raised) });
     }
   }
   return out;

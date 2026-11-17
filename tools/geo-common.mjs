@@ -518,7 +518,9 @@ export class BitRaster {
 // nothing drawn twice (two pieces over each other, triangulated apart, fought for every pixel). Smoothing used to cut the corner where
 // an outline met a square's edge, a wedge along the seam, and each square was traced 3 m into the next to hide it. Keeps every polygon
 // cheap to triangulate, and lets the game build only those near the player. Returns [[outer, ...holes]].
-export function tiledPolygons(raster, size, eps, minCells = 6, minHole = 6, within = null) {
+// `adjust(ring, onEdge)`: each traced ring, before it's simplified, moved onto what its cells stand for (onEdge() says which of its points
+// are on the square's edge, to stay put); a piece whose adjusted rings come to cross is traced as it was.
+export function tiledPolygons(raster, size, eps, minCells = 6, minHole = 6, within = null, adjust = null) {
   const out = [];
   const step = Math.round(size / raster.res);
   for (let tj = 0; tj < raster.h; tj += step) {
@@ -542,10 +544,15 @@ export function tiledPolygons(raster, size, eps, minCells = 6, minHole = 6, with
         if (c.n < minCells) continue;
         const sx = raster.x0 + ti * raster.res, sz = raster.z0 + tj * raster.res, ex = sx + w * raster.res, ez = sz + h * raster.res;
         const onEdge = (x, z) => Math.abs(x - sx) < 1e-6 || Math.abs(x - ex) < 1e-6 || Math.abs(z - sz) < 1e-6 || Math.abs(z - ez) < 1e-6;
-        const traced = tile.traceRings(labels, c, onEdge);
-        let rings = traced.map((r) => rdpRing(r, eps, onEdge)).filter((r) => r.length >= 3);
-        // Simplified apart, a hole can come to cross the outline around it
-        for (let tighter = eps / 2; tighter > 0.1 && ringsCross(rings); tighter /= 2) rings = traced.map((r) => rdpRing(r, tighter, onEdge)).filter((r) => r.length >= 3);
+        const raw = tile.traceRings(labels, c, onEdge);
+        const simplify = (traced) => {
+          let rings = traced.map((r) => rdpRing(r, eps, onEdge)).filter((r) => r.length >= 3);
+          // Simplified apart, a hole can come to cross the outline around it
+          for (let tighter = eps / 2; tighter > 0.1 && ringsCross(rings); tighter /= 2) rings = traced.map((r) => rdpRing(r, tighter, onEdge)).filter((r) => r.length >= 3);
+          return rings;
+        };
+        let rings = simplify(adjust ? raw.map((r) => adjust(r, onEdge)) : raw);
+        if (adjust && (ringsCross(rings) || rings.some((r) => r.length < 4000 && crossesItself(r)))) rings = simplify(raw);
         if (!rings.length) continue;
         rings.sort((p, q) => Math.abs(ringArea(q)) - Math.abs(ringArea(p)));
         out.push(rings.filter((r, i) => !i || Math.abs(ringArea(r)) > minHole));

@@ -20,6 +20,8 @@ const WALKS = [
   { name: 'kerb', x: 9, z: -42, heading: 0, seconds: 7, keys: [[0, 'KeyW', 1], [1500, 'ArrowLeft', 1], [2200, 'ArrowLeft', 0], [4000, 'ArrowRight', 1], [4900, 'ArrowRight', 0]] },
   { name: 'park', x: 283, z: -39, heading: Math.PI, seconds: 7, keys: [[0, 'KeyW', 1]] },
   { name: 'slope', x: 700, z: -1000, heading: Math.PI, seconds: 7, keys: [[0, 'KeyW', 1]] },
+  // Off a garden's raised lawn, down its kerb onto an asphalt path and up onto the lawn the other side (js/garden.js)
+  { name: 'garden-kerb', x: 1090, z: -1003.2, heading: Math.PI / 2, seconds: 7, keys: [[0, 'KeyW', 1]] },
   { name: 'stand', x: 9, z: -42, heading: 0, seconds: 4, keys: [] }
 ].filter((w) => !only.length || only.includes(w.name));
 

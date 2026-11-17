@@ -18,7 +18,7 @@ import { groundHeight, groundRoadAt, linkById } from './surfaces.js';
 import { GroundCells, SIDEWALK_TOP, addBase, addCurb, addRoadDeck, addSurface, denseRing, pointInPolygonXZ } from './ground-geometry.js';
 import { SITE_CUTS } from './model-sites.js';
 import { buildStructures } from './structures.js';
-import { buildTileGarden } from './garden.js';
+import { buildTileGarden, useMapLawn } from './garden.js';
 import { ROCK_LIFT, SAND_LIFT } from './drawn-ground.js';
 import { outsideTunnelMouths } from './tunnel-mouths.js';
 
@@ -233,6 +233,8 @@ function groundMaterials() {
   };
   // ...and none of it closing a tunnel's mouth (js/tunnel-mouths.js)
   for (const mat of [shared.curb, shared.sidewalk, shared.lawn, shared.hedge, shared.base]) mat.maskNode = outsideTunnelMouths();
+  // A garden's raised lawn is the same grass (js/garden.js)
+  useMapLawn(shared.lawn);
   return shared;
 }
 

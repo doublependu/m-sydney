@@ -188,15 +188,129 @@ test('the garden\'s paths lie over the lawn as it\'s drawn, so the lawn doesn\'t
     }
     return null;
   };
+  // A path is laid on the lawn's triangles and on the paving's (which runs under the lawn's edge): at each point, the top of what's laid
+  const paths = drawn(tile, 'paths');
+  const pathCells = new Map();
+  for (const t of paths) {
+    for (let cx = Math.floor(Math.min(t[0][0], t[1][0], t[2][0]) / 4); cx <= Math.floor(Math.max(t[0][0], t[1][0], t[2][0]) / 4); cx++) {
+      for (let cz = Math.floor(Math.min(t[0][2], t[1][2], t[2][2]) / 4); cz <= Math.floor(Math.max(t[0][2], t[1][2], t[2][2]) / 4); cz++) {
+        const k = cx * 100000 + cz;
+        (pathCells.get(k) || pathCells.set(k, []).get(k)).push(t);
+      }
+    }
+  }
+  const pathTopAt = (x, z) => {
+    let top = -Infinity;
+    for (const t of pathCells.get(Math.floor(x / 4) * 100000 + Math.floor(z / 4)) || []) {
+      const y = heightIn(t, x, z);
+      if (y !== null) top = Math.max(top, y);
+    }
+    return top;
+  };
   let over = 0, under = 0;
-  for (const t of drawn(tile, 'paths')) {
-    const x = (t[0][0] + t[1][0] + t[2][0]) / 3, z = (t[0][2] + t[1][2] + t[2][2]) / 3, y = (t[0][1] + t[1][1] + t[2][1]) / 3;
+  for (const t of paths) {
+    const x = (t[0][0] + t[1][0] + t[2][0]) / 3, z = (t[0][2] + t[1][2] + t[2][2]) / 3;
     const l = lawnAt(x, z);
     if (l === null) continue;
-    // A track lies a centimetre over the lawn (js/drawn-ground.js TRACK_TOP); anything nearer would fight it
-    if (y - l < 0.005) under++;
+    // A track lies a centimetre over the lawn (js/drawn-ground.js TRACK_TOP), a path a little more; anything nearer would fight it
+    if (pathTopAt(x, z) - l < 0.005) under++;
     else over++;
   }
   assert.ok(over > 1000, `only ${over} of the paths' triangles over a lawn`);
   assert.ok(under / (over + under) < 0.02, `${under} of ${over + under} path triangles within half a centimetre of the lawn, or under it`);
+});
+
+// A formal park's raised lawn (tools/build-garden.mjs): the map's lawn in it less a corridor along each kerbed path, its ponds left out
+const raisedPieces = garden.flatMap((t) => (t.garden.lawns || []).map(([kerb, ...flats]) => {
+  const rings = flats.map((f) => {
+    const pts = [];
+    for (let i = 0; i + 1 < f.length; i += 2) pts.push({ x: f[i], z: f[i + 1] });
+    return pts;
+  });
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const p of rings[0]) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z); }
+  return { kerb, rings, x0, x1, z0, z1 };
+}));
+const ringArea = (r) => {
+  let a = 0;
+  for (let i = 0; i < r.length; i++) { const p = r[i], q = r[(i + 1) % r.length]; a += p.x * q.z - q.x * p.z; }
+  return Math.abs(a) / 2;
+};
+const onRaised = (x, z) => raisedPieces.some((p) => {
+  if (x < p.x0 || x > p.x1 || z < p.z0 || z > p.z1) return false;
+  let k = false;
+  for (const r of p.rings) {
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      const a = r[i], b = r[j];
+      if ((a.z > z) !== (b.z > z) && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) k = !k;
+    }
+  }
+  return k;
+});
+const kerbedPaths = paths.filter((p) => p.kind !== 3 && p.surface !== 4);
+/** Points along a path every `step` m, with its way across there, `trim` m short of each end */
+function along(p, step, trim = 0) {
+  const out = [];
+  let L = 0;
+  for (let i = 1; i < p.pts.length; i++) L += Math.hypot(p.pts[i].x - p.pts[i - 1].x, p.pts[i].z - p.pts[i - 1].z);
+  let s = 0;
+  for (let i = 1; i < p.pts.length; i++) {
+    const a = p.pts[i - 1], b = p.pts[i], d = Math.hypot(b.x - a.x, b.z - a.z);
+    if (d < 1e-6) continue;
+    for (let t = (Math.ceil(s / step) * step - s); t < d; t += step) {
+      if (s + t < trim || s + t > L - trim) continue;
+      out.push({ x: a.x + ((b.x - a.x) * t) / d, z: a.z + ((b.z - a.z) * t) / d, nx: -(b.z - a.z) / d, nz: (b.x - a.x) / d });
+    }
+    s += d;
+  }
+  return out;
+}
+
+test('the raised lawn never covers a kerbed path\'s middle, and none of it is under a square metre', { skip: !raisedPieces.length && 'no raised lawn in the tiles held' }, () => {
+  let samples = 0;
+  for (const p of kerbedPaths) {
+    for (const q of along(p, 0.5)) {
+      samples++;
+      assert.ok(!onRaised(q.x, q.z), `the raised lawn over the middle of a path at (${q.x.toFixed(2)}, ${q.z.toFixed(2)})`);
+    }
+  }
+  assert.ok(samples > 10000, `${samples} points on kerbed paths`);
+  for (const p of raisedPieces) {
+    const area = ringArea(p.rings[0]) - p.rings.slice(1).reduce((t, r) => t + ringArea(r), 0);
+    assert.ok(area >= 1, `a piece of ${area.toFixed(2)} m² at (${p.rings[0][0].x}, ${p.rings[0][0].z})`);
+    for (const r of p.rings.slice(1)) assert.ok(ringArea(r) >= 1, `a hole of ${ringArea(r).toFixed(2)} m² at (${r[0].x}, ${r[0].z})`);
+  }
+});
+
+test('a kerbed path has the raised lawn beside it, on one side at least, wherever there\'s lawn beside it', { skip: !raisedPieces.length && 'no raised lawn in the tiles held' }, async () => {
+  const { lawnSurface } = await import('../js/garden.js');
+  const lawnAt = new Map();
+  const lawn = (x, z) => {
+    const t = garden.find((g) => Math.floor(x / 1000) === g.ix && Math.floor(z / 1000) === g.iz);
+    if (!t) return null;
+    if (!lawnAt.has(t)) lawnAt.set(t, lawnSurface(t));
+    return lawnAt.get(t)(x, z);
+  };
+  // Just past the kerb either side, a quarter metre into where the raised lawn starts: off any other path's corridor
+  const inCorridor = (x, z) => kerbedPaths.some((p) => {
+    for (let i = 1; i < p.pts.length; i++) if (segDist(x, z, p.pts[i - 1], p.pts[i]) < p.width / 2 + 0.1) return true;
+    return false;
+  });
+  let beside = 0, bare = 0;
+  const where = [];
+  for (const p of kerbedPaths) {
+    for (const q of along(p, 2, 3)) {
+      const sides = [1, -1].map((k) => ({ x: q.x + q.nx * k * (p.width / 2 + 0.35), z: q.z + q.nz * k * (p.width / 2 + 0.35) }))
+        .filter((s) => lawn(s.x, s.z) !== null && !inCorridor(s.x, s.z));
+      if (!sides.length) continue;
+      if (sides.some((s) => onRaised(s.x, s.z))) beside++;
+      else {
+        bare++;
+        if (where.length < 6) where.push([+q.x.toFixed(1), +q.z.toFixed(1)]);
+      }
+    }
+  }
+  assert.ok(beside > 3000, `${beside} points with the raised lawn beside them`);
+  // Left bare: a path along an area's outline, with only the map's lawn outside it
+  assert.ok(bare / (beside + bare) < 0.03, `${bare} of ${beside + bare} points on a path with lawn beside it but none raised: ${JSON.stringify(where)}`);
 });

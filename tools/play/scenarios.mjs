@@ -2544,9 +2544,10 @@ export const SCENARIOS = {
   },
 
   // The Royal Botanic Garden on foot and on the bike (js/garden.js, js/drawn-ground.js): in from Macquarie St through the Palace Garden
-  // Gate, along the asphalt and onto a gravel path; through the Queen Elizabeth II Gate from the promenade along Farm Cove to the Opera
-  // House's forecourt; then on the bike up Macquarie St's kerb and along the garden's path. The walker and the bike stand on what's
-  // drawn under them all the way: the paving, the path, never sunk into it
+  // Gate, along the asphalt and onto a gravel path; up a kerb onto the raised lawn beside an asphalt path and back down; through the Queen
+  // Elizabeth II Gate from the promenade along Farm Cove to the Opera House's forecourt; then on the bike up Macquarie St's kerb and along
+  // the garden's path, and across a path between two raised lawns, down one kerb and up the other. The walker and the bike stand on
+  // what's drawn under them all the way: the paving, the path, the raised lawn, never sunk into it
   garden: {
     minutes: 8,
     async run({ human, page, metric, expect }) {
@@ -2581,6 +2582,24 @@ export const SCENARIOS = {
         [658.6, -1088.1], [671.9, -1110], [657.2, -1131.8], [651.3, -1137.4], [662.7, -1141.7], [670.8, -1143.6], [674.5, -1156.8]], 'in the garden');
       const gravel = await check('on the gravel');
       expect(gravel.what?.startsWith('garden:'), `not on a garden's path at the gravel: ${gravel.what}`);
+      // On an asphalt path by the Domain, east up its kerb onto the raised lawn, and back
+      await debug(() => window.__gameDebug.goto(1097.3, -1003.2, Math.PI / 2, 'person'));
+      await human.wait(1500);
+      const path = await check('on the asphalt');
+      await walk([[1101.5, -1003.2]], 'onto the raised lawn');
+      const lawn = await check('on the raised lawn');
+      // The kerb's step on the way, over the ground's slope (it falls 16% here): what's drawn every 5 cm from the path to the lawn
+      const tops = await debug(([x0, x1, z]) => {
+        const out = [];
+        for (let x = x0; x <= x1; x += 0.05) out.push(window.__gameDebug.drawnAt(x, z).top);
+        return out;
+      }, [path.x, lawn.x, -1003.2]);
+      const rises = tops.slice(1).map((t, i) => t - tops[i]);
+      const slope = [...rises].sort((a, b) => a - b)[rises.length >> 1];
+      const up = Math.max(...rises.map((r) => r - slope));
+      metric('raisedLawnStep', Number(up.toFixed(3)));
+      expect(lawn.what?.startsWith('garden:') && up > 0.05 && up < 0.12, `not up on the raised lawn: ${lawn.what}, its kerb ${up.toFixed(3)} m over the path`);
+      await walk([[1096.8, -1003.2]], 'back down onto the path');
       // Along the promenade by Farm Cove, through the Queen Elizabeth II Gate, onto the Opera House's forecourt
       await debug(() => window.__gameDebug.goto(643.8, -1671.9, -2.2, 'person'));
       await human.wait(1500);
@@ -2609,6 +2628,26 @@ export const SCENARIOS = {
       expect(jump < 0.15, `the bike rose ${jump.toFixed(2)} m between samples at the kerb`);
       expect(trace[trace.length - 1].x > 445, `the bike stopped at x ${trace[trace.length - 1].x.toFixed(1)}`);
       await check('on the bike');
+      // Across the asphalt path by the Domain from the raised lawn west of it to the one east: down a kerb and up the other
+      await debug(() => window.__gameDebug.goto(1090, -1003.2, Math.PI / 2, 'cyclist'));
+      await human.wait(1500);
+      const across = [];
+      await human.down('KeyW');
+      for (let i = 0; i < 120; i++) {
+        const b = await debug(() => { const p = window.__gameDebug.player(); return { x: p.x, z: p.z, over: p.drawnY - window.__gameDebug.decksOver(p.x, p.z).ground }; });
+        across.push(b);
+        if (b.x > 1106) break;
+        await human.steerTowards(await human.state(), { x: 1112, z: -1003.2 }, 0.05);
+        await human.wait(40);
+      }
+      await human.releaseAll();
+      await human.wait(1200);
+      const lawnKerbs = across.filter((b) => b.x > 1093 && b.x < 1101);
+      const lawnJump = Math.max(0, ...lawnKerbs.slice(1).map((b, i) => Math.abs(b.over - lawnKerbs[i].over)));
+      metric('bikeLawnKerbStep', Number(lawnJump.toFixed(3)));
+      expect(lawnJump < 0.08, `the bike moved ${lawnJump.toFixed(3)} m up or down between samples at the raised lawn's kerbs`);
+      expect(across[across.length - 1].x > 1103, `the bike stopped at x ${across[across.length - 1].x.toFixed(1)} crossing the path`);
+      await check('on the bike, on the raised lawn');
       metric('worstOff', Number(worst.off.toFixed(3)));
       expect(Math.abs(worst.off) < 0.03, `drawn ${worst.off.toFixed(3)} m off what's under it, ${worst.why} at (${worst.x?.toFixed(1)}, ${worst.z?.toFixed(1)}) on ${worst.what}`);
     }

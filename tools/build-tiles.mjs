@@ -33,7 +33,7 @@ const { AWNINGS } = await import(path.join(SRC, 'awning-geodata.js'));
 const { ROAD_TAGS } = await import(path.join(SRC, 'road-tags.js'));
 const { REAL_BUILDINGS } = await import(path.join(SRC, 'building-geodata.js'));
 const { REAL_TREES, TREE_KINDS, TREE_HEIGHTS } = await import(path.join(SRC, 'tree-geodata.js'));
-// The paths, beds, hedges, ponds and gates of a few gardens (tools/build-garden.mjs)
+// The paths, beds, hedges, ponds and gates of a few gardens, and their raised lawns (tools/build-garden.mjs)
 const GARDEN_FILE = path.join(SRC, 'garden.json');
 const GARDEN = fs.existsSync(GARDEN_FILE) ? JSON.parse(fs.readFileSync(GARDEN_FILE, 'utf8')) : null;
 if (!GARDEN) console.warn('[tiles] no garden.json: no garden paths (node tools/build-garden.mjs)');
@@ -113,7 +113,7 @@ function cutMap(derived) {
     if (!tiles.has(key)) {
       tiles.set(key, { ix, iz, blocks: [], lawns: [], pavements: [], fills: [], signals: [], postBoxes: [], busShelters: [], nodes: new Map(), links: [], home: [],
         scenery: [], awnings: [], tags: { buses: [], cycles: [], cycleways: [], speeds: [], oneways: [], zebras: [], directions: [] }, buildings: [], trees: [],
-        garden: { paths: [], gates: [], hedges: [], ponds: [], beds: [], seawalls: [] }, sand: [] });
+        garden: { paths: [], gates: [], hedges: [], ponds: [], beds: [], seawalls: [], lawns: [] }, sand: [] });
     }
     return tiles.get(key);
   };
@@ -168,6 +168,8 @@ function cutMap(derived) {
     const middle = (ring) => { const m = (ring.length >> 2) << 1; return at(ring[m], ring[m + 1]); };
     for (const ring of GARDEN.ponds) middle(ring).garden.ponds.push(ring);
     for (const [kind, ...ring] of GARDEN.beds) middle(ring).garden.beds.push([kind, ...ring]);
+    // A formal park's raised lawn: each piece (a 240 m square's, at most) with the tile its outline's middle is in
+    for (const [kerb, ...rings] of GARDEN.lawns || []) middle(rings[0]).garden.lawns.push([kerb, ...rings]);
   }
 
   // --- Roads: a link is in every tile within reach of it, with its id --------------------------------------------------

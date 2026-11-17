@@ -1,4 +1,5 @@
 import { ROAD_CLASS } from './surfaces.js';
+import { drape } from './drape.js';
 import { HOUSE_STYLES } from './house-styles.js';
 
 // The verge along a street of houses: a nature strip of lawn from the kerb, most often with a footpath in it, in place of the 3.5 m of
@@ -48,89 +49,6 @@ const hashText = (s) => {
   for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
   return h | 0;
 };
-
-// --- Geometry ------------------------------------------------------------------------------------------------------------------
-
-/** Twice the signed area of a ring in x, z: positive anticlockwise seen from above as the ground's triangles are wound (y of u x v) */
-function areaOf(ring) {
-  let a = 0;
-  for (let i = 0; i < ring.length; i++) {
-    const p = ring[i], q = ring[(i + 1) % ring.length];
-    a += p.z * q.x - p.x * q.z;
-  }
-  return a;
-}
-
-/** A polygon cut to the inside of a convex ring wound as areaOf() counts positive (Sutherland and Hodgman) */
-function clipConvex(poly, ring) {
-  let out = poly;
-  for (let i = 0; i < ring.length && out.length; i++) {
-    const a = ring[i], b = ring[(i + 1) % ring.length];
-    // Inside: on the side of a -> b that keeps the ring's winding
-    const side = (p) => (b.z - a.z) * (p.x - a.x) - (b.x - a.x) * (p.z - a.z);
-    const input = out;
-    out = [];
-    for (let j = 0; j < input.length; j++) {
-      const p = input[j], q = input[(j + 1) % input.length];
-      const sp = side(p), sq = side(q);
-      if (sp >= 0) out.push(p);
-      if ((sp >= 0) !== (sq >= 0)) {
-        const t = sp / (sp - sq);
-        out.push({ x: p.x + (q.x - p.x) * t, z: p.z + (q.z - p.z) * t });
-      }
-    }
-  }
-  return out;
-}
-
-/** Whether a ring is convex, wound as areaOf() counts positive */
-function convex(ring) {
-  for (let i = 0; i < ring.length; i++) {
-    const a = ring[i], b = ring[(i + 1) % ring.length], c = ring[(i + 2) % ring.length];
-    if ((b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z) < -1e-9) return false;
-  }
-  return true;
-}
-
-/**
- * A flat piece (a ring in x, z) laid on triangles ([[x, y, z] x 3], from js/garden.js trianglesIn()), `lift` over them: the part of it over
- * each triangle, in that triangle's plane, as triangles facing up, pushed onto `out` as x, y, z, each relative to (ox, oz)
- */
-function drape(ring, tris, lift, out, ox, oz) {
-  let rings = [ring];
-  if (areaOf(ring) < 0) rings = [[...ring].reverse()];
-  if (!convex(rings[0])) {
-    const r = rings[0];
-    rings = [];
-    for (let i = 1; i + 1 < r.length; i++) rings.push([r[0], r[i], r[i + 1]]);
-  }
-  let n = 0;
-  for (const piece of rings) {
-    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-    for (const p of piece) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z); }
-    for (const t of tris) {
-      const [a, b, c] = t;
-      if (Math.max(a[0], b[0], c[0]) < x0 || Math.min(a[0], b[0], c[0]) > x1 || Math.max(a[2], b[2], c[2]) < z0 || Math.min(a[2], b[2], c[2]) > z1) continue;
-      const poly = clipConvex([{ x: a[0], z: a[2] }, { x: b[0], z: b[2] }, { x: c[0], z: c[2] }], piece);
-      if (poly.length < 3) continue;
-      // The triangle's plane: y = a + gx (x - ax) + gz (z - az)
-      const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
-      const den = ux * vz - uz * vx;
-      if (Math.abs(den) < 1e-9) continue;
-      const gx = (uy * vz - uz * vy) / den, gz = (ux * vy - uy * vx) / den;
-      const y = (p) => a[1] + gx * (p.x - a[0]) + gz * (p.z - a[2]) + lift;
-      const up = areaOf(poly) >= 0;
-      for (let i = 1; i + 1 < poly.length; i++) {
-        const tri = up ? [poly[0], poly[i], poly[i + 1]] : [poly[0], poly[i + 1], poly[i]];
-        // Slivers left by the clipping add nothing
-        if (Math.abs(areaOf(tri)) < 1e-6) continue;
-        for (const p of tri) out.push(p.x - ox, y(p), p.z - oz);
-        n++;
-      }
-    }
-  }
-  return n;
-}
 
 // --- Streets as stretches between junctions ------------------------------------------------------------------------------------
 
@@ -430,4 +348,4 @@ function walkLine(walks, link, x, z) {
   return null;
 }
 
-export { LEDGE, OUTER, PAVING_TOP, STRIP_CLASSES, VERGE_LIFT, along, clipConvex, drape, squareVerge, stretchesOf, walkLine };
+export { LEDGE, OUTER, PAVING_TOP, STRIP_CLASSES, VERGE_LIFT, along, drape, squareVerge, stretchesOf, walkLine };

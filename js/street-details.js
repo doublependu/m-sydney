@@ -6,6 +6,7 @@ import { heldList, heldTrees } from './geodata.js';
 import { cityUniforms, createTreeGrateMaterial } from './tsl-materials.js';
 import { TREE_CELL_SIZE, createTreeFieldSteps, setPlantDistance, treeVariant } from './trees.js';
 import { placeStreetTreesSteps } from './tree-placements.js';
+import { RAISE, raisedLawnTest } from './drawn-ground.js';
 import { groundHeight, groundRoadAt, groundRoadDistance } from './surfaces.js';
 import { roomOver, treeClear } from './deck-room.js';
 import { clearOfSites } from './model-sites.js';
@@ -827,7 +828,10 @@ function* buildStreetDetails(scene, allColliders = [], lightPools, addedTrees = 
       (small || treeClear(x, z, tall)) && clearOfSites(x, z));
   for (const tree of sidewalkTreePositions) treePositions.push(tree);
   sidewalkTreePositions = sidewalkTreePositions.filter((t) => t.tier > 0);
-  for (const t of treePositions) t.y = (t.y || 0) + groundHeight(t.x, t.z);
+  // ...and on a formal park's raised lawn, a garden's plants and trees stand on it (js/garden.js)
+  const onRaised = raisedLawnTest();
+  yield;
+  for (const t of treePositions) t.y = (t.y || 0) + groundHeight(t.x, t.z) + (onRaised(t.x, t.z) ? RAISE : 0);
   // The verges' trees: on a nature strip's lawn, kept from poles, decks and the model sites' doors as a street tree is, and 3 m from any
   // other tree, as the street trees are from each other
   const treeCells = new Map();

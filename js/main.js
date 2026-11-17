@@ -2122,6 +2122,9 @@ async function initApp() {
       },
       // Fences, driveways, the lots' things and the verges drawn or not, for measuring what they cost
       lotsShown: (on) => lotDetails?.setShown(on),
+      // A garden's raised lawn, paths, beds, ponds and stonework drawn or not (by layer, so the culling can't undo it): for measuring what
+      // they cost
+      gardenShown: (on) => scene.traverse((o) => { if (o.userData.garden) o.layers.set(on ? 0 : 31); }),
       // Each frame's longest piece of work over 30 ms, as [ms since the page opened, what it was, ms]
       slowWork: () => debugFrames.slow.slice(),
       // The verges' trees planted or not, at once (they're in the street furniture's tree field): the number planted

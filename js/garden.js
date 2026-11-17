@@ -1,44 +1,68 @@
 import * as THREE from 'three/webgpu';
 import { groundHeight } from './surfaces.js';
-import { createGardenBedMaterial, createGardenPathMaterial, createPondMaterial, createSandstoneWallMaterial } from './tsl-materials.js';
+import { createGardenBedMaterial, createGardenPathMaterial, createParkLawnMaterial, createPondMaterial, createSandstoneWallMaterial } from './tsl-materials.js';
 import { CITY_BOUNDS, LAWNS, PAVEMENTS } from './city-config.js';
-import { GroundCells, addSurface } from './ground-geometry.js';
+import { GroundCells, SIDEWALK_TOP, addSurface } from './ground-geometry.js';
 import { TILE } from './geodata.js';
-import { LAWN_TOP, PATH_TOP, TRACK, TRACK_TOP, buildSurface, heightOn, pathTop, setLayer, surfaceOf, trianglesOf } from './drawn-ground.js';
+import {
+  KERB_PROUD, LAWN_TOP, PATH_TOP, RAISED_TOP, TRACK, TRACK_LIFT, TRACK_TOP, buildSurface, heightInTriangle, heightOn, pathTop, setLayer, surfaceOf,
+  trianglesOf
+} from './drawn-ground.js';
+import { areaOf, drape, drapePolygon } from './drape.js';
 
-// A garden's ground, laid over a tile's lawns (tools/build-garden.mjs): its footpaths, beds, hedges, ponds and the gates on its paths. Only
-// a few areas have them yet: the Royal Botanic Garden, the Domain, round the Opera House and Circular Quay.
+// A garden's ground, laid over a tile's lawns (tools/build-garden.mjs): its footpaths, beds, hedges, ponds and the gates on its paths, and in
+// a formal park the lawn raised over its paved paths, kerbed along every edge. Only a few areas have them yet: the Royal Botanic Garden,
+// the Domain, round the Opera House and Circular Quay, and Bronte Park.
 //   tile.garden: { paths: [[kind, surface, width, x, z, ...]], gates: [[x, z, heading, width]], hedges: [[height, width, x, z, ...]],
-//     ponds: [[x, z, ...]], beds: [[kind, x, z, ...]], seawalls: [[side, x, z, ...]] }
+//     ponds: [[x, z, ...]], beds: [[kind, x, z, ...]], seawalls: [[side, x, z, ...]], lawns: [[kerb, [x, z, ...], ...holes]] }
+//   (a raised lawn's pieces, `kerb` what its kerbs are: 0 concrete, 1 sandstone)
+// In layers, each laid exactly on the triangles of what's under it (js/drape.js), so on a slope none comes up through another: the map's
+// lawn and paving (js/city-grid.js); the paths, just over them; the raised lawn 8 cm over the map's lawn, its kerbs' tops 1 cm over it
+// at their outer edge, their faces down to the paths; and tracks and beds on the raised lawn, or tracks on the map's lawn off it.
 // Kinds of path: 0 a footpath, 1 steps, 2 a cycleway, 3 a track (a worn strip on the lawn, with no kerb, whatever it was in OSM). Surfaces:
 // 0 paving, 1 asphalt, 2 gravel, 3 timber, 4 trodden grass, 5 dirt, 6 sand. Trodden grass is drawn only as a track.
 // Beds, by what's planted in them: 0 shrubs, 1 succulents on gravel, 2 flowers and roses, 3 Australian natives.
 
-// Heights over the ground: the lawn's, a path's by what it's made of, a track's, the steps' and pathTop() are js/drawn-ground.js's (each lies
-// a little over the lawn as it's drawn, lawnSurface()), which stands you on them too
-const BED_TOP = LAWN_TOP + 0.03;
+// Heights over the ground: the lawn's, the raised lawn's, a path's by what it's made of, a track's, the steps' and pathTop() are
+// js/drawn-ground.js's (each lies a little over the lawn as it's drawn, lawnSurface()), which stands you on them too
+const linearHex = (hex) => new THREE.Color(hex).toArray();
+const BED_LIFT = 0.03; // a bed over the lawn it's dug in
+const BED_TOP = LAWN_TOP + BED_LIFT;
 const POND_TOP = LAWN_TOP + 0.02;
 const COPING = { width: 0.32, rise: 0.08 };
-const STEP = 2; // m between a path's points, so it follows the lawn's triangles
-const WIDE = 2.5; // m: a path wider than this has a row of points along its middle too
+const KERB_WIDTH = 0.1; // m: in the corridor beside its path's edge, or round a pond in its water (tools/build-garden.mjs)
+const KERB_STONE = [linearHex(0xa9a59b), linearHex(0xc4a679)]; // concrete, sandstone (the Royal Botanic Garden's)
+const KERB_FOOT = 0.04; // m a kerb's face reaches under whatever it stands on
+const UNDER_KERB = 0.03; // m a kerbed path is drawn wider either side, under its kerbs, so no lawn shows between the two
+const SQUARE = 240; // m: the squares the raised lawn is traced in, whose edges are seams, not edges
+const STEP = 2; // m between a pond's coping's points, so it follows the lawn's triangles
 const PIECE = 3; // m: a bed's or pond's triangles are cut no longer than this, to follow the lawn
 // A sea wall's parapet along the shore, its face from under the water up to its top, so the water's level shows against the stone. It
 // stands from a metre out past the shore's line (js/city-grid.js draws the sea wall's own face on it) to `thickness` in: the lawn's
 // outline and the shore's are each traced from the land to within a metre, and the lawn can reach out past the shore by that much.
 const PARAPET = { height: 0.6, thickness: 0.45, out: 1.0, coping: 0.07, overhang: 0.05, stop: 1.1 };
 
-// One set for every tile, so a new tile compiles nothing; few of them, as a tile draws each once. The paths' surfaces, and the stonework
-// and iron, are colours in their vertices; which kind each bed is, too (createGardenBedMaterial()).
+const over = (m) => {
+  m.polygonOffset = true;
+  m.polygonOffsetFactor = -2;
+  m.polygonOffsetUnits = -2;
+  return m;
+};
+// The raised lawn is drawn in the map's own lawn material, which js/city-grid.js hands over as it makes it (useMapLawn()): the same grass
+// at the same place, so there's nothing more to compile, and two lawns 8 cm apart can't be seen to fight far off
+let mapLawn = null;
+function useMapLawn(material) {
+  mapLawn = material;
+  if (shared) shared.lawn = material;
+}
+
+// One set for every tile, so a new tile compiles nothing; few of them, as a tile draws each once. The paths' surfaces, and the stonework,
+// kerbs and iron, are colours in their vertices; which kind each bed is, too (createGardenBedMaterial()).
 let shared = null;
 function gardenMaterials() {
   if (shared) return shared;
-  const over = (m) => {
-    m.polygonOffset = true;
-    m.polygonOffsetFactor = -2;
-    m.polygonOffsetUnits = -2;
-    return m;
-  };
   shared = {
+    lawn: mapLawn ?? createParkLawnMaterial(false),
     paths: over(createGardenPathMaterial()),
     beds: over(createGardenBedMaterial([
       { soil: 0x3a2a1e, speckles: [0x3d5f2a, 0x47692f, 0x2f4a22], cover: 0.45 }, { soil: 0xa39783, speckles: [0x7d9a8a, 0x6f8b7c, 0x8a8f5a], cover: 0.35 },
@@ -52,9 +76,8 @@ function gardenMaterials() {
   return shared;
 }
 // The paths' surfaces: paving, asphalt, gravel, timber, trodden grass, dirt, sand; and steps, in sandstone
-const linear = (hex) => new THREE.Color(hex).toArray();
-const SURFACES = [0xa59d8f, 0x56575a, 0xb8a582, 0x7d5f42, 0x8a8455, 0x8c6e4c, 0xd2bf94].map(linear);
-const SANDSTONE = linear(0xc4a679), IRON = linear(0x1d1e1f);
+const SURFACES = [0xa59d8f, 0x56575a, 0xb8a582, 0x7d5f42, 0x8a8455, 0x8c6e4c, 0xd2bf94].map(linearHex);
+const SANDSTONE = linearHex(0xc4a679), IRON = linearHex(0x1d1e1f);
 
 /**
  * Ground cells with a colour at each vertex: set `tint` before adding to them. With `worn`, a fourth value too, `wear`: 1 for a path laid
@@ -114,16 +137,35 @@ function drawnSurface(list, tile) {
   // The triangles themselves, as drawn (without their lift), over a box: [[x, y, z] x 3], each once. For laying something exactly on
   // them, a piece of it in each triangle's plane (js/verge.js)
   heightAt.trianglesIn = (bx0, bz0, bx1, bz1) => {
+    const lawns = new Set();
+    for (let cx = Math.floor(bx0 / BOX); cx <= Math.floor(bx1 / BOX); cx++) {
+      for (let cz = Math.floor(bz0 / BOX); cz <= Math.floor(bz1 / BOX); cz++) {
+        for (const lawn of index.get(cx * 100000 + cz) || []) if (!(bx1 < lawn.x0 || bx0 > lawn.x1 || bz1 < lawn.z0 || bz0 > lawn.z1)) lawns.add(lawn);
+      }
+    }
+    const out = new Set();
+    for (const lawn of lawns) {
+      if (!lawn.tris) buildSurface(lawn);
+      // All of it, where the box holds it; or the cells of it in the box
+      if (bx0 <= lawn.x0 && bx1 >= lawn.x1 && bz0 <= lawn.z0 && bz1 >= lawn.z1) {
+        lawn.all ||= [...new Set([...lawn.tris.values()].flat())];
+        for (const t of lawn.all) out.add(t);
+        continue;
+      }
+      for (let ix = Math.floor(Math.max(bx0, lawn.x0) / CELL); ix <= Math.floor(Math.min(bx1, lawn.x1) / CELL); ix++) {
+        for (let iz = Math.floor(Math.max(bz0, lawn.z0) / CELL); iz <= Math.floor(Math.min(bz1, lawn.z1) / CELL); iz++) {
+          for (const t of lawn.tris.get(ix * 100000 + iz) || []) out.add(t);
+        }
+      }
+    }
+    return [...out];
+  };
+  /** Its surfaces over a box whose triangles aren't made yet, to make one at a time ahead of trianglesIn() (buildSurface()) */
+  heightAt.unbuilt = (bx0, bz0, bx1, bz1) => {
     const out = new Set();
     for (let cx = Math.floor(bx0 / BOX); cx <= Math.floor(bx1 / BOX); cx++) {
       for (let cz = Math.floor(bz0 / BOX); cz <= Math.floor(bz1 / BOX); cz++) {
-        for (const lawn of index.get(cx * 100000 + cz) || []) {
-          if (bx1 < lawn.x0 || bx0 > lawn.x1 || bz1 < lawn.z0 || bz0 > lawn.z1) continue;
-          if (!lawn.tris) buildSurface(lawn);
-          for (let ix = Math.floor(bx0 / CELL); ix <= Math.floor(bx1 / CELL); ix++) {
-            for (let iz = Math.floor(bz0 / CELL); iz <= Math.floor(bz1 / CELL); iz++) for (const t of lawn.tris.get(ix * 100000 + iz) || []) out.add(t);
-          }
-        }
+        for (const lawn of index.get(cx * 100000 + cz) || []) if (!lawn.tris && !(bx1 < lawn.x0 || bx0 > lawn.x1 || bz1 < lawn.z0 || bz0 > lawn.z1)) out.add(lawn);
       }
     }
     return [...out];
@@ -163,31 +205,271 @@ function norm(x, z) {
   return { x: x / L, z: z / L };
 }
 
-/**
- * A strip `width` across along a polyline, `lift` over the height `heightAt` gives. `worn`: a track's, each vertex saying how far across it
- * is in the cells' `wear`, for its worn edges.
- */
-function addRibbon(cells, pts, width, lift, heightAt, worn = false) {
+/** A strip `width` across along a polyline, `lift` over the height `heightAt` gives at its points: a pond's coping */
+function addRibbon(cells, pts, width, lift, heightAt) {
   if (pts.length < 2) return;
   const line = dense(pts);
   const side = across(line);
   const c = cells.cell(line[0].x, line[0].z);
   const h = width / 2;
-  // Its left edge, its middle if it's wide, its right edge
-  const columns = width > WIDE ? [1, 0, -1] : [1, -1];
   let prev = null;
   for (let i = 0; i < line.length; i++) {
     const p = line[i], s = side[i];
-    const row = columns.map((k) => {
+    const row = [1, -1].map((k) => {
       const x = p.x + s.x * h * k, z = p.z + s.z * h * k;
-      if (worn) cells.wear = (1 - k) / 4;
       return cells.vertex(c, x, heightAt(x, z) + lift, z, 0, 1, 0);
     });
     // Up: counter-clockwise from above, with z pointing south
-    if (prev) for (let k = 1; k < row.length; k++) c.index.push(prev[k - 1], row[k - 1], prev[k], prev[k], row[k - 1], row[k]);
+    if (prev) c.index.push(prev[0], row[0], prev[1], prev[1], row[0], row[1]);
     prev = row;
   }
-  cells.wear = 1;
+}
+
+/**
+ * Triangles laid on the ground (x, y, z of each corner, facing up: js/drape.js), into ground cells, a point shared by the triangles that
+ * meet at it. `wearOf(x, z)`: a track's wear at each point (TintedCells).
+ */
+function addLaid(cells, tris, wearOf = null) {
+  if (!tris.length) return;
+  const c = cells.cell(tris[0], tris[2]);
+  const ids = new Map();
+  for (let i = 0; i < tris.length; i += 3) {
+    const x = tris[i], y = tris[i + 1], z = tris[i + 2];
+    const key = `${Math.round(x * 1000)},${Math.round(y * 1000)},${Math.round(z * 1000)}`;
+    let id = ids.get(key);
+    if (id === undefined) {
+      if (wearOf) cells.wear = wearOf(x, z);
+      ids.set(key, (id = cells.vertex(c, x, y, z, 0, 1, 0)));
+    }
+    c.index.push(id);
+  }
+  if (wearOf) cells.wear = 1;
+}
+
+/**
+ * A path `width` across along a polyline as flat pieces, one a segment, mitred where it bends as the paths always were (across()): each
+ * { ring: [{ x, z } x 4], a, ux, uz, h }, its segment's start, its way along and its half width. A piece whose corners don't make a convex
+ * quad (a short segment at a sharp bend) comes as its two triangles that do face up.
+ */
+function pathPieces(pts, width) {
+  const side = across(pts);
+  const h = width / 2;
+  const out = [];
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i], sa = side[i - 1], sb = side[i];
+    const L = Math.hypot(b.x - a.x, b.z - a.z);
+    if (L < 1e-3) continue;
+    const ring = [
+      { x: a.x + sa.x * h, z: a.z + sa.z * h }, { x: b.x + sb.x * h, z: b.z + sb.z * h },
+      { x: b.x - sb.x * h, z: b.z - sb.z * h }, { x: a.x - sa.x * h, z: a.z - sa.z * h }
+    ];
+    const seg = { a, ux: (b.x - a.x) / L, uz: (b.z - a.z) / L, h };
+    const turns = ring.map((p, k) => {
+      const q = ring[(k + 1) % 4], r = ring[(k + 2) % 4];
+      return (q.x - p.x) * (r.z - q.z) - (q.z - p.z) * (r.x - q.x);
+    });
+    if (turns.every((t) => t > 1e-9) || turns.every((t) => t < -1e-9)) out.push({ ring, ...seg });
+    else {
+      for (const tri of [[ring[0], ring[1], ring[2]], [ring[0], ring[2], ring[3]]]) if (Math.abs(areaOf(tri)) > 1e-6) out.push({ ring: tri, ...seg });
+    }
+  }
+  return out;
+}
+
+/** A track's wear at (x, z) on its piece: how far across it, 0 at its left side, a quarter down its middle, a half at its right */
+const wearAcross = (piece) => (x, z) => {
+  const side = (-(x - piece.a.x) * piece.uz + (z - piece.a.z) * piece.ux) / piece.h;
+  return Math.min(0.5, Math.max(0, (1 - side) / 4));
+};
+
+// --- The raised lawn -------------------------------------------------------------------------------------------------------------
+
+/** Triangles, x, y, z of each corner in the world's heights, found by 4 m cell: a raised lawn as laid, for what's laid on it in turn */
+class LaidSurface {
+  constructor() {
+    this.cells = new Map();
+    this.count = 0;
+  }
+  add(tris) {
+    for (let i = 0; i < tris.length; i += 9) {
+      const t = [[tris[i], tris[i + 1], tris[i + 2]], [tris[i + 3], tris[i + 4], tris[i + 5]], [tris[i + 6], tris[i + 7], tris[i + 8]]];
+      for (let cx = Math.floor(Math.min(t[0][0], t[1][0], t[2][0]) / 4); cx <= Math.floor(Math.max(t[0][0], t[1][0], t[2][0]) / 4); cx++) {
+        for (let cz = Math.floor(Math.min(t[0][2], t[1][2], t[2][2]) / 4); cz <= Math.floor(Math.max(t[0][2], t[1][2], t[2][2]) / 4); cz++) {
+          const key = cx * 100000 + cz;
+          (this.cells.get(key) || this.cells.set(key, []).get(key)).push(t);
+        }
+      }
+      this.count++;
+    }
+  }
+  trianglesIn(x0, z0, x1, z1) {
+    const out = new Set();
+    for (let cx = Math.floor(x0 / 4); cx <= Math.floor(x1 / 4); cx++) {
+      for (let cz = Math.floor(z0 / 4); cz <= Math.floor(z1 / 4); cz++) for (const t of this.cells.get(cx * 100000 + cz) || []) out.add(t);
+    }
+    return [...out];
+  }
+  /** Its top at (x, z), or null off it */
+  at(x, z) {
+    for (const t of this.cells.get(Math.floor(x / 4) * 100000 + Math.floor(z / 4)) || []) {
+      const y = heightInTriangle(t, x, z);
+      if (y !== null) return y;
+    }
+    return null;
+  }
+}
+
+const boxOf = (pts) => {
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const p of pts) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z); }
+  return { x0, x1, z0, z1 };
+};
+const onSeam = (a, b) => (a.x === b.x && Math.abs(a.x / SQUARE - Math.round(a.x / SQUARE)) < 1e-9)
+  || (a.z === b.z && Math.abs(a.z / SQUARE - Math.round(a.z / SQUARE)) < 1e-9);
+
+const BEND = 0.003; // m the lawn may bend under a kerb's top between two of its points
+
+/** Of the points along an edge `L` m long ({ t: its share along, y }), those where what's between strays BEND or more from straight */
+function bends(line, L) {
+  if (line.length < 3) return line;
+  const keep = new Uint8Array(line.length);
+  keep[0] = keep[line.length - 1] = 1;
+  const stack = [[0, line.length - 1]];
+  while (stack.length) {
+    const [i, j] = stack.pop();
+    let worst = BEND, at = -1;
+    for (let k = i + 1; k < j; k++) {
+      const f = (line[k].t - line[i].t) / (line[j].t - line[i].t || 1e-12);
+      const off = Math.abs(line[k].y - (line[i].y + (line[j].y - line[i].y) * f));
+      if (off >= worst) { worst = off; at = k; }
+    }
+    if (at >= 0) {
+      keep[at] = 1;
+      stack.push([i, at], [at, j]);
+    }
+  }
+  return line.filter((_, k) => keep[k]);
+}
+
+/**
+ * The kerbs along a raised lawn's edges (`rings`, its outline and holes), into `cells` (its tint set): along each, out from the lawn,
+ * KERB_WIDTH wide, its top from the lawn's edge out to KERB_PROUD over it, and a face from there down under whatever's beside it. Not along
+ * a seam between two squares' pieces. Its top follows the lawn's triangles (`tris`, without their lift), as the raised lawn's edge does, a
+ * point at each of their edges where the lawn bends there (bends()). Returns the tops' triangles, x, y, z each corner, for what stands on
+ * them.
+ */
+function addKerbs(cells, rings, tris, below) {
+  const c = cells.cell(rings[0][0].x, rings[0][0].z);
+  const tops = [];
+  // The lawn's triangles by 8 m cell (most are bigger), to find those along each edge
+  const near = new Map(), CELL = 8;
+  for (const t of tris) {
+    for (let cx = Math.floor(Math.min(t[0][0], t[1][0], t[2][0]) / CELL); cx <= Math.floor(Math.max(t[0][0], t[1][0], t[2][0]) / CELL); cx++) {
+      for (let cz = Math.floor(Math.min(t[0][2], t[1][2], t[2][2]) / CELL); cz <= Math.floor(Math.max(t[0][2], t[1][2], t[2][2]) / CELL); cz++) {
+        const key = cx * 100000 + cz;
+        (near.get(key) || near.set(key, []).get(key)).push(t);
+      }
+    }
+  }
+  const along = (a, b) => {
+    const x0 = Math.floor(Math.min(a.x, b.x) / CELL), x1 = Math.floor(Math.max(a.x, b.x) / CELL);
+    const z0 = Math.floor(Math.min(a.z, b.z) / CELL), z1 = Math.floor(Math.max(a.z, b.z) / CELL);
+    if (x0 === x1 && z0 === z1) return near.get(x0 * 100000 + z0) || [];
+    const out = new Set();
+    for (let cx = x0; cx <= x1; cx++) for (let cz = z0; cz <= z1; cz++) for (const t of near.get(cx * 100000 + cz) || []) out.add(t);
+    return out;
+  };
+  const plane = (t) => {
+    const [a, b, d] = t;
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = d[0] - a[0], vy = d[1] - a[1], vz = d[2] - a[2];
+    const den = ux * vz - uz * vx;
+    if (Math.abs(den) < 1e-9) return null;
+    const gx = (uy * vz - uz * vy) / den, gz = (ux * vy - uy * vx) / den;
+    return (x, z) => a[1] + gx * (x - a[0]) + gz * (z - a[2]);
+  };
+  for (const [k, ring] of rings.entries()) {
+    const n = ring.length;
+    if (n < 3) continue;
+    // Out from the lawn: off the outline's inside, into a hole's
+    const sign = (areaOf(ring) > 0 ? 1 : -1) * (k === 0 ? -1 : 1);
+    const edges = ring.map((a, i) => {
+      const b = ring[(i + 1) % n];
+      const L = Math.hypot(b.x - a.x, b.z - a.z);
+      return { a, b, L, kept: L > 1e-4 && !onSeam(a, b), ox: L ? ((b.z - a.z) / L) * sign : 0, oz: L ? (-(b.x - a.x) / L) * sign : 0 };
+    });
+    // Out at each point: mitred between its two edges' ways, as long as both are kerbed
+    const outAt = edges.map((e, i) => {
+      const p = edges[(i + n - 1) % n];
+      if (!p.kept || !e.kept) return e.kept ? { x: e.ox, z: e.oz } : { x: p.ox, z: p.oz };
+      let mx = p.ox + e.ox, mz = p.oz + e.oz;
+      const L = Math.hypot(mx, mz);
+      if (L < 1e-6) return { x: e.ox, z: e.oz };
+      mx /= L; mz /= L;
+      const stretch = Math.min(2, 1 / Math.max(0.5, mx * e.ox + mz * e.oz));
+      return { x: mx * stretch, z: mz * stretch };
+    });
+    for (const [i, e] of edges.entries()) {
+      if (!e.kept) continue;
+      const { a, b } = e;
+      // Where it crosses the lawn's triangles: each run in one, by the share of the edge along
+      const runs = [];
+      for (const t of along(a, b)) {
+        if (Math.max(t[0][0], t[1][0], t[2][0]) < Math.min(a.x, b.x) - 1e-6 || Math.min(t[0][0], t[1][0], t[2][0]) > Math.max(a.x, b.x) + 1e-6
+          || Math.max(t[0][2], t[1][2], t[2][2]) < Math.min(a.z, b.z) - 1e-6 || Math.min(t[0][2], t[1][2], t[2][2]) > Math.max(a.z, b.z) + 1e-6) continue;
+        // Cyrus and Beck: the part of a-b inside each of the triangle's three sides
+        const ring3 = [{ x: t[0][0], z: t[0][2] }, { x: t[1][0], z: t[1][2] }, { x: t[2][0], z: t[2][2] }];
+        const wind = areaOf(ring3) > 0 ? 1 : -1;
+        let t0 = 0, t1 = 1;
+        for (let j = 0; j < 3 && t0 <= t1; j++) {
+          const p = ring3[j], q = ring3[(j + 1) % 3];
+          // Inside: as the triangle's winding keeps it, as js/drape.js clipConvex() reckons a side
+          const side = (s) => ((q.z - p.z) * (s.x - p.x) - (q.x - p.x) * (s.z - p.z)) * wind;
+          const sa = side(a), sb = side(b);
+          if (sa < 0 && sb < 0) { t0 = 2; break; }
+          if (sa < 0) t0 = Math.max(t0, sa / (sa - sb));
+          else if (sb < 0) t1 = Math.min(t1, sa / (sa - sb));
+        }
+        if (t1 - t0 > 1e-6) runs.push({ t0, t1, y: plane(t) });
+      }
+      runs.sort((p, q) => p.t0 - q.t0);
+      // The lawn's height along it, in stretches where it's on the lawn: a point where it crosses into each triangle, kept where the lawn
+      // bends there by BEND or more (a kerb's top through the rest strays from the lawn's edge by less)
+      const stretches = [];
+      let reached = 0, stretch = null;
+      for (const r of runs) {
+        if (!r.y || r.t1 <= reached + 1e-6) continue;
+        const from = Math.max(r.t0, reached);
+        const point = (t) => ({ t, y: r.y(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t) });
+        if (!stretch || from > reached + 1e-6) stretches.push((stretch = [point(from)]));
+        stretch.push(point(r.t1));
+        reached = r.t1;
+      }
+      const at = (t) => (t <= 1e-9 ? outAt[i] : t >= 1 - 1e-9 ? outAt[(i + 1) % n] : { x: e.ox, z: e.oz });
+      for (const line of stretches) {
+        const kept = bends(line, e.L);
+        const ends = kept.map(({ t, y }) => {
+          const x = a.x + (b.x - a.x) * t, z = a.z + (b.z - a.z) * t, o = at(t);
+          const ox = x + o.x * KERB_WIDTH, oz = z + o.z * KERB_WIDTH;
+          return { x, z, ox, oz, top: y + RAISED_TOP, foot: Math.min(y + LAWN_TOP, below(ox, oz)) - KERB_FOOT };
+        });
+        for (let j = 1; j < ends.length; j++) {
+          const p = ends[j - 1], q = ends[j];
+          // Its top: the lawn's edge, then out and up to KERB_PROUD over it
+          const v = [
+            cells.vertex(c, p.x, p.top, p.z, 0, 1, 0), cells.vertex(c, q.x, q.top, q.z, 0, 1, 0),
+            cells.vertex(c, q.ox, q.top + KERB_PROUD, q.oz, 0, 1, 0), cells.vertex(c, p.ox, p.top + KERB_PROUD, p.oz, 0, 1, 0)
+          ];
+          const quad = [{ x: p.x, z: p.z }, { x: q.x, z: q.z }, { x: q.ox, z: q.oz }];
+          if (areaOf(quad) >= 0) c.index.push(v[0], v[1], v[2], v[0], v[2], v[3]);
+          else c.index.push(v[0], v[2], v[1], v[0], v[3], v[2]);
+          tops.push(p.x, p.top, p.z, q.x, q.top, q.z, q.ox, q.top + KERB_PROUD, q.oz, p.x, p.top, p.z, q.ox, q.top + KERB_PROUD, q.oz, p.ox, p.top + KERB_PROUD, p.oz);
+          // Its face, out over the path, down under what's there
+          addFace(cells, c, [[p.ox, p.foot, p.oz], [q.ox, q.foot, q.oz], [q.ox, q.top + KERB_PROUD, q.oz], [p.ox, p.top + KERB_PROUD, p.oz]], [e.ox, 0, e.oz]);
+        }
+      }
+    }
+  }
+  return new Float32Array(tops);
 }
 
 /**
@@ -356,17 +638,67 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   const g = tile.garden;
   if (!g) return [];
   const mats = gardenMaterials();
-  const paths = new TintedCells(true), beds = new TintedCells(), stone = new TintedCells(), pond = new GroundCells(1e6), hedge = new GroundCells(1e6);
-  // The ponds' coping, again, for what stands on it: the stone's cells hold the gates' pillars and leaves too
+  const lawn = new GroundCells(1e6), paths = new TintedCells(true), beds = new TintedCells(), stone = new TintedCells(), pond = new GroundCells(1e6);
+  const hedge = new GroundCells(1e6);
+  // The ponds' coping, again, for what stands on it: the stone's cells hold the gates' pillars and leaves, and the kerbs' faces, too
   const coping = new TintedCells();
   const colliders = [];
-  const lawnAt = lawnSurface(tile);
+  const lawnAt = lawnSurface(tile), pavingAt = pavingSurface(tile);
   const heightAt = (x, z) => lawnAt(x, z) ?? groundHeight(x, z);
+  // The lowest top of the lawn and the paving as drawn at (x, z), for a kerb's face to reach under
+  const below = (x, z) => {
+    const l = lawnAt(x, z), p = pavingAt(x, z);
+    return Math.min(l === null ? Infinity : l + LAWN_TOP, p === null ? Infinity : p + SIDEWALK_TOP);
+  };
+  // A step at a time, a few milliseconds each
+  let since = performance.now();
+  const due = () => {
+    if (performance.now() - since < 4) return false;
+    since = performance.now();
+    return true;
+  };
+
+  // The lawn's and the paving's triangles under it all made first, one a step (5-20 ms each)
+  const boxes = [
+    ...(g.lawns ?? []).map(([, outer]) => boxOf(pointsOf(outer))), ...g.beds.map(([, ...ring]) => boxOf(pointsOf(ring))),
+    ...g.paths.map(([, , width, ...line]) => { const b = boxOf(pointsOf(line)); return { x0: b.x0 - width, z0: b.z0 - width, x1: b.x1 + width, z1: b.z1 + width }; })
+  ];
+  for (const at of [lawnAt, pavingAt]) {
+    for (const s of new Set(boxes.flatMap((b) => at.unbuilt(b.x0, b.z0, b.x1, b.z1)))) {
+      if (!s.tris) buildSurface(s);
+      if (due()) yield;
+    }
+  }
+  // A formal park's raised lawn, laid on the map's lawn's triangles, and the kerbs along its edges
+  const raised = new LaidSurface();
+  const kerbTops = [];
+  for (const [kerb, ...flats] of g.lawns ?? []) {
+    const rings = flats.map((f) => pointsOf(f));
+    if (rings[0].length < 3 || !wanted(rings[0][0].x, rings[0][0].z)) continue;
+    const b = boxOf(rings[0]);
+    const tris = lawnAt.trianglesIn(b.x0, b.z0, b.x1, b.z1);
+    const laid = [];
+    drapePolygon(rings, tris, RAISED_TOP, laid, 0, 0);
+    raised.add(laid);
+    addLaid(lawn, laid);
+    stone.tint = KERB_STONE[kerb] ?? KERB_STONE[0];
+    kerbTops.push(addKerbs(stone, rings, tris, below));
+    if (due()) yield;
+  }
+  yield;
+  // Beds dug in the raised lawn, cut to it, or laid on the map's lawn where there's none
   for (const [kind, ...ring] of g.beds) {
     const pts = pointsOf(ring);
     if (pts.length < 3 || !wanted(pts[0].x, pts[0].z)) continue;
     beds.tint = [Math.min(3, kind) / 3, 0, 0];
-    addDraped(beds, [pts], BED_TOP, heightAt);
+    const b = boxOf(pts);
+    const on = raised.trianglesIn(b.x0, b.z0, b.x1, b.z1);
+    if (on.length) {
+      const laid = [];
+      drapePolygon([pts], on, BED_LIFT, laid, 0, 0);
+      addLaid(beds, laid);
+    } else addDraped(beds, [pts], BED_TOP, heightAt);
+    if (due()) yield;
   }
   yield;
   stone.tint = SANDSTONE;
@@ -379,17 +711,40 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
     addRibbon(coping, [...pts, pts[0]], COPING.width, POND_TOP + COPING.rise, heightAt);
   }
   yield;
+  // The paths, laid on the lawn's and the paving's triangles, a piece a segment: where both are drawn (the paving runs under the lawn's
+  // edge) the one on the lawn is on top. A track is worn into the raised lawn, and into the map's lawn off it, where a paved path that
+  // crosses it covers it
   for (const [kind, surface, width, ...line] of g.paths) {
     const pts = pointsOf(line);
-    if ((surface === 4 && kind !== TRACK) || !SURFACES[surface] || !wanted(pts[0].x, pts[0].z)) continue;
+    if (pts.length < 2 || (surface === 4 && kind !== TRACK) || !SURFACES[surface] || !wanted(pts[0].x, pts[0].z)) continue;
     // Steps in sandstone, whatever OSM says they're made of
     paths.tint = kind === 1 ? SANDSTONE : SURFACES[surface];
-    addRibbon(paths, pts, width, pathTop(kind, surface), heightAt, kind === TRACK);
+    const top = pathTop(kind, surface);
+    const laid = [];
+    for (const piece of pathPieces(pts, kind === TRACK ? width : width + 2 * UNDER_KERB)) {
+      const b = boxOf(piece.ring);
+      if (kind === TRACK) {
+        const worn = [];
+        drape(piece.ring, raised.trianglesIn(b.x0, b.z0, b.x1, b.z1), TRACK_LIFT, worn, 0, 0);
+        drape(piece.ring, lawnAt.trianglesIn(b.x0, b.z0, b.x1, b.z1), TRACK_TOP, worn, 0, 0);
+        addLaid(paths, worn, wearAcross(piece));
+      } else {
+        drape(piece.ring, pavingAt.trianglesIn(b.x0, b.z0, b.x1, b.z1), SIDEWALK_TOP + top - LAWN_TOP, laid, 0, 0);
+        drape(piece.ring, lawnAt.trianglesIn(b.x0, b.z0, b.x1, b.z1), top, laid, 0, 0);
+      }
+    }
+    addLaid(paths, laid);
+    if (due()) yield;
   }
   yield;
+  // Hedges stand on the raised lawn where there is one
+  const hedgeAt = (x, z) => {
+    const y = raised.at(x, z);
+    return y === null ? heightAt(x, z) : y - LAWN_TOP;
+  };
   for (const [height, width, ...line] of g.hedges) {
     const pts = pointsOf(line);
-    if (wanted(pts[0].x, pts[0].z)) addWallAlong(hedge, pts, width, LAWN_TOP, height, heightAt);
+    if (wanted(pts[0].x, pts[0].z)) addWallAlong(hedge, pts, width, LAWN_TOP, height, hedgeAt);
   }
   const walls = new GroundCells(1e6);
   for (const [side, ...line] of g.seawalls ?? []) {
@@ -417,15 +772,20 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
     }
   }
   yield;
-  // What's walked on, ridden over and driven onto, as drawn
-  setLayer(`garden:${tile.key}`, [trianglesOf(paths), trianglesOf(beds), trianglesOf(coping)]);
+  // What's walked on, ridden over and driven onto, as drawn: the raised lawn and its kerbs' tops, the paths, beds and the ponds' coping
+  setLayer(`garden:${tile.key}`, [trianglesOf(lawn), ...kerbTops, trianglesOf(paths), trianglesOf(beds), trianglesOf(coping)]);
+  yield;
+  const before = target?.children.length ?? 0;
+  buildCells(lawn, target, mats.lawn, { cullDistance: 900 });
   buildCells(paths, target, mats.paths, { cullDistance: 900 });
   buildCells(beds, target, mats.beds, { cullDistance: 900 });
   buildCells(pond, target, mats.pond, { cullDistance: 1200 });
   buildCells(stone, target, mats.stone, { cullDistance: 600 });
   buildCells(hedge, target, mats.hedge, { cast: true, cullDistance: 900 });
   buildCells(walls, target, mats.wall, { cast: true, cullDistance: 900 });
+  // What's the garden's, for measuring what it costs (__gameDebug.gardenShown())
+  for (const mesh of target?.children.slice(before) ?? []) mesh.userData.garden = true;
   return colliders;
 }
 
-export { PATH_TOP, SURFACES as PATH_SURFACES, TRACK, TRACK_TOP, buildTileGarden, gardenMaterials, lawnSurface, pathTop, pavingSurface };
+export { PATH_TOP, SURFACES as PATH_SURFACES, TRACK, TRACK_TOP, buildTileGarden, gardenMaterials, lawnSurface, pathTop, pavingSurface, useMapLawn };

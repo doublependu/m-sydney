@@ -1,4 +1,4 @@
-import { TILE, onMap } from './geodata.js';
+import { TILE, heldTiles, onMap } from './geodata.js';
 import { blockAt } from './city-config.js';
 import { GroundCells, SIDEWALK_TOP, addSurface, pointInPolygonXZ } from './ground-geometry.js';
 import { groundHeight } from './surfaces.js';
@@ -8,7 +8,8 @@ import { SITE_CUTS } from './model-sites.js';
 // of these, on their own triangles as they're drawn:
 // - the map's paving and lawns (js/city-grid.js), laid on the height grid's nodes with addSurface(), and the beaches' sand and the coast's
 //   rock over them;
-// - a garden's paths, steps, beds and its ponds' coping (js/garden.js), as each tile's garden was built;
+// - a garden's raised lawn and the tops of its kerbs, its paths, steps, tracks, beds and its ponds' coping (js/garden.js), as each tile's
+//   garden was built;
 // - near you, the nature strips' lawn and footpath (js/verge.js) and the lots' driveways, crossovers, laybacks and paths (js/lot-details.js).
 // The map's surfaces come with the tiles, and are looked through and their triangles made near you, a tile or a surface at a time as the
 // world's jobs have room once the city round you is complete (buildNear(): 5-20 ms a surface, as js/garden.js and the lots have always
@@ -18,18 +19,27 @@ import { SITE_CUTS } from './model-sites.js';
 // Each surface's lift over its triangles, as js/city-grid.js draws it
 const SAND_LIFT = 0.06, ROCK_LIFT = 0.12;
 const LIFT = { paving: SIDEWALK_TOP, lawn: SIDEWALK_TOP + 0.02, sand: SIDEWALK_TOP + SAND_LIFT, rock: SIDEWALK_TOP + ROCK_LIFT };
-// A garden's (js/garden.js), over the ground, on the lawn as drawn: a path a little over the lawn, a centimetre apart by what it's made of
-// so that where two meet one is always on top (timber lowest, then gravel, paving and asphalt, and steps over all of them: at one height
-// the two fought for every pixel where they crossed); a track a centimetre over the lawn, a strip worn into the grass, not laid on it, which
-// paved paths cross over
+// A garden's (js/garden.js), over the ground, on the lawn as drawn. A formal park's lawn is raised RAISE over the map's, with a kerb along
+// its edges 1 cm prouder still, and its paved paths lie down between, just over the map's lawn: a few millimetres apart by what they're
+// made of, so that where two meet one is always on top (timber lowest, then gravel, paving and asphalt, and steps over all of them: at one
+// height the two fought for every pixel where they crossed). A track is a strip worn into whatever lawn it crosses, a centimetre over it,
+// not laid on it: the map's lawn under a paved path's, which covers it there, or the raised lawn.
 const LAWN_TOP = LIFT.lawn;
-const PATH_TOP = LAWN_TOP + 0.05;
-const PATH_LIFT = [0.02, 0.03, 0.01, 0]; // paving, asphalt, gravel, timber: over PATH_TOP
-const STEPS_LIFT = 0.04;
-const TRACK_TOP = LAWN_TOP + 0.01;
+const RAISE = 0.08;
+const RAISED_TOP = LAWN_TOP + RAISE;
+const KERB_PROUD = 0.01;
+const PATH_TOP = LAWN_TOP + 0.0125;
+const PATH_LIFT = [0.005, 0.0075, 0.0025, 0]; // paving, asphalt, gravel, timber: over PATH_TOP
+const STEPS_LIFT = 0.01;
+const TRACK_LIFT = 0.01; // a track over the lawn it's worn into
+const TRACK_TOP = LAWN_TOP + TRACK_LIFT;
 const TRACK = 3; // a garden path's kind: 0 a footpath, 1 steps, 2 a cycleway, 3 a track
-/** A garden path's top over the ground, as drawn over the lawn, by its kind and surface: for the crowd walking it (js/pedestrian-system.js) */
-const pathTop = (kind, surface) => (kind === TRACK ? TRACK_TOP : PATH_TOP + (kind === 1 ? STEPS_LIFT : PATH_LIFT[surface] ?? PATH_LIFT[2]));
+/**
+ * A garden path's top over the ground, as drawn over the lawn, by its kind and surface (`raised`: a track on a raised lawn): for the crowd
+ * walking it (js/pedestrian-system.js)
+ */
+const pathTop = (kind, surface, raised = false) => (kind === TRACK ? (raised ? RAISED_TOP : LAWN_TOP) + TRACK_LIFT
+  : PATH_TOP + (kind === 1 ? STEPS_LIFT : PATH_LIFT[surface] ?? PATH_LIFT[2]));
 const BOX = 32; // m: the cells the map's surfaces are indexed in
 const CELL = 4; // m: the cells each surface's triangles, and each layer's, are indexed in
 const AHEAD = 40; // m round you that the map's surfaces have their triangles made ahead of time
@@ -234,6 +244,52 @@ function trianglesOf(cells) {
   return out;
 }
 
+// --- A formal park's raised lawn, for what isn't built with it ----------------------------------------------------------------------
+
+/**
+ * Whether a point is on a formal park's raised lawn (js/garden.js) in the tiles held now: for what stands on it that isn't built with the
+ * garden, its plants and the crowd on its tracks. A function of (x, z), the pieces found by 32 m cell.
+ */
+function raisedLawnTest() {
+  const cells = new Map();
+  for (const t of heldTiles()) {
+    for (const [, ...flats] of t.garden?.lawns ?? []) {
+      const rings = flats.map(ptsOf);
+      if (rings[0].length < 3) continue;
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (const p of rings[0]) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z); }
+      // Its edges by the metre-high row they reach, so a point is tested against those level with it, not all of them
+      const rows = new Map();
+      for (const r of rings) {
+        for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+          const a = r[i], b = r[j];
+          for (let row = Math.floor(Math.min(a.z, b.z)); row <= Math.floor(Math.max(a.z, b.z)); row++) (rows.get(row) || rows.set(row, []).get(row)).push(a, b);
+        }
+      }
+      const piece = { rows, x0, x1, z0, z1 };
+      for (let cx = Math.floor(x0 / BOX); cx <= Math.floor(x1 / BOX); cx++) {
+        for (let cz = Math.floor(z0 / BOX); cz <= Math.floor(z1 / BOX); cz++) {
+          const key = cx * 100000 + cz;
+          (cells.get(key) || cells.set(key, []).get(key)).push(piece);
+        }
+      }
+    }
+  }
+  return (x, z) => {
+    for (const p of cells.get(keyOf(x, z, BOX)) || []) {
+      if (x < p.x0 || x > p.x1 || z < p.z0 || z > p.z1) continue;
+      const edges = p.rows.get(Math.floor(z)) || [];
+      let inside = false;
+      for (let i = 0; i < edges.length; i += 2) {
+        const a = edges[i], b = edges[i + 1];
+        if ((a.z > z) !== (b.z > z) && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) inside = !inside;
+      }
+      if (inside) return true;
+    }
+    return false;
+  };
+}
+
 // --- The lookup ----------------------------------------------------------------------------------------------------------------------
 
 let lastWhat = null;
@@ -320,6 +376,6 @@ function buildNear(x, z, reach = AHEAD) {
 }
 
 export {
-  LAWN_TOP, LIFT, PATH_TOP, ROCK_LIFT, SAND_LIFT, TRACK, TRACK_TOP, buildNear, pathTop, buildSurface, drawnOver, drawnTop, drawnWhat, dropLayer, dropLayers, heightInTriangle, heightOn,
-  setLayer, surfaceOf, trianglesOf
+  KERB_PROUD, LAWN_TOP, LIFT, PATH_TOP, RAISE, RAISED_TOP, ROCK_LIFT, SAND_LIFT, TRACK, TRACK_LIFT, TRACK_TOP, buildNear, pathTop, buildSurface, drawnOver,
+  drawnTop, drawnWhat, dropLayer, dropLayers, heightInTriangle, heightOn, raisedLawnTest, setLayer, surfaceOf, trianglesOf
 };

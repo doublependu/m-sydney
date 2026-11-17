@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { TILE, heldTiles, isHeld } from '../js/geodata.js';
 import { groundHeight } from '../js/surfaces.js';
-import { buildNear, drawnTop, drawnWhat, dropLayer, pathTop, setLayer } from '../js/drawn-ground.js';
+import { RAISED_TOP, buildNear, drawnTop, drawnWhat, dropLayer, pathTop, setLayer } from '../js/drawn-ground.js';
 
 // What the walker, the bike's wheels and the car's stand on (js/drawn-ground.js): the top of what's drawn on the ground, on real tiles. The
 // Royal Botanic Garden's path and lawn and Macquarie St's footpath and road; a square of Woollahra's verges and driveways.
@@ -28,15 +28,21 @@ test('a garden\'s path, its lawn, a footpath\'s paving and the road, as each is 
   assert.ok(footpath - groundHeight(389, -1000) < 0.2, 'under the paving\'s nominal height here');
   // Its road: nothing drawn over the ground
   assert.equal(built(397, -1000), null);
-  // The garden's lawn, and an asphalt path over it: the path's top over the lawn as drawn by its lift, to within the bend of the lawn
-  // between the ribbon's points (laid on the lawn's heights every 2 m along it and at its edges)
+  // The garden's raised lawn, and an asphalt path down beside it: each laid on the map's lawn's own triangles, RAISED_TOP and the path's
+  // top over them
   const lawn = built(1101, -1003.2);
-  assert.equal(drawnWhat(), 'lawn');
-  assert.ok(Math.abs(lawn - (lawnSurface(tileAt(1101, -1003.2))(1101, -1003.2) + 0.24)) < 1e-6);
+  assert.ok(drawnWhat().startsWith('garden:'), drawnWhat());
+  assert.ok(Math.abs(lawn - (lawnSurface(tileAt(1101, -1003.2))(1101, -1003.2) + RAISED_TOP)) < 1e-4, 'not on the raised lawn');
   const path = built(1097.3, -1003.2);
   assert.ok(drawnWhat().startsWith('garden:'), drawnWhat());
-  const under = lawnSurface(tileAt(1097.3, -1003.2))(1097.3, -1003.2) + pathTop(0, 1);
-  assert.ok(Math.abs(path - under) < 0.03 && path > lawn + 0.05, `the path ${path.toFixed(3)} against the lawn plus its lift ${under.toFixed(3)}`);
+  // Laid on the lawn's triangles, a path's top over it (here the asphalt's, or a flight of steps' that meets it: steps are on top)
+  const over = path - lawnSurface(tileAt(1097.3, -1003.2))(1097.3, -1003.2);
+  assert.ok(over > pathTop(2, 3) - 1e-4 && over < pathTop(1, 1) + 1e-4, `the path ${over.toFixed(4)} over the lawn, not a path's top`);
+  assert.ok(RAISED_TOP - over > 0.05, 'the path isn\'t down between the lawns');
+  // The kerb between them: its top over the raised lawn's edge, a centimetre at most (and the 3 mm its top may stray from the lawn's bend)
+  let kerb = -Infinity;
+  for (let x = 1097.3; x < 1101; x += 0.02) kerb = Math.max(kerb, built(x, -1003.2) - lawnSurface(tileAt(x, -1003.2))(x, -1003.2));
+  assert.ok(kerb > RAISED_TOP + 0.003 && kerb <= RAISED_TOP + 0.014, `the kerb's top ${kerb.toFixed(4)} over the lawn`);
 });
 
 test('a strip\'s footpath and a driveway near you: what the lots handed over, the highest of it', { skip: !['3_0', '2_0', '3_-1', '2_-1'].every(isHeld) && 'its tiles aren\'t held' }, async () => {

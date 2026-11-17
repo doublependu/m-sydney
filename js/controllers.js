@@ -239,6 +239,10 @@ const COLLIDER_CELL = 48;
 const colliderKey = (ix, iz) => (ix + 4096) * 8192 + (iz + 4096);
 
 const JUMP_QUEUE = 0.15; // s a jump press stays good for
+const JUMP_CROUCH = 0.085; // s crouched before taking off: the press, or one held over by the queue, starts it
+const KERB_EASE = 18; // /s the body eases at, up or down a kerb or onto the footway, which the feet step over
+const FALLING = 0.3; // m over the ground (in the flat simulation) that's a fall, not a kerb
+const HEAD_ON = 0.02; // cosine of the turn a wall makes in a walker's move (89 degrees), past which it's held square on, not sliding along
 
 class ThirdPersonControllerManager {
   constructor(scene, colliders = []) {
@@ -617,6 +621,13 @@ class ThirdPersonControllerManager {
     ent.speed = 0;
     if (this.activeMode === 'person') {
       ent.verticalVel = 0;
+      ent.jumping = false;
+      ent.jumpPrep = 0;
+      ent.heldBack = null;
+      if (ent.shadow) {
+        ent.shadow.position.y = 0.02;
+        ent.shadow.scale.set(1, 1, 1);
+      }
       ent._charHidden = false;
       if (ent.mesh) ent.mesh.visible = true;
       ent.rig.reset(ent.position.x, ent.position.z, ent.heading, personGround, this);
@@ -732,12 +743,16 @@ class ThirdPersonControllerManager {
       type: 'person',
       label: 'Pedestrian',
       mesh: root,
+      shadow: pedShadow,
       crowd,
       rig,
       position: new THREE.Vector3(SPAWN.x + 12, CITY_BOUNDS.sidewalkHeight, SPAWN.z),
       heading: SPAWN.heading,
       speed: 0,
       verticalVel: 0,
+      jumping: false, // in the air, from a jump or a fall
+      jumpPrep: 0, // s of the crouch before taking off still to go
+      heldBack: null, // what a wall left of the last step's move, forward and aside (m/s), or null
       cameraTargetOffset: new THREE.Vector3(0, 1.55, 0),
       chaseDistance: 4.3,
       chaseHeight: 1.95
@@ -1130,6 +1145,9 @@ class ThirdPersonControllerManager {
     p.heading = seat.heading;
     p.speed = 0;
     p.verticalVel = 0;
+    p.jumping = false;
+    p.jumpPrep = 0;
+    p.heldBack = null;
     return true;
   }
 
@@ -1408,9 +1426,19 @@ class ThirdPersonControllerManager {
       if (this.activeMode === 'person') {
         p._charHidden = false;
         if (p.mesh) p.mesh.visible = true;
-        const air = p.position.y - this.getGroundHeight(p.position.x, p.position.z, 'person');
+        const groundY = this.getGroundHeight(p.position.x, p.position.z, 'person');
+        const air = p.position.y - groundY;
+        // The rig is told of the crouch before a jump (as a negative share of it, -1 at take-off), the height in a jump or a fall, and
+        // nothing stepping up or down a kerb, which its feet step over
+        const rigAir = p.jumping ? Math.max(0.006, air) : p.jumpPrep > 0 ? -(1 - p.jumpPrep / JUMP_CROUCH) : air > FALLING ? air : 0;
+        // The shadow stays on what you stand on, smaller the higher you are
+        if (p.shadow) {
+          p.shadow.position.y = groundY - p.position.y + 0.02;
+          const size = Math.max(0.45, 1 - Math.max(0, rigAir) * 0.35);
+          p.shadow.scale.set(size, size, 1);
+        }
         if (p.seat) p.rig.sit(p.seat.x, p.seat.z, p.seat.heading, p.seat.seatY);
-        else p.rig.update(dt, p.position.x, p.position.z, p.heading, personGround, this, air > 0.02 ? air : 0);
+        else p.rig.update(dt, p.position.x, p.position.z, p.heading, personGround, this, rigAir);
         p.crowd.begin();
         // On whatever it stands on: the ground, or a deck (the simulation is flat, js/surfaces.js)
         p.crowd.add(p.rig, 0, surfaceHeight(p.surface || 0, p.position.x, p.position.z, p.surfaceY ?? null));
@@ -1580,27 +1608,80 @@ class ThirdPersonControllerManager {
       const acceleration = accelerating ? 2 + 3.5 * Math.abs(target) / pace.run : 12;
       return speed + Math.max(-acceleration * dt, Math.min(acceleration * dt, target - speed));
     };
+    // Held back by a wall last step, you keep your pace while you push on, and slide along it as before; let go or turn back, and you
+    // start from what you actually moved, not the pace you were pushing at, so you come away from it at once
+    const held = p.heldBack;
+    p.heldBack = null;
+    if (held) {
+      const pushing = (speed, target) => target * speed > 0 && Math.abs(target) >= Math.abs(speed);
+      const moved = (speed, actual) => (speed > 0 ? Math.min(speed, Math.max(0, actual)) : Math.max(speed, Math.min(0, actual)));
+      if (!pushing(p.speed, targetSpeed)) p.speed = moved(p.speed, held.forward);
+      if (!pushing(p.sideSpeed || 0, targetSide)) p.sideSpeed = moved(p.sideSpeed || 0, held.aside);
+    }
     p.speed = towards(p.speed, targetSpeed);
     p.sideSpeed = towards(p.sideSpeed || 0, targetSide);
 
     // Forward along the heading, and aside to its left (+) or right
     const sin = Math.sin(p.heading), cos = Math.cos(p.heading);
-    p.position.x += (sin * p.speed + cos * p.sideSpeed) * dt;
-    p.position.z += (cos * p.speed - sin * p.sideSpeed) * dt;
+    const fromX = p.position.x, fromZ = p.position.z;
+    const toX = fromX + (sin * p.speed + cos * p.sideSpeed) * dt;
+    const toZ = fromZ + (cos * p.speed - sin * p.sideSpeed) * dt;
+    p.position.x = toX;
+    p.position.z = toZ;
     // Through a house's doorways, between its furniture and up its stair: inside, or on a model's floors, the walker is narrower
     this.resolveHorizontalCollision(p.position, this.indoors || onFloor(p.position.x, p.position.z) ? WALKER : 0.48);
+    // Held back by a wall, a fence, the shore or a railing: what you moved, forward and aside, for the next step (above). Held square on,
+    // where nothing moves, the speed comes down to it now. Further round you slide along at your pace: a cut every frame there (cos² of the
+    // speed at a slant) would leave you crawling along a wall you used to slide along, or steer round
+    const wantX = toX - fromX, wantZ = toZ - fromZ, want = Math.hypot(wantX, wantZ);
+    if (want > 1e-9 && (Math.abs(p.position.x - toX) > 1e-6 || Math.abs(p.position.z - toZ) > 1e-6)) {
+      const movedX = p.position.x - fromX, movedZ = p.position.z - fromZ, moved = Math.hypot(movedX, movedZ);
+      p.heldBack = { forward: (movedX * sin + movedZ * cos) / dt, aside: (movedX * cos - movedZ * sin) / dt };
+      // The cosine of the turn the wall made in the move, from where you meant to go
+      const along = moved > 1e-9 ? (movedX * wantX + movedZ * wantZ) / (moved * want) : 0;
+      if (along < HEAD_ON) {
+        const kept = along <= 0 ? 0 : moved / (want * HEAD_ON);
+        p.speed *= kept;
+        p.sideSpeed *= kept;
+      }
+    }
 
     const groundY = this.getGroundHeight(p.position.x, p.position.z, 'person');
-    if ((this.keys.up || this.jumpQueued > 0) && p.position.y <= groundY + 0.02) {
-      p.verticalVel = 5.2;
+    const ease = 1 - Math.exp(-dt * KERB_EASE);
+    // A press, or one the queue's held over, crouches first, and takes off from the crouch
+    if ((this.keys.up || this.jumpQueued > 0) && p.position.y <= groundY + 0.02 && !p.jumping && !(p.jumpPrep > 0)) {
+      p.jumpPrep = JUMP_CROUCH;
       this.jumpQueued = 0;
     }
     this.jumpQueued = Math.max(0, this.jumpQueued - dt); // game time, so a hitch can't use it up
-    p.verticalVel -= 14.5 * dt;
-    p.position.y += p.verticalVel * dt;
-    if (p.position.y < groundY) {
-      p.position.y = groundY;
+    if (p.jumpPrep > 0) {
+      p.jumpPrep = Math.max(0, p.jumpPrep - dt);
+      p.position.y += (groundY - p.position.y) * ease;
+      if (Math.abs(groundY - p.position.y) < 1e-3) p.position.y = groundY;
+      if (p.jumpPrep === 0) {
+        p.verticalVel = 5.2;
+        p.jumping = true;
+      }
+    }
+    if (p.jumping || p.position.y > groundY + FALLING) {
+      // In the air, from a jump or off something higher than a kerb
+      if (p.position.y > groundY + FALLING) {
+        p.jumping = true;
+        p.jumpPrep = 0;
+      }
+      p.verticalVel -= 14.5 * dt;
+      p.position.y += p.verticalVel * dt;
+      if (p.position.y <= groundY) {
+        p.position.y = groundY;
+        p.verticalVel = 0;
+        p.jumping = false;
+      }
+    } else if (!(p.jumpPrep > 0)) {
+      // Up or down a kerb, or onto the footway: eased, as the feet step it, rather than a fall onto the road
+      p.position.y += (groundY - p.position.y) * ease;
+      if (Math.abs(groundY - p.position.y) < 1e-3) p.position.y = groundY;
       p.verticalVel = 0;
+      p.jumping = false;
     }
   }
 

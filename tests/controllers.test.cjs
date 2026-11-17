@@ -843,3 +843,100 @@ test('cyclist braking stops briskly, pauses at zero before reversing, and Space 
   assert.ok(blocked.cyclist.speed < 0.05, `a bike held by a wall doesn't build up speed (got ${blocked.cyclist.speed})`);
   assert.ok(blocked.cyclist.position.z < 0.5, 'and stays out of it');
 });
+
+// The walker on its own, with a kerb along z = 0: the footpath (0.22 m up) where z < 0, the road beyond
+function walkerHarness(person = {}, colliders = []) {
+  const harness = keyboardHarness({ CITY_BOUNDS: { minX: -1000, maxX: 1000, minZ: -1000, maxZ: 1000, sidewalkHeight: 0.22 }, blockAt: (_x, z) => (z < 0 ? {} : null) });
+  const shadow = { position: { y: 0.02 }, scale: { x: 1, y: 1, z: 1, set(x, y, z) { Object.assign(this, { x, y, z }); } } };
+  const airs = [];
+  const p = {
+    type: 'person', position: { x: 0, y: 0.22, z: -0.4 }, heading: 0, speed: 0, sideSpeed: 0, verticalVel: 0, jumping: false, jumpPrep: 0, shadow,
+    mesh: { visible: true },
+    rig: { placed: true, update(_dt, _x, _z, _h, _g, _o, air) { airs.push(air); } },
+    crowd: { updates: 0, begin() {}, add() {}, end() {} },
+    ...person
+  };
+  Object.assign(harness.controller, { activeMode: 'person', colliders, _colliderCells: null, _walkerCells: new Map(), entities: { person: p } });
+  const step = (frames = 1) => {
+    for (let i = 0; i < frames; i++) {
+      harness.controller.updatePerson(1 / 60);
+      harness.controller.poseCharacters(1 / 60, p.position);
+    }
+  };
+  return { ...harness, person: p, shadow, airs, step };
+}
+
+test('on foot, stepping off a kerb is a step, not a jump; a jump crouches first, arcs, and keeps the shadow on the ground', () => {
+  const { controller, person, shadow, airs, step, key } = walkerHarness();
+  controller.keys.forward = true;
+  // Over the kerb at z = 0, at a walk
+  for (let i = 0; i < 60; i++) {
+    step();
+    assert.equal(person.jumping, false, 'stepping off a 0.22 m kerb is no jump');
+    assert.ok(Math.abs(person.position.y + shadow.position.y - (person.position.z < 0 ? 0.22 : 0) - 0.02) < 0.23, 'the shadow stays on the footpath or the road');
+  }
+  assert.ok(person.position.z > 0.5, `walked off the footpath (z ${person.position.z.toFixed(2)})`);
+  assert.equal(person.position.y, 0, 'down on the road, eased there');
+  assert.equal(Math.max(...airs), 0, 'the rig is told of no air over the kerb, so its feet step it');
+  assert.ok(Math.abs(person.position.y + shadow.position.y - 0.02) < 1e-9, 'the shadow is on the road');
+
+  // A tap of Space between two frames: the queue holds it, and it starts the crouch
+  airs.length = 0;
+  key('keydown', 'Space');
+  key('keyup', 'Space');
+  step();
+  assert.ok(person.jumpPrep > 0 && Math.min(...airs) < 0, 'a tap crouches before taking off, the rig told as a negative air');
+  assert.equal(controller.jumpQueued, 0, 'the queued press is used up by the crouch');
+  assert.equal(person.position.y, 0, 'still on the ground, crouching');
+  step(20);
+  assert.equal(person.jumping, true, 'off the ground after the crouch');
+  assert.ok(person.position.y > 0.5 && Math.max(...airs) > 0.5, `in the air, and the rig told (${person.position.y.toFixed(2)} m)`);
+  assert.ok(Math.abs(person.position.y + shadow.position.y - 0.02) < 1e-9, 'the shadow stays on the road under the jump');
+  assert.ok(shadow.scale.x < 0.85, 'and smaller, the higher the jump');
+  step(60);
+  assert.equal(person.jumping, false, 'landed');
+  assert.equal(person.position.y, 0);
+  assert.equal(shadow.scale.x, 1);
+});
+
+test('on foot, held against a wall, no speed builds up forward or aside, and you walk away from it at once', () => {
+  const wall = { minX: -10, maxX: 10, minZ: 0, maxZ: 10, maxY: 30 };
+  const { controller, person, step } = walkerHarness({ position: { x: 0, y: 0, z: -0.5 } }, [wall]);
+  Object.assign(controller.keys, { forward: true, run: true });
+  step(120);
+  assert.ok(person.speed < 0.05, `running into a wall builds up no speed (${person.speed})`);
+  assert.ok(person.position.z <= -0.48 + 1e-9, 'and stays out of it');
+  Object.assign(controller.keys, { forward: false, backward: true });
+  step();
+  assert.ok(person.speed < 0 && person.position.z < -0.48, 'backing away moves at once, with no speed to shed first');
+
+  // Stepping aside into it (first person's A): facing -x, your left is +z
+  const aside = walkerHarness({ position: { x: 0, y: 0, z: -0.5 }, heading: -Math.PI / 2 }, [wall]);
+  aside.controller.keys.sideLeft = true;
+  aside.step(120);
+  assert.ok(Math.abs(aside.person.sideSpeed) < 0.05, `stepping aside into a wall builds up no speed (${aside.person.sideSpeed})`);
+  aside.controller.keys.sideLeft = false;
+  aside.controller.keys.sideRight = true;
+  aside.step();
+  assert.ok(aside.person.sideSpeed < 0 && aside.person.position.z < -0.48, 'and stepping away from it moves at once');
+
+  // At a slant you slide along it at your pace: 45 degrees into it running, cos 45 of 6 m/s along it, as before the cut
+  const slant = walkerHarness({ position: { x: 0, y: 0, z: -0.49 }, heading: Math.PI / 4 }, [{ ...wall, minX: -1e3, maxX: 1e3 }]);
+  Object.assign(slant.controller.keys, { forward: true, run: true });
+  slant.step(120);
+  const x0 = slant.person.position.x;
+  slant.step(60);
+  assert.ok(Math.abs(slant.person.position.x - x0 - 6 * Math.SQRT1_2) < 0.05, `running along a wall at 45 degrees slides at ${(slant.person.position.x - x0).toFixed(2)} m/s`);
+  assert.ok(slant.person.speed > 5.99, `and keeps its pace (${slant.person.speed.toFixed(3)} m/s)`);
+
+  // Nearly square on (85 degrees), you still slide, slowly, as before; and backing away is at once, with no pace to shed first
+  const steep = walkerHarness({ position: { x: 0, y: 0, z: -0.49 }, heading: 5 * Math.PI / 180 }, [{ ...wall, minX: -1e3, maxX: 1e3 }]);
+  Object.assign(steep.controller.keys, { forward: true, run: true });
+  steep.step(120);
+  const x1 = steep.person.position.x;
+  steep.step(60);
+  assert.ok(Math.abs(steep.person.position.x - x1 - 6 * Math.sin(5 * Math.PI / 180)) < 0.02, `running into a wall at 85 degrees slides at ${(steep.person.position.x - x1).toFixed(2)} m/s`);
+  Object.assign(steep.controller.keys, { forward: false, backward: true });
+  steep.step();
+  assert.ok(steep.person.speed < 0, `backing away from it moves at once (${steep.person.speed.toFixed(2)} m/s)`);
+});

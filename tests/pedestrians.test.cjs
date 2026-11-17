@@ -403,7 +403,7 @@ function mergeGeometries(geos) {
   return merged;
 }
 
-const { PersonCrowd, PersonRig, buildPersonGeometry, createPersonMaterial } = loadModule(pedestriansSource, {
+const { PERSON_BONES, PersonCrowd, PersonRig, buildPersonGeometry, createPersonMaterial } = loadModule(pedestriansSource, {
   imports: {
     'three/webgpu': { Vector3, Quaternion, Matrix4, BufferAttribute, BufferGeometry, Float32BufferAttribute, MeshStandardNodeMaterial, Mesh },
     'three/tsl': tslStub,
@@ -785,5 +785,327 @@ test('A rider is drawn on the saddle, on whatever the bike stands on, whatever t
     const low = drawn(hilly, bikeAt(x, 0, z), 0);
     for (let bone = 0; bone < 4; bone++) assert.ok(Math.abs(b.pose[bone * 8 + 5] - low.pose[bone * 8 + 5] - base) < 1e-3, `bone ${bone} raised by ${b.pose[bone * 8 + 5] - low.pose[bone * 8 + 5]}, not ${base}`);
     assert.ok(b.head > base + 1.3 && b.head < base + 2, `head at ${b.head.toFixed(2)} on a bike at ${base}`);
+  }
+});
+
+// Where a bone's point is drawn (from PersonRig.writeBone()'s pose: rotation, the bone's root less its bind offset, scale)
+function boneWorldPos(rig, bone, localPos = rig.bind[bone]) {
+  const o = bone * 8;
+  const q = new Quaternion(rig.pose[o], rig.pose[o + 1], rig.pose[o + 2], rig.pose[o + 3]);
+  const p = localPos.clone().applyQuaternion(q).multiplyScalar(rig.pose[o + 7]);
+  p.x += rig.pose[o + 4];
+  p.y += rig.pose[o + 5];
+  p.z += rig.pose[o + 6];
+  return p;
+}
+
+// How far a knee is bent, in degrees (0 straight)
+function legKneeBendDeg(rig, legIndex) {
+  const B = PERSON_BONES;
+  const hip = boneWorldPos(rig, legIndex === 0 ? B.THIGH_L : B.THIGH_R);
+  const knee = boneWorldPos(rig, legIndex === 0 ? B.SHIN_L : B.SHIN_R);
+  const ankle = boneWorldPos(rig, legIndex === 0 ? B.FOOT_L : B.FOOT_R);
+  const u1 = hip.sub(knee).normalize();
+  const u2 = ankle.sub(knee).normalize();
+  return 180 - Math.acos(Math.max(-1, Math.min(1, u1.dot(u2)))) * 180 / Math.PI;
+}
+
+// The lowest point of a shoe's sole, its heel or its toe
+function lowestSole(rig) {
+  const B = PERSON_BONES;
+  let lowest = Infinity;
+  for (let i = 0; i < 2; i++) {
+    const side = rig.feet[i].side;
+    const heel = boneWorldPos(rig, i === 0 ? B.FOOT_L : B.FOOT_R, new Vector3(side * 0.09, 0, -0.078));
+    const toe = boneWorldPos(rig, i === 0 ? B.TOE_L : B.TOE_R, new Vector3(side * 0.09, 0.005, 0.208));
+    lowest = Math.min(lowest, heel.y, toe.y);
+  }
+  return lowest;
+}
+
+// What's left of each value after a quadratic through the 7 samples round it, by time: a step back and forth from one frame to the
+// next, not a stride's bob (tools/play/walk-trace.mjs measures the walker in the game the same way)
+function jitterOf(ts, vs) {
+  const out = [];
+  for (let i = 3; i + 3 < vs.length; i++) {
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, y0 = 0, y1 = 0, y2 = 0;
+    for (let k = i - 3; k <= i + 3; k++) {
+      const t = ts[k] - ts[i], y = vs[k];
+      s0 += 1; s1 += t; s2 += t * t; s3 += t * t * t; s4 += t * t * t * t;
+      y0 += y; y1 += y * t; y2 += y * t * t;
+    }
+    const det = s0 * (s2 * s4 - s3 * s3) - s1 * (s1 * s4 - s3 * s2) + s2 * (s1 * s3 - s2 * s2);
+    out.push(Math.abs(vs[i] - (y0 * (s2 * s4 - s3 * s3) - s1 * (y1 * s4 - s3 * y2) + s2 * (y1 * s3 - s2 * y2)) / det));
+  }
+  return out;
+}
+
+test('PersonRig walking and running: knees never lock straight, the pelvis rises and falls smoothly, feet stay near the hips and above the pavement', () => {
+  const dt = 1 / 60;
+  // The people in the street (1.2-1.7 m/s), your walk (1.5), your run inside (2.4) and out (6), js/controllers.js ON_FOOT
+  for (const speed of [1.2, 1.5, 2.4, 6]) {
+    const rig = new PersonRig({ seed: 4.2, scale: 1.0, girth: 1.02, hair: 0.18, armSwing: 1.0 });
+    let z = 0;
+    rig.reset(0, 0, 0, () => 0);
+    let minPelvisY = Infinity, maxPelvisY = -Infinity, minKneeDeg = 180, minRelZ = Infinity, maxRelZ = -Infinity, minSoleY = Infinity;
+    for (let f = 0; f < 180; f++) {
+      z += speed * dt;
+      rig.update(dt, 0, z, 0, () => 0);
+      if (f < 60) continue;
+      minPelvisY = Math.min(minPelvisY, rig.pelvisY);
+      maxPelvisY = Math.max(maxPelvisY, rig.pelvisY);
+      for (let i = 0; i < 2; i++) {
+        minKneeDeg = Math.min(minKneeDeg, legKneeBendDeg(rig, i));
+        minRelZ = Math.min(minRelZ, rig.feet[i].az - z);
+        maxRelZ = Math.max(maxRelZ, rig.feet[i].az - z);
+      }
+      minSoleY = Math.min(minSoleY, lowestSole(rig));
+    }
+    assert.ok(minKneeDeg > 6.5, `${speed} m/s: the knee gives at full stretch rather than snapping straight (${minKneeDeg.toFixed(1)} degrees)`);
+    assert.ok(minPelvisY > 0.85 && maxPelvisY - minPelvisY < 0.055, `${speed} m/s: the pelvis rises and falls within [${minPelvisY.toFixed(3)}, ${maxPelvisY.toFixed(3)}]`);
+    assert.ok(minRelZ > -0.58 && maxRelZ < 0.48, `${speed} m/s: the swinging foot is carried with the body, not left behind or thrown ahead [${minRelZ.toFixed(2)}, ${maxRelZ.toFixed(2)}]`);
+    assert.ok(minSoleY > -0.005, `${speed} m/s: soles stay above the pavement (${(minSoleY * 100).toFixed(2)} cm)`);
+  }
+});
+
+test('PersonRig walking backward rolls from the ball of the foot to the heel, upright', () => {
+  // Walking back and running back (0.65 of each pace, js/controllers.js ASIDE)
+  for (const speed of [0.975, 3.9]) {
+    const rig = new PersonRig({ seed: 4.2, scale: 1.0 });
+    const dt = 1 / 60;
+    let z = 0;
+    rig.reset(0, 0, 0, () => 0);
+    let maxFrontStancePitch = -Infinity, maxTouchdownPitch = -Infinity;
+    for (let f = 0; f < 180; f++) {
+      z -= speed * dt;
+      rig.update(dt, 0, z, 0, () => 0);
+      if (f < 60) continue;
+      for (const foot of rig.feet) {
+        const relZ = foot.az - z;
+        if (!foot.swing && relZ > 0.2) maxFrontStancePitch = Math.max(maxFrontStancePitch, foot.pitch);
+        if (!foot.swing && relZ < -0.05) maxTouchdownPitch = Math.max(maxTouchdownPitch, foot.pitch);
+      }
+    }
+    assert.ok(rig.back > 0.95, `${speed} m/s: it walks backward`);
+    assert.ok(rig.pelvisTilt < 0.05, `${speed} m/s: the pelvis stays upright going back (${rig.pelvisTilt.toFixed(3)} rad)`);
+    assert.ok(maxTouchdownPitch > 0.05, `${speed} m/s: a foot lands on its ball behind the hips`);
+    assert.ok(maxFrontStancePitch <= 0.02, `${speed} m/s: a planted foot ahead of the hips never goes up on its toes (${maxFrontStancePitch.toFixed(3)} rad)`);
+  }
+});
+
+test('PersonRig turning: the head leads, the feet step round on the spot, and a run banks into the turn', () => {
+  const rig = new PersonRig({ seed: 4.2, scale: 1.0 });
+  const dt = 1 / 60;
+  let heading = 0;
+  rig.reset(0, 0, 0, () => 0);
+  let totalPhase = 0, prevPhase = rig.phase;
+  // Turning on the spot at the arrows' 2.6 rad/s, outside (js/controllers.js ON_FOOT)
+  for (let f = 0; f < 60; f++) {
+    heading += 2.6 * dt;
+    rig.update(dt, 0, 0, heading, () => 0);
+    let dp = rig.phase - prevPhase;
+    if (dp < 0) dp += 1;
+    totalPhase += dp;
+    prevPhase = rig.phase;
+  }
+  assert.ok(rig.yawRate > 2.2, `the body turns with you (${rig.yawRate.toFixed(2)} rad/s)`);
+  assert.ok(rig.headTurn > 0.25, `the head leads into the turn (${rig.headTurn.toFixed(2)} rad)`);
+  assert.ok(totalPhase > 0.8, `the feet step round on the spot (${totalPhase.toFixed(2)} cycles)`);
+
+  // Running round to the left at 6 m/s
+  let x = 0, z = 0;
+  for (let f = 0; f < 90; f++) {
+    heading += 2.6 * dt;
+    x += Math.sin(heading) * 6 * dt;
+    z += Math.cos(heading) * 6 * dt;
+    rig.update(dt, x, z, heading, () => 0);
+  }
+  assert.ok(rig.bank < -0.06, `a run banks into the turn (${rig.bank.toFixed(3)} rad)`);
+});
+
+test('PersonRig jumping: a crouch with the arms back, a tuck, the legs reaching down to land, and a landing that gives', () => {
+  const dt = 1 / 60;
+  const B = PERSON_BONES;
+
+  // Standing: the crouch before take-off comes as a negative `air` (js/controllers.js poseCharacters())
+  const standRig = new PersonRig({ seed: 4.2, scale: 1.0 });
+  standRig.reset(0, 0, 0, () => 0);
+  const standPelvis0 = standRig.pelvisY;
+  const handOffset = new Vector3(0.24, 0.92, 0);
+  let minPrepPelvisY = Infinity, minPrepHandRelZ = Infinity;
+  for (let p = 1; p <= 5; p++) {
+    standRig.update(dt, 0, 0, 0, () => 0, null, -p / 5);
+    minPrepPelvisY = Math.min(minPrepPelvisY, standRig.pelvisY);
+    minPrepHandRelZ = Math.min(minPrepHandRelZ, boneWorldPos(standRig, B.FOREARM_L, handOffset).z - boneWorldPos(standRig, B.UPPER_ARM_L).z);
+  }
+  assert.ok(standPelvis0 - minPrepPelvisY > 0.05, `it crouches before taking off (${((standPelvis0 - minPrepPelvisY) * 100).toFixed(1)} cm)`);
+  assert.ok(minPrepHandRelZ < -0.05, `the arms swing back before take-off (${minPrepHandRelZ.toFixed(2)} m)`);
+
+  // Then up at the walker's 5.2 m/s, under its 14.5 m/s² (js/controllers.js updatePerson())
+  let sy = 0, svy = 5.2, apexAnkleClearance = 0, preLandAnkleClearance = Infinity, maxStandLandDrop = 0, minStandSoleY = Infinity;
+  for (let f = 0; f < 65; f++) {
+    if (svy !== 0 || sy > 0) {
+      svy -= 14.5 * dt;
+      sy += svy * dt;
+      if (sy <= 0) sy = svy = 0;
+    }
+    standRig.update(dt, 0, 0, 0, () => 0, null, sy > 0 ? Math.max(0.006, sy) : 0);
+    if (Math.abs(svy) < 0.35 && sy > 0.8) apexAnkleClearance = Math.max(apexAnkleClearance, standRig.feet[0].ay - sy);
+    if (svy < -4.2 && sy > 0.05 && sy < 0.25) preLandAnkleClearance = Math.min(preLandAnkleClearance, standRig.feet[0].ay - sy);
+    if (f > 15 && sy === 0) maxStandLandDrop = Math.max(maxStandLandDrop, standRig.landDrop);
+    minStandSoleY = Math.min(minStandSoleY, lowestSole(standRig));
+  }
+  assert.ok(apexAnkleClearance - preLandAnkleClearance > 0.1, `the legs reach down before landing (${apexAnkleClearance.toFixed(3)} -> ${preLandAnkleClearance.toFixed(3)} m)`);
+  assert.ok(maxStandLandDrop > 0.07, `the landing gives at the knees (${(maxStandLandDrop * 100).toFixed(1)} cm)`);
+  assert.ok(minStandSoleY > -0.005, `the soles never go under the pavement (${(minStandSoleY * 100).toFixed(2)} cm)`);
+
+  // Running at 6 m/s: a split leap, the leading foot ahead of the hips, the trailing one not dragged behind
+  const rig = new PersonRig({ seed: 4.2, scale: 1.0 });
+  let z = 0, y = 0, vy = 0;
+  rig.reset(0, 0, 0, () => 0);
+  for (let f = 0; f < 90; f++) {
+    z += 6 * dt;
+    rig.update(dt, 0, z, 0, () => 0, null, 0);
+  }
+  vy = 5.2;
+  let apexKneeBend = 0, maxLeadFootRelZ = -Infinity, minTrailFootRelZ = Infinity, landed = false, maxLandDrop = 0;
+  for (let f = 0; f < 60; f++) {
+    z += 6 * dt;
+    if (vy !== 0 || y > 0) {
+      vy -= 14.5 * dt;
+      y = Math.max(0, y + vy * dt);
+      if (y === 0) vy = 0;
+    }
+    rig.update(dt, 0, z, 0, () => 0, null, y > 0 ? Math.max(0.006, y) : 0);
+    if (y > 0.4) {
+      const r0 = rig.feet[0].az - z, r1 = rig.feet[1].az - z;
+      maxLeadFootRelZ = Math.max(maxLeadFootRelZ, r0, r1);
+      minTrailFootRelZ = Math.min(minTrailFootRelZ, r0, r1);
+    }
+    if (y > 0.8) apexKneeBend = Math.max(apexKneeBend, legKneeBendDeg(rig, 0), legKneeBendDeg(rig, 1));
+    if (f > 10 && y === 0) {
+      landed = true;
+      maxLandDrop = Math.max(maxLandDrop, rig.landDrop);
+    }
+  }
+  assert.ok(apexKneeBend > 45, `the knees fold at the top of a running jump (${apexKneeBend.toFixed(1)} degrees)`);
+  assert.ok(maxLeadFootRelZ > 0.18, `the leading foot stays ahead of the hips (${maxLeadFootRelZ.toFixed(2)} m)`);
+  assert.ok(minTrailFootRelZ > -0.52, `the trailing foot isn't dragged behind (${minTrailFootRelZ.toFixed(2)} m)`);
+  assert.ok(landed && maxLandDrop > 0.025, `the landing gives into the next stride (${(maxLandDrop * 100).toFixed(2)} cm)`);
+
+  // A heel kicked up over the knee: the shin turns on the thigh's hinge, never flipping round it
+  rig.reset(0, 0, 0, () => 0);
+  rig.solveLeg(0, new Vector3(0.09, 0.92, 0), new Vector3(0.09, 0.62, -0.32), 0);
+  const quat = (bone) => new Quaternion(rig.pose[bone * 8], rig.pose[bone * 8 + 1], rig.pose[bone * 8 + 2], rig.pose[bone * 8 + 3]);
+  const xThigh = new Vector3(1, 0, 0).applyQuaternion(quat(B.THIGH_L));
+  const xShin = new Vector3(1, 0, 0).applyQuaternion(quat(B.SHIN_L));
+  assert.ok(xThigh.dot(xShin) > 0.98, `the shin keeps the thigh's hinge (dot ${xThigh.dot(xShin).toFixed(4)})`);
+});
+
+test('PersonRig running at 6 m/s stays smooth under uneven browser frames', () => {
+  const rig = new PersonRig({ seed: 4.2, scale: 1.0, girth: 1.02, hair: 0.18, armSwing: 1.0 });
+  const dtSeq = [0.0142, 0.0189, 0.0155, 0.0208, 0.0138, 0.0174, 0.0166];
+  let z = 0, t = 0;
+  rig.reset(0, 0, 0, () => 0);
+  let maxFrameStep = 0, prevPelvisY = rig.pelvisY;
+  const ts = [], ys = [];
+  for (let f = 0; f < 400; f++) {
+    const dt = dtSeq[f % dtSeq.length];
+    z += 6 * dt;
+    t += dt;
+    rig.update(dt, 0, z, 0, () => 0);
+    if (f >= 90) {
+      ts.push(t);
+      ys.push(rig.pelvisY);
+      maxFrameStep = Math.max(maxFrameStep, Math.abs(rig.pelvisY - prevPelvisY));
+    }
+    prevPelvisY = rig.pelvisY;
+  }
+  const bob = Math.max(...ys) - Math.min(...ys);
+  const jitter = Math.max(...jitterOf(ts, ys));
+  assert.ok(bob < 0.03, `the run's bob is a gentle one (${(bob * 100).toFixed(2)} cm)`);
+  // The bob itself moves up to 7 mm in the longest of these frames: more than that is a jump from one frame to the next
+  assert.ok(maxFrameStep < 0.008, `no jump of the pelvis from one frame to the next (${(maxFrameStep * 100).toFixed(2)} cm)`);
+  assert.ok(jitter < 0.002, `no step back and forth off a smooth curve (${(jitter * 1000).toFixed(2)} mm)`);
+});
+
+test('PersonRig running: the body springs, lowest at mid-stance and highest in flight; swinging feet follow the shins; the arms pump against the legs', () => {
+  const dt = 1 / 60;
+  const B = PERSON_BONES;
+
+  // Walking is highest as one leg passes the other, after each heel strike's dip
+  const walkRig = new PersonRig({ seed: 1, scale: 1.0 });
+  walkRig.reset(0, 0, 0, () => 0);
+  let wz = 0, walkContactY = 0, walkContactN = 0, walkPassY = 0, walkPassN = 0;
+  for (let f = 0; f < 240; f++) {
+    wz += 1.5 * dt;
+    walkRig.update(dt, 0, wz, 0, () => 0);
+    if (f < 90) continue;
+    const p = walkRig.phase % 0.5;
+    if (p > 0.08 && p < 0.16) { walkContactY += walkRig.pelvisY; walkContactN++; }
+    if (p > 0.28 && p < 0.38) { walkPassY += walkRig.pelvisY; walkPassN++; }
+  }
+  assert.ok(walkPassY / walkPassN > walkContactY / walkContactN + 0.012, 'a walk is higher passing than taking the weight');
+
+  const runRig = new PersonRig({ seed: 1, scale: 1.0 });
+  runRig.reset(0, 0, 0, () => 0);
+  let rz = 0, midStanceY = 0, midStanceN = 0, midFlightY = 0, midFlightN = 0, maxDorsiflex = -Infinity;
+  let maxRightHandRelZ = -Infinity, minLeftHandRelZ = Infinity;
+  for (let f = 0; f < 240; f++) {
+    rz += 6 * dt;
+    runRig.update(dt, 0, rz, 0, () => 0);
+    if (f < 90) continue;
+    const bothSwing = runRig.feet[0].swing && runRig.feet[1].swing;
+    const p = runRig.phase % 0.5;
+    if (!bothSwing && p > 0.08 && p < 0.16) { midStanceY += runRig.pelvisY; midStanceN++; }
+    if (bothSwing && p > 0.33 && p < 0.43) { midFlightY += runRig.pelvisY; midFlightN++; }
+    // A swinging foot hangs from its shin, not held level like a hoverboard under the heel kicked up behind
+    for (let i = 0; i < 2; i++) {
+      if (!runRig.feet[i].swing) continue;
+      const footBone = i === 0 ? B.FOOT_L : B.FOOT_R;
+      const knee = boneWorldPos(runRig, i === 0 ? B.SHIN_L : B.SHIN_R);
+      const ankle = boneWorldPos(runRig, footBone);
+      const shinPitch = Math.atan2(knee.z - ankle.z, knee.y - ankle.y);
+      const o = footBone * 8;
+      const footFwd = new Vector3(0, 0, 1).applyQuaternion(new Quaternion(runRig.pose[o], runRig.pose[o + 1], runRig.pose[o + 2], runRig.pose[o + 3]));
+      maxDorsiflex = Math.max(maxDorsiflex, shinPitch - Math.atan2(-footFwd.y, footFwd.z));
+    }
+    // As the left foot pushes off and the right knee drives forward, the left hand comes forward and the right goes back
+    if (runRig.phase > 0.24 && runRig.phase < 0.30) {
+      minLeftHandRelZ = Math.min(minLeftHandRelZ, boneWorldPos(runRig, B.FOREARM_L, new Vector3(0.24, 0.92, 0)).z - boneWorldPos(runRig, B.UPPER_ARM_L).z);
+      maxRightHandRelZ = Math.max(maxRightHandRelZ, boneWorldPos(runRig, B.FOREARM_R, new Vector3(-0.24, 0.92, 0)).z - boneWorldPos(runRig, B.UPPER_ARM_R).z);
+    }
+  }
+  assert.ok(midFlightY / midFlightN > midStanceY / midStanceN + 0.01,
+    `a run is higher in flight (${(midFlightY / midFlightN).toFixed(3)}) than at mid-stance (${(midStanceY / midStanceN).toFixed(3)})`);
+  assert.ok(maxDorsiflex < 0.5, `a swinging foot follows its shin (${(maxDorsiflex * 180 / Math.PI).toFixed(1)} degrees off)`);
+  assert.ok(minLeftHandRelZ > 0.12 && maxRightHandRelZ < 0.05, `the arms swing against the legs (left ${minLeftHandRelZ.toFixed(2)} m, right ${maxRightHandRelZ.toFixed(2)} m)`);
+});
+
+test('PersonRig sat down and stood up again starts walking cleanly, with nothing of a jump or a turn carried over', () => {
+  const dt = 1 / 60;
+  const rig = new PersonRig({ seed: 4.2, scale: 1.0 });
+  rig.reset(0, 0, 0, () => 0);
+  // In the air, turning, when it sits
+  let heading = 0;
+  for (let f = 0; f < 20; f++) {
+    heading += 2.6 * dt;
+    rig.update(dt, 0, 0, heading, () => 0, null, 0.5);
+  }
+  rig.sit(2, 2, 0, 0.45);
+  for (const field of ['airBlend', 'landDrop', 'back', 'yawRate', 'arm', 'thighSplit', 'jumpPrep', 'sprint']) assert.equal(rig[field], 0, `${field} is cleared on sitting`);
+  assert.equal(rig.wasAirborne, false);
+  // Up again and walking off from the seat's stand spot: as one that was never sat down or in the air
+  const fresh = new PersonRig({ seed: 4.2, scale: 1.0 });
+  fresh.reset(2, 2.5, 0, () => 0);
+  fresh.time = rig.time; // the idle sway and breathing follow the rig's own clock
+  let z = 2.5;
+  rig.update(dt, 2, z, 0, () => 0);
+  assert.equal(rig.placed, true, 'standing up places the feet again');
+  for (let f = 0; f < 90; f++) {
+    z += 1.5 * dt;
+    rig.update(dt, 2, z, 0, () => 0);
+    fresh.update(dt, 2, z, 0, () => 0);
+    assert.ok(Math.abs(rig.pelvisY - fresh.pelvisY) < 1e-9 && Math.abs(rig.feet[0].az - fresh.feet[0].az) < 1e-9, `frame ${f}: walks off as a fresh rig does`);
   }
 });

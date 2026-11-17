@@ -234,9 +234,10 @@ const facadeAlongZ = varying(
  *   domestic palette that block interior glow (`emit = 0.20`) so drapes silhouette against lit rooms.
  * - Once windows shrink to a pixel or two (`fwNode`: pixel footprint in cells), lit rooms merge into filtered
  *   clusters, drapes settle to their mean coverage & lamps fade out, so distant towers don't twinkle in motion.
- * - Returns `vec4(roomColor, litEmit)`.
+ * - `drapeFwNode`: the drapes' pixel footprint (interiorDrapeFootprint()), taken outside, as this runs in a branch.
+ * - Returns `vec4(roomColor, litEmit)`. Called through apartmentInteriorBehind().
  */
-const evaluateApartmentInterior = Fn(([uCoord, vCoord, winUV, cellId, winWNode, floorHNode, seedNode, warmthNode, litProbNode, fwNode]) => {
+const evaluateApartmentInterior = Fn(([uCoord, vCoord, winUV, cellId, winWNode, floorHNode, seedNode, warmthNode, litProbNode, fwNode, drapeFwNode]) => {
   const u = float(uCoord).toVar();
   const v = float(vCoord).toVar();
   const wUV = vec2(winUV).toVar();
@@ -361,7 +362,7 @@ const evaluateApartmentInterior = Fn(([uCoord, vCoord, winUV, cellId, winWNode, 
   const lw = sL.mul(sL).mul(0.48); // Left drape width (0..48% of window width)
   const rw = sR.mul(sR).mul(0.48); // Right drape width (0..48% of window width)
   // Drape edges widen to the pixel footprint & pleats fade to their mean shade once they'd shrink below a few pixels
-  const cFw = fwidth(cUVx).toVar();
+  const cFw = float(drapeFwNode).toVar();
   const drapeAA = cFw.add(0.015).toVar();
   const inLeftDrape = smoothstep(lw.add(drapeAA), lw.sub(drapeAA), cUVx).mul(step(0.03, lw));
   const inRightDrape = smoothstep(float(1.0).sub(rw).sub(drapeAA), float(1.0).sub(rw).add(drapeAA), cUVx).mul(step(0.03, rw));
@@ -392,6 +393,36 @@ const evaluateApartmentInterior = Fn(([uCoord, vCoord, winUV, cellId, winWNode, 
   const distantLit = distantWindowLight(vec2(gridU, v.div(fH)), fwNode, litProbNode, seedNode, lod);
   return vec4(finalRoomCol, mix(litRoom, distantLit, lod).mul(bestEmit));
 });
+
+// The pixel footprint of the drapes' coordinate behind the glass (`cUVx` above). A derivative needs every pixel round it to take it,
+// which a branch doesn't promise (and Firefox has no switch for it), so apartmentInteriorBehind() takes it before its branch.
+const interiorDrapeFootprint = Fn(([winUV]) => {
+  const rayWorld = normalize(positionWorld.sub(cameraPosition));
+  const tSign = mix(sign(facadeWorldNormal.z).negate(), sign(facadeWorldNormal.x), facadeAlongZ);
+  const dirX = dot(rayWorld, vec3(facadeWorldNormal.z.negate(), 0.0, facadeWorldNormal.x).mul(tSign));
+  const dirZ = max(abs(dot(rayWorld, facadeWorldNormal)), 0.05);
+  return fwidth(clamp(vec2(winUV).x.add(dirX.div(dirZ).mul(0.06)), 0.0, 1.0));
+});
+
+/**
+ * The apartment behind the glass (evaluateApartmentInterior()), worked out only where `coverage` is more than 0: the share of the
+ * pixel in the glass, or in the window's opening, that every output weights the room by (or by a mask inside it). Walls, piers,
+ * frames, roofs and houses skip it, so no pixel works out a room it then throws away.
+ * Its inputs go into variables before the branch, so what the rest of the shader shares with them is built once (what's first built
+ * in a branch is built again outside it), and its one derivative is taken there too.
+ */
+function apartmentInteriorBehind(coverage, uCoord, vCoord, winUV, cellId, winW, floorH, seed, warmth, litProb, fw) {
+  const drapeFootprint = interiorDrapeFootprint(winUV);
+  return Fn(() => {
+    const u = float(uCoord).toVar(), v = float(vCoord).toVar(), wUV = vec2(winUV).toVar(), cid = vec2(cellId).toVar();
+    const w = float(winW).toVar(), lit = float(litProb).toVar(), fwv = vec2(fw).toVar(), drapeFw = float(drapeFootprint).toVar();
+    const room = vec4(0.0).toVar();
+    If(float(coverage).greaterThan(0.0), () => {
+      room.assign(evaluateApartmentInterior(u, v, wUV, cid, w, floorH, seed, warmth, lit, fwv, drapeFw));
+    });
+    return room;
+  })();
+}
 
 // Street fronts may have shops; courtyard walls have windows and shared lot-line walls are solid masonry. A house has one front, to
 // its street, and its other outer walls are sides (js/building-footprints.js).
@@ -916,18 +947,19 @@ function createCurtainWallMaterial(opts = {}) {
     vec2(0.0),
     vec2(1.0)
   );
-  const aptRoom = evaluateApartmentInterior(uCoord, vCoord, winUV, cellId, bayWidth, uFloorHeight, uSeed, uWarmth, uLitProbability.mul(0.65), fw);
-  const storefront = createStorefront(facade, uSeed, boxLocal || footprintLocal);
-  const entrance = createBuildingEntrance(facade, cFrame, boxLocal || footprintLocal, true);
   const floorIdx = floor(gridV);
   const isMechFloor = float(1.0).sub(step(1.0, mod(floorIdx.add(uSeed), 16.0))).mul(step(4.0, floorIdx));
+  // Solid walls and coping have no glazing.
+  const isGlassPane = filteredPulse(cellUV.x, mullionThickness * 0.5, 1.0 - mullionThickness * 0.5, fw.x)
+    .mul(filteredPulse(cellUV.y, spandrelRatio + 0.015, 1.0 - mullionThickness * 0.5, fw.y))
+    .mul(float(1.0).sub(isRoof)).mul(float(1.0).sub(solid)).mul(float(1.0).sub(coping));
+  // The room shows only through the glass, and not on a mechanical floor's louvres: the glow's pane mask lies inside that too
+  const aptRoom = apartmentInteriorBehind(isGlassPane.mul(float(1.0).sub(isMechFloor)), uCoord, vCoord, winUV, cellId, bayWidth,
+    uFloorHeight, uSeed, uWarmth, uLitProbability.mul(0.65), fw);
+  const storefront = createStorefront(facade, uSeed, boxLocal || footprintLocal);
+  const entrance = createBuildingEntrance(facade, cFrame, boxLocal || footprintLocal, true);
 
   mat.colorNode = Fn(() => {
-    // Solid walls and coping have no glazing.
-    const isGlassPane = filteredPulse(cellUV.x, mullionThickness * 0.5, 1.0 - mullionThickness * 0.5, fw.x)
-      .mul(filteredPulse(cellUV.y, spandrelRatio + 0.015, 1.0 - mullionThickness * 0.5, fw.y))
-      .mul(float(1.0).sub(isRoof)).mul(float(1.0).sub(solid)).mul(float(1.0).sub(coping));
-
     const louverStripes = sin(vCoord.mul(22.0)).mul(0.5).add(0.5);
 
     // Per-Pane Thermal/Wind Glass Warble & Pillow Distortion
@@ -1144,7 +1176,12 @@ function createPreWarBuildingMaterial(opts = {}) {
     vec2(0.0),
     vec2(1.0)
   );
-  const aptRoom = evaluateApartmentInterior(uCoord, vCoord, winUV, cellId, bayWidth, uFloorHeight, uSeed, uWarmth, uLitProbability.mul(0.62), fw);
+  // The room shows only in a city window's opening: the glass's mask (colour) and the glow's (emissive) below lie inside it, and a
+  // house's windows have their own room (createHouseLook()), so no pixel of a house works it out
+  const windowOpening = notHouse(filteredPulse(cellUV.x, effHalfX, float(1.0).sub(effHalfX), fw.x).mul(open)
+    .mul(filteredPulse(cellUV.y, effHalfY, float(1.0).sub(effHalfY), fw.y)).mul(float(1.0).sub(isRoof)));
+  const aptRoom = apartmentInteriorBehind(windowOpening, uCoord, vCoord, winUV, cellId, bayWidth, uFloorHeight, uSeed, uWarmth,
+    uLitProbability.mul(0.62), fw);
   const storefront = createStorefront(facade, uSeed, boxLocal || footprintLocal);
   const entrance = createBuildingEntrance(facade, cTrim, boxLocal || footprintLocal);
   const entranceMask = notHouse(entrance.mask);
@@ -1782,6 +1819,20 @@ function roadWetMasks(field, drainage = 0.0) {
   return vec3(damp, puddle, film);
 }
 
+/**
+ * `detail()` where `active` holds, else `flat`: the value the detail's own fade settles to. Texture that the pixel's footprint or the
+ * distance has faded out is skipped, not worked out and multiplied by nothing. Call it inside a Fn, with every input that other code
+ * shares or that a derivative is taken of already in a variable (what's first built in a branch is built again outside it, and a
+ * derivative can't be taken in one).
+ */
+function fadedDetail(active, flat, detail) {
+  const out = float(flat).toVar();
+  If(active, () => {
+    out.assign(detail());
+  });
+  return out;
+}
+
 // Distance from p to the nearest border of its jittered 3x3 Voronoi cell (in cell units, ~(F2 - F1) / 2)
 const voronoiBorder = Fn(([p]) => {
   const pv = vec2(p).toVar();
@@ -1805,7 +1856,7 @@ const voronoiBorder = Fn(([p]) => {
  * Wear & repairs of the asphalt at world xz, `px` metres a pixel: x = hairline crack coverage (block & alligator
  * cracking in worn stretches), y = signed distance to the edge of a rectangular utility-cut patch (m, < 0 inside),
  * z = pothole depth (0 .. 1 at the bottom of the bowl), w = 1 where the 11 m cell has a patch.
- * Cracks are only traced near the camera and in the worn stretches, where they can show.
+ * Cracks are only traced near the camera and in the worn stretches, where they can show, and potholes only in their cells.
  */
 const roadWear = Fn(([wxz, px]) => {
   // Worn stretches: about a quarter of the roadway, in patches a block or so across
@@ -1839,12 +1890,14 @@ const roadWear = Fn(([wxz, px]) => {
   const patchDist = max(pq.x, pq.y);
 
   // Potholes, mostly in the worn stretches: a ragged bowl a hand or two across
-  const hCell = floor(wxz.div(7.0));
-  const hCentre = hCell.add(vec2(hash2D(hCell.add(vec2(2.2, 7.7))), hash2D(hCell.add(vec2(6.1, 1.9)))).mul(0.6).add(0.2)).mul(7.0);
-  const hRadius = hash2D(hCell.add(vec2(5.3, 4.2))).mul(0.24).add(0.12);
-  const hDist = length(wxz.sub(hCentre)).mul(noise2D(wxz.mul(6.0)).sub(0.5).mul(0.5).add(1.0));
-  const hasHole = step(float(0.975).sub(worn.mul(0.12)), hash2D(hCell.add(vec2(8.8, 0.3))));
-  const pothole = smoothstep(hRadius.add(px), hRadius.mul(0.35), hDist).mul(hasHole);
+  const hCell = floor(wxz.div(7.0)).toVar();
+  const pothole = float(0.0).toVar();
+  If(hash2D(hCell.add(vec2(8.8, 0.3))).greaterThanEqual(float(0.975).sub(worn.mul(0.12))), () => {
+    const hCentre = hCell.add(vec2(hash2D(hCell.add(vec2(2.2, 7.7))), hash2D(hCell.add(vec2(6.1, 1.9)))).mul(0.6).add(0.2)).mul(7.0);
+    const hRadius = hash2D(hCell.add(vec2(5.3, 4.2))).mul(0.24).add(0.12);
+    const hDist = length(wxz.sub(hCentre)).mul(noise2D(wxz.mul(6.0)).sub(0.5).mul(0.5).add(1.0));
+    pothole.assign(smoothstep(hRadius.add(px), hRadius.mul(0.35), hDist));
+  });
 
   return vec4(crack.mul(float(1.0).sub(step(patchDist, 0.0).mul(hasPatch))), patchDist, pothole, hasPatch);
 });
@@ -1921,16 +1974,27 @@ function createRoadSurfaceMaterial() {
   // Fresh patches are darker & tighter than the roadway, old ones paler & greyer
   const patchFresh = step(0.55, hash2D(floor(patternXZ.div(11.0)).add(vec2(12.9, 6.6))));
   // Exposed light stone chips in the worn surface, settling to their average where they shrink below a pixel
-  const chips = mix(float(0.035), smoothstep(0.72, 0.8, noise2D(patternXZ.mul(30.0))), smoothstep(0.03, 0.012, pixelSize));
+  const chips = Fn(() => {
+    const xz = vec2(patternXZ).toVar();
+    const px = float(pixelSize).toVar();
+    return fadedDetail(px.lessThan(0.03), 0.035, () =>
+      mix(float(0.035), smoothstep(0.72, 0.8, noise2D(xz.mul(30.0))), smoothstep(0.03, 0.012, px)));
+  })();
   // Tar-snake crack sealant (none over the newer patches)
   const tarSnake = roadTarSnakes(patternXZ, pixelSize).mul(float(1.0).sub(patchCover));
-  // Oil & coolant drips from parked & idling cars: ragged dark blots a hand or two across, one 2.5 m cell in three
-  const oilCell = floor(patternXZ.div(2.5));
-  const oilCentre = oilCell.add(vec2(hash2D(oilCell.add(vec2(4.1, 2.2))), hash2D(oilCell.add(vec2(8.3, 6.7)))).mul(0.6).add(0.2)).mul(2.5);
-  const oilDist = length(patternXZ.sub(oilCentre)).mul(noise2D(patternXZ.mul(5.0)).sub(0.5).mul(0.8).add(1.0));
-  const oilRadius = hash2D(oilCell.add(vec2(1.9, 9.4))).mul(0.25).add(0.1);
-  const oilDrip = smoothstep(oilRadius.add(pixelSize), oilRadius.mul(0.3), oilDist).mul(step(0.66, hash2D(oilCell.add(vec2(7.7, 3.3)))))
-    .mul(hash2D(oilCell.add(vec2(2.6, 5.1))).mul(0.6).add(0.4));
+  // Oil & coolant drips from parked & idling cars: ragged dark blots a hand or two across, one 2.5 m cell in three, worked out only in
+  // the cells that have one
+  const oilDrip = Fn(() => {
+    const xz = vec2(patternXZ).toVar();
+    const px = float(pixelSize).toVar();
+    const oilCell = floor(xz.div(2.5)).toVar();
+    return fadedDetail(hash2D(oilCell.add(vec2(7.7, 3.3))).greaterThanEqual(0.66), 0.0, () => {
+      const oilCentre = oilCell.add(vec2(hash2D(oilCell.add(vec2(4.1, 2.2))), hash2D(oilCell.add(vec2(8.3, 6.7)))).mul(0.6).add(0.2)).mul(2.5);
+      const oilDist = length(xz.sub(oilCentre)).mul(noise2D(xz.mul(5.0)).sub(0.5).mul(0.8).add(1.0));
+      const oilRadius = hash2D(oilCell.add(vec2(1.9, 9.4))).mul(0.25).add(0.1);
+      return smoothstep(oilRadius.add(px), oilRadius.mul(0.3), oilDist).mul(hash2D(oilCell.add(vec2(2.6, 5.1))).mul(0.6).add(0.4));
+    });
+  })();
 
   // Circular cast-iron manhole covers scattered over the roadway (one 14 m cell in three)
   const mhCell = floor(patternXZ.div(14.0));
@@ -1950,17 +2014,24 @@ function createRoadSurfaceMaterial() {
 
   mat.aoNode = float(STREET_SKY);
 
+  // Each layer of texture below is skipped where its fade has reached its flat value (fadedDetail()): the pixel's world size and the
+  // distance are put in variables first, and the place too, as the layers share it with the rest of the shader
   mat.colorNode = Fn(() => {
-    const wx = patternXZ.x;
-    const wz = patternXZ.y;
-    const camDist = length(positionWorld.sub(cameraPosition));
-    const detail = smoothstep(240.0, 22.0, camDist);
+    const xz = vec2(patternXZ).toVar();
+    const wx = xz.x;
+    const wz = xz.y;
+    const px = float(pixelSize).toVar();
+    const camDist = length(positionWorld.sub(cameraPosition)).toVar();
+    const detail = smoothstep(240.0, 22.0, camDist).toVar();
 
     // Two-scale aggregate grit, patchwork pours, oily wear stains & tar crack seams
-    const microAggregate = mix(float(0.5), noise2D(vec2(wx.mul(16.0), wz.mul(16.0))), smoothstep(0.06, 0.02, pixelSize));
-    const fineGrain = mix(float(0.5), noise2D(vec2(wx.mul(3.2), wz.mul(3.2))), smoothstep(0.4, 0.12, pixelSize));
+    const microAggregate = fadedDetail(px.lessThan(0.06), 0.5, () =>
+      mix(float(0.5), noise2D(vec2(wx.mul(16.0), wz.mul(16.0))), smoothstep(0.06, 0.02, px)));
+    const fineGrain = fadedDetail(px.lessThan(0.4), 0.5, () =>
+      mix(float(0.5), noise2D(vec2(wx.mul(3.2), wz.mul(3.2))), smoothstep(0.4, 0.12, px)));
     const patchNoise = noise2D(vec2(wx.mul(0.18), wz.mul(0.18)));
-    const oilyStain = smoothstep(0.52, 0.84, noise2D(vec2(wx.mul(0.42), wz.mul(0.42)))).mul(detail);
+    const oilyStain = fadedDetail(camDist.lessThan(240.0), 0.0, () =>
+      smoothstep(0.52, 0.84, noise2D(vec2(wx.mul(0.42), wz.mul(0.42)))).mul(detail));
     const tarSeam = float(1.0).sub(smoothstep(0.0, 0.015, abs(patchNoise.sub(0.52)))).mul(0.14).mul(detail);
     // Binder-rich (dark) & ravelled, aggregate-exposed (pale) mottling a stride or so across
     const mottle = noise2D(vec2(wx.mul(0.9), wz.mul(0.9)).add(41.0)).mul(0.65).add(noise2D(vec2(wx.mul(2.3), wz.mul(2.3)).add(7.0)).mul(0.35));
@@ -1992,7 +2063,10 @@ function createRoadSurfaceMaterial() {
   })();
 
   mat.roughnessNode = Fn(() => {
-    const microRough = mix(float(0.04), noise2D(patternXZ.mul(12.0)).mul(0.08), smoothstep(0.08, 0.03, pixelSize));
+    const xz = vec2(patternXZ).toVar();
+    const px = float(pixelSize).toVar();
+    const microRough = fadedDetail(px.lessThan(0.08), 0.04, () =>
+      mix(float(0.04), noise2D(xz.mul(12.0)).mul(0.08), smoothstep(0.08, 0.03, px)));
     // Tar sealant is glossier, oil satin, fresh patches a little tighter, potholes & cracks rougher
     const dry = float(0.90).add(microRough)
       .sub(patchSeal.mul(0.3))
@@ -2017,27 +2091,33 @@ function createRoadSurfaceMaterial() {
   // >= 2 px so no edge sparkles; the finest relief fades before it shrinks to a pixel. Flattens to mirror-smooth 0.0
   // inside standing rainwater puddles so SSR reflections stay crisp!
   mat.normalNode = Fn(() => {
-    const wx = patternXZ.x;
-    const wz = patternXZ.y;
-    const coarseFade = smoothstep(0.12, 0.035, pixelSize);
-    const midFade = smoothstep(0.035, 0.012, pixelSize);
-    const fineFade = smoothstep(0.02, 0.006, pixelSize).mul(float(1.0).sub(film.mul(0.6)));
-    const ramp = max(float(0.012), pixelSize.mul(2.0));
+    const xz = vec2(patternXZ).toVar();
+    const wx = xz.x;
+    const wz = xz.y;
+    const px = float(pixelSize).toVar();
+    const coarseFade = smoothstep(0.12, 0.035, px).toVar();
+    const midFade = smoothstep(0.035, 0.012, px).toVar();
+    const fineFade = smoothstep(0.02, 0.006, px).mul(float(1.0).sub(film.mul(0.6))).toVar();
+    const ramp = max(float(0.012), px.mul(2.0));
 
     const swell = noise2D(vec2(wx.mul(0.55), wz.mul(0.55)).add(23.0)).sub(0.5).mul(0.02)
       .add(noise2D(vec2(wx.mul(1.9), wz.mul(1.9))).sub(0.5).mul(0.005));
-    const ripples = noise2D(vec2(wx.mul(3.6), wz.mul(3.6)).add(61.0)).sub(0.5).mul(0.004).mul(smoothstep(0.3, 0.1, pixelSize));
-    const coarseGrit = noise2D(vec2(wx.mul(8.5), wz.mul(8.5))).sub(0.5).mul(0.006).mul(coarseFade);
-    const midGrit = noise2D(vec2(wx.mul(19.0), wz.mul(19.0)).add(3.0)).sub(0.5).mul(0.0022).mul(midFade);
-    const fineGrit = noise2D(vec2(wx.mul(36.0), wz.mul(36.0))).sub(0.5).mul(0.0016).mul(fineFade);
+    const ripples = fadedDetail(px.lessThan(0.3), 0.0, () =>
+      noise2D(vec2(wx.mul(3.6), wz.mul(3.6)).add(61.0)).sub(0.5).mul(0.004).mul(smoothstep(0.3, 0.1, px)));
+    const coarseGrit = fadedDetail(px.lessThan(0.12), 0.0, () =>
+      noise2D(vec2(wx.mul(8.5), wz.mul(8.5))).sub(0.5).mul(0.006).mul(coarseFade));
+    const midGrit = fadedDetail(px.lessThan(0.035), 0.0, () =>
+      noise2D(vec2(wx.mul(19.0), wz.mul(19.0)).add(3.0)).sub(0.5).mul(0.0022).mul(midFade));
+    const fineGrit = fadedDetail(px.lessThan(0.02), 0.0, () =>
+      noise2D(vec2(wx.mul(36.0), wz.mul(36.0))).sub(0.5).mul(0.0016).mul(fineFade));
     const chipRelief = chips.mul(0.0015).mul(midFade);
     const snakeBead = tarSnake.mul(0.0018);
-    const crackGroove = crack.mul(0.003).mul(smoothstep(0.012, 0.004, pixelSize));
+    const crackGroove = crack.mul(0.003).mul(smoothstep(0.012, 0.004, px));
     const patchStep = smoothstep(ramp, ramp.negate(), patchDist).mul(wear.w).mul(0.004);
     const sealBead = float(1.0).sub(smoothstep(0.0, max(float(0.03), ramp), abs(patchDist))).mul(wear.w).mul(0.0015);
     const bowl = pothole.mul(0.03);
     const mhRim = float(1.0).sub(smoothstep(0.0, max(float(0.02), ramp), abs(mhDist.sub(0.58)))).mul(0.004);
-    const mhPattern = sin(mhDist.mul(36.0)).mul(0.0008).mul(step(mhDist, 0.54)).mul(smoothstep(0.01, 0.004, pixelSize));
+    const mhPattern = sin(mhDist.mul(36.0)).mul(0.0008).mul(step(mhDist, 0.54)).mul(smoothstep(0.01, 0.004, px));
     const manhole = mhPattern.sub(mhRim).mul(hasManhole).mul(coarseFade);
 
     const height = swell.add(ripples).add(coarseGrit).add(midGrit).add(fineGrit).add(chipRelief).add(snakeBead).sub(crackGroove)
@@ -2045,20 +2125,11 @@ function createRoadSurfaceMaterial() {
     return bumpNormal(height.mul(float(1.0).sub(puddle)));
   })();
 
+  // At night the wet road mirrors the sky
   mat.emissiveNode = Fn(() => {
-    const wx = patternXZ.x;
-    const wz = patternXZ.y;
-
     const roadFresnel = pow(clamp(float(1.0).sub(abs(viewDir.y)), 0.0, 1.0), 2.3);
-
     const skyMirror = mix(cityUniforms.uSkyHorizonColor, cityUniforms.uSkyTopColor, 0.40).mul(0.10);
-
-    const tsDist = clamp(float(1.0).sub(length(vec2(wx.add(212.0), wz.add(45.0))).div(145.0)), 0.0, 1.0);
-    const neonPatch = noise2D(vec2(wx.mul(0.15), wz.mul(0.15)));
-    const neonCol = mix(color(0xff2a85), color(0x2ad4ff), neonPatch).mul(0.32);
-    const reflectCol = mix(skyMirror, neonCol, tsDist.mul(0.65));
-
-    return reflectCol.mul(max(puddle, film.mul(0.35))).mul(roadFresnel).mul(cityUniforms.uInteriorGlow).mul(0.07);
+    return skyMirror.mul(max(puddle, film.mul(0.35))).mul(roadFresnel).mul(cityUniforms.uInteriorGlow).mul(0.07);
   })();
 
   return mat;
@@ -2177,19 +2248,29 @@ function createSidewalkMaterial() {
   const jointGrime = gridBand(0.018);
   const tooledBand = gridBand(0.045).sub(jointGrime).max(0.0);
 
-  // Flattened chewing gum: a dark fresh blob here and there, grey ghosts of older ones, thickest on busy stretches
+  // Flattened chewing gum: a dark fresh blob here and there, grey ghosts of older ones, thickest on busy stretches. Only traced where
+  // blobs can show, and only in the cells that have one
   const gumCell = 0.32;
   const gumCoord = wxz.div(gumCell);
   const gumId = floor(gumCoord);
-  const gumCentre = vec2(hash2D(gumId.add(vec2(11.3, 2.9))), hash2D(gumId.add(vec2(23.9, 17.4)))).mul(0.6).add(0.2);
-  const gumRadius = hash2D(gumId.add(vec2(4.1, 31.7))).mul(0.011).add(0.006);
-  const gumWobble = noise2D(gumCoord.mul(9.0)).sub(0.5).mul(0.35).add(1.0);
-  const gumDist = length(fract(gumCoord).sub(gumCentre)).mul(gumCell).mul(gumWobble);
-  const gumDensity = smoothstep(0.3, 0.8, noise2D(wxz.mul(0.07).add(5.3))).mul(0.4).add(0.12).mul(float(1.0).sub(replaced.mul(0.8)));
-  const gumAA = max(pixelSize, 0.001);
-  const gum = smoothstep(gumRadius.add(gumAA), gumRadius.sub(gumAA.mul(0.5)), gumDist)
-    .mul(step(float(1.0).sub(gumDensity), hash2D(gumId.add(vec2(7.7, 3.3)))))
-    .mul(smoothstep(0.04, 0.015, pixelSize));
+  const gum = Fn(() => {
+    const xz = vec2(wxz).toVar();
+    const px = float(pixelSize).toVar();
+    const notReplaced = float(1.0).sub(replaced.mul(0.8)).toVar();
+    const coord = vec2(gumCoord).toVar();
+    const id = vec2(gumId).toVar();
+    return fadedDetail(px.lessThan(0.04), 0.0, () => {
+      const gumDensity = smoothstep(0.3, 0.8, noise2D(xz.mul(0.07).add(5.3))).mul(0.4).add(0.12).mul(notReplaced);
+      return fadedDetail(hash2D(id.add(vec2(7.7, 3.3))).greaterThanEqual(float(1.0).sub(gumDensity)), 0.0, () => {
+        const gumCentre = vec2(hash2D(id.add(vec2(11.3, 2.9))), hash2D(id.add(vec2(23.9, 17.4)))).mul(0.6).add(0.2);
+        const gumRadius = hash2D(id.add(vec2(4.1, 31.7))).mul(0.011).add(0.006);
+        const gumWobble = noise2D(coord.mul(9.0)).sub(0.5).mul(0.35).add(1.0);
+        const gumDist = length(fract(coord).sub(gumCentre)).mul(gumCell).mul(gumWobble);
+        const gumAA = max(px, 0.001);
+        return smoothstep(gumRadius.add(gumAA), gumRadius.sub(gumAA.mul(0.5)), gumDist).mul(smoothstep(0.04, 0.015, px));
+      });
+    });
+  })();
   const gumAge = hash2D(gumId.add(vec2(19.1, 0.7)));
 
   // Hairline settlement cracks across about one flag in eight, wandering a little
@@ -2202,21 +2283,27 @@ function createSidewalkMaterial() {
 
   mat.aoNode = float(STREET_SKY);
 
+  // As on the road, each layer of texture is skipped where its fade has reached its flat value (fadedDetail())
   mat.colorNode = Fn(() => {
-    const wx = patternXZ.x;
-    const wz = patternXZ.y;
-    const camDist = length(positionWorld.sub(cameraPosition));
-    const detail = smoothstep(190.0, 16.0, camDist);
+    const xz = vec2(patternXZ).toVar();
+    const wx = xz.x;
+    const wz = xz.y;
+    const px = float(pixelSize).toVar();
+    const camDist = length(positionWorld.sub(cameraPosition)).toVar();
+    const detail = smoothstep(190.0, 16.0, camDist).toVar();
 
     // Pour-to-pour tone, broad traffic-worn & weathered stains, and fine exposed aggregate
     const tone = noise2D(vec2(wx.mul(0.48), wz.mul(0.48)));
     const stainField = noise2D(vec2(wx.mul(0.8), wz.mul(0.8)).add(17.0)).mul(0.65).add(noise2D(vec2(wx.mul(2.6), wz.mul(2.6))).mul(0.35));
     const stain = smoothstep(0.52, 0.86, stainField).mul(mix(float(0.24), float(0.08), replaced));
-    const grit = noise2D(vec2(wx.mul(14.0), wz.mul(14.0))).sub(0.5).mul(0.07).mul(detail).mul(smoothstep(0.07, 0.02, pixelSize));
+    const grit = fadedDetail(px.lessThan(0.07).and(camDist.lessThan(190.0)), 0.0, () =>
+      noise2D(vec2(wx.mul(14.0), wz.mul(14.0))).sub(0.5).mul(0.07).mul(detail).mul(smoothstep(0.07, 0.02, px)));
     // Cloudy trowel & curing mottling a hand or two across
-    const mottle = noise2D(vec2(wx.mul(3.1), wz.mul(3.1)).add(41.0)).mul(0.6).add(noise2D(vec2(wx.mul(7.3), wz.mul(7.3))).mul(0.4))
-      .sub(0.5).mul(0.12).mul(smoothstep(0.15, 0.05, pixelSize));
-    const aggregate = noise2D(vec2(wx.mul(55.0), wz.mul(55.0))).sub(0.5).mul(0.08).mul(smoothstep(0.02, 0.006, pixelSize));
+    const mottle = fadedDetail(px.lessThan(0.15), 0.0, () =>
+      noise2D(vec2(wx.mul(3.1), wz.mul(3.1)).add(41.0)).mul(0.6).add(noise2D(vec2(wx.mul(7.3), wz.mul(7.3))).mul(0.4))
+        .sub(0.5).mul(0.12).mul(smoothstep(0.15, 0.05, px)));
+    const aggregate = fadedDetail(px.lessThan(0.02), 0.0, () =>
+      noise2D(vec2(wx.mul(55.0), wz.mul(55.0))).sub(0.5).mul(0.08).mul(smoothstep(0.02, 0.006, px)));
 
     const flagTone = flagHash.sub(0.5).mul(0.2).add(1.0).mul(mix(float(1.0), float(1.1), replaced));
     const concrete = mix(cConcreteB, cConcreteA, tone)
@@ -2248,19 +2335,23 @@ function createSidewalkMaterial() {
   // 6 mm tooled joint grooves with rounded edges, flags heaved a little out of true by tree roots & frost, hairline
   // cracks, gum blobs and concrete grain via bumpNormal. Edges ramp over >= 2 px so nothing sparkles along the joints.
   mat.normalNode = Fn(() => {
-    const wx = patternXZ.x;
-    const wz = patternXZ.y;
-    const camDist = length(positionWorld.sub(cameraPosition));
+    const xz = vec2(patternXZ).toVar();
+    const wx = xz.x;
+    const wz = xz.y;
+    const px = float(pixelSize).toVar();
+    const camDist = length(positionWorld.sub(cameraPosition)).toVar();
     const detail = smoothstep(140.0, 14.0, camDist);
-    const rampPx = pixelSize.mul(2.0);
+    const rampPx = px.mul(2.0);
 
-    const groove = float(1.0).sub(smoothstep(0.003, max(float(0.012), rampPx), edgeDist)).mul(0.006).mul(smoothstep(0.02, 0.006, pixelSize));
+    const groove = float(1.0).sub(smoothstep(0.003, max(float(0.012), rampPx), edgeDist)).mul(0.006).mul(smoothstep(0.02, 0.006, px));
     const tiltAngle = hash2D(flagId.add(vec2(2.3, 13.1))).mul(Math.PI * 2.0);
     const tiltSlope = hash2D(flagId.add(vec2(29.3, 3.7))).mul(0.012).mul(float(1.0).sub(replaced));
     const tilt = dot(flagLocal, vec2(cos(tiltAngle), sin(tiltAngle))).mul(FLAG).mul(tiltSlope)
-      .mul(smoothstep(0.0, max(float(0.06), pixelSize.mul(3.0)), edgeDist));
-    const grain = noise2D(vec2(wx.mul(4.5), wz.mul(4.5))).sub(0.5).mul(0.003);
-    const pores = noise2D(vec2(wx.mul(38.0), wz.mul(38.0))).sub(0.5).mul(0.0008).mul(smoothstep(0.012, 0.004, pixelSize));
+      .mul(smoothstep(0.0, max(float(0.06), px.mul(3.0)), edgeDist));
+    // The whole relief fades out with distance, so its grain is skipped beyond that
+    const grain = fadedDetail(camDist.lessThan(140.0), 0.0, () => noise2D(vec2(wx.mul(4.5), wz.mul(4.5))).sub(0.5).mul(0.003));
+    const pores = fadedDetail(px.lessThan(0.012), 0.0, () =>
+      noise2D(vec2(wx.mul(38.0), wz.mul(38.0))).sub(0.5).mul(0.0008).mul(smoothstep(0.012, 0.004, px)));
     const height = grain.add(pores).add(tilt).sub(groove).sub(crack.mul(0.0015)).add(gum.mul(0.0008))
       .mul(detail).mul(float(1.0).sub(swPuddle));
     return bumpNormal(height);
@@ -2282,14 +2373,17 @@ function createCurbMaterial() {
 
   mat.aoNode = float(STREET_SKY);
 
+  // The speckle and the grain are skipped beyond the distance they fade out at (fadedDetail())
   mat.colorNode = Fn(() => {
-    const wx = patternXZ.x;
-    const wz = patternXZ.y;
-    const camDist = length(positionWorld.sub(cameraPosition));
-    const detail = smoothstep(180.0, 16.0, camDist);
+    const xz = vec2(patternXZ).toVar();
+    const wx = xz.x;
+    const wz = xz.y;
+    const camDist = length(positionWorld.sub(cameraPosition)).toVar();
+    const detail = smoothstep(180.0, 16.0, camDist).toVar();
 
     const tone = noise2D(vec2(wx.mul(0.6), wz.mul(0.6)));
-    const speckle = noise2D(vec2(wx.mul(18.0), wz.mul(18.0))).sub(0.5).mul(0.06).mul(detail);
+    const speckle = fadedDetail(camDist.lessThan(180.0), 0.0, () =>
+      noise2D(vec2(wx.mul(18.0), wz.mul(18.0))).sub(0.5).mul(0.06).mul(detail));
     const stone = mix(color(0x4c4c45), color(0x63635a), tone).add(speckle);
 
     const joints = max(gridLine(wx, 1.5, 0.005), gridLine(wz, 1.5, 0.005)).mul(detail);
@@ -2301,12 +2395,13 @@ function createCurbMaterial() {
   mat.roughnessNode = mix(float(0.72), float(0.5), smoothstep(0.2, 0.8, cityUniforms.uRoadWetness));
 
   mat.normalNode = Fn(() => {
-    const wx = patternXZ.x;
-    const wz = patternXZ.y;
-    const camDist = length(positionWorld.sub(cameraPosition));
-    const detail = smoothstep(120.0, 12.0, camDist);
-    const grain = noise2D(vec2(wx.mul(5.5), wz.mul(5.5))).sub(0.5).mul(0.0022);
-    return bumpNormal(grain.mul(detail));
+    const xz = vec2(patternXZ).toVar();
+    const wx = xz.x;
+    const wz = xz.y;
+    const camDist = length(positionWorld.sub(cameraPosition)).toVar();
+    const grain = fadedDetail(camDist.lessThan(120.0), 0.0, () =>
+      noise2D(vec2(wx.mul(5.5), wz.mul(5.5))).sub(0.5).mul(0.0022).mul(smoothstep(120.0, 12.0, camDist)));
+    return bumpNormal(grain);
   })();
 
   return mat;

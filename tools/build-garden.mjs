@@ -1,5 +1,6 @@
-// tools/build-garden.mjs: the footpaths of a few areas, and what their gardens are drawn with: beds, hedges, ponds, the gates on the paths,
-// and every plant, from OpenStreetMap (paths.json and land.json, tools/extract-osm.mjs) and the Royal Botanic Garden's own map. Writes
+// tools/build-garden.mjs: the footpaths of a few areas, and what their gardens are drawn with: beds, hedges, ponds and fountains, paved
+// areas, the gates on the paths, the raised lawn, and every plant, from OpenStreetMap (paths.json, land.json and all_roads.json,
+// tools/extract-osm.mjs), the Royal Botanic Garden's own map and the City of Sydney's tree register (cos_trees.json). Writes
 // tools/data/generated/garden.json. tools/build-trees.mjs adds its plants to the trees; tools/build-tiles.mjs cuts the rest into the tiles.
 // Paths elsewhere wait: they'd change where everyone walks.
 //   node tools/build-garden.mjs
@@ -8,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BitRaster, Raster, bbox, elementRings, flat, load, pointInRing, q1, rdp, ringArea, rdpRing, tiledPolygons, toWorld } from './geo-common.mjs';
 import { MODEL_GATES, gardenAreas, gateHeading, pathKind } from './garden-areas.mjs';
+import { onRegionEdge } from './geodata/regions.mjs';
 import { localAreas } from './local-edits.mjs';
 import { beachBehind, beachTest, loadSand } from './sand-pieces.mjs';
 
@@ -226,9 +228,11 @@ for (const e of pathsSource) {
   hedges.push([q1(h), 0.8, ...flat(rdp(pts, 0.2))]);
 }
 
-// Ponds and reflecting pools: still water at the ground's own height, not the sea's
+// Ponds and reflecting pools: still water at the ground's own height, not the sea's. A fountain's basin (amenity=fountain, or a fountain's
+// water) is a pond too, and its middle and how far that is from its edge, [x, z, r], a fountain: js/garden.js gives it a rim and a plinth
 const ponds = [];
 const pondRings = [];
+const fountains = [];
 for (const e of land) {
   const t = e.tags || {};
   if (t.natural !== 'water' || (t.water && !/^(pond|reflecting_pool|fishpond|basin|lake|fountain)$/.test(t.water))) continue;
@@ -239,10 +243,55 @@ for (const e of land) {
     if (!areaAt(cx, cz) || landBits.at(cx, cz) !== 1) continue;
     pondRings.push(ring);
     ponds.push(flat(rdpRing(ring, 0.2)));
+    if (t.amenity === 'fountain' || t.water === 'fountain') {
+      // Its middle (the area's), and the nearest of its edges to it
+      let ax = 0, az = 0, a2 = 0;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const c = ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+        a2 += c; ax += (ring[j][0] + ring[i][0]) * c; az += (ring[j][1] + ring[i][1]) * c;
+      }
+      const mx = ax / (3 * a2), mz = az / (3 * a2);
+      fountains.push([q1(mx), q1(mz), q1(distToRing(ring, mx, mz))]);
+    }
   }
 }
 const inPond = (x, z, margin = 0) => pondRings.some((r) => pointInRing(r, x, z) || (margin && distToRing(r, x, z) < margin));
-log(`${hedges.length} hedges, ${ponds.length} ponds and pools`);
+
+// Paved areas OSM draws in a garden as areas, not lines (highway=pedestrian, a footway as an area): the plaza round the Archibald Fountain,
+// the paving along the Pool of Reflection. The map draws a park's as lawn; the garden paves them where it does (the raised lawn, below), on
+// the ground's level. Untagged, paving.
+const plazaSource = [];
+for (const els of [load('all_roads.json').elements, pathsSource]) {
+  for (const e of els) {
+    const t = e.tags || {};
+    const isArea = (/^(pedestrian|footway)$/.test(t.highway || '') && t.area === 'yes') || /^(pedestrian|footway)$/.test(t['area:highway'] || '');
+    if (!isArea || (t.layer && t.layer !== '0') || (t.level && t.level !== '0') || (t.tunnel && t.tunnel !== 'no') || (t.bridge && t.bridge !== 'no')
+      || t.indoor === 'yes' || t.covered === 'yes') continue;
+    const surface = t.surface ? surfaceOf(t) : 0;
+    if (surface === 4) continue;
+    const { outer, inner } = elementRings(e);
+    for (const ring of outer) {
+      if (ring.length < 4) continue;
+      const b = bbox(ring);
+      if (!areaAt((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2)) continue;
+      plazaSource.push({ surface, rings: [ring, ...inner.filter((h) => h.length > 3 && pointInRing(ring, h[0][0], h[0][1]))] });
+    }
+  }
+}
+// ...and those drawn by hand (tools/local/, `paving`)
+const HAND_SURFACE = { paving: 0, asphalt: 1, gravel: 2 };
+for (const area of localAreas()) {
+  for (const p of area.paving || []) {
+    const surface = HAND_SURFACE[p.surface];
+    if (surface === undefined) throw new Error(`tools/local/${area.file}: no paved surface called ${p.surface}`);
+    const ring = p.ring || Array.from({ length: 48 }, (_, i) => [p.circle[0] + p.circle[2] * Math.cos((i / 48) * Math.PI * 2), p.circle[1] + p.circle[2] * Math.sin((i / 48) * Math.PI * 2)]);
+    const b = bbox(ring);
+    if (!areaAt((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2)) throw new Error(`tools/local/${area.file}: paving outside every garden's area (${p.why})`);
+    plazaSource.push({ surface, rings: [ring] });
+  }
+}
+log(`${plazaSource.length} paved areas in them, OSM's and by hand`);
+log(`${hedges.length} hedges, ${ponds.length} ponds and pools, ${fountains.length} of them fountains`);
 
 // --- Sea walls: the shore round the parks themselves, where a sandstone parapet keeps people out of the water (js/garden.js) ------------
 // Not the boxes round the Opera House, whose model has its own sea wall, or the Quay's, where the ferries tie up. Each is
@@ -250,7 +299,8 @@ log(`${hedges.length} hedges, ${ponds.length} ponds and pools`);
 // winding). Open where steps or a jetty reach the water.
 const WALL_REACH = 8; // m past a park's outline the shore can lie: its outline is often drawn along the top of the wall
 const OPENING = 2.5; // m either side of where steps or a pier meet the shore
-const parks = areas.filter((a) => a.osm);
+// ...nor a park whose shore is rock stepping down to the water (tools/garden-areas.mjs `rockShore`)
+const parks = areas.filter((a) => a.osm && !a.rockShore);
 const parkBox = bbox(parks.flatMap((a) => a.rings.flat()));
 const inPark = (x, z) => parks.some((a) => x >= a.box.x0 - WALL_REACH && x <= a.box.x1 + WALL_REACH && z >= a.box.z0 - WALL_REACH && z <= a.box.z1 + WALL_REACH
   && a.rings.some((r) => pointInRing(r, x, z) || distToRing(r, x, z) <= WALL_REACH));
@@ -266,7 +316,8 @@ for (const e of land) {
 }
 const isOpen = (x, z) => openings.some(([a, b]) => segDist(x, z, a, b) < OPENING);
 // ...and none where a beach runs down to the water (tools/build-sand.mjs)
-const onBeach = beachTest(loadSand(GENERATED));
+const sandPieces = loadSand(GENERATED);
+const onBeach = beachTest(sandPieces);
 const seawalls = [];
 let wallMetres = 0;
 for (const rings of GEO.shores) {
@@ -291,8 +342,9 @@ for (const rings of GEO.shores) {
     };
     for (let i = 0; i < ring.length; i++) {
       const [ax, az] = ring[i], [bx, bz] = ring[(i + 1) % ring.length];
+      // Nor where a region's edge cut the land (tools/build-tiles.mjs leaves those out of the shore too): Hyde Park South is on one
       if (Math.max(ax, bx) < parkBox.x0 - WALL_REACH || Math.min(ax, bx) > parkBox.x1 + WALL_REACH
-        || Math.max(az, bz) < parkBox.z0 - WALL_REACH || Math.min(az, bz) > parkBox.z1 + WALL_REACH) {
+        || Math.max(az, bz) < parkBox.z0 - WALL_REACH || Math.min(az, bz) > parkBox.z1 + WALL_REACH || onRegionEdge(ax, az, bx, bz)) {
         flush();
         continue;
       }
@@ -318,7 +370,8 @@ log(`${seawalls.length} sea walls, ${(wallMetres / 1000).toFixed(2)} km, round t
 // they meet. Traced in the map's 240 m squares, as its lawns are, so each piece is cheap to lay on the lawn's triangles; each traced point
 // is then moved onto what its cells stand for (a corridor's edge, a pond's edge, the lawn's or the area's outline), so a kerb stands at
 // its path's edge, not wherever the cells put it, and kept to the centimetre. [[kerb, outer, ...holes]], each ring [x, z, ...]; `kerb` what
-// its kerbs are, by the area most of its outline is in: 0 concrete, 1 sandstone (tools/garden-areas.mjs `kerb`).
+// its kerbs are, by the area most of its outline is in: 0 concrete, 1 sandstone (tools/garden-areas.mjs `kerb`). Nor is it raised where
+// the map draws a beach's sand or the coast's rock over the lawn (tools/build-sand.mjs): it stops at their edge.
 const RAISED_RES = 0.5; // m: the raster's cells
 const KERB = 0.1; // m: the kerb's width (js/garden.js)
 const SNAP = 0.6; // m a traced point may move onto what its cells stand for
@@ -338,6 +391,8 @@ const mitres = (pts) => pts.map((p, i) => {
 });
 const q2 = (v) => Math.round(v * 100) / 100;
 const lawns = [];
+const plazas = [];
+let plazaArea = 0;
 {
   const formal = areas.filter((a) => a.kind === 'formal');
   const clusters = [];
@@ -394,6 +449,21 @@ const lawns = [];
       for (const ring of pts) ringLines(ring);
     }
     for (let i = 0; i < raised.d.length; i++) raised.d[i] &= lawn.d[i];
+    // ...less the paved areas, each surface's traced on its own (below) where it's on the map's lawn in an area
+    const plazaBy = new Map();
+    for (const p of plazaSource) {
+      if (!inBox(p.rings[0])) continue;
+      const r = plazaBy.get(p.surface) || plazaBy.set(p.surface, blank()).get(p.surface);
+      r.fillRing(p.rings[0], 1);
+      for (const hole of p.rings.slice(1)) r.fillRing(hole, 0);
+      for (const ring of p.rings) ringLines(ring);
+    }
+    for (const r of plazaBy.values()) {
+      for (let i = 0; i < r.d.length; i++) {
+        r.d[i] &= raised.d[i];
+        if (r.d[i]) raised.d[i] = 0;
+      }
+    }
     // ...less the corridors of its kerbed paths and steps, and its ponds
     // A corridor is its path as js/garden.js draws it (mitred where it bends: pathPieces()), KERB wider either side, and KERB past each end:
     // its kerb across a path that ends on the lawn
@@ -425,7 +495,29 @@ const lawns = [];
       for (let k = 0; k + 1 < f.length; k += 2) ring.push([f[k], f[k + 1]]);
       if (!inBox(ring)) continue;
       raised.fillRing(ring, 0);
+      for (const r of plazaBy.values()) r.fillRing(ring, 0);
       ringLines(ring);
+    }
+    // ...and the sand and rock on land, each piece's outline less its holes: a piece over no raised lawn adds no lines to move points onto
+    for (const [kind, ...flats] of sandPieces) {
+      if (kind > 1) continue;
+      const rings = flats.map((f) => { const out = []; for (let k = 0; k + 1 < f.length; k += 2) out.push([f[k], f[k + 1]]); return out; });
+      if (!inBox(rings[0])) continue;
+      const b = bbox(rings[0]);
+      // Its own cells, on the same grid as the area's
+      const piece = new Raster(Math.max(b.x0, box.x0), Math.max(b.z0, box.z0), Math.min(b.x1, box.x1 - RAISED_RES), Math.min(b.z1, box.z1 - RAISED_RES), RAISED_RES);
+      if (piece.w < 1 || piece.h < 1) continue;
+      piece.fillRing(rings[0], 1);
+      for (const hole of rings.slice(1)) piece.fillRing(hole, 0);
+      const di = Math.round((piece.x0 - raised.x0) / RAISED_RES), dj = Math.round((piece.z0 - raised.z0) / RAISED_RES);
+      let cut = 0;
+      for (let j = 0; j < piece.h; j++) {
+        for (let i = 0; i < piece.w; i++) {
+          const k = (j + dj) * raised.w + i + di;
+          if (piece.d[j * piece.w + i] && i + di < raised.w && j + dj < raised.h && raised.d[k]) { raised.d[k] = 0; cut++; }
+        }
+      }
+      if (cut) for (const ring of rings) ringLines(ring);
     }
 
     // ...less what's too narrow for its cells to draw: a strip between two corridors that close is lawn at the paths' level
@@ -540,7 +632,20 @@ const lawns = [];
       pieces++;
       area += Math.abs(ringArea(rings[0])) - rings.slice(1).reduce((t, r) => t + Math.abs(ringArea(r)), 0);
     }
+    // The paved areas, traced as the raised lawn is, so their edges and its meet on the same lines: [surface, outer, ...holes]
+    for (const [surface, r] of [...plazaBy].sort((p, q) => p[0] - q[0])) {
+      for (const rings of tiledPolygons(r, SQUARE, 0.02, MIN_LAWN / RAISED_RES ** 2, MIN_LAWN, null, snap)) {
+        const held = Math.abs(ringArea(rings[0])) - rings.slice(1).reduce((t, q) => t + Math.abs(ringArea(q)), 0);
+        if (held < MIN_LAWN) continue;
+        plazas.push([surface, ...rings.map((q) => q.map(([x, z]) => [q2(x), q2(z)]).filter((p, i, all) => {
+          const n = all[(i + 1) % all.length];
+          return p[0] !== n[0] || p[1] !== n[1];
+        }).flat())]);
+        plazaArea += held;
+      }
+    }
   }
+  log(`${plazas.length} paved areas traced, ${(plazaArea / 1e4).toFixed(2)} ha`);
   log(`${pieces} pieces of raised lawn, ${(area / 1e4).toFixed(1)} ha, in ${clusters.length} rasters; ${moved} traced points moved onto their lines, ${kept} not, ${corners} corners put back`);
 }
 
@@ -596,7 +701,8 @@ for (const e of land) {
     const b = bbox(ring);
     if (ring.length < 4 || !areaAt((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2)) continue;
     let mix = zoneOf(t.name || '');
-    if (!mix && t.natural === 'wood') mix = 'wood';
+    // A park planted with natives only (tools/garden-areas.mjs `natives`) has its woods planted as bush: natives and grasses, a few gums
+    if (!mix && t.natural === 'wood') mix = areaAt((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2).natives ? 'native' : 'wood';
     if (!mix && t.leisure === 'garden' && area <= 4000) mix = 'beds';
     if (mix) zones.push({ name: t.name || '', mix, ring, area });
   }
@@ -636,6 +742,18 @@ const treeNear = (x, z, r) => {
   }
   return false;
 };
+// The City of Sydney register's trees in an area that has them all (tools/garden-areas.mjs `register`): tools/build-trees.mjs plants them
+// wherever the garden is, so the garden plants no trees there, and keeps its small plants off them
+const registered = (x, z) => areaAt(x, z)?.register === true;
+let registerTrees = 0;
+for (const [lon, lat, name, , status] of load('cos_trees.json')) {
+  if (name === 'Not Applicable' || (status && status !== 'Tree')) continue;
+  const [x, z] = toWorld(lon, lat);
+  if (!registered(x, z)) continue;
+  const key = Math.floor(x / PLANT_CELL) * 100000 + Math.floor(z / PLANT_CELL);
+  (plantCells.get(key) || plantCells.set(key, []).get(key)).push([x, z, K.broadleaf]);
+  registerTrees++;
+}
 // Where nothing can grow: paths (and their edges), ponds, roads, buildings and the sea. A plant's kept to the half metre (tools/build-trees.mjs),
 // so it may move a third of a metre nearer a path.
 const clearFor = (x, z, small) => pathClear(x, z) > (small ? 0.7 : 1.4) && !inPond(x, z, small ? 0.3 : 1) && roadClear(x, z, true) > (small ? 1.5 : 3)
@@ -658,6 +776,8 @@ const byTags = (t) => {
 };
 // The garden's big trees are mostly Moreton Bay and Port Jackson figs and old exotics
 const BIG = [[K.fig, 0.32], [K.broadleaf, 0.38], [K.gum, 0.16], [K.small, 0.1], [K.jacaranda, 0.04]];
+// ...and a park of natives' (Barangaroo Reserve's): gums and angophoras, Port Jackson figs, banksias and she-oaks, cabbage-tree palms
+const NATIVE_BIG = [[K.gum, 0.5], [K.fig, 0.15], [K.small, 0.25], [K.palm, 0.1]];
 const HEIGHT = { [K.broadleaf]: [10, 18], [K.small]: [5, 9], [K.gum]: [12, 24], [K.fig]: [14, 24], [K.palm]: [6, 11], [K.jacaranda]: [8, 12],
   [K.bangalow]: [9, 17], [K.datePalm]: [7, 12], [K.araucaria]: [24, 36], [K.wollemi]: [8, 14], [K.cycad]: [1, 2.5], [K.treeFern]: [3, 5] };
 const pick = (list, r) => {
@@ -667,15 +787,44 @@ const pick = (list, r) => {
 };
 const nodes = load('nodes.json').elements;
 let osmTrees = 0;
+const OFF_PATH = 0.5; // m off a path's edge a tree on it is moved to: kept to the half metre (tools/build-trees.mjs), it stays off it
+/** (x, z) moved straight out from the nearest path's line to OFF_PATH past its edge, or null if that's on a path too */
+const offPath = (x, z) => {
+  let best = null;
+  for (const sg of pathCells.get(Math.floor(x / PATH_CELL) * 100000 + Math.floor(z / PATH_CELL)) || []) {
+    const [ax, az] = sg.a, [bx, bz] = sg.b, dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz || 1e-9;
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / L2));
+    const cx = ax + dx * t, cz = az + dz * t, d = Math.hypot(x - cx, z - cz);
+    if (!best || d - sg.r < best.d - best.sg.r) best = { sg, cx, cz, d };
+  }
+  if (!best) return null;
+  // Straight out from its line, or across it where the tree is on the line itself
+  const [ux, uz] = best.d > 1e-3 ? [(x - best.cx) / best.d, (z - best.cz) / best.d] : (() => {
+    const [ax, az] = best.sg.a, [bx, bz] = best.sg.b, L = Math.hypot(bx - ax, bz - az) || 1;
+    return [-(bz - az) / L, (bx - ax) / L];
+  })();
+  const out = [best.cx + ux * (best.sg.r + OFF_PATH), best.cz + uz * (best.sg.r + OFF_PATH)];
+  return pathClear(out[0], out[1]) >= OFF_PATH - 0.01 ? out : null;
+};
+let movedOff = 0;
 for (const e of nodes) {
   if (e.tags?.natural !== 'tree') continue;
-  const [x, z] = toWorld(e.lon, e.lat);
-  if (!areaAt(x, z) || roadClear(x, z, true) < 2 || inBuilding(x, z) || landBits.at(x, z) !== 1) continue;
+  let [x, z] = toWorld(e.lon, e.lat);
+  if (!areaAt(x, z) || registered(x, z)) continue;
+  // ...not on a path: where OSM has one there, its line or the tree's is a little off (trees along Barangaroo Reserve's paths), so the tree
+  // stands just off the path's edge, or isn't planted if that's on another
+  if (pathClear(x, z) < 0.1) {
+    const moved = offPath(x, z);
+    if (!moved) continue;
+    [x, z] = moved;
+    movedOff++;
+  }
+  if (roadClear(x, z, true) < 2 || inBuilding(x, z) || landBits.at(x, z) !== 1) continue;
   const zone = zoneAt(x, z);
   let kind = byTags(e.tags);
   if (kind === null && zone?.mix === 'palms') kind = seeded(x, z, 1) < 0.7 ? K.bangalow : K.datePalm;
   if (kind === null && zone?.mix === 'rainforest') kind = pick([[K.fig, 0.3], [K.broadleaf, 0.4], [K.bangalow, 0.3]], seeded(x, z, 1));
-  if (kind === null) kind = pick(BIG, seeded(x, z, 1));
+  if (kind === null) kind = pick(areaAt(x, z).natives ? NATIVE_BIG : BIG, seeded(x, z, 1));
   const [lo, hi] = HEIGHT[kind];
   const tagged = parseFloat(e.tags.height);
   const height = Number.isFinite(tagged) && tagged > 1 ? Math.min(40, tagged) : lo + seeded(x, z, 2) * (hi - lo);
@@ -690,7 +839,7 @@ for (const e of pathsSource) {
     const [ax, az] = pts[i - 1], [bx, bz] = pts[i], L = Math.hypot(bx - ax, bz - az);
     for (let s = 4; s < L; s += 9) {
       const x = ax + ((bx - ax) * s) / L, z = az + ((bz - az) * s) / L;
-      if (!areaAt(x, z) || treeNear(x, z, 6) || !clearFor(x, z, false)) continue;
+      if (!areaAt(x, z) || registered(x, z) || treeNear(x, z, 6) || !clearFor(x, z, false)) continue;
       const kind = pick(BIG, seeded(x, z, 3));
       const [lo, hi] = HEIGHT[kind];
       addPlant(x, z, kind, Math.round(lo + seeded(x, z, 4) * (hi - lo)));
@@ -736,7 +885,7 @@ for (const zone of zones) {
       if (zones.some((o) => o !== zone && o.area < zone.area && pointInRing(o.ring, x, z))) continue;
       const kind = pick(mix.plants, seeded(x, z, 7));
       const small = SMALL.has(kind);
-      if (!clearFor(x, z, small) || treeNear(x, z, small ? 1.2 : 5)) continue;
+      if ((!small && registered(x, z)) || !clearFor(x, z, small) || treeNear(x, z, small ? 1.2 : 5)) continue;
       const [, , lo, hi] = mix.plants.find((p) => p[0] === kind);
       const height = lo + seeded(x, z, 8) * (hi - lo);
       addPlant(x, z, kind, Math.round(small ? height * 10 : height));
@@ -750,11 +899,11 @@ for (const zone of zones) {
 const counts = {};
 for (const [, , kind] of plants) counts[kind] = (counts[kind] || 0) + 1;
 const names = Object.fromEntries(Object.entries(K).map(([k, v]) => [v, k]));
-log(`${plants.length} plants: ${osmTrees} trees from OSM, ${byHand} by hand; by zone ${JSON.stringify(planted)}`);
+log(`${plants.length} plants: ${osmTrees} trees from OSM (${movedOff} moved off a path), ${byHand} by hand; by zone ${JSON.stringify(planted)}; ${registerTrees} of the register's trees kept clear of`);
 log(`by kind: ${Object.entries(counts).map(([k, v]) => `${names[k]} ${v}`).join(', ')}; ${beds.length} beds`);
 
 fs.writeFileSync(OUT, JSON.stringify({
   areas: areas.map((a) => ({ name: a.name, rings: a.rings.map((r) => flat(rdpRing(r, 0.5))), except: a.except })),
-  paths, gates, hedges, ponds, beds, seawalls, lawns, plants, small: [...SMALL]
+  paths, gates, hedges, ponds, fountains, beds, seawalls, lawns, plazas, plants, small: [...SMALL]
 }));
 log(`wrote ${path.relative(ROOT, OUT)} (${(fs.statSync(OUT).size / 1024).toFixed(0)} KB) in ${((Date.now() - started) / 1000).toFixed(1)} s`);

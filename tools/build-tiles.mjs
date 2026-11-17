@@ -170,6 +170,12 @@ function cutMap(derived) {
     for (const [kind, ...ring] of GARDEN.beds) middle(ring).garden.beds.push([kind, ...ring]);
     // A formal park's raised lawn: each piece (a 240 m square's, at most) with the tile its outline's middle is in
     for (const [kerb, ...rings] of GARDEN.lawns || []) middle(rings[0]).garden.lawns.push([kerb, ...rings]);
+    // ...and its paved areas, the same way, and its fountains where they stand: a tile with none has no field for them
+    for (const [surface, ...rings] of GARDEN.plazas || []) {
+      const g = middle(rings[0]).garden;
+      (g.plazas ||= []).push([surface, ...rings]);
+    }
+    for (const f of GARDEN.fountains || []) (at(f[0], f[1]).garden.fountains ||= []).push(f);
   }
 
   // --- Roads: a link is in every tile within reach of it, with its id --------------------------------------------------

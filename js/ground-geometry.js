@@ -25,14 +25,16 @@ const { x0: HX0, z0: HZ0, cell: HCELL } = GEO.frame.heights;
 // Ground geometry is built in square cells of the city that can be culled on their own
 const GROUND_CELL = 700;
 class GroundCells {
-  // `size`: of its cells. A tile's ground is one cell: the tile is what gets culled
+  // `size`: of its cells. A tile's ground is one cell: the tile is what gets culled. `keyOf(x, z)`, if set, says which cell a point's in
+  // instead (a garden's clusters, js/garden.js)
   constructor(size = GROUND_CELL) {
     this.size = size;
     this.cells = new Map();
+    this.keyOf = null;
   }
 
   cell(x, z) {
-    const key = Math.floor(x / this.size) * 100000 + Math.floor(z / this.size);
+    const key = this.keyOf ? this.keyOf(x, z) : Math.floor(x / this.size) * 100000 + Math.floor(z / this.size);
     let c = this.cells.get(key);
     if (!c) this.cells.set(key, (c = { position: [], normal: [], uv: [], index: [] }));
     return c;

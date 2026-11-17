@@ -6,6 +6,11 @@
 // - bush: every path a track.
 // `kerbedGravel`: its gravel paths are edged as its paved ones are, not tracks (the Royal Botanic Garden's, in the photos). `kerb`: what its
 // raised lawn's kerbs are, concrete or sandstone (the Royal Botanic Garden's, in the photos).
+// `register`: its trees are the City of Sydney's register's, every one surveyed, which tools/build-trees.mjs plants wherever the garden is:
+// the garden plants no trees of its own there (OSM's are the same trees again), only the small plants in its beds, kept off the register's.
+// `rockShore`: its shore is sandstone blocks stepping down to the water (OSM's bare rock, tools/build-sand.mjs), with no parapet along it.
+// `natives`: planted with natives only: its woods are bush (natives and grasses, a few gums), and OSM's trees that don't say what they are
+// gums, figs, small trees and palms, not the Royal Botanic Garden's exotics.
 import { bbox, elementRings, pointInRing, ringArea } from './geo-common.mjs';
 
 export const AREAS = [
@@ -19,7 +24,17 @@ export const AREAS = [
   { name: 'Circular Quay', box: [-40, -1720, 470, -1330], kind: 'formal' },
   // Behind Bronte Beach: its promenade and paths, palms and pines (tools/local/bronte.json). No still water in it, so adding it needed no
   // whole build
-  { name: 'Bronte Park', osm: 'Bronte Park', kind: 'formal' }
+  { name: 'Bronte Park', osm: 'Bronte Park', kind: 'formal' },
+  // The CBD's parks. Hyde Park's halves either side of Park St: paved paths between kerbed lawns, the Archibald Fountain and the Pool of
+  // Reflection (OSM's natural=water, a fountain and a reflecting pool, drawn as its ponds), its figs the register's. None of their water is
+  // the sea's (small, or tagged as a pool or fountain), so adding them needed no whole build.
+  { name: 'Hyde Park North', osm: 'Hyde Park North', kind: 'formal', register: true },
+  { name: 'Hyde Park South', osm: 'Hyde Park South', kind: 'formal', register: true },
+  // Its lawns on the headland's terraces, kerbed in sandstone; the sandstone blocks themselves are OSM's bare rock (tools/build-sand.mjs),
+  // which OSM draws as areas, not as walls
+  { name: 'Barangaroo Reserve', osm: 'Barangaroo Reserve', kind: 'formal', kerb: 'sandstone', rockShore: true, natives: true },
+  { name: 'Observatory Hill Park', osm: 'Observatory Hill Park', kind: 'formal', register: true },
+  { name: 'Wynyard Park', osm: 'Wynyard Park', kind: 'formal', register: true }
 ];
 
 // Gates a model draws itself (js/model-sites.js; its script in m-sydney-private's tools/models/), which the garden leaves out: the Queen

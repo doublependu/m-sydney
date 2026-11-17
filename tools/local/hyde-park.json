@@ -1,0 +1,11 @@
+{
+  "name": "Hyde Park: the paved plaza round the Archibald Fountain",
+  "box": [385, -330, 447, -265],
+  "paving": [
+    {
+      "circle": [415.7, -297.1, 23],
+      "surface": "paving",
+      "why": "The round plaza of light stone paving the Archibald Fountain stands in, 46 m across (NSW's aerial photo; ref/frames/walk-hyde-park 00005-00125 and 01385-01475), which OSM draws only as the walks out of it east and west"
+    }
+  ]
+}

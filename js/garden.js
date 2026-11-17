@@ -12,10 +12,13 @@ import { areaOf, drape, drapePolygon } from './drape.js';
 
 // A garden's ground, laid over a tile's lawns (tools/build-garden.mjs): its footpaths, beds, hedges, ponds and the gates on its paths, and in
 // a formal park the lawn raised over its paved paths, kerbed along every edge. Only a few areas have them yet: the Royal Botanic Garden,
-// the Domain, round the Opera House and Circular Quay, and Bronte Park.
+// the Domain, round the Opera House and Circular Quay, Bronte Park, and the CBD's parks (Hyde Park, Barangaroo Reserve, Observatory Hill,
+// Wynyard Park).
 //   tile.garden: { paths: [[kind, surface, width, x, z, ...]], gates: [[x, z, heading, width]], hedges: [[height, width, x, z, ...]],
-//     ponds: [[x, z, ...]], beds: [[kind, x, z, ...]], seawalls: [[side, x, z, ...]], lawns: [[kerb, [x, z, ...], ...holes]] }
-//   (a raised lawn's pieces, `kerb` what its kerbs are: 0 concrete, 1 sandstone)
+//     ponds: [[x, z, ...]], beds: [[kind, x, z, ...]], seawalls: [[side, x, z, ...]], lawns: [[kerb, [x, z, ...], ...holes]],
+//     plazas: [[surface, [x, z, ...], ...holes]], fountains: [[x, z, r]] }
+//   (a raised lawn's pieces, `kerb` what its kerbs are: 0 concrete, 1 sandstone; paved areas, as plazas round a fountain, and fountains,
+//   each the middle of one of its ponds and how far that is from the pond's edge, where a tile has any)
 // In layers, each laid exactly on the triangles of what's under it (js/drape.js), so on a slope none comes up through another: the map's
 // lawn and paving (js/city-grid.js); the paths, just over them; the raised lawn 8 cm over the map's lawn, its kerbs' tops 1 cm over it
 // at their outer edge, their faces down to the paths; and tracks and beds on the raised lawn, or tracks on the map's lawn off it.
@@ -30,6 +33,11 @@ const BED_LIFT = 0.03; // a bed over the lawn it's dug in
 const BED_TOP = LAWN_TOP + BED_LIFT;
 const POND_TOP = LAWN_TOP + 0.02;
 const COPING = { width: 0.32, rise: 0.08 };
+// A fountain's basin (tools/build-garden.mjs `fountains`): its rim over the pond's level, its water under the rim's top, and its middle's
+// plinth, for a basin at least `plinthFrom` m from its middle to its edge (the Archibald Fountain's is 10.6): a smaller one, as East
+// Circular Quay's (4.2), has the rim alone
+const FOUNTAIN = { rim: 0.42, rimWidth: 0.55, water: 0.3, plinthFrom: 8 };
+const GRANITE = linearHex(0x6e5048), BRONZE = linearHex(0x3b3426);
 const KERB_WIDTH = 0.1; // m: in the corridor beside its path's edge, or round a pond in its water (tools/build-garden.mjs)
 const KERB_STONE = [linearHex(0xa9a59b), linearHex(0xc4a679)]; // concrete, sandstone (the Royal Botanic Garden's)
 const KERB_FOOT = 0.04; // m a kerb's face reaches under whatever it stands on
@@ -631,8 +639,50 @@ function addBox(cells, x, z, yaw, w, d, y, h) {
   c.index.push(top[0], top[2], top[1], top[0], top[3], top[2]);
 }
 
+// A tile's garden in clusters, each drawn as meshes of its own: two gardens in one tile, Hyde Park North and the Domain with College St
+// between them, are culled apart, so a view of one (or away from both) doesn't draw the other's. What the garden draws comes in pieces
+// whose boxes, CLUSTER_GAP apart or nearer, are one cluster.
+const CLUSTER_GAP = 60; // m
+/** (x, z) => the key of the cluster of `g`'s garden (x, z) is in: 0 for the first, or off them all */
+function gardenClusters(g) {
+  const boxes = [];
+  const add = (flat, from = 0) => { if (flat.length >= from + 2) boxes.push(boxOf(pointsOf(flat, from))); };
+  for (const [, outer] of g.lawns ?? []) add(outer);
+  for (const [, outer] of g.plazas ?? []) add(outer);
+  for (const p of g.paths) add(p, 3);
+  for (const b of g.beds) add(b, 1);
+  for (const f of g.ponds) add(f);
+  for (const h of g.hedges) add(h, 2);
+  for (const w of g.seawalls ?? []) add(w, 1);
+  for (const [x, z] of g.gates) boxes.push({ x0: x, x1: x, z0: z, z1: z });
+  // Joined where they come within the gap, sweeping along x
+  boxes.sort((a, b) => a.x0 - b.x0);
+  const up = boxes.map((_, i) => i);
+  const root = (i) => { while (up[i] !== i) i = up[i] = up[up[i]]; return i; };
+  for (let i = 0; i < boxes.length; i++) {
+    const a = boxes[i];
+    for (let j = i + 1; j < boxes.length && boxes[j].x0 <= a.x1 + CLUSTER_GAP; j++) {
+      const b = boxes[j];
+      if (b.z0 <= a.z1 + CLUSTER_GAP && b.z1 >= a.z0 - CLUSTER_GAP) up[root(j)] = root(i);
+    }
+  }
+  const clusters = new Map();
+  for (let i = 0; i < boxes.length; i++) {
+    const r = root(i), b = boxes[i], c = clusters.get(r);
+    if (!c) clusters.set(r, { ...b });
+    else { c.x0 = Math.min(c.x0, b.x0); c.x1 = Math.max(c.x1, b.x1); c.z0 = Math.min(c.z0, b.z0); c.z1 = Math.max(c.z1, b.z1); }
+  }
+  const list = [...clusters.values()];
+  if (list.length < 2) return () => 0;
+  return (x, z) => {
+    const k = list.findIndex((c) => x >= c.x0 - CLUSTER_GAP && x <= c.x1 + CLUSTER_GAP && z >= c.z0 - CLUSTER_GAP && z <= c.z1 + CLUSTER_GAP);
+    return k < 0 ? 0 : k;
+  };
+}
+
 /**
- * A tile's garden, into `target` with `buildCells` (js/city-grid.js). Returns colliders for the gates' pillars, as structures' are.
+ * A tile's garden, into `target` with `buildCells` (js/city-grid.js). Returns colliders for the gates' pillars and the fountains' plinths, as
+ * structures' are.
  */
 function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   const g = tile.garden;
@@ -642,6 +692,10 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   const hedge = new GroundCells(1e6);
   // The ponds' coping, again, for what stands on it: the stone's cells hold the gates' pillars and leaves, and the kerbs' faces, too
   const coping = new TintedCells();
+  const walls = new GroundCells(1e6);
+  // Each of the tile's gardens its own meshes, culled apart (gardenClusters())
+  const keyOf = gardenClusters(g);
+  for (const cells of [lawn, paths, beds, stone, pond, hedge, coping, walls]) cells.keyOf = keyOf;
   const colliders = [];
   const lawnAt = lawnSurface(tile), pavingAt = pavingSurface(tile);
   const heightAt = (x, z) => lawnAt(x, z) ?? groundHeight(x, z);
@@ -660,7 +714,8 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
 
   // The lawn's and the paving's triangles under it all made first, one a step (5-20 ms each)
   const boxes = [
-    ...(g.lawns ?? []).map(([, outer]) => boxOf(pointsOf(outer))), ...g.beds.map(([, ...ring]) => boxOf(pointsOf(ring))),
+    ...(g.lawns ?? []).map(([, outer]) => boxOf(pointsOf(outer))), ...(g.plazas ?? []).map(([, outer]) => boxOf(pointsOf(outer))),
+    ...g.beds.map(([, ...ring]) => boxOf(pointsOf(ring))),
     ...g.paths.map(([, , width, ...line]) => { const b = boxOf(pointsOf(line)); return { x0: b.x0 - width, z0: b.z0 - width, x1: b.x1 + width, z1: b.z1 + width }; })
   ];
   for (const at of [lawnAt, pavingAt]) {
@@ -686,6 +741,20 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
     if (due()) yield;
   }
   yield;
+  // Paved areas, laid as the paths are, on the lawn's and the paving's triangles at a footpath's height for what they're made of: the
+  // raised lawn's kerbs stand along their edges
+  for (const [surface, ...flats] of g.plazas ?? []) {
+    const rings = flats.map((f) => pointsOf(f));
+    if (rings[0].length < 3 || !SURFACES[surface] || !wanted(rings[0][0].x, rings[0][0].z)) continue;
+    paths.tint = SURFACES[surface];
+    const top = pathTop(0, surface);
+    const b = boxOf(rings[0]);
+    const laid = [];
+    drapePolygon(rings, pavingAt.trianglesIn(b.x0, b.z0, b.x1, b.z1), SIDEWALK_TOP + top - LAWN_TOP, laid, 0, 0);
+    drapePolygon(rings, lawnAt.trianglesIn(b.x0, b.z0, b.x1, b.z1), top, laid, 0, 0);
+    addLaid(paths, laid);
+    if (due()) yield;
+  }
   // Beds dug in the raised lawn, cut to it, or laid on the map's lawn where there's none
   for (const [kind, ...ring] of g.beds) {
     const pts = pointsOf(ring);
@@ -702,9 +771,32 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   }
   yield;
   stone.tint = SANDSTONE;
+  const fountainOf = (pts) => {
+    const mx = pts.reduce((t, p) => t + p.x, 0) / pts.length, mz = pts.reduce((t, p) => t + p.z, 0) / pts.length;
+    return (g.fountains ?? []).find(([x, z, r]) => Math.hypot(x - mx, z - mz) < r);
+  };
   for (const ring of g.ponds) {
     const pts = pointsOf(ring);
     if (pts.length < 3 || !wanted(pts[0].x, pts[0].z)) continue;
+    const fountain = fountainOf(pts);
+    if (fountain) {
+      // A fountain's basin: its water up near the top of a granite rim (not stood on: you sit on it, you don't climb it), and a plinth in
+      // its middle with a bronze figure on it
+      addDraped(pond, [pts], POND_TOP + FOUNTAIN.water, heightAt);
+      stone.tint = GRANITE;
+      addWallAlong(stone, [...pts, pts[0]], FOUNTAIN.rimWidth, POND_TOP - 0.05, FOUNTAIN.rim + 0.05, heightAt);
+      const [x, z, r] = fountain;
+      if (r >= FOUNTAIN.plinthFrom) {
+        const yaw = Math.atan2(pts[1].x - pts[0].x, pts[1].z - pts[0].z), y = heightAt(x, z) + POND_TOP;
+        addBox(stone, x, z, yaw, r * 0.36, r * 0.36, y - 0.05, FOUNTAIN.water + 0.6);
+        addBox(stone, x, z, yaw, r * 0.17, r * 0.17, y, 2.9);
+        stone.tint = BRONZE;
+        addBox(stone, x, z, yaw, 0.7, 0.5, y + 2.9, 3.0);
+        colliders.push({ minX: x - r * 0.2, maxX: x + r * 0.2, minZ: z - r * 0.2, maxZ: z + r * 0.2, minY: 0, maxY: 6 });
+      }
+      stone.tint = SANDSTONE;
+      continue;
+    }
     addDraped(pond, [pts], POND_TOP, heightAt);
     // Sandstone round its edge
     addRibbon(stone, [...pts, pts[0]], COPING.width, POND_TOP + COPING.rise, heightAt);
@@ -746,7 +838,6 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
     const pts = pointsOf(line);
     if (wanted(pts[0].x, pts[0].z)) addWallAlong(hedge, pts, width, LAWN_TOP, height, hedgeAt);
   }
-  const walls = new GroundCells(1e6);
   for (const [side, ...line] of g.seawalls ?? []) {
     const pts = pointsOf(line);
     if (pts.length > 1 && wanted(pts[0].x, pts[0].z)) colliders.push(...addParapet(walls, pts, side, heightAt));

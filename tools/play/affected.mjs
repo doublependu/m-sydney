@@ -57,7 +57,7 @@ export const COVERS = {
   'drive-route': { files: /^js\/(road-network|traffic|vehicle-physics)\.js$/, area: [50, 320, 230, 400] },
   'crash-recovery': { files: /^js\/(vehicle-physics|building-collision|controllers)\.js$/, area: null },
   'walk-cycle': { files: /^js\/(pedestrians|pedestrian-system|building-collision|controllers|arrivals)\.js$/, area: null },
-  garden: { files: /^(js\/(garden|drawn-ground|drape|controllers|ground-geometry|lot-details)\.js|tools\/(build-garden|garden-areas)\.mjs)$/, area: [400, 700, -1770, -990] },
+  garden: { files: /^(js\/(garden|drawn-ground|drape|controllers|ground-geometry|lot-details)\.js|tools\/(build-garden|garden-areas)\.mjs)$/, area: [270, 700, -1770, -200] },
   helicopter: { files: /^js\/(helicopter|controllers|cameras|buildings|building-footprints|arrivals)\.js$/, area: null },
   'mode-map': { files: /^js\/(cameras|city-map|lighting|controllers|arrivals|main)\.js$/, area: null },
   'mode-switch': { files: /^js\/(controllers|arrivals|surfaces|bridge|main)\.js$/, area: null },

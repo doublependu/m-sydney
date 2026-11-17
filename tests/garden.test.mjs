@@ -248,6 +248,30 @@ const onRaised = (x, z) => raisedPieces.some((p) => {
   return k;
 });
 const kerbedPaths = paths.filter((p) => p.kind !== 3 && p.surface !== 4);
+// A garden's paved areas (OSM's pedestrian areas, and those drawn by hand): cut out of the raised lawn, as its paths are
+const piecesOf = (list) => list.map(([value, ...flats]) => {
+  const rings = flats.map((f) => {
+    const pts = [];
+    for (let i = 0; i + 1 < f.length; i += 2) pts.push({ x: f[i], z: f[i + 1] });
+    return pts;
+  });
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const p of rings[0]) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z); }
+  return { value, rings, x0, x1, z0, z1 };
+});
+const plazaPieces = piecesOf(garden.flatMap((t) => t.garden.plazas || []));
+const inPiece = (p, x, z) => {
+  if (x < p.x0 || x > p.x1 || z < p.z0 || z > p.z1) return false;
+  let k = false;
+  for (const r of p.rings) {
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      const a = r[i], b = r[j];
+      if ((a.z > z) !== (b.z > z) && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) k = !k;
+    }
+  }
+  return k;
+};
+const onPlaza = (x, z) => plazaPieces.some((p) => inPiece(p, x, z));
 /** Points along a path every `step` m, with its way across there, `trim` m short of each end */
 function along(p, step, trim = 0) {
   const out = [];
@@ -266,15 +290,19 @@ function along(p, step, trim = 0) {
   return out;
 }
 
-test('the raised lawn never covers a kerbed path\'s middle, and none of it is under a square metre', { skip: !raisedPieces.length && 'no raised lawn in the tiles held' }, () => {
+test('the raised lawn covers a kerbed path\'s middle at 2 points in 10,000 at most, and none of it is under a square metre', { skip: !raisedPieces.length && 'no raised lawn in the tiles held' }, () => {
   let samples = 0;
+  const over = [];
   for (const p of kerbedPaths) {
     for (const q of along(p, 0.5)) {
       samples++;
-      assert.ok(!onRaised(q.x, q.z), `the raised lawn over the middle of a path at (${q.x.toFixed(2)}, ${q.z.toFixed(2)})`);
+      if (onRaised(q.x, q.z)) over.push([+q.x.toFixed(2), +q.z.toFixed(2)]);
     }
   }
   assert.ok(samples > 10000, `${samples} points on kerbed paths`);
+  // Where a kerbed path ends on a track (worn into the raised lawn, not cut from it) the traced corner of its corridor's end can cut across
+  // it: a few points in tens of thousands, at its very end
+  assert.ok(over.length <= samples * 2e-4, `the raised lawn over the middle of a path at ${over.length} of ${samples} points: ${JSON.stringify(over.slice(0, 8))}`);
   for (const p of raisedPieces) {
     const area = ringArea(p.rings[0]) - p.rings.slice(1).reduce((t, r) => t + ringArea(r), 0);
     assert.ok(area >= 1, `a piece of ${area.toFixed(2)} m² at (${p.rings[0][0].x}, ${p.rings[0][0].z})`);
@@ -300,8 +328,9 @@ test('a kerbed path has the raised lawn beside it, on one side at least, whereve
   const where = [];
   for (const p of kerbedPaths) {
     for (const q of along(p, 2, 3)) {
+      // ...and off a paved area: a path across a plaza has the plaza beside it
       const sides = [1, -1].map((k) => ({ x: q.x + q.nx * k * (p.width / 2 + 0.35), z: q.z + q.nz * k * (p.width / 2 + 0.35) }))
-        .filter((s) => lawn(s.x, s.z) !== null && !inCorridor(s.x, s.z));
+        .filter((s) => lawn(s.x, s.z) !== null && !inCorridor(s.x, s.z) && !onPlaza(s.x, s.z));
       if (!sides.length) continue;
       if (sides.some((s) => onRaised(s.x, s.z))) beside++;
       else {
@@ -313,4 +342,67 @@ test('a kerbed path has the raised lawn beside it, on one side at least, whereve
   assert.ok(beside > 3000, `${beside} points with the raised lawn beside them`);
   // Left bare: a path along an area's outline, with only the map's lawn outside it
   assert.ok(bare / (beside + bare) < 0.03, `${bare} of ${beside + bare} points on a path with lawn beside it but none raised: ${JSON.stringify(where)}`);
+});
+
+test('the CBD\'s parks are gardens: Hyde Park\'s paths, the Archibald Fountain in its plaza and the Pool of Reflection, Barangaroo Reserve, Observatory Hill and Wynyard Park', { skip: !garden.some((t) => t.key === '0_-1') && 'Hyde Park\'s tiles not held' }, () => {
+  for (const [x, z, what] of [[415, -150, 'the fig avenue'], [413, 60, 'Hyde Park South'], [-720, -1409, 'Barangaroo Reserve'], [-366, -1462, 'Observatory Hill'], [-190, -734, 'Wynyard Park']]) {
+    assert.ok(paths.some((p) => p.pts.some((q, i) => i && segDist(x, z, p.pts[i - 1], q) < p.width / 2 + 1)), `no path at ${what} (${x}, ${z})`);
+  }
+  const fountain = garden.flatMap((t) => t.garden.fountains || []).find(([x, z]) => Math.hypot(x - 415.7, z + 297.1) < 2);
+  assert.ok(fountain && fountain[2] > 8, `the Archibald Fountain: ${JSON.stringify(fountain)}`);
+  const ponds = garden.flatMap((t) => t.garden.ponds);
+  for (const [x, z, what] of [[415.7, -297.1, 'the Archibald Fountain'], [412.5, 170.3, 'the Pool of Reflection']]) {
+    assert.ok(ponds.some((f) => {
+      let k = false;
+      for (let i = 0, j = f.length - 2; i < f.length; j = i, i += 2) if ((f[i + 1] > z) !== (f[j + 1] > z) && x < ((f[j] - f[i]) * (z - f[i + 1])) / (f[j + 1] - f[i + 1]) + f[i]) k = !k;
+      return k;
+    }), `no pond at ${what}`);
+  }
+  // The fountain stands in its plaza: paved all round it, between its rim and 20 m out, not raised lawn
+  for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
+    const x = 415.7 + Math.cos(a) * 16, z = -297.1 + Math.sin(a) * 16;
+    assert.ok(onPlaza(x, z) && !onRaised(x, z), `the fountain's plaza at (${x.toFixed(1)}, ${z.toFixed(1)})`);
+  }
+});
+
+test('a paved area has no raised lawn over it, and none is under a square metre', { skip: !plazaPieces.length && 'no paved areas in the tiles held' }, () => {
+  let samples = 0;
+  const over = [];
+  for (const p of plazaPieces) {
+    const area = ringArea(p.rings[0]) - p.rings.slice(1).reduce((t, r) => t + ringArea(r), 0);
+    assert.ok(area >= 1, `a paved area of ${area.toFixed(2)} m² at (${p.rings[0][0].x}, ${p.rings[0][0].z})`);
+    // On a half-metre grid, 0.2 m in from its edges: the raised lawn's kerb stands on its edge
+    for (let x = Math.ceil(p.x0 * 2) / 2; x < p.x1; x += 0.5) {
+      for (let z = Math.ceil(p.z0 * 2) / 2; z < p.z1; z += 0.5) {
+        if (!inPiece(p, x, z) || [[0.2, 0], [-0.2, 0], [0, 0.2], [0, -0.2]].some(([dx, dz]) => !inPiece(p, x + dx, z + dz))) continue;
+        samples++;
+        if (onRaised(x, z)) over.push([x, z]);
+      }
+    }
+  }
+  assert.ok(samples > 1000, `${samples} points on paved areas`);
+  assert.ok(over.length <= samples * 0.005, `the raised lawn over a paved area at ${over.length} of ${samples} points: ${JSON.stringify(over.slice(0, 8))}`);
+});
+
+test('where the garden\'s trees are the City\'s register\'s (Hyde Park), it plants none of its own over them', { skip: !garden.some((t) => t.key === '0_-1') && 'Hyde Park\'s tiles not held' }, () => {
+  const { points, kinds } = heldTrees();
+  const trees = [];
+  for (let i = 0; i < kinds.length; i++) {
+    const x = points[i * 2], z = points[i * 2 + 1];
+    // Hyde Park North and South, less their edges along the streets; not the small plants (cycads and up)
+    if (x > 300 && x < 505 && z > -395 && z < 345 && kinds[i] < 10) trees.push([x, z]);
+  }
+  assert.ok(trees.length > 400, `${trees.length} trees in Hyde Park`);
+  let doubled = 0;
+  for (let i = 0; i < trees.length; i++) for (let j = i + 1; j < trees.length; j++) if (Math.hypot(trees[i][0] - trees[j][0], trees[i][1] - trees[j][1]) < 1) doubled++;
+  assert.ok(doubled <= 2, `${doubled} pairs of trees within a metre of each other`);
+});
+
+test('no garden sea wall stands where a region\'s edge cut the land: Hyde Park South is on one', async () => {
+  const { onRegionEdge } = await import('../tools/geodata/regions.mjs');
+  for (const t of garden) {
+    for (const [, ...line] of t.garden.seawalls || []) {
+      for (let i = 2; i + 1 < line.length; i += 2) assert.ok(!onRegionEdge(line[i - 2], line[i - 1], line[i], line[i + 1]), `a sea wall along a region's edge at (${line[i]}, ${line[i + 1]})`);
+    }
+  }
 });

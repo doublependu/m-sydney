@@ -2545,7 +2545,8 @@ export const SCENARIOS = {
 
   // The Royal Botanic Garden on foot and on the bike (js/garden.js, js/drawn-ground.js): in from Macquarie St through the Palace Garden
   // Gate, along the asphalt and onto a gravel path; up a kerb onto the raised lawn beside an asphalt path and back down; through the Queen
-  // Elizabeth II Gate from the promenade along Farm Cove to the Opera House's forecourt; then on the bike up Macquarie St's kerb and along
+  // Elizabeth II Gate from the promenade along Farm Cove to the Opera House's forecourt; in Hyde Park from Elizabeth St across the
+  // Archibald Fountain's plaza and down its avenue; then on the bike up Macquarie St's kerb and along
   // the garden's path, and across a path between two raised lawns, down one kerb and up the other. The walker and the bike stand on
   // what's drawn under them all the way: the paving, the path, the raised lawn, never sunk into it
   garden: {
@@ -2606,6 +2607,14 @@ export const SCENARIOS = {
       await walk([[631, -1678.6], [614.4, -1689.2], [599.4, -1700.8], [581.2, -1712], [571.7, -1721.3], [567.4, -1735.1], [560.1, -1755.3]], 'through the gate');
       const forecourt = await human.state();
       expect(forecourt.z < -1740, `not through the gate: at (${forecourt.x.toFixed(1)}, ${forecourt.z.toFixed(1)})`);
+      // Hyde Park North: in from Elizabeth St's footpath along the paved walk to the Archibald Fountain, across its plaza, and south down
+      // the fig avenue
+      await debug(() => window.__gameDebug.goto(277, -296.6, Math.PI / 2, 'person'));
+      await human.wait(1500);
+      await walk([[290, -296.7], [312.5, -296.7], [350, -296.9], [385, -297], [398, -287], [409, -276]], 'to the fountain');
+      const plaza = await check('in the fountain\'s plaza');
+      expect(plaza.what?.startsWith('garden:'), `not on the fountain's plaza: ${plaza.what}`);
+      await walk([[415.7, -268], [415.9, -250.4], [415.2, -215]], 'down the avenue');
       // The bike on Macquarie St, east up its kerb (at x 410) onto the footpath and through the gate along the garden's path
       await debug(() => window.__gameDebug.goto(398, -1016, Math.PI / 2, 'cyclist'));
       await human.wait(1500);

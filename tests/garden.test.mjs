@@ -193,9 +193,10 @@ test('the garden\'s paths lie over the lawn as it\'s drawn, so the lawn doesn\'t
     const x = (t[0][0] + t[1][0] + t[2][0]) / 3, z = (t[0][2] + t[1][2] + t[2][2]) / 3, y = (t[0][1] + t[1][1] + t[2][1]) / 3;
     const l = lawnAt(x, z);
     if (l === null) continue;
-    if (y - l < 0.01) under++;
+    // A track lies a centimetre over the lawn (js/drawn-ground.js TRACK_TOP); anything nearer would fight it
+    if (y - l < 0.005) under++;
     else over++;
   }
   assert.ok(over > 1000, `only ${over} of the paths' triangles over a lawn`);
-  assert.ok(under / (over + under) < 0.02, `${under} of ${over + under} path triangles within a centimetre of the lawn, or under it`);
+  assert.ok(under / (over + under) < 0.02, `${under} of ${over + under} path triangles within half a centimetre of the lawn, or under it`);
 });

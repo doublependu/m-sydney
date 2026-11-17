@@ -26,7 +26,8 @@ function network(side) {
       './geodata.js': { GEO: { roadGraph: graph }, heldTiles: () => [] },
       './building-collision.js': { polygonBoxOverlaps: () => false },
       './surfaces.js': { KIND: { GROUND: 0, BRIDGE: 1, TUNNEL: 2, CUTTING: 3 }, linkById: new Map(graph.links.map((_, i) => [i, { sid: 0, kind: 0 }])) },
-      './bridge.js': { deckLanePoints: () => null }
+      './bridge.js': { deckLanePoints: () => null },
+      './drawn-ground.js': { pathTop: () => 0.29 }
     },
     globals: { console: { info() {} }, Math, Map, Set, Array, Object, Number, Infinity, Uint8Array, Float32Array }
   });

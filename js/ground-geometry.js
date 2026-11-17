@@ -496,22 +496,26 @@ function roadSurfaceMeshes() {
 }
 
 // Height under a wheel at (x, z) on surface `sid`: on the ground, the car's own road (`road`, where its middle is) or,
-// off it, the ground, and a footpath's top on a kerb's island
-function wheelGround(sid, x, z, road = null, near = null) {
+// off it, the ground, and a footpath's top on a kerb's island. `top(x, z)`: the top of what's drawn there, or null where nothing is
+// (js/drawn-ground.js drawnTop()), which comes first off a deck: the game's car has it, the checks that drive in node don't.
+function wheelGround(sid, x, z, road = null, near = null, top = null) {
   if (sid) return surfaceHeight(sid, x, z, near);
+  const drawn = top ? top(x, z) : null;
+  if (drawn !== null) return drawn;
   if (blockAt(x, z)) return groundHeight(x, z) + SIDEWALK_TOP;
   return road ? roadHeight(road, x, z) : groundHeight(x, z);
 }
 
 // Where a car's four wheels touch, and the body's height, pitch and roll that put all four on the surface:
-// { contacts: [{ x, z, y }], y, pitch, roll }. `near`: the height of the level it's on, where its structure has two
-function wheelContacts(x, z, heading, sid = 0, near = null, track = 0.8, axle = 1.4) {
+// { contacts: [{ x, z, y }], y, pitch, roll }. `near`: the height of the level it's on, where its structure has two. `top`: as
+// wheelGround() takes it
+function wheelContacts(x, z, heading, sid = 0, near = null, track = 0.8, axle = 1.4, top = null) {
   const sin = Math.sin(heading), cos = Math.cos(heading);
   const road = sid ? null : groundRoadAt(x, z, near);
   const contacts = [];
   for (const [side, along] of [[-track, axle], [track, axle], [-track, -axle], [track, -axle]]) {
     const px = x + sin * along + cos * side, pz = z + cos * along - sin * side;
-    const y = wheelGround(sid, px, pz, road, near);
+    const y = wheelGround(sid, px, pz, road, near, top);
     // A wheel over a drop too big to drive off, or against a rise too big to climb, is held at the car's level: the edge of
     // a cutting, a deck's parapet
     contacts.push({ x: px, z: pz, y: near !== null && Math.abs(y - near) >= STEP ? near : y });
@@ -521,7 +525,7 @@ function wheelContacts(x, z, heading, sid = 0, near = null, track = 0.8, axle = 
   // under its middle: over a crest too sharp for its wheels (the top of a cutting's bank, where a tunnel's mouth meets it) it rests
   // on its floor there, beached, a wheel or two in the air. On a road's steepest change of grade the middle stands 0.14 m over the mean
   let y = (fl + fr + rl + rr) / 4;
-  const middle = wheelGround(sid, x, z, road, near);
+  const middle = wheelGround(sid, x, z, road, near, top);
   if (middle - y > CAR_FLOOR && (near === null || Math.abs(middle - near) < STEP)) y = middle - CAR_FLOOR;
   const pitch = Math.atan2((fl + fr - rl - rr) / 2, axle * 2);
   const roll = Math.atan2((fr + rr - fl - rl) / 2, track * 2);

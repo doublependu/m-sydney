@@ -2543,6 +2543,77 @@ export const SCENARIOS = {
     }
   },
 
+  // The Royal Botanic Garden on foot and on the bike (js/garden.js, js/drawn-ground.js): in from Macquarie St through the Palace Garden
+  // Gate, along the asphalt and onto a gravel path; through the Queen Elizabeth II Gate from the promenade along Farm Cove to the Opera
+  // House's forecourt; then on the bike up Macquarie St's kerb and along the garden's path. The walker and the bike stand on what's
+  // drawn under them all the way: the paving, the path, never sunk into it
+  garden: {
+    minutes: 8,
+    async run({ human, page, metric, expect }) {
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      // How far the player is drawn off the top of what's drawn under them, at their middle; the worst over a walk
+      let worst = { off: 0 };
+      const check = async (why) => {
+        const at = await debug(() => {
+          const p = window.__gameDebug.player();
+          const d = window.__gameDebug.drawnAt(p.x, p.z);
+          return { x: p.x, z: p.z, mode: p.mode, drawnY: p.drawnY, top: d.top, what: d.what };
+        });
+        if (at.top === null) return at;
+        // A bike's tyres reach 8 mm under its middle (js/controllers.js)
+        const off = at.drawnY - at.top - (at.mode === 'cyclist' ? 0.008 : 0);
+        if (Math.abs(off) > Math.abs(worst.off)) worst = { off, why, ...at };
+        return at;
+      };
+      const walk = async (points, why) => {
+        for (const [x, z] of points) {
+          expect(await walkTo(human, { x, z }, { arrive: 1.2, timeout: 30000 }), `never got to (${x}, ${z}) ${why}`);
+          await human.wait(400);
+          await check(why);
+        }
+      };
+      // On Macquarie St's footpath by the Palace Garden Gate, then in and east along the asphalt to a gravel path
+      await debug(() => window.__gameDebug.goto(436, -1016, Math.PI / 2, 'person'));
+      await human.wait(1500);
+      await walk([[447.9, -1015.7], [473.8, -1014.8], [487.8, -1011.9], [511.3, -1021.7], [521.2, -1014.2], [528.8, -1012.5], [538.4, -992],
+        [562.4, -1001.6], [585.3, -1012.4], [599.4, -1019.1], [625.4, -1014.1], [634.8, -1027.2], [632.6, -1043.5], [646.3, -1066],
+        [658.6, -1088.1], [671.9, -1110], [657.2, -1131.8], [651.3, -1137.4], [662.7, -1141.7], [670.8, -1143.6], [674.5, -1156.8]], 'in the garden');
+      const gravel = await check('on the gravel');
+      expect(gravel.what?.startsWith('garden:'), `not on a garden's path at the gravel: ${gravel.what}`);
+      // Along the promenade by Farm Cove, through the Queen Elizabeth II Gate, onto the Opera House's forecourt
+      await debug(() => window.__gameDebug.goto(643.8, -1671.9, -2.2, 'person'));
+      await human.wait(1500);
+      await walk([[631, -1678.6], [614.4, -1689.2], [599.4, -1700.8], [581.2, -1712], [571.7, -1721.3], [567.4, -1735.1], [560.1, -1755.3]], 'through the gate');
+      const forecourt = await human.state();
+      expect(forecourt.z < -1740, `not through the gate: at (${forecourt.x.toFixed(1)}, ${forecourt.z.toFixed(1)})`);
+      // The bike on Macquarie St, east up its kerb (at x 410) onto the footpath and through the gate along the garden's path
+      await debug(() => window.__gameDebug.goto(398, -1016, Math.PI / 2, 'cyclist'));
+      await human.wait(1500);
+      const trace = [];
+      await human.down('KeyW');
+      for (let i = 0; i < 160; i++) {
+        const b = await debug(() => { const p = window.__gameDebug.player(); return { x: p.x, z: p.z, over: p.drawnY - window.__gameDebug.decksOver(p.x, p.z).ground }; });
+        trace.push(b);
+        if (b.x > 452) break;
+        const error = await human.steerTowards(await human.state(), { x: 520, z: -1016 }, 0.05);
+        void error;
+        await human.wait(40);
+      }
+      await human.releaseAll();
+      await human.wait(1200);
+      const kerb = trace.filter((b) => b.x > 405 && b.x < 416);
+      const jump = Math.max(0, ...kerb.slice(1).map((b, i) => Math.abs(b.over - kerb[i].over)));
+      metric('bikeKerbStep', Number(jump.toFixed(3)));
+      expect(trace.some((b) => b.x < 408 && b.over < 0.08) && trace.some((b) => b.x > 414 && b.x < 440 && b.over > 0.15), 'the bike never rode up the kerb');
+      expect(jump < 0.15, `the bike rose ${jump.toFixed(2)} m between samples at the kerb`);
+      expect(trace[trace.length - 1].x > 445, `the bike stopped at x ${trace[trace.length - 1].x.toFixed(1)}`);
+      await check('on the bike');
+      metric('worstOff', Number(worst.off.toFixed(3)));
+      expect(Math.abs(worst.off) < 0.03, `drawn ${worst.off.toFixed(3)} m off what's under it, ${worst.why} at (${worst.x?.toFixed(1)}, ${worst.z?.toFixed(1)}) on ${worst.what}`);
+    }
+  },
+
   // Dragging the camera round, by mouse or by a finger on the right half of a phone, never loses you; and moving forward turns
   // you to where it looks, with the camera staying put (js/cameras.js, steerToView() in js/controllers.js)
   'orbit-follow': orbitFollowScenario('laptop'),

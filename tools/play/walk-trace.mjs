@@ -1,7 +1,7 @@
 // How smoothly the walker moves: walks at a few places and logs every frame where its head and pelvis are drawn, in the world and on
 // the screen, and where the camera is. Jitter is what's left of each after a smooth curve through the 7 frames round it (a quadratic,
 // by the game's own clock), so a stride's bob and sway don't count; a step back and forth from one frame to the next does.
-// usage: node tools/play/walk-trace.mjs out.json [--profile=laptop] [--only=straight,turn] [--shift] [--query=...]
+// usage: node tools/play/walk-trace.mjs out.json [--profile=laptop] [--only=straight,turn] [--shift] [--query=...] [--dist=dir]
 //   --shift holds Shift with W, for the run
 import { writeFileSync } from 'node:fs';
 import { launchBrowser, openGame, serveDist, PROFILES } from './lib.mjs';
@@ -50,7 +50,9 @@ const jitter = (ts, axes) => {
   return { rms: +rms(len).toFixed(3), p95: +p95(len).toFixed(3) };
 };
 
-const server = await serveDist();
+// Another build, to trace in turns with this one
+const dist = option('dist', null);
+const server = await serveDist(0, ...(dist ? [dist] : []));
 const browser = await launchBrowser({});
 const game = await openGame(browser, server.url, { profile, query: option('query', '') });
 const { page } = game;

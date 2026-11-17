@@ -611,9 +611,9 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
   // with 2 m of sidewalk (the rig steps down and up the curbs)
   const SIDEWALK_Y = 0.22;
   const CROSSWALK_Y = 0.012;
-  const PATH_Y = 0.29; // a garden's path lies over its lawn (PATH_TOP, js/garden.js)
+  const PATH_Y = 0.29; // a garden's path lies over its lawn: each track says how far by what it's made of (js/drawn-ground.js pathTop())
   function pedGround(p, x, z) {
-    if (p.path) return PATH_Y;
+    if (p.path) return p.top ?? PATH_Y;
     if (!p.node) return SIDEWALK_Y;
     const t = (x - p.ax) * p.ux + (z - p.az) * p.uz;
     return t > 2 && t < p.len - 2 ? CROSSWALK_Y : SIDEWALK_Y;

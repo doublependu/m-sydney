@@ -2,7 +2,7 @@ import * as THREE from 'three/webgpu';
 import { blockAt } from './city-config.js';
 import { groundHeight, groundRoadAt, linkById, roadHeight } from './surfaces.js';
 import { streetFront, tileStreets } from './street-front.js';
-import { PATH_SURFACES, gardenMaterials, lawnSurface, pavingSurface } from './garden.js';
+import { PATH_SURFACES, lawnSurface, pavingSurface } from './garden.js';
 import { MODEL_SITES, toWorldOf } from './model-sites.js';
 import { GEO, TILE, heldList, heldTiles, isHeld, tileExists, tileKey } from './geodata.js';
 import { MARGIN, squareLots } from './house-lots.js';
@@ -12,6 +12,7 @@ import { createConcreteMaterial, createFenceMaterial, createLotThingMaterial, cr
 import { outsideTunnelMouths } from './tunnel-mouths.js';
 import { anchorToOrigin, onOriginMove, origin } from './world-origin.js';
 import { activity, runToEnd } from './world-jobs.js';
+import { dropLayers, setLayer } from './drawn-ground.js';
 
 // The houses' lots near you (js/house-lots.js): their fences and driveways, drawn within the graphics level's houseDetail of you
 // (js/quality.js), nearest first, once the city round you is complete; and the fences' colliders, which hold the walker and nothing else
@@ -277,6 +278,32 @@ function* squareWork(square, tiles) {
   return { entries, env };
 }
 
+/**
+ * What a square's lots draw over the ground, as triangles in the world (for js/drawn-ground.js, which the walker and what's ridden stand on):
+ * { lawn, path, slabs }, its verges' lawn and footpath, and the tops of its slabs (driveways, crossovers, laybacks and paths)
+ */
+function groundOf(result) {
+  const inWorld = (chunks) => chunks.map((c) => {
+    const t = new Float32Array(c.pos.length);
+    for (let i = 0; i < c.pos.length; i += 3) {
+      t[i] = c.pos[i] + c.x;
+      t[i + 1] = c.pos[i + 1];
+      t[i + 2] = c.pos[i + 2] + c.z;
+    }
+    return t;
+  });
+  // A slab's top: its middle, half its length either way along (a) and half its width across (b), as js/house-lots.js slab() makes it
+  const tops = new Float32Array(result.slabs.length * 18);
+  let n = 0;
+  for (const s of result.slabs) {
+    const at = (u, w) => [s.x + s.ax * u + s.bx * w, s.y + s.ay * u + s.by * w, s.z + s.az * u + s.bz * w];
+    const a = at(-0.5, -0.5), b = at(0.5, -0.5), c = at(0.5, 0.5), d = at(-0.5, 0.5);
+    tops.set([...a, ...b, ...c, ...a, ...c, ...d], n);
+    n += 18;
+  }
+  return { lawn: inWorld(result.verge.lawn), path: inWorld(result.verge.path), slabs: [tops] };
+}
+
 /** A unit box from (-0.5, 0, -0.5) to (0.5, 1, 0.5): each of the lots' things */
 function thingGeometry() {
   const box = new THREE.BoxGeometry(1, 1, 1);
@@ -318,6 +345,18 @@ function vergeLawnMaterial() {
   return vergeLawn;
 }
 
+// The nature strips' footpath: the garden paths' plain asphalt (their colour in the vertices), over the paving as the garden's paths are.
+// Not the gardens' own material, whose tracks' worn edges (createGardenPathMaterial()) cost every pixel a few noises and an alpha test.
+let vergePath = null;
+function vergePathMaterial() {
+  if (vergePath) return vergePath;
+  vergePath = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.9 });
+  vergePath.polygonOffset = true;
+  vergePath.polygonOffsetFactor = -2;
+  vergePath.polygonOffsetUnits = -2;
+  return vergePath;
+}
+
 /**
  * The lots near you. `level`: the graphics level's name; `reach()`: m round you they're drawn (houseDetail); `built(key)`: whether that
  * tile is built; `walker`: { add(list), remove(list) } for the fences' colliders; `shadows`: whether they cast them.
@@ -354,7 +393,7 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
   }
   const lawns = vergeMesh(room.lawn, vergeLawnMaterial());
   lawns.name = 'VergeLawn';
-  const paths = vergeMesh(room.path, gardenMaterials().paths, PATH_SURFACES[1]);
+  const paths = vergeMesh(room.path, vergePathMaterial(), PATH_SURFACES[1]);
   paths.name = 'VergePath';
   for (const mesh of [lawns, paths]) {
     mesh.userData.lifted = true;
@@ -378,6 +417,7 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
       const far = Math.max(entry.square.x0 - x, x - entry.square.x1, entry.square.z0 - z, z - entry.square.z1) > r + KEEP;
       if (far || !entry.keys.every((k) => isHeld(k))) {
         squares.delete(key);
+        dropLayers(`lots:${key}:`);
         changed = true;
       }
     }
@@ -404,7 +444,11 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
       result.fronting = null;
       treesVersion++;
       // Let go of while it was worked out
-      if (next.keys.every((k) => isHeld(k))) squares.set(next.key, { square: next.square, keys: next.keys, result });
+      if (next.keys.every((k) => isHeld(k))) {
+        squares.set(next.key, { square: next.square, keys: next.keys, result });
+        // Each by itself, so the lookup can say which it stood on
+        for (const [what, tris] of Object.entries(groundOf(result))) setLayer(`lots:${next.key}:${what}`, tris);
+      }
       changed = true;
       return true;
     }
@@ -602,6 +646,7 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
   /** Lets go of everything: the colliders back from the walker */
   function clear() {
     squares.clear();
+    dropLayers('lots:');
     if (walker) walker.remove([...held]);
     held = new Set();
     fences.count = slabs.count = things.count = 0;
@@ -649,4 +694,4 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
   return { group, anchor, work, state, setShown, clear, debugLines, squares, trees, treesState, walkAt };
 }
 
-export { HOLD, REFILL, SQUARE, createLotDetails, squareWork, squareWorkNow, tilesFor };
+export { HOLD, REFILL, SQUARE, createLotDetails, groundOf, squareWork, squareWorkNow, tilesFor };

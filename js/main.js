@@ -35,6 +35,7 @@ import { createInteriors } from './interiors.js';
 import { ceilingOver, decksAt, groundHeight, inTunnel, roadRoute, structuresAt, surfaceHeight, surfaceSlope } from './surfaces.js';
 import { updateTunnelMouths } from './tunnel-mouths.js';
 import { wheelContacts } from './ground-geometry.js';
+import { buildNear, drawnTop, drawnWhat, dropLayer } from './drawn-ground.js';
 import { BRIDGE_LENGTH, DECK_REACH, bridgeAt, bridgePoint, deckOver, deckSpanAt } from './bridge.js';
 import { fullscreenElement, fullscreenSupported, onFullscreenChange, toggleFullscreen } from './fullscreen.js';
 
@@ -1291,6 +1292,7 @@ async function initApp() {
     const record = builtTiles.get(key);
     if (!record) return;
     builtTiles.delete(key);
+    dropLayer(`garden:${key}`);
     farLevel?.setShown(record.tile.ix, record.tile.iz, false);
     for (const handle of record.culling) removeSceneCulling(handle);
     for (const stage of record.stages) disposeStage(stage);
@@ -1538,6 +1540,8 @@ async function initApp() {
     setDrawDistance(quality.drawDistance);
     worldCompleteAt = performance.now();
     console.log(`[world] complete at ${Math.round(worldCompleteAt)} ms`);
+    // From here on a teleport makes the triangles of what's drawn where it arrives at once (js/drawn-ground.js)
+    controllerManager.groundAhead = true;
     if (debugFrames) console.log(`[world] steps: ${progress.timings().map(([label, ms]) => `${label} ${ms}ms`).join(', ')}`);
 
     // Houses' lots near you, from here on: their fences hold the walker, and nothing else (js/lot-details.js)
@@ -1591,6 +1595,9 @@ async function initApp() {
       }
       if (next.load.length && !groundReady(x, z, 600)) {
         yield* buildTile(next.load[0]);
+      } else if (!flying() && buildNear(x, z)) {
+        // the triangles of a lawn or footpath near you made, for standing on (js/drawn-ground.js)
+        activity.label = 'the ground near you';
       } else if (Math.hypot(x - detailsAt.x, z - detailsAt.z) > REBUILD_AFTER * (flying() ? 1.5 : 1)) {
         detailsAt = { x, z };
         detailsDoneAt = null;
@@ -1891,14 +1898,64 @@ async function initApp() {
         return result;
       },
       // The camera put at (x, y, z), looking at (tx, ty, tz), with the player on foot below where it looks so the city there is
-      // built; null to give the camera back
-      async view(from, to) {
+      // built; null to give the camera back. `keep`: the player left as they are, on the bike or in the car, to picture them from beside
+      async view(from, to, keep = false) {
         if (!from) {
           cameraSystem.fixedView = null;
           return;
         }
-        await window.__gameDebug.goto(to[0], to[2], 0, 'person');
+        if (keep) await window.__gameDebug.mapReady(to[0], to[2]);
+        else await window.__gameDebug.goto(to[0], to[2], 0, 'person');
         cameraSystem.fixedView = { from: new THREE.Vector3(...from), to: new THREE.Vector3(...to) };
+      },
+      // Where the player touches what's under them, as drawn: the walker's soles (each foot planted), the bike's tyres or the car's, each
+      // { x, z, y }, with the top of what's drawn there (js/drawn-ground.js) and the ground's height
+      contacts() {
+        const e = controllerManager.getActiveEntity();
+        const out = [];
+        const bottom = (o, drop) => {
+          const v = o.getWorldPosition(new THREE.Vector3());
+          out.push({ x: v.x + origin.x, z: v.z + origin.z, y: v.y - drop });
+        };
+        if (e.type === 'cyclist') {
+          // Its tyres: 0.35 m round the hub and 0.038 thick
+          bottom(e.frontWheel, 0.388);
+          bottom(e.rearWheel, 0.388);
+        } else if (e.type === 'car') {
+          for (const w of e.wheels) bottom(w.steerPivot, w.steerPivot.position.y);
+        } else if (e.type === 'person' && e.rig?.placed) {
+          const base = surfaceHeight(e.surface || 0, e.position.x, e.position.z, e.surfaceY ?? null);
+          for (const f of e.rig.feet) out.push({ x: f.px, z: f.pz, y: f.py + base, swing: !!f.swing });
+        }
+        return out.map((c) => ({ ...c, top: drawnTop(c.x, c.z), what: drawnWhat(), ground: groundHeight(c.x, c.z) }));
+      },
+      // What the walker, the bike's wheels and the car's stand on at (x, z) (js/drawn-ground.js): the top of what's drawn there and what
+      // it is, with the ground's height. `probe`: and every surface facing up that the scene draws on the vertical line there, top down,
+      // as a ray finds it, to check the one against the other: the player's own meshes left out, and the far level and the horizon, whose
+      // shaders leave out what's near
+      drawnAt(x, z, probe = false) {
+        const top = drawnTop(x, z);
+        const out = { x, z, ground: groundHeight(x, z), top, what: drawnWhat() };
+        if (!probe) return out;
+        const ray = new THREE.Raycaster(new THREE.Vector3(x - origin.x, 2000, z - origin.z), new THREE.Vector3(0, -1, 0), 0, 4000);
+        const own = new Set();
+        for (const e of Object.values(controllerManager.entities)) e.mesh?.traverse((o) => own.add(o));
+        const shown = (o) => { for (let n = o; n; n = n.parent) if (!n.visible) return false; return true; };
+        const hits = [];
+        scene.traverse((o) => {
+          if (!o.isMesh || o.isSkinnedMesh || own.has(o) || !shown(o) || o.material?.visible === false) return;
+          if (/^(Horizon|FarGround|FarLevel)$/.test(o.name || o.parent?.name || '')) return;
+          // The verges' meshes are refilled in place, their bounds never worked out again (they aren't culled)
+          if (o.name === 'VergeLawn' || o.name === 'VergePath') o.geometry.computeBoundingSphere();
+          const before = hits.length;
+          try { o.raycast(ray, hits); } catch { /* a mesh whose geometry can't be cast against */ }
+          for (let i = before; i < hits.length; i++) hits[i].owner = o;
+        });
+        hits.sort((a, b) => a.distance - b.distance);
+        out.hits = hits.filter((h) => !h.face || Math.abs(h.face.normal.y) > 0.3).slice(0, 8).map((h) => ({
+          y: +(2000 - h.distance).toFixed(3), mesh: h.owner.name || h.owner.parent?.name || '?', material: h.owner.material?.name || h.owner.material?.type || '?'
+        }));
+        return out;
       },
       // Waits for the map and traffic around (x, z)
       async mapReady(x, z, timeout = 90000) {
@@ -2237,7 +2294,8 @@ async function initApp() {
       const p = entity.position;
       entity.mesh.rotation.order = 'YXZ';
       if (entity.type === 'car') {
-        const rest = wheelContacts(p.x, p.z, entity.heading, entity.surface || 0, entity.surfaceY ?? null);
+        // Its wheels on what's drawn under each, off a deck: the paving, a lawn, a garden's path, a strip, a driveway (js/drawn-ground.js)
+        const rest = wheelContacts(p.x, p.z, entity.heading, entity.surface || 0, entity.surfaceY ?? null, undefined, undefined, drawnTop);
         entity.mesh.position.y = p.y + rest.y;
         entity.mesh.rotation.x = -rest.pitch;
         entity.mesh.rotation.z = rest.roll;
@@ -2245,8 +2303,12 @@ async function initApp() {
       }
       entity.mesh.position.y = p.y + groundUnder(entity);
       if (entity.type === 'cyclist') {
-        const slope = surfaceSlope(entity.surface || 0, p.x, p.z, Math.sin(entity.heading), Math.cos(entity.heading), entity.surfaceY ?? null);
-        entity.mesh.rotation.x = -Math.atan(slope);
+        // Off a deck, pitched between its two wheels as they stand (js/controllers.js standBike()); on one, to the deck
+        if (!entity.surface && entity.pitch != null) entity.mesh.rotation.x = -entity.pitch;
+        else {
+          const slope = surfaceSlope(entity.surface || 0, p.x, p.z, Math.sin(entity.heading), Math.cos(entity.heading), entity.surfaceY ?? null);
+          entity.mesh.rotation.x = -Math.atan(slope);
+        }
       }
     }
   }

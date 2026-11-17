@@ -19,12 +19,14 @@ function eventTarget() {
   };
 }
 
-function keyboardHarness(nyc = {}) {
+function keyboardHarness(nyc = {}, drawn = {}) {
   const window = eventTarget();
   const document = { ...eventTarget(), hidden: false };
   const config = {
     SPAWN: { x: 0, z: 0, heading: 0 },
     landAt: () => true,
+    blockAt: () => null,
+    CITY_BOUNDS: { sidewalkHeight: 0.22 },
     isTypingInField: (event) => ['INPUT', 'SELECT'].includes(event.target?.tagName),
     ...nyc
   };
@@ -43,7 +45,9 @@ function keyboardHarness(nyc = {}) {
       './surfaces.js': { clearOfWater: (x, z) => [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].every(([u, v]) => config.landAt(x + u * 2.5, z + v * 2.5)), edgeHeight: () => 0, groundHeight: () => 0, onFloor: () => false, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), moveOver: (sid, y, fx, fz, x, z) => ({ x, z, sid: 0, y: 0, held: false }), freeFromDeck: () => null, ROOM: { car: 2.0, foot: 2.3 }, structureAt: () => null, structuresAt: () => [], LINKS: [] },
       './building-collision.js': polygonCollision,
       './interior-data.js': { WALKER: 0.22 },
-      './model-sites.js': { MODEL_SITES: [] }
+      './model-sites.js': { MODEL_SITES: [] },
+      // Nothing drawn over the ground: the paving's height on a kerb's island, the road's off it
+      './drawn-ground.js': { buildNear: () => false, drawnOver: () => null, ...drawn }
     }
   });
   // Exercise the production event handlers without constructing the scene's 3D models.

@@ -940,3 +940,47 @@ test('on foot, held against a wall, no speed builds up forward or aside, and you
   steep.step();
   assert.ok(steep.person.speed < 0, `backing away from it moves at once (${steep.person.speed.toFixed(2)} m/s)`);
 });
+
+test('the bike stands on what\'s drawn under each of its wheels: up a kerb the front wheel climbs first, eased, and the rear follows', () => {
+  // A kerb along z = 0: the footpath beyond it, the road before it. Nothing else drawn: the footpath at the paving's height
+  const { controller } = keyboardHarness({ CITY_BOUNDS: { sidewalkHeight: 0.22 }, blockAt: (x, z) => z > 0 }, { drawnOver: () => null });
+  const position = (x, y, z) => ({ x, y, z });
+  const bike = { type: 'cyclist', position: position(0, 0, 0), heading: 0, surface: 0, mesh: { rotation: {} } };
+  // Its middle over the kerb: the front wheel on the footpath, the rear on the road, at once
+  controller.standBike(bike);
+  assert.deepEqual([...bike.wheelOver], [0.22, 0]);
+  assert.ok(Math.abs(bike.position.y - 0.11) < 1e-9, `its middle ${bike.position.y} between its wheels`);
+  assert.ok(Math.abs(bike.pitch - Math.atan2(0.22, 1.16)) < 1e-9 && bike.mesh.rotation.x === -bike.pitch, 'pitched up to the footpath');
+  // Ridden up from the road at 5 m/s, a frame at a time: no wheel jumps the kerb's height in one frame, the front is up before the rear
+  bike.position.z = -2;
+  bike.wheelOver = null;
+  controller.standBike(bike);
+  let frontUp = null, rearUp = null, step = 0;
+  for (let frame = 0; frame < 120; frame++) {
+    bike.position.z += 5 / 60;
+    const before = [...bike.wheelOver];
+    controller.standBike(bike, 1 / 60);
+    step = Math.max(step, ...bike.wheelOver.map((w, i) => Math.abs(w - before[i])));
+    if (frontUp === null && bike.wheelOver[0] > 0.2) frontUp = frame;
+    if (rearUp === null && bike.wheelOver[1] > 0.2) rearUp = frame;
+  }
+  assert.ok(step < 0.22 * 0.4, `a wheel rose ${step.toFixed(3)} m in a frame`);
+  assert.ok(frontUp !== null && rearUp !== null && rearUp > frontUp, `the front wheel up at frame ${frontUp}, the rear at ${rearUp}`);
+  assert.deepEqual([...bike.wheelOver], [0.22, 0.22]);
+  assert.ok(Math.abs(bike.pitch) < 1e-9, 'level on the footpath');
+  // On a deck, as it was: its own height and pitch are the deck's
+  bike.surface = 7;
+  controller.standBike(bike);
+  assert.equal(bike.position.y, 0);
+  assert.equal(bike.pitch, null);
+});
+
+test('on foot you stand on what\'s drawn under you, or on the paving\'s height on a kerb\'s island where nothing\'s known', () => {
+  const { controller } = keyboardHarness({ CITY_BOUNDS: { sidewalkHeight: 0.22 }, blockAt: (x, z) => z > 0 }, { drawnOver: (x, z) => (x > 5 ? 0.32 : null) });
+  controller.entities = { person: { position: { x: 0, y: 0, z: 0 } } };
+  controller.activeMode = 'person';
+  assert.equal(controller.getGroundHeight(0, -1, 'person'), 0, 'the road');
+  assert.equal(controller.getGroundHeight(0, 1, 'person'), 0.22, 'a kerb\'s island, nothing known over it');
+  assert.equal(controller.getGroundHeight(6, 1, 'person'), 0.32, 'a garden\'s path');
+  assert.equal(controller.getGroundHeight(6, 1, 'car'), 0, 'a car\'s wheels are js/ground-geometry.js wheelContacts()\'s');
+});

@@ -2876,6 +2876,30 @@ function createPondMaterial() {
   return mat;
 }
 
+/**
+ * A garden's paths (js/garden.js): the colour in each vertex. A track is a strip worn into the lawn, not laid on it: its vertices carry how
+ * far across it they are in the colour's fourth value, 0 to 0.5, where a path's have 1 (a geometry with no fourth value reads as 1). Its
+ * edges are ragged, cut by noise along it, and its colour mottled and darker towards them. No branch and no derivative: a pixel off a track
+ * takes exactly its colour.
+ */
+function createGardenPathMaterial() {
+  const mat = new THREE.MeshStandardNodeMaterial({ metalness: 0.0, roughness: 0.9 });
+  const vc = vertexColor();
+  const track = float(1.0).sub(step(0.75, vc.a));
+  const across = clamp(vc.a.mul(2.0), 0.0, 1.0);
+  // 0 at either side of a track, 1 down its middle; 0 everywhere off a track, where nothing's cut
+  const edge = min(across, float(1.0).sub(across)).mul(2.0);
+  const wp = patternXZ;
+  const ragged = noise2D(wp.mul(1.4)).mul(0.3).add(noise2D(wp.mul(4.7)).mul(0.14)).add(0.06).mul(track);
+  const inner = smoothstep(ragged, ragged.add(0.35), edge);
+  const grain = noise2D(wp.mul(2.6)).mul(0.24).add(0.88);
+  const worn = mix(vc.rgb.mul(vec3(0.82, 0.9, 0.7)), vc.rgb.mul(grain), inner);
+  mat.colorNode = mix(vc.rgb, worn, track);
+  mat.opacityNode = step(ragged, edge);
+  mat.alphaTest = 0.5;
+  return mat;
+}
+
 function createGardenBedMaterial(beds) {
   const mat = new THREE.MeshStandardNodeMaterial({ metalness: 0.0, roughness: 0.95 });
   const kinds = [0, 1, 2, 3].map((i) => beds[Math.min(i, beds.length - 1)]);
@@ -3101,6 +3125,7 @@ export {
   createWaterMaterial,
   createParkLawnMaterial,
   createGardenBedMaterial,
+  createGardenPathMaterial,
   createContactShadowMaterial,
   createFenceMaterial,
   createLotThingMaterial,

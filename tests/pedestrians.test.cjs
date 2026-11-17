@@ -671,7 +671,8 @@ test('poseCharacters skips stationary inactive cyclist IK/uploads and culls park
       './vehicle-lights.js': {},
       './building-collision.js': polygonCollision,
       './interior-data.js': { WALKER: 0.22 },
-      './model-sites.js': { MODEL_SITES: [] }
+      './model-sites.js': { MODEL_SITES: [] },
+      './drawn-ground.js': { buildNear: () => false, drawnOver: () => null }
     }
   });
 

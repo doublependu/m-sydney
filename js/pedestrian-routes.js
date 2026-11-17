@@ -16,14 +16,15 @@ function createPedestrianRoutes({ walkable, onSidewalk, edges = [], paths = [], 
   const segment = (a, b, extra = {}) => {
     const len = Math.hypot(b.x - a.x, b.z - a.z);
     return { ax: a.x, az: a.z, ux: (b.x - a.x) / len, uz: (b.z - a.z) / len,
-      len, node: null, side: 0, line: 0, path: false, ...extra };
+      len, node: null, side: 0, line: 0, path: false, top: null, ...extra };
   };
   const pathTracks = [], pathLinks = [], joinsByEdge = new Map();
   buildPaths();
 
   // The paths as tracks, each piece between two places where paths meet a chain of straight ones, `before` and `after` each other
   function buildPaths() {
-    const lines = paths.filter((p) => p.pts.length > 1).map((p) => p.pts.map((q) => ({ x: q.x, z: q.z })));
+    const kept = paths.filter((p) => p.pts.length > 1);
+    const lines = kept.map((p) => p.pts.map((q) => ({ x: q.x, z: q.z })));
     if (!lines.length) return;
     const G = 8;
     const key = (x, z) => Math.floor(x / G) * 100000 + Math.floor(z / G);
@@ -87,7 +88,7 @@ function createPedestrianRoutes({ walkable, onSidewalk, edges = [], paths = [], 
           if (q.place && previous) { const to = placeAt(q.x, q.z); nodes.add(to); previous.to = to; to.ends.push({ track: previous, end: 1 }); previous = null; from = to; }
           continue;
         }
-        const track = segment(p, q, { path: true, block: blockAt(p.x, p.z) });
+        const track = segment(p, q, { path: true, block: blockAt(p.x, p.z), top: kept[li].top ?? null });
         if (previous) { previous.after = track; track.before = previous; } else { track.from = from; from.ends.push({ track, end: 0 }); }
         pathTracks.push(track);
         previous = track;

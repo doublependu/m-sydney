@@ -25,6 +25,7 @@ import { FLY, arrivalFor, holdOnFootway } from './arrivals.js';
 import { ROOM, STRUCTURES, clearOfWater, floorBelow, freeFromDeck, groundHeight, moveOver, onFloor, structureAt, surfaceHeight } from './surfaces.js';
 import { WALKER } from './interior-data.js';
 import { MODEL_SITES } from './model-sites.js';
+import { buildNear, drawnOver } from './drawn-ground.js';
 
 // On the Harbour Bridge's deck: any of its roads' structures, the corridor's and those of the carriageways east of it (plan 5)
 const onDeck = (sid) => !!sid && !!STRUCTURES[sid]?.deck;
@@ -242,6 +243,7 @@ const JUMP_QUEUE = 0.15; // s a jump press stays good for
 const JUMP_CROUCH = 0.085; // s crouched before taking off: the press, or one held over by the queue, starts it
 const KERB_EASE = 18; // /s the body eases at, up or down a kerb or onto the footway, which the feet step over
 const FALLING = 0.3; // m over the ground (in the flat simulation) that's a fall, not a kerb
+const BIKE_AXLE = 0.58; // m along the bike from its middle to each wheel's hub
 const HEAD_ON = 0.02; // cosine of the turn a wall makes in a walker's move (89 degrees), past which it's held square on, not sliding along
 
 class ThirdPersonControllerManager {
@@ -616,6 +618,9 @@ class ThirdPersonControllerManager {
       ent.onFootway = false;
       ent.deck = !!ent.surface && onDeck(ent.surface);
       ent.position.landed = { x: destination.x, z: destination.z };
+      // What's drawn where it arrives, its triangles made now (js/drawn-ground.js): the walker's feet are planted on it, and what's ridden
+      // stands on it. Not while the first view loads (a saved place's arrival): that waits for the world's jobs, as the rest of it does
+      if (!heli && this.groundAhead) while (buildNear(destination.x, destination.z, 4));
       ent.position.y = heli ? altitude : this.getGroundHeight(destination.x, destination.z, this.activeMode);
     }
     ent.speed = 0;
@@ -647,6 +652,8 @@ class ThirdPersonControllerManager {
     } else if (this.activeMode === 'cyclist') {
       ent.leanAngle = ent.leanPivot.rotation.z = 0;
       ent._brakeHold = 0;
+      ent.wheelOver = null;
+      this.standBike(ent);
       ent._riderHidden = false;
       ent._posedX = NaN;
       if (ent.helmet) ent.helmet.visible = true;
@@ -1128,11 +1135,58 @@ class ThirdPersonControllerManager {
     return !!blockAt(x, z);
   }
 
+  // How far over the ground (the flat simulation's height) something stands at (x, z), off a deck: on foot, or a bike's middle (its wheels
+  // stand on their own, standBike()). A car's wheels are js/ground-geometry.js wheelContacts()'s.
   getGroundHeight(x, z, mode = 'person') {
     const active = this.getActiveEntity();
     if (mode === 'person' && active?.onFootway) return FOOTWAY_RISE;
-    if (mode === 'person' && !active?.surface) return !onFloor(x, z) && this.isPointOnSidewalk(x, z) ? CITY_BOUNDS.sidewalkHeight : 0.0;
+    if ((mode === 'person' || mode === 'cyclist') && !active?.surface) return this.standingOver(x, z);
     return 0.0;
+  }
+
+  /**
+   * The top of what's drawn on the ground at (x, z), over the ground there (js/drawn-ground.js): the paving, a lawn, a garden's path, a
+   * strip's footpath, a driveway, the sand. Where it isn't known yet, the paving's height on a kerb's island and the road's off it; on a
+   * model's floor, the floor's own (the ground's, js/surfaces.js).
+   */
+  standingOver(x, z) {
+    if (onFloor(x, z)) return 0.0;
+    const over = drawnOver(x, z);
+    if (over !== null) return over;
+    return this.isPointOnSidewalk(x, z) ? CITY_BOUNDS.sidewalkHeight : 0.0;
+  }
+
+  /**
+   * The bike stood on what's drawn under its two wheels, off a deck: each wheel's height over the ground eased towards the top of what's
+   * under it, as the walker's step is (KERB_EASE), so it climbs a kerb front wheel first and then the rear; its middle between the two,
+   * pitched to them. `dt` 0 puts it there at once. On a deck it's the deck's (js/main.js standOnSurfaces()).
+   */
+  standBike(b, dt = 0) {
+    if (b.surface) {
+      b.wheelOver = null;
+      b.pitch = null;
+      b.position.y = 0.0;
+      return;
+    }
+    const sin = Math.sin(b.heading), cos = Math.cos(b.heading);
+    const ease = dt > 0 && b.wheelOver ? 1 - Math.exp(-dt * KERB_EASE) : 1;
+    b.wheelOver ||= [0, 0];
+    const tops = [0, 0];
+    for (let i = 0; i < 2; i++) {
+      const along = i === 0 ? BIKE_AXLE : -BIKE_AXLE;
+      const x = b.position.x + sin * along, z = b.position.z + cos * along;
+      const want = this.standingOver(x, z);
+      b.wheelOver[i] += (want - b.wheelOver[i]) * ease;
+      if (Math.abs(want - b.wheelOver[i]) < 1e-3) b.wheelOver[i] = want;
+      tops[i] = groundHeight(x, z) + b.wheelOver[i];
+    }
+    b.pitch = Math.atan2(tops[0] - tops[1], BIKE_AXLE * 2);
+    b.position.y = (tops[0] + tops[1]) / 2 - groundHeight(b.position.x, b.position.z);
+    // Pitched now, for the rider posed from its frame this frame (poseCharacters())
+    if (b.mesh) {
+      b.mesh.rotation.order = 'YXZ';
+      b.mesh.rotation.x = -b.pitch;
+    }
   }
 
   /** Sits the person down on a seat: { x, z, heading, seatY (over the floor), stand: { x, z } } in the world's frame */
@@ -1517,6 +1571,9 @@ class ThirdPersonControllerManager {
     } else if (this.activeMode === 'helicopter') {
       this.updateHelicopter(dt, elapsed);
     }
+    // A bike left somewhere stands on what's drawn there, which can come in after it was left (a nature strip near you)
+    const parkedBike = this.entities.cyclist;
+    if (parkedBike?._parked && parkedBike._shown !== false && this.activeMode !== 'cyclist') this.standBike(parkedBike);
 
     for (const key of Object.keys(this.entities)) {
       const e = this.entities[key];
@@ -1830,7 +1887,7 @@ class ThirdPersonControllerManager {
       if (b.speed > 0 && moved < b.speed) b.speed = Math.max(0, moved);
       else if (b.speed < 0 && moved > b.speed) b.speed = Math.min(0, moved);
     }
-    b.position.y = this.getGroundHeight(b.position.x, b.position.z, 'cyclist');
+    this.standBike(b, dt);
 
     const targetLean = -turnInput * Math.min(1.0, Math.abs(b.speed) / 9.0) * 0.34;
     b.leanAngle += (targetLean - b.leanAngle) * Math.min(1, dt * 9);

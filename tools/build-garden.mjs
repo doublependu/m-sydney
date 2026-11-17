@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BitRaster, bbox, elementRings, flat, load, pointInRing, q1, rdp, ringArea, rdpRing, toWorld } from './geo-common.mjs';
-import { gardenAreas } from './garden-areas.mjs';
+import { MODEL_GATES, gardenAreas, gateHeading, pathKind } from './garden-areas.mjs';
 import { localAreas } from './local-edits.mjs';
 import { beachBehind, beachTest, loadSand } from './sand-pieces.mjs';
 
@@ -82,12 +82,15 @@ const landBits = BitRaster.load(path.join(GENERATED, 'land.bin'));
 const inBuilding = (x, z) => walls.at(x, z) === 1;
 
 // --- Paths ---------------------------------------------------------------------------------------------------------------------------
-// Kinds: 0 a footpath, 1 steps, 2 a cycleway. Surfaces: 0 paving, 1 asphalt, 2 gravel, 3 timber, 4 trodden grass (walked, not drawn)
+// Kinds: 0 a footpath, 1 steps, 2 a cycleway, 3 a track (by its area's kind and its surface: tools/garden-areas.mjs pathKind()).
+// Surfaces: 0 paving, 1 asphalt, 2 gravel, 3 timber, 4 trodden grass, 5 dirt, 6 sand
 const KINDS = { footway: 0, path: 0, track: 0, bridleway: 0, steps: 1, cycleway: 2 };
 const SURFACE = [
   [/^(paving_stones|sett|brick|bricks|stone|cobblestone|unhewn_cobblestone|concrete:plates|concrete:lanes|tiles|granite|sandstone)/, 0],
   [/^(asphalt|paved|concrete|metal|rubber|tartan)/, 1],
-  [/^(gravel|fine_gravel|compacted|woodchips|dirt|ground|earth|sand|rock|pebblestone|mud|unpaved)/, 2],
+  [/^(gravel|fine_gravel|compacted|woodchips|rock|pebblestone|unpaved)/, 2],
+  [/^(dirt|ground|earth|mud)/, 5],
+  [/^sand/, 6],
   [/^(wood|boardwalk)/, 3],
   [/^(grass|grass_paver)/, 4]
 ];
@@ -99,9 +102,12 @@ const surfaceOf = (t) => {
 };
 // A path's width where OSM gives none: the garden's main walks are asphalt about 3 m across, its gravel ones narrower
 const DEFAULT_WIDTH = [[2.4, 3, 1.8, 2, 1.2], [2.4, 2.4, 2.4, 2.4, 2.4], [2.5, 2.5, 2.5, 2.5, 2.5]];
+const TRACK_WIDTH = 1.2; // m: a track's, where OSM gives none
 const widthOf = (t, kind, surface) => {
   const w = parseFloat(t.width);
-  return Number.isFinite(w) && w > 0.6 ? Math.min(6, w) : t.highway === 'track' ? 3 : DEFAULT_WIDTH[kind][surface];
+  if (Number.isFinite(w) && w > 0.6) return Math.min(6, w);
+  if (kind === 3) return TRACK_WIDTH;
+  return t.highway === 'track' ? 3 : DEFAULT_WIDTH[kind][surface] ?? DEFAULT_WIDTH[kind][2];
 };
 // Left out: footpaths along a street (its own footpath's drawn already) and over it, those in or under something, and ones not on the
 // ground's level
@@ -114,6 +120,7 @@ const paths = [];
 const wayGeom = new Map(); // way id: { pts, nodes, width } of each kept path, for the gates on it
 const skipped = { sidewalk: 0, offGround: 0, area: 0 };
 let metres = 0;
+const byKind = [0, 0, 0, 0];
 const STEP = 1; // m between the points a path is tested at
 for (const e of pathsSource) {
   if (e.type !== 'way' || !e.geometry) continue;
@@ -128,8 +135,7 @@ for (const e of pathsSource) {
     continue;
   }
   const surface = surfaceOf(t);
-  const width = widthOf(t, kind, surface);
-  wayGeom.set(e.id, { pts, nodes: e.nodes, width });
+  wayGeom.set(e.id, { pts, nodes: e.nodes, width: widthOf(t, kind, surface) });
   // Kept where it's in an area, off the roads and out of buildings: in runs
   const keep = (x, z) => areaAt(x, z, REACH) && roadClear(x, z) > 0.6 && !inBuilding(x, z) && landBits.at(x, z) === 1;
   let run = [];
@@ -139,8 +145,13 @@ for (const e of pathsSource) {
       let L = 0;
       for (let i = 1; i < line.length; i++) L += Math.hypot(line[i][0] - line[i - 1][0], line[i][1] - line[i - 1][1]);
       if (L >= 2) {
-        paths.push([kind, surface, q1(width), ...flat(line)]);
+        // A track or a path laid with a kerb, by the area it runs through
+        const [mx, mz] = run[run.length >> 1];
+        const area = areaAt(mx, mz, REACH) || areaAt(run[0][0], run[0][1], REACH);
+        const k = pathKind(kind, surface, area.kind, area.kerbedGravel);
+        paths.push([k, surface, q1(widthOf(t, k, surface)), ...flat(line)]);
         metres += L;
+        byKind[k] += L;
       }
     }
     run = [];
@@ -159,23 +170,27 @@ for (const e of pathsSource) {
   }
   flush();
 }
-log(`${paths.length} paths, ${(metres / 1000).toFixed(1)} km; left out ${skipped.sidewalk} along or across streets, ${skipped.offGround} off the ground`);
+log(`${paths.length} paths, ${(metres / 1000).toFixed(1)} km (${byKind.map((m, k) => `${['footpaths', 'steps', 'cycleways', 'tracks'][k]} ${(m / 1000).toFixed(1)}`).join(', ')}); left out ${skipped.sidewalk} along or across streets, ${skipped.offGround} off the ground`);
 
-// Gates on them: where they stand, which way their path runs, and how wide
+// Gates on them: where they stand, which way their path runs through them, and how wide
 const gates = [];
 for (const e of pathsSource) {
   if (e.type !== 'node' || !/gate/.test(e.tags?.barrier || '')) continue;
   const [x, z] = toWorld(e.lon, e.lat);
-  if (!areaAt(x, z, REACH) || roadClear(x, z) < 1) continue;
-  let found = null;
+  if (!areaAt(x, z, REACH) || roadClear(x, z) < 1 || MODEL_GATES.some(([gx, gz]) => Math.hypot(gx - x, gz - z) < 3)) continue;
+  // Every way out of the gate along the paths through it, in the order they're found
+  const arms = [];
   for (const way of wayGeom.values()) {
     const k = way.nodes.indexOf(e.id);
     if (k < 0) continue;
-    const a = way.pts[Math.max(0, k - 1)], b = way.pts[Math.min(way.pts.length - 1, k + 1)];
-    found = { heading: Math.atan2(b[0] - a[0], b[1] - a[1]), width: way.width };
-    break;
+    if (k > 0) arms.push({ pt: way.pts[k - 1], after: false, width: way.width });
+    if (k < way.pts.length - 1) arms.push({ pt: way.pts[k + 1], after: true, width: way.width });
   }
-  if (found) gates.push([q1(x), q1(z), Math.round(found.heading * 1000) / 1000, q1(Math.max(1.2, found.width + 0.4))]);
+  const through = gateHeading([x, z], arms);
+  if (!through) continue;
+  // As wide as the path it's on
+  const width = arms[through.used[0]].width;
+  gates.push([q1(x), q1(z), Math.round(through.heading * 1000) / 1000, q1(Math.max(1.2, width + 0.4))]);
 }
 log(`${gates.length} gates on them`);
 

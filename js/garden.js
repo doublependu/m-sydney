@@ -1,27 +1,23 @@
 import * as THREE from 'three/webgpu';
 import { groundHeight } from './surfaces.js';
-import { createGardenBedMaterial, createPondMaterial, createSandstoneWallMaterial } from './tsl-materials.js';
+import { createGardenBedMaterial, createGardenPathMaterial, createPondMaterial, createSandstoneWallMaterial } from './tsl-materials.js';
 import { CITY_BOUNDS, LAWNS, PAVEMENTS } from './city-config.js';
-import { GroundCells, SIDEWALK_TOP, addSurface } from './ground-geometry.js';
+import { GroundCells, addSurface } from './ground-geometry.js';
 import { TILE } from './geodata.js';
+import { LAWN_TOP, PATH_TOP, TRACK, TRACK_TOP, buildSurface, heightOn, pathTop, setLayer, surfaceOf, trianglesOf } from './drawn-ground.js';
 
 // A garden's ground, laid over a tile's lawns (tools/build-garden.mjs): its footpaths, beds, hedges, ponds and the gates on its paths. Only
 // a few areas have them yet: the Royal Botanic Garden, the Domain, round the Opera House and Circular Quay.
 //   tile.garden: { paths: [[kind, surface, width, x, z, ...]], gates: [[x, z, heading, width]], hedges: [[height, width, x, z, ...]],
 //     ponds: [[x, z, ...]], beds: [[kind, x, z, ...]], seawalls: [[side, x, z, ...]] }
-// Kinds of path: 0 a footpath, 1 steps, 2 a cycleway. Surfaces: 0 paving, 1 asphalt, 2 gravel, 3 timber, 4 trodden grass (not drawn).
+// Kinds of path: 0 a footpath, 1 steps, 2 a cycleway, 3 a track (a worn strip on the lawn, with no kerb, whatever it was in OSM). Surfaces:
+// 0 paving, 1 asphalt, 2 gravel, 3 timber, 4 trodden grass, 5 dirt, 6 sand. Trodden grass is drawn only as a track.
 // Beds, by what's planted in them: 0 shrubs, 1 succulents on gravel, 2 flowers and roses, 3 Australian natives.
 
-// Heights over the ground. The lawn is drawn SIDEWALK_TOP + 0.02 up (js/city-grid.js); each of these lies a little over it, on the
-// lawn as it's drawn (lawnSurface()).
-const LAWN_TOP = SIDEWALK_TOP + 0.02;
+// Heights over the ground: the lawn's, a path's by what it's made of, a track's, the steps' and pathTop() are js/drawn-ground.js's (each lies
+// a little over the lawn as it's drawn, lawnSurface()), which stands you on them too
 const BED_TOP = LAWN_TOP + 0.03;
 const POND_TOP = LAWN_TOP + 0.02;
-const PATH_TOP = LAWN_TOP + 0.05;
-// Paths a centimetre apart by what they're made of, so that where two meet one is always on top: timber lowest, then gravel, paving
-// and asphalt, and steps over all of them. At one height, the two fought for every pixel where they crossed.
-const PATH_LIFT = [0.02, 0.03, 0.01, 0]; // paving, asphalt, gravel, timber: over PATH_TOP
-const STEPS_LIFT = 0.04;
 const COPING = { width: 0.32, rise: 0.08 };
 const STEP = 2; // m between a path's points, so it follows the lawn's triangles
 const WIDE = 2.5; // m: a path wider than this has a row of points along its middle too
@@ -43,7 +39,7 @@ function gardenMaterials() {
     return m;
   };
   shared = {
-    paths: over(new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.9 })),
+    paths: over(createGardenPathMaterial()),
     beds: over(createGardenBedMaterial([
       { soil: 0x3a2a1e, speckles: [0x3d5f2a, 0x47692f, 0x2f4a22], cover: 0.45 }, { soil: 0xa39783, speckles: [0x7d9a8a, 0x6f8b7c, 0x8a8f5a], cover: 0.35 },
       { soil: 0x3a2a1e, speckles: [0xb0283a, 0xd8708a, 0xe0b030], cover: 0.5 }, { soil: 0x3f3022, speckles: [0x5f6e48, 0x6b7a52, 0x7a5040], cover: 0.45 }
@@ -55,24 +51,31 @@ function gardenMaterials() {
   };
   return shared;
 }
-// The paths' surfaces: paving, asphalt, gravel, timber; and steps, in sandstone
+// The paths' surfaces: paving, asphalt, gravel, timber, trodden grass, dirt, sand; and steps, in sandstone
 const linear = (hex) => new THREE.Color(hex).toArray();
-const SURFACES = [0xa59d8f, 0x56575a, 0xb8a582, 0x7d5f42].map(linear);
+const SURFACES = [0xa59d8f, 0x56575a, 0xb8a582, 0x7d5f42, 0x8a8455, 0x8c6e4c, 0xd2bf94].map(linear);
 const SANDSTONE = linear(0xc4a679), IRON = linear(0x1d1e1f);
 
-/** Ground cells with a colour at each vertex: set `tint` before adding to them */
+/**
+ * Ground cells with a colour at each vertex: set `tint` before adding to them. With `worn`, a fourth value too, `wear`: 1 for a path laid
+ * on the lawn, and how far across a track a vertex is for a track's, 0 to 0.5 (createGardenPathMaterial()).
+ */
 class TintedCells extends GroundCells {
-  constructor() {
+  constructor(worn = false) {
     super(1e6);
     this.tint = [1, 1, 1];
+    this.worn = worn;
+    this.wear = 1;
   }
   cell(x, z) {
     const c = super.cell(x, z);
     c.color ||= [];
+    if (this.worn) c.colorSize = 4;
     return c;
   }
   vertex(c, x, y, z, nx, ny, nz) {
     c.color.push(...this.tint);
+    if (this.worn) c.color.push(this.wear);
     return super.vertex(c, x, y, z, nx, ny, nz);
   }
 }
@@ -81,10 +84,9 @@ class TintedCells extends GroundCells {
  * The lawn's height under (x, z) as js/city-grid.js draws it, or null off the lawns: each lawn is laid with addSurface() on the height
  * grid's nodes, 20 m apart, and its own edges, so its triangles are straight where the ground bends between the nodes, and on a slope
  * the lawn came up through anything laid on the ground's own height. Any held tile's lawn near `tile`: a lawn's 240 m square can reach
- * over a tile's edge, though it's the other tile's. Each lawn's triangles are made again the first time a garden asks for a height on
- * it (the tiles' own were drawn in parts, some before the garden), and kept while the lawn is.
+ * over a tile's edge, though it's the other tile's. Each lawn's triangles are made the first time a height is asked of it, and kept
+ * while the lawn is (js/drawn-ground.js, which the walker and what's ridden stand on too).
  */
-const lawnTriangles = new WeakMap();
 const lawnSurface = (tile) => drawnSurface(LAWNS, tile);
 /** The same for the footpaths' paving (js/city-config.js PAVEMENTS), which is laid the same way: for a driveway's crossover */
 const pavingSurface = (tile) => drawnSurface(PAVEMENTS, tile);
@@ -93,15 +95,7 @@ function drawnSurface(list, tile) {
   const x0 = tile.ix * TILE - NEAR, x1 = (tile.ix + 1) * TILE + NEAR, z0 = tile.iz * TILE - NEAR, z1 = (tile.iz + 1) * TILE + NEAR;
   const index = new Map();
   for (const rings of list) {
-    let lawn = lawnTriangles.get(rings);
-    if (!lawn) {
-      let a = Infinity, b = -Infinity, c = Infinity, d = -Infinity;
-      for (const p of rings[0]) {
-        a = Math.min(a, p.x); b = Math.max(b, p.x); c = Math.min(c, p.z); d = Math.max(d, p.z);
-      }
-      lawn = { rings, x0: a, x1: b, z0: c, z1: d, tris: null };
-      lawnTriangles.set(rings, lawn);
-    }
+    const lawn = surfaceOf(rings);
     if (lawn.x1 < x0 || lawn.x0 > x1 || lawn.z1 < z0 || lawn.z0 > z1) continue;
     for (let cx = Math.floor(lawn.x0 / BOX); cx <= Math.floor(lawn.x1 / BOX); cx++) {
       for (let cz = Math.floor(lawn.z0 / BOX); cz <= Math.floor(lawn.z1 / BOX); cz++) {
@@ -110,32 +104,10 @@ function drawnSurface(list, tile) {
       }
     }
   }
-  const build = (lawn) => {
-    const cells = new GroundCells(1e6);
-    addSurface(cells, lawn.rings, 0);
-    lawn.tris = new Map();
-    for (const c of cells.cells.values()) {
-      const P = c.position, I = c.index;
-      for (let i = 0; i < I.length; i += 3) {
-        const t = [I[i], I[i + 1], I[i + 2]].map((v) => [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]]);
-        const xs = t.map((v) => v[0]), zs = t.map((v) => v[2]);
-        for (let cx = Math.floor(Math.min(...xs) / CELL); cx <= Math.floor(Math.max(...xs) / CELL); cx++) {
-          for (let cz = Math.floor(Math.min(...zs) / CELL); cz <= Math.floor(Math.max(...zs) / CELL); cz++) {
-            const key = cx * 100000 + cz;
-            (lawn.tris.get(key) || lawn.tris.set(key, []).get(key)).push(t);
-          }
-        }
-      }
-    }
-  };
   const heightAt = (x, z) => {
     for (const lawn of index.get(Math.floor(x / BOX) * 100000 + Math.floor(z / BOX)) || []) {
-      if (x < lawn.x0 || x > lawn.x1 || z < lawn.z0 || z > lawn.z1) continue;
-      if (!lawn.tris) build(lawn);
-      for (const t of lawn.tris.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || []) {
-        const y = heightInTriangle(t, x, z);
-        if (y !== null) return y;
-      }
+      const y = heightOn(lawn, x, z);
+      if (y !== null) return y;
     }
     return null;
   };
@@ -147,7 +119,7 @@ function drawnSurface(list, tile) {
       for (let cz = Math.floor(bz0 / BOX); cz <= Math.floor(bz1 / BOX); cz++) {
         for (const lawn of index.get(cx * 100000 + cz) || []) {
           if (bx1 < lawn.x0 || bx0 > lawn.x1 || bz1 < lawn.z0 || bz0 > lawn.z1) continue;
-          if (!lawn.tris) build(lawn);
+          if (!lawn.tris) buildSurface(lawn);
           for (let ix = Math.floor(bx0 / CELL); ix <= Math.floor(bx1 / CELL); ix++) {
             for (let iz = Math.floor(bz0 / CELL); iz <= Math.floor(bz1 / CELL); iz++) for (const t of lawn.tris.get(ix * 100000 + iz) || []) out.add(t);
           }
@@ -157,17 +129,6 @@ function drawnSurface(list, tile) {
     return [...out];
   };
   return heightAt;
-}
-
-/** The height at (x, z) of the triangle [[x, y, z] x 3] over it, or null if it isn't over it */
-function heightInTriangle([a, b, c], x, z) {
-  const d = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]);
-  if (Math.abs(d) < 1e-9) return null;
-  const l1 = ((b[2] - c[2]) * (x - c[0]) + (c[0] - b[0]) * (z - c[2])) / d;
-  const l2 = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / d;
-  const l3 = 1 - l1 - l2;
-  if (l1 < -1e-6 || l2 < -1e-6 || l3 < -1e-6) return null;
-  return l1 * a[1] + l2 * b[1] + l3 * c[1];
 }
 
 const pointsOf = (flat, from = 0) => {
@@ -202,8 +163,11 @@ function norm(x, z) {
   return { x: x / L, z: z / L };
 }
 
-/** A strip `width` across along a polyline, `lift` over the height `heightAt` gives */
-function addRibbon(cells, pts, width, lift, heightAt) {
+/**
+ * A strip `width` across along a polyline, `lift` over the height `heightAt` gives. `worn`: a track's, each vertex saying how far across it
+ * is in the cells' `wear`, for its worn edges.
+ */
+function addRibbon(cells, pts, width, lift, heightAt, worn = false) {
   if (pts.length < 2) return;
   const line = dense(pts);
   const side = across(line);
@@ -216,12 +180,14 @@ function addRibbon(cells, pts, width, lift, heightAt) {
     const p = line[i], s = side[i];
     const row = columns.map((k) => {
       const x = p.x + s.x * h * k, z = p.z + s.z * h * k;
+      if (worn) cells.wear = (1 - k) / 4;
       return cells.vertex(c, x, heightAt(x, z) + lift, z, 0, 1, 0);
     });
     // Up: counter-clockwise from above, with z pointing south
     if (prev) for (let k = 1; k < row.length; k++) c.index.push(prev[k - 1], row[k - 1], prev[k], prev[k], row[k - 1], row[k]);
     prev = row;
   }
+  cells.wear = 1;
 }
 
 /**
@@ -390,7 +356,9 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   const g = tile.garden;
   if (!g) return [];
   const mats = gardenMaterials();
-  const paths = new TintedCells(), beds = new TintedCells(), stone = new TintedCells(), pond = new GroundCells(1e6), hedge = new GroundCells(1e6);
+  const paths = new TintedCells(true), beds = new TintedCells(), stone = new TintedCells(), pond = new GroundCells(1e6), hedge = new GroundCells(1e6);
+  // The ponds' coping, again, for what stands on it: the stone's cells hold the gates' pillars and leaves too
+  const coping = new TintedCells();
   const colliders = [];
   const lawnAt = lawnSurface(tile);
   const heightAt = (x, z) => lawnAt(x, z) ?? groundHeight(x, z);
@@ -408,14 +376,15 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
     addDraped(pond, [pts], POND_TOP, heightAt);
     // Sandstone round its edge
     addRibbon(stone, [...pts, pts[0]], COPING.width, POND_TOP + COPING.rise, heightAt);
+    addRibbon(coping, [...pts, pts[0]], COPING.width, POND_TOP + COPING.rise, heightAt);
   }
   yield;
   for (const [kind, surface, width, ...line] of g.paths) {
     const pts = pointsOf(line);
-    if (surface === 4 || !SURFACES[surface] || !wanted(pts[0].x, pts[0].z)) continue;
+    if ((surface === 4 && kind !== TRACK) || !SURFACES[surface] || !wanted(pts[0].x, pts[0].z)) continue;
     // Steps in sandstone, whatever OSM says they're made of
     paths.tint = kind === 1 ? SANDSTONE : SURFACES[surface];
-    addRibbon(paths, pts, width, PATH_TOP + (kind === 1 ? STEPS_LIFT : PATH_LIFT[surface]), heightAt);
+    addRibbon(paths, pts, width, pathTop(kind, surface), heightAt, kind === TRACK);
   }
   yield;
   for (const [height, width, ...line] of g.hedges) {
@@ -448,6 +417,8 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
     }
   }
   yield;
+  // What's walked on, ridden over and driven onto, as drawn
+  setLayer(`garden:${tile.key}`, [trianglesOf(paths), trianglesOf(beds), trianglesOf(coping)]);
   buildCells(paths, target, mats.paths, { cullDistance: 900 });
   buildCells(beds, target, mats.beds, { cullDistance: 900 });
   buildCells(pond, target, mats.pond, { cullDistance: 1200 });
@@ -457,4 +428,4 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   return colliders;
 }
 
-export { PATH_TOP, SURFACES as PATH_SURFACES, buildTileGarden, gardenMaterials, lawnSurface, pavingSurface };
+export { PATH_TOP, SURFACES as PATH_SURFACES, TRACK, TRACK_TOP, buildTileGarden, gardenMaterials, lawnSurface, pathTop, pavingSurface };

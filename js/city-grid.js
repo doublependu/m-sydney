@@ -19,6 +19,7 @@ import { GroundCells, SIDEWALK_TOP, addBase, addCurb, addRoadDeck, addSurface, d
 import { SITE_CUTS } from './model-sites.js';
 import { buildStructures } from './structures.js';
 import { buildTileGarden } from './garden.js';
+import { ROCK_LIFT, SAND_LIFT } from './drawn-ground.js';
 import { outsideTunnelMouths } from './tunnel-mouths.js';
 
 // The harbour, the seawalls, the road deck, and every curb island: footpaths, traffic islands and park lawns, all laid
@@ -124,7 +125,7 @@ function buildCells(cells, group, material, { cast = false, cullDistance = 0 } =
     g.setAttribute('position', new THREE.Float32BufferAttribute(c.position, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(c.normal, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(c.uv, 2));
-    if (c.color?.length) g.setAttribute('color', new THREE.Float32BufferAttribute(c.color, 3));
+    if (c.color?.length) g.setAttribute('color', new THREE.Float32BufferAttribute(c.color, c.colorSize || 3));
     g.setIndex(c.index);
     g.computeBoundingSphere();
     const mesh = new THREE.Mesh(g, material);
@@ -251,9 +252,8 @@ function buildWater(target) {
 // The shore, a segment at a time; `beach` where a beach lies behind it (tools/build-tiles.mjs)
 const shoreOfTile = (tile) => (tile.shore || []).map(([side, ax, az, bx, bz, beach]) => ({ a: { x: ax, z: az }, b: { x: bx, z: bz }, side, beach: beach === 1 }));
 
-// Beaches and the coast's bare rock (tools/build-sand.mjs): sand and rock lie this far over the lawn they're drawn on, as the garden's paths
-// do, so neither shows through the other
-const SAND_LIFT = 0.06, ROCK_LIFT = 0.12;
+// Beaches and the coast's bare rock (tools/build-sand.mjs): sand and rock lie SAND_LIFT and ROCK_LIFT over the lawn they're drawn on
+// (js/drawn-ground.js, which stands you on them), as the garden's paths do, so neither shows through the other
 // A beach runs on past the shore and down under the water, so the sea meets it at a line: FACE_RUN m out, to FACE_FOOT under the water
 const FACE_RUN = 8, FACE_FOOT = 1.0;
 // A rock shelf in the sea stands this far over it, its edge down into the water

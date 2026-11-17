@@ -2546,11 +2546,12 @@ export const SCENARIOS = {
   // The Royal Botanic Garden on foot and on the bike (js/garden.js, js/drawn-ground.js): in from Macquarie St through the Palace Garden
   // Gate, along the asphalt and onto a gravel path; up a kerb onto the raised lawn beside an asphalt path and back down; through the Queen
   // Elizabeth II Gate from the promenade along Farm Cove to the Opera House's forecourt; in Hyde Park from Elizabeth St across the
-  // Archibald Fountain's plaza and down its avenue; then on the bike up Macquarie St's kerb and along
-  // the garden's path, and across a path between two raised lawns, down one kerb and up the other. The walker and the bike stand on
-  // what's drawn under them all the way: the paving, the path, the raised lawn, never sunk into it
+  // Archibald Fountain's plaza and down its avenue; in Bradfield Park along the path under the Harbour Bridge's approach, past a pier;
+  // along the Chinese Garden of Friendship's path by its lake; then on the bike up Macquarie St's kerb and along the garden's path, and
+  // across a path between two raised lawns, down one kerb and up the other. The walker and the bike stand on what's drawn under them all
+  // the way: the paving, the path, the raised lawn, never sunk into it
   garden: {
-    minutes: 8,
+    minutes: 9,
     async run({ human, page, metric, expect }) {
       await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
       const debug = (fn, ...args) => page.evaluate(fn, ...args);
@@ -2615,6 +2616,18 @@ export const SCENARIOS = {
       const plaza = await check('in the fountain\'s plaza');
       expect(plaza.what?.startsWith('garden:'), `not on the fountain's plaza: ${plaza.what}`);
       await walk([[415.7, -268], [415.9, -250.4], [415.2, -215]], 'down the avenue');
+      // Bradfield Park: east along the path under the bridge's approach, past a pier, on the garden's path
+      await debug(() => window.__gameDebug.goto(100, -2683.6, 1.82, 'person'));
+      await human.wait(1500);
+      await walk([[117.5, -2687.8], [140, -2694.2], [160.4, -2700.1], [176.7, -2710.3]], 'under the bridge');
+      const under = await check('under the bridge');
+      expect(under.what?.startsWith('garden:'), `not on Bradfield Park's path under the bridge: ${under.what}`);
+      // The Chinese Garden: along its path by the lake's east shore, edged with rocks
+      await debug(() => window.__gameDebug.goto(-303, 437.7, 0, 'person'));
+      await human.wait(1500);
+      await walk([[-305, 442.9], [-308.6, 448.3]], 'in the Chinese Garden');
+      const chinese = await check('in the Chinese Garden');
+      expect(chinese.what?.startsWith('garden:'), `not on the Chinese Garden's path: ${chinese.what}`);
       // The bike on Macquarie St, east up its kerb (at x 410) onto the footpath and through the gate along the garden's path
       await debug(() => window.__gameDebug.goto(398, -1016, Math.PI / 2, 'cyclist'));
       await human.wait(1500);

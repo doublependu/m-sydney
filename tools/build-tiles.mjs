@@ -176,6 +176,8 @@ function cutMap(derived) {
       (g.plazas ||= []).push([surface, ...rings]);
     }
     for (const f of GARDEN.fountains || []) (at(f[0], f[1]).garden.fountains ||= []).push(f);
+    // Ponds edged with rocks, as ponds are, but in a field of their own where a tile has any
+    for (const ring of GARDEN.rockPonds || []) (middle(ring).garden.rockPonds ||= []).push(ring);
   }
 
   // --- Roads: a link is in every tile within reach of it, with its id --------------------------------------------------

@@ -178,6 +178,51 @@ function pylonStations() {
   return pylonPlaces;
 }
 
+// Where the approach spans' piers stand: one each PIER_STEP m along the deck either side of the arch, moved along a little off any street
+// below, or none there. A pier has a foot under each truss where the deck's 2.5 m or more over the ground.
+const PIER_STEP = 56;
+const PIER_FOOT = 2.8; // m: a foot's steel, across and along at most
+function pierStations() {
+  readStreets();
+  const middle = BRIDGE_SPAN.middle, halfSpan = BEARINGS / 2;
+  const out = [];
+  for (let s0 = 40; s0 < BRIDGE_LENGTH - 40; s0 += PIER_STEP) {
+    if (s0 > middle - halfSpan - 6 && s0 < middle + halfSpan + 6) continue;
+    const s = [0, 4, -4, 8, -8, 12, -12, 16, -16].map((d) => s0 + d).find((t) => TRUSSES.every((side) => {
+      const foot = at(t, side, 0), q = axis(t);
+      return clearOfStreets(foot.x, foot.z, q.ux, q.uz, 1.4, 1.4, 0.5);
+    }));
+    if (s !== undefined) out.push(s);
+  }
+  return out;
+}
+
+/**
+ * What of the bridge stands on the ground: each pylon's granite, whole, and each approach pier's feet, as boxes { x, z, ux, uz, across,
+ * along } (their middles, which way the deck runs there, and their half sizes), for what's laid out round them (tools/build-garden.mjs keeps
+ * a garden's paths and plants off them)
+ */
+function bridgeFeet() {
+  readStreets();
+  const out = [];
+  for (const s of pylonStations()) {
+    const q = axis(s);
+    for (const side of [-1, 1]) {
+      const a = pylonAcross(s, side), p = at(s, (a.from + a.to) / 2, 0);
+      out.push({ x: p.x, z: p.z, ux: q.ux, uz: q.uz, across: (a.to - a.from) / 2, along: PYLON_BASE[1] / 2 });
+    }
+  }
+  for (const s of pierStations()) {
+    const q = axis(s), deck = deckHeight(s) - 1.4;
+    for (const side of TRUSSES) {
+      const p = at(s, side, 0);
+      if (deck - Math.max(WATER, groundHeight(p.x, p.z)) < 2.5) continue;
+      out.push({ x: p.x, z: p.z, ux: q.ux, uz: q.uz, across: PIER_FOOT / 2, along: PIER_FOOT / 2 });
+    }
+  }
+  return out;
+}
+
 // The Pylon Lookout, in the south-east pylon (js/model-sites.js, `pylon-lookout`): the granite east of the footway's arch is hollow
 // from the footway's level up, LOOKOUT.height m, its walls `wall` m thick, with a doorway off the footway in the middle of its length.
 // The model draws the foyer and the floor over it, their door and its threshold; what's here is the granite round them, and what
@@ -455,16 +500,8 @@ function buildHarbourBridge(group) {
     }
   }
 
-  // Approach spans: steel piers from the ground up to the deck, either side of the arch. A pier that would land on a
-  // street below moves along a little, or isn't built.
-  const PIER_STEP = 56;
-  for (let s0 = 40; s0 < BRIDGE_LENGTH - 40; s0 += PIER_STEP) {
-    if (s0 > middle - halfSpan - 6 && s0 < middle + halfSpan + 6) continue;
-    const s = [0, 4, -4, 8, -8, 12, -12, 16, -16].map((d) => s0 + d).find((t) => TRUSSES.every((side) => {
-      const foot = at(t, side, 0), q = axis(t);
-      return clearOfStreets(foot.x, foot.z, q.ux, q.uz, 1.4, 1.4, 0.5);
-    }));
-    if (s === undefined) continue;
+  // Approach spans: steel piers from the ground up to the deck, either side of the arch (pierStations())
+  for (const s of pierStations()) {
     const deck = deckHeight(s) - 1.4;
     for (const side of TRUSSES) {
       const foot = at(s, side, 0);
@@ -1030,4 +1067,4 @@ function buildHarbourBridge(group) {
   return surface;
 }
 
-export { GANTRIES, LOOKOUT, buildHarbourBridge, gantryLights, harbourBridgeColliders, lookoutPlace };
+export { GANTRIES, LOOKOUT, bridgeFeet, buildHarbourBridge, gantryLights, harbourBridgeColliders, lookoutPlace };

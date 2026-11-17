@@ -11,6 +11,12 @@
 // `rockShore`: its shore is sandstone blocks stepping down to the water (OSM's bare rock, tools/build-sand.mjs), with no parapet along it.
 // `natives`: planted with natives only: its woods are bush (natives and grasses, a few gums), and OSM's trees that don't say what they are
 // gums, figs, small trees and palms, not the Royal Botanic Garden's exotics.
+// `surfaces`: what some of OSM's surfaces are drawn as there, from the aerial imagery ({ concrete: 'concrete', paved: 'paving' }): elsewhere
+// concrete and paved are drawn as asphalt, as the older gardens' have always been.
+// `woods`: what its woods are planted with (tools/build-garden.mjs MIX), in place of the big trees of the Royal Botanic Garden's `wood`.
+// `ground`: what its ground between the paths is planted with, one bed over all its raised lawn, in place of grass (a garden with little
+// lawn: the Chinese Garden of Friendship's rockeries and shrubberies).
+// `pondEdge`: 'rock' for its ponds edged with rocks (boulders along the water) rather than a sandstone coping.
 import { bbox, elementRings, pointInRing, ringArea } from './geo-common.mjs';
 
 export const AREAS = [
@@ -34,7 +40,19 @@ export const AREAS = [
   // which OSM draws as areas, not as walls
   { name: 'Barangaroo Reserve', osm: 'Barangaroo Reserve', kind: 'formal', kerb: 'sandstone', rockShore: true, natives: true },
   { name: 'Observatory Hill Park', osm: 'Observatory Hill Park', kind: 'formal', register: true },
-  { name: 'Wynyard Park', osm: 'Wynyard Park', kind: 'formal', register: true }
+  { name: 'Wynyard Park', osm: 'Wynyard Park', kind: 'formal', register: true },
+  // Under the Harbour Bridge's north end, either side of its approach, down to the pylons and the shore at Milsons Point. OSM's relation
+  // holds Bradfield Park North as its fourth ring, so it's one area. North Sydney's: no register. Its sea wall along Milsons Point's shore
+  // is the garden's parapet. The bridge's pylons and piers stand in it (js/harbour-bridge.js bridgeFeet()): its plants keep off them.
+  { name: 'Bradfield Park', osm: 'Bradfield Park', kind: 'formal' },
+  // South of Central: its shared paths pale concrete in the aerial, its trees the register's; its pool and courts stay the map's
+  { name: 'Prince Alfred Park', osm: 'Prince Alfred Park', kind: 'formal', register: true, surfaces: { concrete: 'concrete' } },
+  // Darling Harbour's, so not in the City's register: their trees are OSM's. Tumbalong Park's lawn is ringed and crossed by concrete paths.
+  // The Chinese Garden of Friendship has little lawn: rockeries and shrubberies round its lake, under small ornamental trees, its paths
+  // stone, its ponds edged with rocks. Its lake (1,511 m², tagged a pond) isn't the sea's.
+  { name: 'Tumbalong Park', osm: 'Tumbalong Park', kind: 'formal', surfaces: { concrete: 'concrete' } },
+  { name: 'Chinese Garden of Friendship', osm: 'Chinese Garden of Friendship', kind: 'formal', surfaces: { paved: 'paving', concrete: 'concrete' },
+    woods: 'chinese', ground: 'oriental', pondEdge: 'rock' }
 ];
 
 // Gates a model draws itself (js/model-sites.js; its script in m-sydney-private's tools/models/), which the garden leaves out: the Queen
@@ -87,8 +105,8 @@ export function woodsOf(land) {
 }
 
 // --- A garden path's kind ----------------------------------------------------------------------------------------------------------
-// Surfaces, as js/garden.js draws them: 0 paving, 1 asphalt, 2 gravel, 3 timber, 4 trodden grass, 5 dirt, 6 sand. Kinds: 0 a footpath, 1
-// steps, 2 a cycleway, 3 a track.
+// Surfaces, as js/garden.js draws them: 0 paving, 1 asphalt, 2 gravel, 3 timber, 4 trodden grass, 5 dirt, 6 sand, 7 concrete. Kinds: 0 a
+// footpath, 1 steps, 2 a cycleway, 3 a track.
 const TRACK_SURFACES = new Set([2, 4, 5, 6]);
 /** A path's kind in an area of `kind` (formal or bush), from what it is in OSM (0 a footpath, 1 steps, 2 a cycleway) and its surface */
 export function pathKind(osmKind, surface, kind, kerbedGravel = false) {

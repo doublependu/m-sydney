@@ -1,8 +1,9 @@
-// tools/build-garden.mjs: the footpaths of a few areas, and what their gardens are drawn with: beds, hedges, ponds and fountains, paved
-// areas, the gates on the paths, the raised lawn, and every plant, from OpenStreetMap (paths.json, land.json and all_roads.json,
-// tools/extract-osm.mjs), the Royal Botanic Garden's own map and the City of Sydney's tree register (cos_trees.json). Writes
+// tools/build-garden.mjs: the footpaths of a few areas, and what their gardens are drawn with: beds, hedges, ponds (some edged with rocks)
+// and fountains, paved areas, the gates on the paths, the raised lawn, and every plant, from OpenStreetMap (paths.json, land.json and
+// all_roads.json, tools/extract-osm.mjs), the Royal Botanic Garden's own map and the City of Sydney's tree register (cos_trees.json). Writes
 // tools/data/generated/garden.json. tools/build-trees.mjs adds its plants to the trees; tools/build-tiles.mjs cuts the rest into the tiles.
-// Paths elsewhere wait: they'd change where everyone walks.
+// It reads the game's tiles as last built too, for the Harbour Bridge's feet and the room under the decks (js/harbour-bridge.js,
+// js/deck-room.js): not while tools/build-tiles.mjs writes them. Paths elsewhere wait: they'd change where everyone walks.
 //   node tools/build-garden.mjs
 import fs from 'node:fs';
 import path from 'node:path';
@@ -80,12 +81,28 @@ function roadClear(x, z, tunnels = false) {
   return best;
 }
 const walls = BitRaster.load(path.join(GENERATED, 'walls.bin'));
+// What of the Harbour Bridge stands on the ground (js/harbour-bridge.js): its pylons (in the buildings' walls too) and its approaches'
+// piers (not), which nothing of a garden is planted in or stands in
+const { bridgeFeet } = await import('../js/harbour-bridge.js');
+const feet = bridgeFeet();
+/** Whether (x, z) is within `margin` of the bridge's pylons or piers */
+const onBridgeFoot = (x, z, margin = 0) => feet.some((f) => {
+  const dx = x - f.x, dz = z - f.z;
+  return Math.abs(dx * f.ux + dz * f.uz) <= f.along + margin && Math.abs(dz * f.ux - dx * f.uz) <= f.across + margin;
+});
+// ...and the room under the decks (js/deck-room.js, the game's, as the tiles were last built): no path, nor a gate, where a walker hasn't
+// room to stand (ROOM, js/surfaces.js), as Bradfield Park's under the bridge's railway where it comes down at its north end, or the crowd
+// walks inside the deck. Trees under a deck without room for them are left out of the tiles (tools/tiles/derive.mjs).
+const { roomOver } = await import('../js/deck-room.js');
+const { ROOM } = await import('../js/surfaces.js');
+const GATE_ROOM = 2.6; // m: a gate's pillars and their caps, 2.24 m
 const landBits = BitRaster.load(path.join(GENERATED, 'land.bin'));
 const inBuilding = (x, z) => walls.at(x, z) === 1;
 
 // --- Paths ---------------------------------------------------------------------------------------------------------------------------
 // Kinds: 0 a footpath, 1 steps, 2 a cycleway, 3 a track (by its area's kind and its surface: tools/garden-areas.mjs pathKind()).
-// Surfaces: 0 paving, 1 asphalt, 2 gravel, 3 timber, 4 trodden grass, 5 dirt, 6 sand
+// Surfaces: 0 paving, 1 asphalt, 2 gravel, 3 timber, 4 trodden grass, 5 dirt, 6 sand, 7 concrete (only where an area says its concrete is
+// drawn as concrete, tools/garden-areas.mjs `surfaces`: elsewhere it's asphalt)
 const KINDS = { footway: 0, path: 0, track: 0, bridleway: 0, steps: 1, cycleway: 2 };
 const SURFACE = [
   [/^(paving_stones|sett|brick|bricks|stone|cobblestone|unhewn_cobblestone|concrete:plates|concrete:lanes|tiles|granite|sandstone)/, 0],
@@ -96,14 +113,21 @@ const SURFACE = [
   [/^(wood|boardwalk)/, 3],
   [/^(grass|grass_paver)/, 4]
 ];
-const surfaceOf = (t) => {
+const NAMED = { paving: 0, asphalt: 1, gravel: 2, timber: 3, concrete: 7 };
+/** A path's surface from its tags, in `area` (some areas draw some of OSM's surfaces as another: `surfaces`) */
+const surfaceOf = (t, area = null) => {
   if (t.bridge === 'boardwalk') return 3;
   const s = t.surface || '';
+  const named = area?.surfaces?.[s];
+  if (named !== undefined) {
+    if (NAMED[named] === undefined) throw new Error(`${area.name}: no surface called ${named}`);
+    return NAMED[named];
+  }
   for (const [re, k] of SURFACE) if (re.test(s)) return k;
   return t.highway === 'path' || t.highway === 'track' ? 2 : 1;
 };
 // A path's width where OSM gives none: the garden's main walks are asphalt about 3 m across, its gravel ones narrower
-const DEFAULT_WIDTH = [[2.4, 3, 1.8, 2, 1.2], [2.4, 2.4, 2.4, 2.4, 2.4], [2.5, 2.5, 2.5, 2.5, 2.5]];
+const DEFAULT_WIDTH = [[2.4, 3, 1.8, 2, 1.2, 1.8, 1.8, 2.4], [2.4, 2.4, 2.4, 2.4, 2.4], [2.5, 2.5, 2.5, 2.5, 2.5]];
 const TRACK_WIDTH = 1.2; // m: a track's, where OSM gives none
 const widthOf = (t, kind, surface) => {
   const w = parseFloat(t.width);
@@ -130,16 +154,17 @@ for (const e of pathsSource) {
   const kind = KINDS[t.highway];
   if (kind === undefined) continue;
   const pts = e.geometry.map((g) => toWorld(g.lon, g.lat));
-  if (!pts.some(([x, z]) => areaAt(x, z, REACH))) continue;
+  const first = pts.find(([x, z]) => areaAt(x, z, REACH));
+  if (!first) continue;
   if (skipPath(t)) {
     if (/sidewalk|crossing/.test(t.footway || '')) skipped.sidewalk++;
     else skipped.offGround++;
     continue;
   }
-  const surface = surfaceOf(t);
+  const surface = surfaceOf(t, areaAt(first[0], first[1], REACH));
   wayGeom.set(e.id, { pts, nodes: e.nodes, width: widthOf(t, kind, surface) });
-  // Kept where it's in an area, off the roads and out of buildings: in runs
-  const keep = (x, z) => areaAt(x, z, REACH) && roadClear(x, z) > 0.6 && !inBuilding(x, z) && landBits.at(x, z) === 1;
+  // Kept where it's in an area, off the roads, out of buildings and not under a deck too low to walk under: in runs
+  const keep = (x, z) => areaAt(x, z, REACH) && roadClear(x, z) > 0.6 && !inBuilding(x, z) && landBits.at(x, z) === 1 && roomOver(x, z) >= ROOM.foot;
   let run = [];
   const flush = () => {
     if (run.length > 1) {
@@ -179,7 +204,8 @@ const gates = [];
 for (const e of pathsSource) {
   if (e.type !== 'node' || !/gate/.test(e.tags?.barrier || '')) continue;
   const [x, z] = toWorld(e.lon, e.lat);
-  if (!areaAt(x, z, REACH) || roadClear(x, z) < 1 || MODEL_GATES.some(([gx, gz]) => Math.hypot(gx - x, gz - z) < 3)) continue;
+  if (!areaAt(x, z, REACH) || roadClear(x, z) < 1 || MODEL_GATES.some(([gx, gz]) => Math.hypot(gx - x, gz - z) < 3) || onBridgeFoot(x, z, 0.5)
+    || roomOver(x, z) < GATE_ROOM) continue;
   // Every way out of the gate along the paths through it, in the order they're found
   const arms = [];
   for (const way of wayGeom.values()) {
@@ -229,8 +255,11 @@ for (const e of pathsSource) {
 }
 
 // Ponds and reflecting pools: still water at the ground's own height, not the sea's. A fountain's basin (amenity=fountain, or a fountain's
-// water) is a pond too, and its middle and how far that is from its edge, [x, z, r], a fountain: js/garden.js gives it a rim and a plinth
+// water) is a pond too, and its middle and how far that is from its edge, [x, z, r], a fountain: js/garden.js gives it a rim and a plinth.
+// In an area whose ponds are edged with rocks (tools/garden-areas.mjs `pondEdge`), they're `rockPonds`, not `ponds`: js/garden.js lays rocks
+// along their edges in place of a coping.
 const ponds = [];
+const rockPonds = [];
 const pondRings = [];
 const fountains = [];
 for (const e of land) {
@@ -242,6 +271,10 @@ for (const e of land) {
     const b = bbox(ring), cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2;
     if (!areaAt(cx, cz) || landBits.at(cx, cz) !== 1) continue;
     pondRings.push(ring);
+    if (areaAt(cx, cz).pondEdge === 'rock') {
+      rockPonds.push(flat(rdpRing(ring, 0.2)));
+      continue;
+    }
     ponds.push(flat(rdpRing(ring, 0.2)));
     if (t.amenity === 'fountain' || t.water === 'fountain') {
       // Its middle (the area's), and the nearest of its edges to it
@@ -267,19 +300,20 @@ for (const els of [load('all_roads.json').elements, pathsSource]) {
     const isArea = (/^(pedestrian|footway)$/.test(t.highway || '') && t.area === 'yes') || /^(pedestrian|footway)$/.test(t['area:highway'] || '');
     if (!isArea || (t.layer && t.layer !== '0') || (t.level && t.level !== '0') || (t.tunnel && t.tunnel !== 'no') || (t.bridge && t.bridge !== 'no')
       || t.indoor === 'yes' || t.covered === 'yes') continue;
-    const surface = t.surface ? surfaceOf(t) : 0;
-    if (surface === 4) continue;
     const { outer, inner } = elementRings(e);
     for (const ring of outer) {
       if (ring.length < 4) continue;
       const b = bbox(ring);
-      if (!areaAt((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2)) continue;
+      const area = areaAt((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2);
+      if (!area) continue;
+      const surface = t.surface ? surfaceOf(t, area) : 0;
+      if (surface === 4) continue;
       plazaSource.push({ surface, rings: [ring, ...inner.filter((h) => h.length > 3 && pointInRing(ring, h[0][0], h[0][1]))] });
     }
   }
 }
 // ...and those drawn by hand (tools/local/, `paving`)
-const HAND_SURFACE = { paving: 0, asphalt: 1, gravel: 2 };
+const HAND_SURFACE = { paving: 0, asphalt: 1, gravel: 2, concrete: 7 };
 for (const area of localAreas()) {
   for (const p of area.paving || []) {
     const surface = HAND_SURFACE[p.surface];
@@ -291,7 +325,7 @@ for (const area of localAreas()) {
   }
 }
 log(`${plazaSource.length} paved areas in them, OSM's and by hand`);
-log(`${hedges.length} hedges, ${ponds.length} ponds and pools, ${fountains.length} of them fountains`);
+log(`${hedges.length} hedges, ${ponds.length} ponds and pools, ${fountains.length} of them fountains; ${rockPonds.length} edged with rocks`);
 
 // --- Sea walls: the shore round the parks themselves, where a sandstone parapet keeps people out of the water (js/garden.js) ------------
 // Not the boxes round the Opera House, whose model has its own sea wall, or the Quay's, where the ferries tie up. Each is
@@ -490,7 +524,7 @@ let plazaArea = 0;
         if (on) addLine(quad[1], quad[2]);
       }
     }
-    for (const f of ponds) {
+    for (const f of [...ponds, ...rockPonds]) {
       const ring = [];
       for (let k = 0; k + 1 < f.length; k += 2) ring.push([f[k], f[k + 1]]);
       if (!inBox(ring)) continue;
@@ -669,7 +703,10 @@ const MIX = {
   rainforest: { every: 4, bed: -1, plants: [[K.treeFern, 0.35, 2.5, 5], [K.bangalow, 0.15, 8, 14], [K.broadleaf, 0.08, 10, 16], [K.fig, 0.04, 14, 20], [K.shrub, 0.28, 1, 2.2], [K.cycad, 0.1, 0.8, 1.6]] },
   wollemi: { every: 6, bed: -1, plants: [[K.wollemi, 1, 6, 12]] },
   scrub: { every: 2.2, bed: 3, plants: [[K.native, 0.7, 0.8, 2.4], [K.grass, 0.3, 0.5, 1.1]] },
-  wood: { every: 9, bed: -1, plants: [[K.broadleaf, 0.4, 10, 18], [K.fig, 0.2, 14, 22], [K.gum, 0.25, 12, 22], [K.small, 0.15, 5, 8]] }
+  wood: { every: 9, bed: -1, plants: [[K.broadleaf, 0.4, 10, 18], [K.fig, 0.2, 14, 22], [K.gum, 0.25, 12, 22], [K.small, 0.15, 5, 8]] },
+  // A Chinese garden's groves: small ornamental trees (maples, crepe myrtles, magnolias) under a few bigger ones (elms, willows), shrubs and
+  // cycads between, in the bed its ground is planted as (`ground`), not one of their own
+  chinese: { every: 4, bed: -1, plants: [[K.small, 0.38, 4, 8], [K.broadleaf, 0.14, 8, 14], [K.shrub, 0.3, 0.8, 1.8], [K.cycad, 0.06, 0.8, 1.4], [K.grass, 0.12, 0.5, 1.0]] }
 };
 const zoneOf = (name) => {
   if (/rose/i.test(name)) return 'rose';
@@ -702,7 +739,11 @@ for (const e of land) {
     if (ring.length < 4 || !areaAt((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2)) continue;
     let mix = zoneOf(t.name || '');
     // A park planted with natives only (tools/garden-areas.mjs `natives`) has its woods planted as bush: natives and grasses, a few gums
-    if (!mix && t.natural === 'wood') mix = areaAt((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2).natives ? 'native' : 'wood';
+    // ...and an area that says what its woods are (`woods`), with that
+    if (!mix && t.natural === 'wood') {
+      const a = areaAt((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2);
+      mix = a.woods ?? (a.natives ? 'native' : 'wood');
+    }
     if (!mix && t.leisure === 'garden' && area <= 4000) mix = 'beds';
     if (mix) zones.push({ name: t.name || '', mix, ring, area });
   }
@@ -716,10 +757,17 @@ for (const e of pathsSource) {
   zones.push({ name: t.name || '', mix: t.landuse === 'flowerbed' ? 'flowers' : 'scrub', ring, area: Math.abs(ringArea(ring)) });
 }
 for (const [name, x, z, r] of MAP_GARDENS) zones.push({ name, mix: zoneOf(name), ring: circle(x, z, r), area: Math.PI * r * r, map: true });
+// An area planted all over (`ground`): its outline a zone, the biggest, so its woods and beds inside it keep their own plants
+for (const a of areas) {
+  if (!a.ground) continue;
+  if (!MIX[a.ground]) throw new Error(`${a.name}: no mix called ${a.ground}`);
+  for (const ring of a.rings) zones.push({ name: a.name, mix: a.ground, ring, area: Math.abs(ringArea(ring)) });
+}
 // The smaller of two overlapping zones is planted, as a bed inside a wood
 zones.sort((p, q) => p.area - q.area);
 log(`${zones.length} planted zones: ${Object.entries(zones.reduce((m, z) => ({ ...m, [z.mix]: (m[z.mix] || 0) + 1 }), {})).map(([k, v]) => `${v} ${k}`).join(', ')}`);
 
+const TRUNK_CLEAR = 1.5; // m a tree's trunk keeps from the bridge's pylons and piers
 const seeded = (x, z, salt = 0) => {
   const s = Math.sin(x * 12.9898 + z * 78.233 + salt * 37.719) * 43758.5453;
   return s - Math.floor(s);
@@ -757,9 +805,10 @@ for (const [lon, lat, name, , status] of load('cos_trees.json')) {
 // Where nothing can grow: paths (and their edges), ponds, roads, buildings and the sea. A plant's kept to the half metre (tools/build-trees.mjs),
 // so it may move a third of a metre nearer a path.
 const clearFor = (x, z, small) => pathClear(x, z) > (small ? 0.7 : 1.4) && !inPond(x, z, small ? 0.3 : 1) && roadClear(x, z, true) > (small ? 1.5 : 3)
-  && !inBuilding(x, z) && landBits.at(x, z) === 1;
+  && !inBuilding(x, z) && landBits.at(x, z) === 1 && !onBridgeFoot(x, z, small ? 0.5 : TRUNK_CLEAR);
 
-// Trees OSM has in the areas: by what it says they are, or what's growing round them
+// Trees OSM has in the areas: by what it says they are, or what's growing round them. Not within TRUNK_CLEAR of the bridge's pylons or piers,
+// which the game places a little off where they stand (OSM's trees beside Bradfield Park's pylons would grow through the granite)
 const zoneAt = (x, z) => zones.find((zn) => pointInRing(zn.ring, x, z));
 const byTags = (t) => {
   const what = `${t.species || ''} ${t.genus || ''} ${t.taxon || ''} ${t['species:en'] || ''}`;
@@ -788,6 +837,7 @@ const pick = (list, r) => {
 const nodes = load('nodes.json').elements;
 let osmTrees = 0;
 const OFF_PATH = 0.5; // m off a path's edge a tree on it is moved to: kept to the half metre (tools/build-trees.mjs), it stays off it
+let offFeet = 0;
 /** (x, z) moved straight out from the nearest path's line to OFF_PATH past its edge, or null if that's on a path too */
 const offPath = (x, z) => {
   let best = null;
@@ -820,6 +870,7 @@ for (const e of nodes) {
     movedOff++;
   }
   if (roadClear(x, z, true) < 2 || inBuilding(x, z) || landBits.at(x, z) !== 1) continue;
+  if (onBridgeFoot(x, z, TRUNK_CLEAR)) { offFeet++; continue; }
   const zone = zoneAt(x, z);
   let kind = byTags(e.tags);
   if (kind === null && zone?.mix === 'palms') kind = seeded(x, z, 1) < 0.7 ? K.bangalow : K.datePalm;
@@ -899,11 +950,11 @@ for (const zone of zones) {
 const counts = {};
 for (const [, , kind] of plants) counts[kind] = (counts[kind] || 0) + 1;
 const names = Object.fromEntries(Object.entries(K).map(([k, v]) => [v, k]));
-log(`${plants.length} plants: ${osmTrees} trees from OSM (${movedOff} moved off a path), ${byHand} by hand; by zone ${JSON.stringify(planted)}; ${registerTrees} of the register's trees kept clear of`);
+log(`${plants.length} plants: ${osmTrees} trees from OSM (${movedOff} moved off a path, ${offFeet} left out by the bridge's feet), ${byHand} by hand; by zone ${JSON.stringify(planted)}; ${registerTrees} of the register's trees kept clear of`);
 log(`by kind: ${Object.entries(counts).map(([k, v]) => `${names[k]} ${v}`).join(', ')}; ${beds.length} beds`);
 
 fs.writeFileSync(OUT, JSON.stringify({
   areas: areas.map((a) => ({ name: a.name, rings: a.rings.map((r) => flat(rdpRing(r, 0.5))), except: a.except })),
-  paths, gates, hedges, ponds, fountains, beds, seawalls, lawns, plazas, plants, small: [...SMALL]
+  paths, gates, hedges, ponds, rockPonds, fountains, beds, seawalls, lawns, plazas, plants, small: [...SMALL]
 }));
 log(`wrote ${path.relative(ROOT, OUT)} (${(fs.statSync(OUT).size / 1024).toFixed(0)} KB) in ${((Date.now() - started) / 1000).toFixed(1)} s`);

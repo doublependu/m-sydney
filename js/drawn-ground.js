@@ -21,15 +21,17 @@ const SAND_LIFT = 0.06, ROCK_LIFT = 0.12;
 const LIFT = { paving: SIDEWALK_TOP, lawn: SIDEWALK_TOP + 0.02, sand: SIDEWALK_TOP + SAND_LIFT, rock: SIDEWALK_TOP + ROCK_LIFT };
 // A garden's (js/garden.js), over the ground, on the lawn as drawn. A formal park's lawn is raised RAISE over the map's, with a kerb along
 // its edges 1 cm prouder still, and its paved paths lie down between, just over the map's lawn: a few millimetres apart by what they're
-// made of, so that where two meet one is always on top (timber lowest, then gravel, paving and asphalt, and steps over all of them: at one
-// height the two fought for every pixel where they crossed). A track is a strip worn into whatever lawn it crosses, a centimetre over it,
+// made of, so that where two meet one is always on top (timber lowest, then gravel, paving, concrete and asphalt, and steps over all of
+// them: at one height the two fought for every pixel where they crossed). A track is a strip worn into whatever lawn it crosses, a centimetre over it,
 // not laid on it: the map's lawn under a paved path's, which covers it there, or the raised lawn.
 const LAWN_TOP = LIFT.lawn;
 const RAISE = 0.08;
 const RAISED_TOP = LAWN_TOP + RAISE;
 const KERB_PROUD = 0.01;
 const PATH_TOP = LAWN_TOP + 0.0125;
-const PATH_LIFT = [0.005, 0.0075, 0.0025, 0]; // paving, asphalt, gravel, timber: over PATH_TOP
+// Over PATH_TOP: paving, asphalt, gravel, timber, then trodden grass, dirt and sand (tracks, but for a path of them, as gravel), and concrete
+// between paving and asphalt, which it meets
+const PATH_LIFT = [0.005, 0.0075, 0.0025, 0, 0.0025, 0.0025, 0.0025, 0.00625];
 const STEPS_LIFT = 0.01;
 const TRACK_LIFT = 0.01; // a track over the lawn it's worn into
 const TRACK_TOP = LAWN_TOP + TRACK_LIFT;

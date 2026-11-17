@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 // The gardens (tools/build-garden.mjs, js/garden.js): the paths, beds and plants of the Royal Botanic Garden, the Domain and round the
-// Opera House, as the tiles have them; people walking the paths (js/pedestrian-routes.js); and The Ribbon's model at Darling Harbour.
+// Opera House, and the parks since (the CBD's, Bradfield Park, Prince Alfred Park, Darling Harbour's), as the tiles have them; people
+// walking the paths (js/pedestrian-routes.js); and The Ribbon's model at Darling Harbour.
 const { heldTiles, heldTrees } = await import('../js/geodata.js');
 const { groundRoadAt } = await import('../js/surfaces.js');
 const { createPedestrianRoutes } = await import('../js/pedestrian-routes.js');
@@ -384,18 +385,118 @@ test('a paved area has no raised lawn over it, and none is under a square metre'
   assert.ok(over.length <= samples * 0.005, `the raised lawn over a paved area at ${over.length} of ${samples} points: ${JSON.stringify(over.slice(0, 8))}`);
 });
 
-test('where the garden\'s trees are the City\'s register\'s (Hyde Park), it plants none of its own over them', { skip: !garden.some((t) => t.key === '0_-1') && 'Hyde Park\'s tiles not held' }, () => {
+test('where the garden\'s trees are the City\'s register\'s (Hyde Park, Prince Alfred Park), it plants none of its own over them', { skip: !garden.some((t) => t.key === '0_-1') && 'Hyde Park\'s tiles not held' }, () => {
   const { points, kinds } = heldTrees();
-  const trees = [];
+  // Hyde Park North and South, less their edges along the streets; Prince Alfred Park; not the small plants (cycads and up)
+  for (const [x0, x1, z0, z1, least, what] of [[300, 505, -395, 345, 400, 'Hyde Park'], [-120, 175, 1430, 1805, 200, 'Prince Alfred Park']]) {
+    const trees = [];
+    for (let i = 0; i < kinds.length; i++) {
+      const x = points[i * 2], z = points[i * 2 + 1];
+      if (x > x0 && x < x1 && z > z0 && z < z1 && kinds[i] < 10) trees.push([x, z]);
+    }
+    assert.ok(trees.length > least, `${trees.length} trees in ${what}`);
+    let doubled = 0;
+    for (let i = 0; i < trees.length; i++) for (let j = i + 1; j < trees.length; j++) if (Math.hypot(trees[i][0] - trees[j][0], trees[i][1] - trees[j][1]) < 1) doubled++;
+    assert.ok(doubled <= 2, `${doubled} pairs of trees within a metre of each other in ${what}`);
+  }
+});
+
+const inFlatRing = (f, x, z) => {
+  let k = false;
+  for (let i = 0, j = f.length - 2; i < f.length; j = i, i += 2) if ((f[i + 1] > z) !== (f[j + 1] > z) && x < ((f[j] - f[i]) * (z - f[i + 1])) / (f[j + 1] - f[i + 1]) + f[i]) k = !k;
+  return k;
+};
+
+test('Bradfield Park, Prince Alfred Park, Tumbalong Park and the Chinese Garden of Friendship are gardens: their paths, pale concrete only where a park says so, and the Chinese Garden\'s lake edged with rocks', { skip: !garden.some((t) => t.key === '-1_0') && 'Darling Harbour\'s tile not held' }, () => {
+  for (const [x, z, what] of [[140, -2694.2, 'Bradfield Park, under the bridge'], [-53, 1726, 'Prince Alfred Park'], [-441, 359, 'Tumbalong Park'], [-305, 442.9, 'the Chinese Garden']]) {
+    assert.ok(paths.some((p) => p.pts.some((q, i) => i && segDist(x, z, p.pts[i - 1], q) < p.width / 2 + 1)), `no path at ${what} (${x}, ${z})`);
+  }
+  // Concrete (7) in Prince Alfred Park, Tumbalong Park and the Chinese Garden alone: the older gardens' concrete is drawn as asphalt still
+  const concrete = paths.filter((p) => p.surface === 7);
+  assert.ok(concrete.length > 20, `${concrete.length} concrete paths`);
+  for (const p of concrete) {
+    const { x, z } = p.pts[0];
+    assert.ok((x > -150 && x < 200 && z > 1400 && z < 1840) || (x > -500 && x < -270 && z > 290 && z < 500), `a concrete path at (${x}, ${z})`);
+  }
+  // The Chinese Garden's ponds are edged with rocks, the Lake of Brightness and the Lotus Pond among them; no other garden's are
+  const rocky = garden.flatMap((t) => (t.garden.rockPonds || []).map((f) => ({ f, tile: t.key })));
+  assert.equal(rocky.length, 5);
+  assert.ok(rocky.every(({ tile }) => tile === '-1_0'), 'rock-edged ponds outside the Chinese Garden');
+  for (const [x, z, what] of [[-339, 437, 'the Lake of Brightness'], [-361, 461, 'the Lotus Pond']]) {
+    assert.ok(rocky.some(({ f }) => inFlatRing(f, x, z)), `no rock-edged pond at ${what}`);
+  }
+  assert.ok(!garden.find((t) => t.key === '-1_0').garden.ponds.length, 'a pond with a coping in the Chinese Garden');
+});
+
+test('the Chinese Garden\'s ponds are edged with rocks all round, but not where two of them meet and the water runs on', { skip: !garden.some((t) => t.key === '-1_0') && 'Darling Harbour\'s tile not held' }, async () => {
+  const { POND_ROCKS, buildTileGarden, gardenMaterials } = await import('../js/garden.js');
+  const tile = garden.find((t) => t.key === '-1_0');
+  const stone = [];
+  const it = buildTileGarden(tile, null, (cells, target, material) => { if (material === gardenMaterials().stone) stone.push(cells); });
+  while (!it.next().done);
+  // The rocks' points (the stone in their tones, not the raised lawn's kerbs), by 1 m cell
+  const isRock = (c, i) => POND_ROCKS.tones.some((t) => t.every((v, k) => Math.abs(c.color[i * 3 + k] - v) < 1e-6));
+  const near = new Map();
+  for (const cells of stone) {
+    for (const c of cells.cells.values()) {
+      for (let i = 0; i < c.position.length; i += 3) {
+        if (!isRock(c, i / 3)) continue;
+        const key = `${Math.floor(c.position[i])},${Math.floor(c.position[i + 2])}`;
+        (near.get(key) || near.set(key, []).get(key)).push([c.position[i], c.position[i + 2]]);
+      }
+    }
+  }
+  const stoneWithin = (x, z, r) => {
+    for (let i = Math.floor(x - r); i <= Math.floor(x + r); i++) {
+      for (let k = Math.floor(z - r); k <= Math.floor(z + r); k++) if ((near.get(`${i},${k}`) || []).some(([px, pz]) => Math.hypot(px - x, pz - z) < r)) return true;
+    }
+    return false;
+  };
+  const rings = tile.garden.rockPonds.map((f) => { const r = []; for (let i = 0; i + 1 < f.length; i += 2) r.push({ x: f[i], z: f[i + 1] }); return r; });
+  const ringDist = (r, x, z) => Math.min(...r.map((a, i) => segDist(x, z, r[(i + r.length - 1) % r.length], a)));
+  let along = 0, bare = 0, shared = 0, rocked = 0;
+  for (const r of rings) {
+    const others = rings.filter((o) => o !== r);
+    for (let i = 0; i < r.length; i++) {
+      const a = r[i], b = r[(i + 1) % r.length], L = Math.hypot(b.x - a.x, b.z - a.z);
+      for (let s = 0; s < L; s += 2) {
+        const x = a.x + ((b.x - a.x) * s) / L, z = a.z + ((b.z - a.z) * s) / L;
+        const d = Math.min(...others.map((o) => ringDist(o, x, z)));
+        if (d < 0.1) {
+          // On another pond's edge too: the water runs on, no rock across it
+          shared++;
+          if (stoneWithin(x, z, 0.15)) rocked++;
+        } else if (d > 1.5) {
+          along++;
+          if (!stoneWithin(x, z, 1.2)) bare++;
+        }
+      }
+    }
+  }
+  assert.ok(along > 300, `${along} points along the ponds' edges`);
+  assert.ok(bare <= along * 0.02, `no rock within 1.2 m at ${bare} of ${along} points along the ponds' edges`);
+  assert.ok(shared > 5 && rocked === 0, `rocks at ${rocked} of ${shared} points where two ponds meet`);
+});
+
+test('nothing of a garden stands in the Harbour Bridge\'s pylons or piers: Bradfield Park\'s trees, plants and gates', { skip: !garden.some((t) => t.key === '0_-3') && 'Bradfield Park\'s tiles not held' }, async () => {
+  const { bridgeFeet } = await import('../js/harbour-bridge.js');
+  const feet = bridgeFeet();
+  assert.ok(feet.length > 20, `${feet.length} feet`);
+  const inFoot = (x, z, m) => feet.some((f) => {
+    const dx = x - f.x, dz = z - f.z;
+    return Math.abs(dx * f.ux + dz * f.uz) <= f.along + m && Math.abs(dz * f.ux - dx * f.uz) <= f.across + m;
+  });
+  const { points, kinds } = heldTrees();
+  let n = 0;
   for (let i = 0; i < kinds.length; i++) {
     const x = points[i * 2], z = points[i * 2 + 1];
-    // Hyde Park North and South, less their edges along the streets; not the small plants (cycads and up)
-    if (x > 300 && x < 505 && z > -395 && z < 345 && kinds[i] < 10) trees.push([x, z]);
+    if (x < -110 || x > 270 || z < -3280 || z > -2500) continue;
+    n++;
+    // A tree's trunk 1.5 m clear, a small plant's half a metre (each kept to the half metre)
+    assert.ok(!inFoot(x, z, kinds[i] >= 10 ? 0.25 : 1.25), `a plant (kind ${kinds[i]}) in the bridge's foot at (${x}, ${z})`);
   }
-  assert.ok(trees.length > 400, `${trees.length} trees in Hyde Park`);
-  let doubled = 0;
-  for (let i = 0; i < trees.length; i++) for (let j = i + 1; j < trees.length; j++) if (Math.hypot(trees[i][0] - trees[j][0], trees[i][1] - trees[j][1]) < 1) doubled++;
-  assert.ok(doubled <= 2, `${doubled} pairs of trees within a metre of each other`);
+  assert.ok(n > 300, `${n} trees and plants round Bradfield Park`);
+  for (const [x, z] of garden.flatMap((t) => t.garden.gates)) assert.ok(!inFoot(x, z, 0.5), `a gate in the bridge's foot at (${x}, ${z})`);
 });
 
 test('no garden sea wall stands where a region\'s edge cut the land: Hyde Park South is on one', async () => {

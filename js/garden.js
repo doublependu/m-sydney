@@ -12,18 +12,19 @@ import { areaOf, drape, drapePolygon } from './drape.js';
 
 // A garden's ground, laid over a tile's lawns (tools/build-garden.mjs): its footpaths, beds, hedges, ponds and the gates on its paths, and in
 // a formal park the lawn raised over its paved paths, kerbed along every edge. Only a few areas have them yet: the Royal Botanic Garden,
-// the Domain, round the Opera House and Circular Quay, Bronte Park, and the CBD's parks (Hyde Park, Barangaroo Reserve, Observatory Hill,
-// Wynyard Park).
+// the Domain, round the Opera House and Circular Quay, Bronte Park, the CBD's parks (Hyde Park, Barangaroo Reserve, Observatory Hill,
+// Wynyard Park), Bradfield Park under the Harbour Bridge's north end, Prince Alfred Park, and Darling Harbour's Tumbalong Park and Chinese
+// Garden of Friendship.
 //   tile.garden: { paths: [[kind, surface, width, x, z, ...]], gates: [[x, z, heading, width]], hedges: [[height, width, x, z, ...]],
 //     ponds: [[x, z, ...]], beds: [[kind, x, z, ...]], seawalls: [[side, x, z, ...]], lawns: [[kerb, [x, z, ...], ...holes]],
-//     plazas: [[surface, [x, z, ...], ...holes]], fountains: [[x, z, r]] }
+//     plazas: [[surface, [x, z, ...], ...holes]], fountains: [[x, z, r]], rockPonds: [[x, z, ...]] }
 //   (a raised lawn's pieces, `kerb` what its kerbs are: 0 concrete, 1 sandstone; paved areas, as plazas round a fountain, and fountains,
-//   each the middle of one of its ponds and how far that is from the pond's edge, where a tile has any)
+//   each the middle of one of its ponds and how far that is from the pond's edge, and ponds edged with rocks, where a tile has any)
 // In layers, each laid exactly on the triangles of what's under it (js/drape.js), so on a slope none comes up through another: the map's
 // lawn and paving (js/city-grid.js); the paths, just over them; the raised lawn 8 cm over the map's lawn, its kerbs' tops 1 cm over it
 // at their outer edge, their faces down to the paths; and tracks and beds on the raised lawn, or tracks on the map's lawn off it.
 // Kinds of path: 0 a footpath, 1 steps, 2 a cycleway, 3 a track (a worn strip on the lawn, with no kerb, whatever it was in OSM). Surfaces:
-// 0 paving, 1 asphalt, 2 gravel, 3 timber, 4 trodden grass, 5 dirt, 6 sand. Trodden grass is drawn only as a track.
+// 0 paving, 1 asphalt, 2 gravel, 3 timber, 4 trodden grass, 5 dirt, 6 sand, 7 concrete. Trodden grass is drawn only as a track.
 // Beds, by what's planted in them: 0 shrubs, 1 succulents on gravel, 2 flowers and roses, 3 Australian natives.
 
 // Heights over the ground: the lawn's, the raised lawn's, a path's by what it's made of, a track's, the steps' and pathTop() are
@@ -38,6 +39,11 @@ const COPING = { width: 0.32, rise: 0.08 };
 // Circular Quay's (4.2), has the rim alone
 const FOUNTAIN = { rim: 0.42, rimWidth: 0.55, water: 0.3, plinthFrom: 8 };
 const GRANITE = linearHex(0x6e5048), BRONZE = linearHex(0x3b3426);
+// A pond edged with rocks (a Chinese garden's lake: grey limestone boulders along the water, some stacked into a rockery): one every
+// `every` m or so along its edge, `w` along it and `d` across, from under the water to `h` over it, narrowing to an uneven top; one in
+// `stacked` with a smaller one on it; mid greys, as paler ones read white in the sun. Not stood on, as a fountain's rim isn't.
+const ROCKS = { every: 0.9, w: [0.55, 1.3], d: [0.5, 1.0], h: [0.15, 0.55], under: 0.15, stacked: 0.25, shared: 0.2,
+  tones: [0x8e8a80, 0x7a766d, 0x9a958a, 0x6c6962].map(linearHex) };
 const KERB_WIDTH = 0.1; // m: in the corridor beside its path's edge, or round a pond in its water (tools/build-garden.mjs)
 const KERB_STONE = [linearHex(0xa9a59b), linearHex(0xc4a679)]; // concrete, sandstone (the Royal Botanic Garden's)
 const KERB_FOOT = 0.04; // m a kerb's face reaches under whatever it stands on
@@ -83,8 +89,8 @@ function gardenMaterials() {
   };
   return shared;
 }
-// The paths' surfaces: paving, asphalt, gravel, timber, trodden grass, dirt, sand; and steps, in sandstone
-const SURFACES = [0xa59d8f, 0x56575a, 0xb8a582, 0x7d5f42, 0x8a8455, 0x8c6e4c, 0xd2bf94].map(linearHex);
+// The paths' surfaces: paving, asphalt, gravel, timber, trodden grass, dirt, sand, concrete; and steps, in sandstone
+const SURFACES = [0xa59d8f, 0x56575a, 0xb8a582, 0x7d5f42, 0x8a8455, 0x8c6e4c, 0xd2bf94, 0x7f7d79].map(linearHex);
 const SANDSTONE = linearHex(0xc4a679), IRON = linearHex(0x1d1e1f);
 
 /**
@@ -622,6 +628,97 @@ function addParapet(cells, pts, side, heightAt) {
   return colliders;
 }
 
+/** 0 to 1, the same every time for the same place and `k` */
+const hashAt = (x, z, k = 0) => {
+  const s = Math.sin(x * 12.9898 + z * 78.233 + k * 37.719) * 43758.5453;
+  return s - Math.floor(s);
+};
+/** How far (x, z) is from a ring of { x, z } */
+function ringDistance(ring, x, z) {
+  let best = Infinity;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[j], b = ring[i], dx = b.x - a.x, dz = b.z - a.z, L2 = dx * dx + dz * dz || 1e-9;
+    const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / L2));
+    best = Math.min(best, Math.hypot(a.x + dx * t - x, a.z + dz * t - z));
+  }
+  return best;
+}
+
+/**
+ * Rocks along a pond's edge (a ring of { x, z }), astride it, each turned along the edge (ROCKS); none reaching within ROCKS.shared of
+ * `others`' edges, where two ponds meet and the water runs on between them. Into `cells` (TintedCells), their tones in it.
+ */
+function addRocks(cells, ring, others, heightAt) {
+  const lerp = ([a, b], t) => a + (b - a) * t;
+  let next = 0, walked = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i], b = ring[(i + 1) % ring.length];
+    const L = Math.hypot(b.x - a.x, b.z - a.z);
+    if (L < 1e-3) continue;
+    const ux = (b.x - a.x) / L, uz = (b.z - a.z) / L;
+    for (; next <= walked + L; ) {
+      const t = (next - walked) / L, x = a.x + (b.x - a.x) * t, z = a.z + (b.z - a.z) * t;
+      const r = [1, 2, 3, 4, 5, 6, 7].map((k) => hashAt(x, z, k));
+      next += ROCKS.every * (0.7 + 0.6 * r[0]);
+      // Astride the edge, a little either way across it, turned a little off it
+      const off = (r[1] - 0.5) * 0.3, cx = x - uz * off, cz = z + ux * off;
+      const yaw = Math.atan2(ux, uz) + (r[2] - 0.5) * 0.8;
+      const w = lerp(ROCKS.w, r[3]), d = lerp(ROCKS.d, r[4]), h = lerp(ROCKS.h, r[5]);
+      // Kept off another pond's edge by its own reach (a corner of its foot, pulled out, is within 0.8 of its size from its middle)
+      if (others.some((o) => ringDistance(o, cx, cz) < 0.8 * Math.max(w, d) + ROCKS.shared)) continue;
+      const y = heightAt(cx, cz) + POND_TOP - ROCKS.under;
+      cells.tint = ROCKS.tones[Math.floor(r[6] * ROCKS.tones.length)];
+      addRock(cells, cx, cz, yaw, w, d, y, h + ROCKS.under, hashAt(x, z, 8));
+      if (r[5] < ROCKS.stacked) {
+        // A smaller one on it, off to one side: a rockery
+        const s = hashAt(x, z, 9);
+        addRock(cells, cx + (s - 0.5) * w * 0.4, cz + (hashAt(x, z, 10) - 0.5) * d * 0.4, yaw + s, w * 0.6, d * 0.6, y + h + ROCKS.under - 0.1, 0.25 + s * 0.35, s);
+      }
+    }
+    walked += L;
+  }
+}
+
+/**
+ * A rock: a block about `w` by `d` at its foot, `h` up from `y`, turned `yaw` about (x, z), narrowing to a top that leans off its middle.
+ * Each corner of its foot is pulled in or out, and each of its top's drawn in and lowered, by its own share (from `seed`), so no two are
+ * alike. Its sides and top each face their own way, flat.
+ */
+function addRock(cells, x, z, yaw, w, d, y, h, seed) {
+  const c = cells.cell(x, z);
+  const cs = Math.cos(yaw), sn = Math.sin(yaw);
+  const at = (u, v, yy) => [x + u * cs + v * sn, yy, z - u * sn + v * cs];
+  const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+  const r = (k, salt) => hashAt(seed * 7.1 + k, seed * 3.3 - k, salt);
+  const foot = corners.map(([u, v], k) => at((u * w * (0.75 + 0.35 * r(k, 13))) / 2, (v * d * (0.75 + 0.35 * r(k, 14))) / 2, y));
+  const lean = [(r(0, 15) - 0.5) * w * 0.3, (r(1, 15) - 0.5) * d * 0.3];
+  const top = corners.map(([u, v], k) => {
+    const inset = 0.35 + 0.4 * r(k, 11), drop = 0.6 + 0.4 * r(k, 12);
+    return at(lean[0] + (u * w * inset) / 2, lean[1] + (v * d * inset * (0.7 + 0.5 * r(k, 16))) / 2, y + h * drop);
+  });
+  const mid = [x, y + h / 2, z];
+  // A triangle facing out from the rock's middle
+  const tri = (p, q, r) => {
+    const e1 = [q[0] - p[0], q[1] - p[1], q[2] - p[2]], e2 = [r[0] - p[0], r[1] - p[1], r[2] - p[2]];
+    let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+    const out = [(p[0] + q[0] + r[0]) / 3 - mid[0], (p[1] + q[1] + r[1]) / 3 - mid[1], (p[2] + q[2] + r[2]) / 3 - mid[2]];
+    if (n[0] * out[0] + n[1] * out[1] + n[2] * out[2] < 0) {
+      [q, r] = [r, q];
+      n = n.map((v) => -v);
+    }
+    const L = Math.hypot(...n) || 1;
+    const ids = [p, q, r].map((v) => cells.vertex(c, v[0], v[1], v[2], n[0] / L, n[1] / L, n[2] / L));
+    c.index.push(...ids);
+  };
+  for (let i = 0; i < 4; i++) {
+    const j = (i + 1) % 4;
+    tri(foot[i], foot[j], top[i]);
+    tri(foot[j], top[j], top[i]);
+  }
+  tri(top[0], top[1], top[2]);
+  tri(top[0], top[2], top[3]);
+}
+
 /** An upright box, `w` by `d` and `h` up from `y`, turned `yaw` about (x, z) */
 function addBox(cells, x, z, yaw, w, d, y, h) {
   const c = cells.cell(x, z);
@@ -652,6 +749,7 @@ function gardenClusters(g) {
   for (const p of g.paths) add(p, 3);
   for (const b of g.beds) add(b, 1);
   for (const f of g.ponds) add(f);
+  for (const f of g.rockPonds ?? []) add(f);
   for (const h of g.hedges) add(h, 2);
   for (const w of g.seawalls ?? []) add(w, 1);
   for (const [x, z] of g.gates) boxes.push({ x0: x, x1: x, z0: z, z1: z });
@@ -802,6 +900,15 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
     addRibbon(stone, [...pts, pts[0]], COPING.width, POND_TOP + COPING.rise, heightAt);
     addRibbon(coping, [...pts, pts[0]], COPING.width, POND_TOP + COPING.rise, heightAt);
   }
+  // Ponds edged with rocks, none along where two of them meet and the water runs on between them
+  const rocky = (g.rockPonds ?? []).map((ring) => pointsOf(ring));
+  for (const pts of rocky) {
+    if (pts.length < 3 || !wanted(pts[0].x, pts[0].z)) continue;
+    addDraped(pond, [pts], POND_TOP, heightAt);
+    addRocks(stone, pts, rocky.filter((o) => o !== pts), heightAt);
+    if (due()) yield;
+  }
+  stone.tint = SANDSTONE;
   yield;
   // The paths, laid on the lawn's and the paving's triangles, a piece a segment: where both are drawn (the paving runs under the lawn's
   // edge) the one on the lawn is on top. A track is worn into the raised lawn, and into the map's lawn off it, where a paved path that
@@ -879,4 +986,5 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   return colliders;
 }
 
-export { PATH_TOP, SURFACES as PATH_SURFACES, TRACK, TRACK_TOP, buildTileGarden, gardenMaterials, lawnSurface, pathTop, pavingSurface, useMapLawn };
+export { PATH_TOP, SURFACES as PATH_SURFACES, ROCKS as POND_ROCKS, TRACK, TRACK_TOP, buildTileGarden, gardenMaterials, lawnSurface, pathTop, pavingSurface,
+  useMapLawn };

@@ -2547,9 +2547,9 @@ export const SCENARIOS = {
   // Gate, along the asphalt and onto a gravel path; up a kerb onto the raised lawn beside an asphalt path and back down; through the Queen
   // Elizabeth II Gate from the promenade along Farm Cove to the Opera House's forecourt; in Hyde Park from Elizabeth St across the
   // Archibald Fountain's plaza and down its avenue; in Bradfield Park along the path under the Harbour Bridge's approach, past a pier;
-  // along the Chinese Garden of Friendship's path by its lake; then on the bike up Macquarie St's kerb and along the garden's path, and
-  // across a path between two raised lawns, down one kerb and up the other. The walker and the bike stand on what's drawn under them all
-  // the way: the paving, the path, the raised lawn, never sunk into it
+  // along the Chinese Garden of Friendship's path by its lake; in Centennial Park along an asphalt path and onto the bridle track; then on
+  // the bike up Macquarie St's kerb and along the garden's path, and across a path between two raised lawns, down one kerb and up the
+  // other. The walker and the bike stand on what's drawn under them all the way: the paving, the path, the raised lawn, never sunk into it
   garden: {
     minutes: 9,
     async run({ human, page, metric, expect }) {
@@ -2628,6 +2628,16 @@ export const SCENARIOS = {
       await walk([[-305, 442.9], [-308.6, 448.3]], 'in the Chinese Garden');
       const chinese = await check('in the Chinese Garden');
       expect(chinese.what?.startsWith('garden:'), `not on the Chinese Garden's path: ${chinese.what}`);
+      // Centennial Park: north-east along the asphalt path beside Grand Drive, then across the raised lawn onto the bridle track (a track
+      // 4 m wide, worn into the raised lawn) and along it
+      await debug(() => window.__gameDebug.goto(2575, 2191.9, 2.745, 'person'));
+      await human.wait(1500);
+      await walk([[2589.5, 2157.5], [2603.9, 2123]], 'along Centennial Park\'s asphalt');
+      const centennial = await check('on Centennial Park\'s asphalt');
+      expect(centennial.what?.startsWith('garden:'), `not on Centennial Park's path: ${centennial.what}`);
+      await walk([[2611.2, 2130.2], [2619.6, 2114.8], [2627.7, 2100.6], [2642.5, 2079.9]], 'along the bridle track');
+      const bridle = await check('on the bridle track');
+      expect(bridle.what?.startsWith('garden:'), `not on Centennial Park's bridle track: ${bridle.what}`);
       // The bike on Macquarie St, east up its kerb (at x 410) onto the footpath and through the gate along the garden's path
       await debug(() => window.__gameDebug.goto(398, -1016, Math.PI / 2, 'cyclist'));
       await human.wait(1500);

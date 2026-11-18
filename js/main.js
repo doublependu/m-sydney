@@ -5,7 +5,7 @@ import { createPostProcessing } from './post-processing.js';
 import { ClusteredLighting } from 'three/addons/lighting/ClusteredLighting.js';
 import { getLocationLabel, isTypingInField, LANDMARK_SITES, ROADS, LANDMARKS, SPAWN, TELEPORT_LOCATIONS, suburbAt } from './city-config.js';
 import { TOWER_SIGNS } from './tower-signs.js';
-import { buildTileGround, buildWater } from './city-grid.js';
+import { buildTileGardenAlone, buildTileGround, buildWater } from './city-grid.js';
 import { addHarbourBridge, addTowerSigns, buildLandmarks } from './landmarks.js';
 import { buildMovingScenery } from './moving-scenery.js';
 import { createCityBlocks } from './buildings.js';
@@ -28,7 +28,7 @@ import { IDLE, WorldBuilder, activity, runToEnd } from './world-jobs.js';
 import { GEO, TILE, fetchFarFile, heldBytes, heldTiles, holdTile, holdTiles, isHeld, loadFar, releaseTile, tileExists, tileKeyAt, tilesNear } from './geodata.js';
 import { estimateMemory } from './memory-estimate.js';
 import { lastSessionNote, noteText, startSessionNote } from './session-note.js';
-import { planTiles } from './tiles/tile-manager.js';
+import { distanceToTile, planTiles } from './tiles/tile-manager.js';
 import { BLOCKS } from './city-config.js';
 import { auditPrecision, moveOriginNear, origin, rebaseMeshes, setOrigin } from './world-origin.js';
 import { createInteriors } from './interiors.js';
@@ -1265,12 +1265,30 @@ async function initApp() {
     let tile = null;
     yield holdTile(key).then((t) => { tile = t; }).catch(() => { tileFailedAt.set(key, performance.now()); });
     if (!tile) return;
+    // A garden lays its raised lawn, paths and ponds on the map's lawn as drawn (js/garden.js), and a lawn can be a neighbour's (a lawn's
+    // 240 m square is the tile's its middle is in): the neighbours in the tiles' reach first, fetched while the rest of the ground is built,
+    // which waits for them only at the garden. One out of reach isn't fetched (held, its roads and the rest would come into the traffic
+    // and the street furniture for nothing: the phone's city completed 3.7 s later); when it's built, the garden is built again
+    let gardenReady = null;
+    const gardenWithout = [];
+    if (tile.garden) {
+      const { x, z } = controllerManager.getActiveEntity().position;
+      const fetch = [];
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const k = `${tile.ix + dx}_${tile.iz + dz}`;
+          if ((!dx && !dz) || !tileExists(k) || isHeld(k)) continue;
+          (distanceToTile(tile.ix + dx, tile.iz + dz, x, z) <= tileRange ? fetch : gardenWithout).push(k);
+        }
+      }
+      if (fetch.length) gardenReady = holdTiles(fetch).catch(() => {});
+    }
     let record = builtTiles.get(key);
     if (!record) builtTiles.set(key, (record = { tile, stages: [], colliders: [], culling: [], done: false }));
     const stage = new THREE.Group();
     stage.name = 'Tile';
     const started = record.startPart;
-    const ground = yield* buildTileGround(tile, stage, { part: started ? (x, z) => !inStart(x, z) : () => true });
+    const ground = yield* buildTileGround(tile, stage, { part: started ? (x, z) => !inStart(x, z) : () => true, gardenReady });
     const buildings = yield* cityBlocks.addBuildings(tile, started ? tile.buildings.filter((b) => !inStart(b.cx, b.cz)) : tile.buildings, stage);
     if (builtTiles.get(key) !== record) { // let go of while it was being built
       disposeStage(stage);
@@ -1284,14 +1302,46 @@ async function initApp() {
     const [shadow, storage] = shadowOf();
     record.culling.push(yield* setupSceneCullingSteps(scene, record.stages, shadow, storage));
     record.done = true;
+    // Its garden built without a neighbour's lawns, which may lie under it: built again when that neighbour is. And this one may be such a
+    // neighbour of a garden built before it
+    if (gardenWithout.length) record.gardenWithout = new Set(gardenWithout.filter((k) => !isHeld(k)));
+    for (const [k, r] of builtTiles) if (r.gardenWithout?.delete(key)) gardenRebuilds.add(k);
     farLevel?.setShown(tile.ix, tile.iz, true);
     cityBlocks.update(cameraSystem.currentPos.x, cameraSystem.currentPos.z, true);
+  }
+
+  // A built tile's garden, built again now that a neighbour whose lawn it lies on has come in: the new garden revealed, then the old one's
+  // meshes taken out (its gates' and fountains' colliders are the same, and kept)
+  const gardenRebuilds = new Set();
+  function* rebuildGarden(key) {
+    const record = builtTiles.get(key);
+    if (!record?.done) return;
+    activity.label = `garden ${key}`;
+    const stage = new THREE.Group();
+    stage.name = 'Tile';
+    yield* buildTileGardenAlone(record.tile, stage);
+    if (builtTiles.get(key) !== record) {
+      disposeStage(stage);
+      return;
+    }
+    yield revealStage(stage);
+    for (const old of record.stages) {
+      for (const mesh of [...old.children]) {
+        if (!mesh.userData.garden) continue;
+        old.remove(mesh);
+        mesh.geometry.dispose();
+      }
+    }
+    record.stages.push(stage);
+    const [shadow, storage] = shadowOf();
+    record.culling.push(yield* setupSceneCullingSteps(scene, [stage], shadow, storage));
   }
 
   function dropTile(key) {
     const record = builtTiles.get(key);
     if (!record) return;
     builtTiles.delete(key);
+    gardenRebuilds.delete(key);
     dropLayer(`garden:${key}`);
     farLevel?.setShown(record.tile.ix, record.tile.iz, false);
     for (const handle of record.culling) removeSceneCulling(handle);
@@ -1612,6 +1662,10 @@ async function initApp() {
         yield* groundFirst(replant(x, z));
       } else if (next.load.length) {
         yield* buildTile(next.load[0]);
+      } else if (gardenRebuilds.size) {
+        const key = gardenRebuilds.values().next().value;
+        gardenRebuilds.delete(key);
+        yield* rebuildGarden(key);
       } else if (!(yield* nextFarSquare(x, z))) {
         yield IDLE;
         continue;
@@ -2125,6 +2179,24 @@ async function initApp() {
       // A garden's raised lawn, paths, beds, ponds and stonework drawn or not (by layer, so the culling can't undo it): for measuring what
       // they cost
       gardenShown: (on) => scene.traverse((o) => { if (o.userData.garden) o.layers.set(on ? 0 : 31); }),
+      // The garden's meshes drawn in the last frame, by material: those the culling showed (js/scene-culling.js) and in the camera's view,
+      // their triangles, and the reach of their bounds
+      gardenMeshes() {
+        const camera = cameraSystem.camera;
+        const frustum = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+        const by = {};
+        scene.traverse((o) => {
+          if (!o.isMesh || !o.userData.garden) return;
+          let shown = o.layers.isEnabled(0);
+          for (let p = o; p && shown; p = p.parent) shown = p.visible;
+          if (!shown || !frustum.intersectsObject(o)) return;
+          const entry = by[o.userData.garden] ??= { meshes: 0, triangles: 0, reach: 0 };
+          entry.meshes++;
+          entry.triangles += (o.geometry.index?.count ?? 0) / 3;
+          entry.reach = Math.max(entry.reach, Math.round(o.geometry.boundingSphere?.radius ?? 0));
+        });
+        return by;
+      },
       // Each frame's longest piece of work over 30 ms, as [ms since the page opened, what it was, ms]
       slowWork: () => debugFrames.slow.slice(),
       // The verges' trees planted or not, at once (they're in the street furniture's tree field): the number planted

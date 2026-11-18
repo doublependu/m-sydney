@@ -178,6 +178,19 @@ function cutMap(derived) {
     for (const f of GARDEN.fountains || []) (at(f[0], f[1]).garden.fountains ||= []).push(f);
     // Ponds edged with rocks, as ponds are, but in a field of their own where a tile has any
     for (const ring of GARDEN.rockPonds || []) (middle(ring).garden.rockPonds ||= []).push(ring);
+    // Islands in the ponds, with the tile their pond is in (its water is laid round them), in a field of their own where a tile has any
+    const inFlat = (f, x, z) => {
+      let inside = false;
+      for (let i = 0, j = f.length - 2; i < f.length; j = i, i += 2) {
+        if ((f[i + 1] > z) !== (f[j + 1] > z) && x < ((f[j] - f[i]) * (z - f[i + 1])) / (f[j + 1] - f[i + 1]) + f[i]) inside = !inside;
+      }
+      return inside;
+    };
+    for (const ring of GARDEN.islands || []) {
+      const pond = [...GARDEN.ponds, ...(GARDEN.rockPonds || [])].find((f) => inFlat(f, ring[0], ring[1]));
+      if (!pond) throw new Error(`an island at ${ring[0]}, ${ring[1]} in no pond`);
+      (middle(pond).garden.islands ||= []).push(ring);
+    }
   }
 
   // --- Roads: a link is in every tile within reach of it, with its id --------------------------------------------------

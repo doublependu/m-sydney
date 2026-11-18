@@ -13,13 +13,14 @@ import { areaOf, drape, drapePolygon } from './drape.js';
 // A garden's ground, laid over a tile's lawns (tools/build-garden.mjs): its footpaths, beds, hedges, ponds and the gates on its paths, and in
 // a formal park the lawn raised over its paved paths, kerbed along every edge. Only a few areas have them yet: the Royal Botanic Garden,
 // the Domain, round the Opera House and Circular Quay, Bronte Park, the CBD's parks (Hyde Park, Barangaroo Reserve, Observatory Hill,
-// Wynyard Park), Bradfield Park under the Harbour Bridge's north end, Prince Alfred Park, and Darling Harbour's Tumbalong Park and Chinese
-// Garden of Friendship.
+// Wynyard Park), Bradfield Park under the Harbour Bridge's north end, Prince Alfred Park, Darling Harbour's Tumbalong Park and Chinese
+// Garden of Friendship, and Centennial Park and Moore Park.
 //   tile.garden: { paths: [[kind, surface, width, x, z, ...]], gates: [[x, z, heading, width]], hedges: [[height, width, x, z, ...]],
 //     ponds: [[x, z, ...]], beds: [[kind, x, z, ...]], seawalls: [[side, x, z, ...]], lawns: [[kerb, [x, z, ...], ...holes]],
-//     plazas: [[surface, [x, z, ...], ...holes]], fountains: [[x, z, r]], rockPonds: [[x, z, ...]] }
+//     plazas: [[surface, [x, z, ...], ...holes]], fountains: [[x, z, r]], rockPonds: [[x, z, ...]], islands: [[x, z, ...]] }
 //   (a raised lawn's pieces, `kerb` what its kerbs are: 0 concrete, 1 sandstone; paved areas, as plazas round a fountain, and fountains,
-//   each the middle of one of its ponds and how far that is from the pond's edge, and ponds edged with rocks, where a tile has any)
+//   each the middle of one of its ponds and how far that is from the pond's edge, ponds edged with rocks, and islands in its ponds, with the
+//   tile their pond's in, where a tile has any)
 // In layers, each laid exactly on the triangles of what's under it (js/drape.js), so on a slope none comes up through another: the map's
 // lawn and paving (js/city-grid.js); the paths, just over them; the raised lawn 8 cm over the map's lawn, its kerbs' tops 1 cm over it
 // at their outer edge, their faces down to the paths; and tracks and beds on the raised lawn, or tracks on the map's lawn off it.
@@ -333,6 +334,15 @@ class LaidSurface {
   }
 }
 
+/** Whether (x, z) is inside a ring of { x, z } */
+const insideRing = (ring, x, z) => {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i], b = ring[j];
+    if ((a.z > z) !== (b.z > z) && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) inside = !inside;
+  }
+  return inside;
+};
 const boxOf = (pts) => {
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   for (const p of pts) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z); }
@@ -740,7 +750,17 @@ function addBox(cells, x, z, yaw, w, d, y, h) {
 // between them, are culled apart, so a view of one (or away from both) doesn't draw the other's. What the garden draws comes in pieces
 // whose boxes, CLUSTER_GAP apart or nearer, are one cluster.
 const CLUSTER_GAP = 60; // m
-/** (x, z) => the key of the cluster of `g`'s garden (x, z) is in: 0 for the first, or off them all */
+// A cluster wider or deeper than this (Centennial Park's fill whole tiles) is drawn in its squares (SQUARE, the raised lawn's), each their
+// own meshes culled by distance one by one (SQUARE_CULL): drawn as one, a big park's garden is never far enough off to be left out from
+// inside it, and from Centennial Park's middle the low level drew 65,000-77,000 of its triangles (15,000-23,000 in squares). Its details go
+// nearer than a small garden's: a kerb or a track's edge is under a pixel long before then, and past the raised lawn's reach the map's
+// lawn under it is the same grass, 8 cm down.
+const BIG_CLUSTER = 1100; // m
+const SQUARE_CULL = { lawn: 400, paths: 700, beds: 500, pond: 1200, stone: 300, hedge: 600, walls: 900 };
+/**
+ * (x, z) => the key of the cluster of `g`'s garden (x, z) is in: 0 for the first, or off them all; in a big one (BIG_CLUSTER), a string
+ * naming the cluster and its square
+ */
 function gardenClusters(g) {
   const boxes = [];
   const add = (flat, from = 0) => { if (flat.length >= from + 2) boxes.push(boxOf(pointsOf(flat, from))); };
@@ -771,10 +791,12 @@ function gardenClusters(g) {
     else { c.x0 = Math.min(c.x0, b.x0); c.x1 = Math.max(c.x1, b.x1); c.z0 = Math.min(c.z0, b.z0); c.z1 = Math.max(c.z1, b.z1); }
   }
   const list = [...clusters.values()];
-  if (list.length < 2) return () => 0;
+  for (const c of list) c.big = c.x1 - c.x0 > BIG_CLUSTER || c.z1 - c.z0 > BIG_CLUSTER;
+  if (list.length < 2 && !list[0]?.big) return () => 0;
   return (x, z) => {
-    const k = list.findIndex((c) => x >= c.x0 - CLUSTER_GAP && x <= c.x1 + CLUSTER_GAP && z >= c.z0 - CLUSTER_GAP && z <= c.z1 + CLUSTER_GAP);
-    return k < 0 ? 0 : k;
+    let k = list.findIndex((c) => x >= c.x0 - CLUSTER_GAP && x <= c.x1 + CLUSTER_GAP && z >= c.z0 - CLUSTER_GAP && z <= c.z1 + CLUSTER_GAP);
+    if (k < 0) k = 0;
+    return list[k].big ? `${k}:${Math.floor(x / SQUARE)},${Math.floor(z / SQUARE)}` : k;
   };
 }
 
@@ -814,6 +836,7 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   const boxes = [
     ...(g.lawns ?? []).map(([, outer]) => boxOf(pointsOf(outer))), ...(g.plazas ?? []).map(([, outer]) => boxOf(pointsOf(outer))),
     ...g.beds.map(([, ...ring]) => boxOf(pointsOf(ring))),
+    ...[...g.ponds, ...(g.rockPonds ?? [])].map((ring) => boxOf(pointsOf(ring))),
     ...g.paths.map(([, , width, ...line]) => { const b = boxOf(pointsOf(line)); return { x0: b.x0 - width, z0: b.z0 - width, x1: b.x1 + width, z1: b.z1 + width }; })
   ];
   for (const at of [lawnAt, pavingAt]) {
@@ -873,6 +896,17 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
     const mx = pts.reduce((t, p) => t + p.x, 0) / pts.length, mz = pts.reduce((t, p) => t + p.z, 0) / pts.length;
     return (g.fountains ?? []).find(([x, z, r]) => Math.hypot(x - mx, z - mz) < r);
   };
+  // A pond's islands (OSM's inner rings, `islands`), holes in its water, edged as its own edge is
+  const islands = (g.islands ?? []).map((f) => pointsOf(f)).filter((r) => r.length > 2);
+  const islandsIn = (pts) => islands.filter((r) => insideRing(pts, r[0].x, r[0].z));
+  // A pond's water laid on the map's lawn's triangles, as the raised lawn is (a neighbour's lawns among them: js/main.js holds a garden
+  // tile's neighbours before building it). Cut into PIECE pieces over the ground, as before, a lake of 5 ha was 30,000 triangles.
+  const layPond = (rings) => {
+    const b = boxOf(rings[0]);
+    const laid = [];
+    drapePolygon(rings, lawnAt.trianglesIn(b.x0, b.z0, b.x1, b.z1), POND_TOP, laid, 0, 0);
+    addLaid(pond, laid);
+  };
   for (const ring of g.ponds) {
     const pts = pointsOf(ring);
     if (pts.length < 3 || !wanted(pts[0].x, pts[0].z)) continue;
@@ -895,17 +929,22 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
       stone.tint = SANDSTONE;
       continue;
     }
-    addDraped(pond, [pts], POND_TOP, heightAt);
-    // Sandstone round its edge
-    addRibbon(stone, [...pts, pts[0]], COPING.width, POND_TOP + COPING.rise, heightAt);
-    addRibbon(coping, [...pts, pts[0]], COPING.width, POND_TOP + COPING.rise, heightAt);
+    const holes = islandsIn(pts);
+    layPond([pts, ...holes]);
+    // Sandstone round its edge, and its islands'
+    for (const r of [pts, ...holes]) {
+      addRibbon(stone, [...r, r[0]], COPING.width, POND_TOP + COPING.rise, heightAt);
+      addRibbon(coping, [...r, r[0]], COPING.width, POND_TOP + COPING.rise, heightAt);
+    }
+    if (due()) yield;
   }
-  // Ponds edged with rocks, none along where two of them meet and the water runs on between them
+  // Ponds edged with rocks, none along where two of them meet and the water runs on between them; round their islands too
   const rocky = (g.rockPonds ?? []).map((ring) => pointsOf(ring));
   for (const pts of rocky) {
     if (pts.length < 3 || !wanted(pts[0].x, pts[0].z)) continue;
-    addDraped(pond, [pts], POND_TOP, heightAt);
-    addRocks(stone, pts, rocky.filter((o) => o !== pts), heightAt);
+    const holes = islandsIn(pts);
+    layPond([pts, ...holes]);
+    for (const r of [pts, ...holes]) addRocks(stone, r, rocky.filter((o) => o !== pts), heightAt);
     if (due()) yield;
   }
   stone.tint = SANDSTONE;
@@ -974,15 +1013,23 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   setLayer(`garden:${tile.key}`, [trianglesOf(lawn), ...kerbTops, trianglesOf(paths), trianglesOf(beds), trianglesOf(coping)]);
   yield;
   const before = target?.children.length ?? 0;
-  buildCells(lawn, target, mats.lawn, { cullDistance: 900 });
-  buildCells(paths, target, mats.paths, { cullDistance: 900 });
-  buildCells(beds, target, mats.beds, { cullDistance: 900 });
-  buildCells(pond, target, mats.pond, { cullDistance: 1200 });
-  buildCells(stone, target, mats.stone, { cullDistance: 600 });
-  buildCells(hedge, target, mats.hedge, { cast: true, cullDistance: 900 });
-  buildCells(walls, target, mats.wall, { cast: true, cullDistance: 900 });
-  // What's the garden's, for measuring what it costs (__gameDebug.gardenShown())
-  for (const mesh of target?.children.slice(before) ?? []) mesh.userData.garden = true;
+  // A small cluster's meshes culled at `far`; a big one's squares (string keys, gardenClusters()) at SQUARE_CULL's
+  const build = (cells, material, far, near, cast = false) => {
+    const whole = { cells: new Map() }, squares = { cells: new Map() };
+    for (const [key, c] of cells.cells) (typeof key === 'string' ? squares : whole).cells.set(key, c);
+    buildCells(whole, target, material, { cast, cullDistance: far });
+    buildCells(squares, target, material, { cast, cullDistance: near });
+  };
+  build(lawn, mats.lawn, 900, SQUARE_CULL.lawn);
+  build(paths, mats.paths, 900, SQUARE_CULL.paths);
+  build(beds, mats.beds, 900, SQUARE_CULL.beds);
+  build(pond, mats.pond, 1200, SQUARE_CULL.pond);
+  build(stone, mats.stone, 600, SQUARE_CULL.stone);
+  build(hedge, mats.hedge, 900, SQUARE_CULL.hedge, true);
+  build(walls, mats.wall, 900, SQUARE_CULL.walls, true);
+  // What's the garden's, by material, for measuring what it costs (__gameDebug.gardenShown(), gardenMeshes())
+  const names = new Map(Object.entries(mats).map(([k, v]) => [v, k]));
+  for (const mesh of target?.children.slice(before) ?? []) mesh.userData.garden = names.get(mesh.material) ?? true;
   return colliders;
 }
 

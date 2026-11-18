@@ -347,10 +347,10 @@ function* addCoast(tile, sand, rock, wanted) {
 /**
  * A tile's ground, into `target`: the road surface and the curb islands: curbs around every one, paving and lawn on them, a
  * low hedge on the wider traffic islands. Part of it if `part` says so, for the first view: `part` picks the ground to build
- * by where it is. The part with `last` set also has what only matters later: the base, the seawalls and the structures.
- * Returns the colliders of any structures.
+ * by where it is. The part with `last` set also has what only matters later: the garden (once `gardenReady`, a promise, has settled),
+ * the base, the seawalls and the structures. Returns the colliders of any structures.
  */
-function* buildTileGround(tile, target, { part = () => true, last = true } = {}) {
+function* buildTileGround(tile, target, { part = () => true, last = true, gardenReady = null } = {}) {
   const mats = groundMaterials();
   const box = { x0: tile.ix * TILE, x1: (tile.ix + 1) * TILE, z0: tile.iz * TILE, z1: (tile.iz + 1) * TILE };
   const inTile = (x, z) => x >= box.x0 && x < box.x1 && z >= box.z0 && z < box.z1;
@@ -425,7 +425,9 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
   yield;
   // A garden's paths, beds, hedges, ponds and gates (js/garden.js): not in the first view
   if (!last) return [];
-  // Each of its pieces is this tile's alone (tools/build-tiles.mjs), though a path or a bed can start a little over its edge
+  // Each of its pieces is this tile's alone (tools/build-tiles.mjs), though a path or a bed can start a little over its edge. What it's
+  // laid on can be a neighbour's lawn: `gardenReady`, when that's held (js/main.js buildTile())
+  if (gardenReady) yield gardenReady;
   const garden = yield* buildTileGarden(tile, target, buildCells);
 
   // The base only backs up the surfaces' seams, so it comes last: on the phone it costs too much of the 4 s to load
@@ -463,4 +465,9 @@ function* buildTileGround(tile, target, { part = () => true, last = true } = {})
   return [...colliders, ...garden];
 }
 
-export { buildTileGround, buildWater, groundMaterials, getStreetGroundHeight, batchStaticGroupMeshes };
+/** A tile's garden alone, into `target`, as buildTileGround() builds it: built again once a neighbour whose lawn it lies on comes in */
+function* buildTileGardenAlone(tile, target) {
+  return yield* buildTileGarden(tile, target, buildCells);
+}
+
+export { buildTileGround, buildTileGardenAlone, buildWater, groundMaterials, getStreetGroundHeight, batchStaticGroupMeshes };

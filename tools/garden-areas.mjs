@@ -17,6 +17,7 @@
 // `ground`: what its ground between the paths is planted with, one bed over all its raised lawn, in place of grass (a garden with little
 // lawn: the Chinese Garden of Friendship's rockeries and shrubberies).
 // `pondEdge`: 'rock' for its ponds edged with rocks (boulders along the water) rather than a sandstone coping.
+// `way` (or `relation`): which of OSM's parks of that name it is, by its id, where there's more than one (four are called Moore Park).
 import { bbox, elementRings, pointInRing, ringArea } from './geo-common.mjs';
 
 export const AREAS = [
@@ -52,7 +53,15 @@ export const AREAS = [
   // stone, its ponds edged with rocks. Its lake (1,511 m², tagged a pond) isn't the sea's.
   { name: 'Tumbalong Park', osm: 'Tumbalong Park', kind: 'formal', surfaces: { concrete: 'concrete' } },
   { name: 'Chinese Garden of Friendship', osm: 'Chinese Garden of Friendship', kind: 'formal', surfaces: { paved: 'paving', concrete: 'concrete' },
-    woods: 'chinese', ground: 'oriental', pondEdge: 'rock' }
+    woods: 'chinese', ground: 'oriental', pondEdge: 'rock' },
+  // The eastern suburbs' great park: its avenues and lawns, paved paths between them, gravel and dirt paths through its woods and the
+  // bridle track round Grand Drive (OSM's dirt and gravel: tracks), and 12 ponds, five of them lakes with islands. All its water is tagged a
+  // pond (or is under 1,500 m²), so none is the sea's and adding it needed no whole build. Greater Sydney Parklands', not the City's: its
+  // trees are OSM's, its woods planted as `parkland` (tools/build-garden.mjs MIX).
+  { name: 'Centennial Park', osm: 'Centennial Park', kind: 'formal', woods: 'parkland' },
+  // Its piece between South Dowling St and Anzac Parade, south of Moore Park Rd, its shared paths asphalt: OSM's way 12281514, not the
+  // three other parks of that name
+  { name: 'Moore Park', osm: 'Moore Park', way: 12281514, kind: 'formal' }
 ];
 
 // Gates a model draws itself (js/model-sites.js; its script in m-sydney-private's tools/models/), which the garden leaves out: the Queen
@@ -157,8 +166,10 @@ export function gardenAreas(land) {
       const [x0, z0, x1, z1] = a.box;
       return { ...a, rings: [[[x0, z0], [x1, z0], [x1, z1], [x0, z1]]], except: (a.except || []).map(([ex0, ez0, ex1, ez1]) => ({ x0: ex0, z0: ez0, x1: ex1, z1: ez1 })) };
     }
-    const e = land.find((el) => el.tags?.name === a.osm && /^(park|garden)$/.test(el.tags.leisure || ''));
-    if (!e) throw new Error(`No park named ${a.osm} in OSM: has it been renamed?`);
+    // The first park or garden of that name, or the one with that id
+    const id = a.way ?? a.relation, type = a.way !== undefined ? 'way' : 'relation';
+    const e = land.find((el) => el.tags?.name === a.osm && /^(park|garden)$/.test(el.tags.leisure || '') && (id === undefined || (el.type === type && el.id === id)));
+    if (!e) throw new Error(`No park named ${a.osm}${id === undefined ? '' : ` (${type} ${id})`} in OSM: has it been renamed?`);
     return { ...a, rings: elementRings(e).outer.filter((r) => r.length > 3), except: [] };
   });
   for (const a of areas) a.box = bbox(a.rings.flat());

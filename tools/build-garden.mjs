@@ -129,9 +129,13 @@ const surfaceOf = (t, area = null) => {
 // A path's width where OSM gives none: the garden's main walks are asphalt about 3 m across, its gravel ones narrower
 const DEFAULT_WIDTH = [[2.4, 3, 1.8, 2, 1.2, 1.8, 1.8, 2.4], [2.4, 2.4, 2.4, 2.4, 2.4], [2.5, 2.5, 2.5, 2.5, 2.5]];
 const TRACK_WIDTH = 1.2; // m: a track's, where OSM gives none
+// ...and a bridleway's: Centennial Park's bridle track round Grand Drive and its gravel loops by the equestrian centre are 3.5-4.5 m across
+// in the aerial imagery, and OSM gives none of them a width
+const BRIDLE_WIDTH = 4;
 const widthOf = (t, kind, surface) => {
   const w = parseFloat(t.width);
   if (Number.isFinite(w) && w > 0.6) return Math.min(6, w);
+  if (t.highway === 'bridleway') return BRIDLE_WIDTH;
   if (kind === 3) return TRACK_WIDTH;
   return t.highway === 'track' ? 3 : DEFAULT_WIDTH[kind][surface] ?? DEFAULT_WIDTH[kind][2];
 };
@@ -257,26 +261,39 @@ for (const e of pathsSource) {
 // Ponds and reflecting pools: still water at the ground's own height, not the sea's. A fountain's basin (amenity=fountain, or a fountain's
 // water) is a pond too, and its middle and how far that is from its edge, [x, z, r], a fountain: js/garden.js gives it a rim and a plinth.
 // In an area whose ponds are edged with rocks (tools/garden-areas.mjs `pondEdge`), they're `rockPonds`, not `ponds`: js/garden.js lays rocks
-// along their edges in place of a coping.
+// along their edges in place of a coping. A pond's islands (OSM's inner rings: Centennial Park's lakes have one to five each) are
+// `islands`, holes in its water, the park's lawn as round it; a fountain's are its plinth's.
+const POND_MAX = 60000; // m²: the biggest still water a garden draws (Centennial Park's Busbys Pond is 57,356)
+const MIN_ISLAND = 8; // m²: smaller islands are water
 const ponds = [];
 const rockPonds = [];
+const islands = [];
 const pondRings = [];
+const islandRings = [];
 const fountains = [];
 for (const e of land) {
   const t = e.tags || {};
   if (t.natural !== 'water' || (t.water && !/^(pond|reflecting_pool|fishpond|basin|lake|fountain)$/.test(t.water))) continue;
-  for (const ring of elementRings(e).outer) {
+  const { outer, inner } = elementRings(e);
+  for (const ring of outer) {
     const area = Math.abs(ringArea(ring));
-    if (ring.length < 4 || area < 8 || area > 30000) continue;
+    if (ring.length < 4 || area < 8 || area > POND_MAX) continue;
     const b = bbox(ring), cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2;
     if (!areaAt(cx, cz) || landBits.at(cx, cz) !== 1) continue;
     pondRings.push(ring);
+    // (A fountain's inner ring is its plinth's, which js/garden.js draws itself, in its water)
+    const fountain = t.amenity === 'fountain' || t.water === 'fountain';
+    for (const hole of fountain ? [] : inner) {
+      if (hole.length < 4 || Math.abs(ringArea(hole)) < MIN_ISLAND || !pointInRing(ring, hole[0][0], hole[0][1])) continue;
+      islandRings.push(hole);
+      islands.push(flat(rdpRing(hole, 0.2)));
+    }
     if (areaAt(cx, cz).pondEdge === 'rock') {
       rockPonds.push(flat(rdpRing(ring, 0.2)));
       continue;
     }
     ponds.push(flat(rdpRing(ring, 0.2)));
-    if (t.amenity === 'fountain' || t.water === 'fountain') {
+    if (fountain) {
       // Its middle (the area's), and the nearest of its edges to it
       let ax = 0, az = 0, a2 = 0;
       for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
@@ -288,7 +305,14 @@ for (const e of land) {
     }
   }
 }
-const inPond = (x, z, margin = 0) => pondRings.some((r) => pointInRing(r, x, z) || (margin && distToRing(r, x, z) < margin));
+const pondBoxes = pondRings.map((r) => bbox(r)), islandBoxes = islandRings.map((r) => bbox(r));
+/** Whether (x, z) is in a pond's water (not on an island in it), or within `margin` of its edge or an island's */
+const inPond = (x, z, margin = 0) => {
+  const near = (b) => x >= b.x0 - margin && x <= b.x1 + margin && z >= b.z0 - margin && z <= b.z1 + margin;
+  const wet = pondRings.some((r, i) => near(pondBoxes[i]) && pointInRing(r, x, z)) && !islandRings.some((r, i) => near(islandBoxes[i]) && pointInRing(r, x, z));
+  return wet || (margin > 0 && (pondRings.some((r, i) => near(pondBoxes[i]) && distToRing(r, x, z) < margin)
+    || islandRings.some((r, i) => near(islandBoxes[i]) && distToRing(r, x, z) < margin)));
+};
 
 // Paved areas OSM draws in a garden as areas, not lines (highway=pedestrian, a footway as an area): the plaza round the Archibald Fountain,
 // the paving along the Pool of Reflection. The map draws a park's as lawn; the garden paves them where it does (the raised lawn, below), on
@@ -325,7 +349,7 @@ for (const area of localAreas()) {
   }
 }
 log(`${plazaSource.length} paved areas in them, OSM's and by hand`);
-log(`${hedges.length} hedges, ${ponds.length} ponds and pools, ${fountains.length} of them fountains; ${rockPonds.length} edged with rocks`);
+log(`${hedges.length} hedges, ${ponds.length} ponds and pools, ${fountains.length} of them fountains; ${rockPonds.length} edged with rocks; ${islands.length} islands in them`);
 
 // --- Sea walls: the shore round the parks themselves, where a sandstone parapet keeps people out of the water (js/garden.js) ------------
 // Not the boxes round the Opera House, whose model has its own sea wall, or the Quay's, where the ferries tie up. Each is
@@ -524,13 +548,25 @@ let plazaArea = 0;
         if (on) addLine(quad[1], quad[2]);
       }
     }
-    for (const f of [...ponds, ...rockPonds]) {
-      const ring = [];
-      for (let k = 0; k + 1 < f.length; k += 2) ring.push([f[k], f[k + 1]]);
-      if (!inBox(ring)) continue;
-      raised.fillRing(ring, 0);
-      for (const r of plazaBy.values()) r.fillRing(ring, 0);
-      ringLines(ring);
+    // ...its water, that is: not its islands, which are lawn as the park's round it is
+    const wet = blank();
+    let anyWet = false;
+    for (const [list, val] of [[[...ponds, ...rockPonds], 1], [islands, 0]]) {
+      for (const f of list) {
+        const ring = [];
+        for (let k = 0; k + 1 < f.length; k += 2) ring.push([f[k], f[k + 1]]);
+        if (!inBox(ring)) continue;
+        wet.fillRing(ring, val);
+        ringLines(ring);
+        anyWet = true;
+      }
+    }
+    if (anyWet) {
+      for (let i = 0; i < wet.d.length; i++) {
+        if (!wet.d[i]) continue;
+        raised.d[i] = 0;
+        for (const r of plazaBy.values()) r.d[i] = 0;
+      }
     }
     // ...and the sand and rock on land, each piece's outline less its holes: a piece over no raised lawn adds no lines to move points onto
     for (const [kind, ...flats] of sandPieces) {
@@ -704,6 +740,10 @@ const MIX = {
   wollemi: { every: 6, bed: -1, plants: [[K.wollemi, 1, 6, 12]] },
   scrub: { every: 2.2, bed: 3, plants: [[K.native, 0.7, 0.8, 2.4], [K.grass, 0.3, 0.5, 1.1]] },
   wood: { every: 9, bed: -1, plants: [[K.broadleaf, 0.4, 10, 18], [K.fig, 0.2, 14, 22], [K.gum, 0.25, 12, 22], [K.small, 0.15, 5, 8]] },
+  // A big park's woods (Centennial Park's paperbark swamps and eucalypt stands): gums and paperbarks, a few big exotics, every 16 m. At
+  // the Royal Botanic Garden's `wood` (every 9 m, figs among them) its 31 ha of woods took 2,900 trees, and the low level drew up to
+  // 270,000 more triangles over the park
+  parkland: { every: 16, bed: -1, plants: [[K.gum, 0.45, 12, 22], [K.small, 0.35, 6, 10], [K.broadleaf, 0.2, 10, 18]] },
   // A Chinese garden's groves: small ornamental trees (maples, crepe myrtles, magnolias) under a few bigger ones (elms, willows), shrubs and
   // cycads between, in the bed its ground is planted as (`ground`), not one of their own
   chinese: { every: 4, bed: -1, plants: [[K.small, 0.38, 4, 8], [K.broadleaf, 0.14, 8, 14], [K.shrub, 0.3, 0.8, 1.8], [K.cycad, 0.06, 0.8, 1.4], [K.grass, 0.12, 0.5, 1.0]] }
@@ -955,6 +995,6 @@ log(`by kind: ${Object.entries(counts).map(([k, v]) => `${names[k]} ${v}`).join(
 
 fs.writeFileSync(OUT, JSON.stringify({
   areas: areas.map((a) => ({ name: a.name, rings: a.rings.map((r) => flat(rdpRing(r, 0.5))), except: a.except })),
-  paths, gates, hedges, ponds, rockPonds, fountains, beds, seawalls, lawns, plazas, plants, small: [...SMALL]
+  paths, gates, hedges, ponds, rockPonds, islands, fountains, beds, seawalls, lawns, plazas, plants, small: [...SMALL]
 }));
 log(`wrote ${path.relative(ROOT, OUT)} (${(fs.statSync(OUT).size / 1024).toFixed(0)} KB) in ${((Date.now() - started) / 1000).toFixed(1)} s`);

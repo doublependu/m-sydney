@@ -341,8 +341,9 @@ test('a kerbed path has the raised lawn beside it, on one side at least, whereve
     }
   }
   assert.ok(beside > 3000, `${beside} points with the raised lawn beside them`);
-  // Left bare: a path along an area's outline, with only the map's lawn outside it
-  assert.ok(bare / (beside + bare) < 0.03, `${bare} of ${beside + bare} points on a path with lawn beside it but none raised: ${JSON.stringify(where)}`);
+  // Left bare: a path along an area's outline, with only the map's lawn outside it. Centennial Park's outline runs along the footpaths of
+  // the streets round it (Alison Rd, Oxford St), a seventh of its paths' points
+  assert.ok(bare / (beside + bare) < 0.04, `${bare} of ${beside + bare} points on a path with lawn beside it but none raised: ${JSON.stringify(where)}`);
 });
 
 test('the CBD\'s parks are gardens: Hyde Park\'s paths, the Archibald Fountain in its plaza and the Pool of Reflection, Barangaroo Reserve, Observatory Hill and Wynyard Park', { skip: !garden.some((t) => t.key === '0_-1') && 'Hyde Park\'s tiles not held' }, () => {
@@ -506,4 +507,79 @@ test('no garden sea wall stands where a region\'s edge cut the land: Hyde Park S
       for (let i = 2; i + 1 < line.length; i += 2) assert.ok(!onRegionEdge(line[i - 2], line[i - 1], line[i], line[i + 1]), `a sea wall along a region's edge at (${line[i]}, ${line[i + 1]})`);
     }
   }
+});
+
+test('Centennial Park and Moore Park are gardens: Centennial\'s paved paths and its tracks, the bridle track 4 m wide, its lakes and their islands, and the Moore Park by Anzac Parade', { skip: !garden.some((t) => t.key === '2_2') && 'Centennial Park\'s tiles not held' }, () => {
+  const inBox = (p, x0, x1, z0, z1) => p.pts.some(({ x, z }) => x > x0 && x < x1 && z > z0 && z < z1);
+  const km = (list) => list.reduce((t, p) => t + p.pts.slice(1).reduce((s, q, i) => s + Math.hypot(q.x - p.pts[i].x, q.z - p.pts[i].z), 0), 0) / 1000;
+  const centennial = paths.filter((p) => inBox(p, 1930, 3930, 1420, 3320));
+  const kerbed = centennial.filter((p) => p.kind !== 3), tracks = centennial.filter((p) => p.kind === 3);
+  assert.ok(km(kerbed) > 5, `${km(kerbed).toFixed(1)} km of Centennial Park's paved paths`);
+  assert.ok(km(tracks) > 20, `${km(tracks).toFixed(1)} km of its tracks`);
+  // The bridle track along Grand Drive: a track 4 m wide, OSM giving none
+  assert.ok(tracks.some((p) => p.width === 4 && p.pts.some((q, i) => i && segDist(2627.7, 2100.6, p.pts[i - 1], q) < 1)), 'no 4 m bridle track by Grand Drive');
+  // Moore Park's paths, by Anzac Parade: OSM's way 12281514, not the first park of the name it has (21 km west)
+  assert.ok(km(paths.filter((p) => inBox(p, 1218, 1529, 1314, 1988))) > 1, 'too little path in Moore Park');
+  // Its lakes: Busbys Pond and the Duck Pond 5.7 ha each, three more over 3 ha
+  const ringArea = (f) => { let a = 0; for (let i = 0, j = f.length - 2; i < f.length; j = i, i += 2) a += f[j] * f[i + 1] - f[i] * f[j + 1]; return Math.abs(a / 2); };
+  const lakes = garden.flatMap((t) => t.garden.ponds).filter((f) => ringArea(f) > 30000);
+  assert.equal(lakes.length, 5, `${lakes.length} lakes over 3 ha`);
+  // Their islands are lawn: the raised lawn over them, and their water round them none
+  const islands = [...new Set(garden.flatMap((t) => (t.garden.islands || []).map((f) => JSON.stringify(f))))].map((f) => JSON.parse(f));
+  const inCentennial = islands.filter((f) => f[0] > 1930 && f[0] < 3930 && f[1] > 1420 && f[1] < 3320);
+  assert.equal(inCentennial.length, 12, `${inCentennial.length} islands in Centennial Park's ponds`);
+  for (const f of lakes) {
+    let water = 0, raisedOver = 0, island = 0, onIsland = 0;
+    const b = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity };
+    for (let i = 0; i + 1 < f.length; i += 2) { b.x0 = Math.min(b.x0, f[i]); b.x1 = Math.max(b.x1, f[i]); b.z0 = Math.min(b.z0, f[i + 1]); b.z1 = Math.max(b.z1, f[i + 1]); }
+    for (let x = b.x0; x < b.x1; x += 4) {
+      for (let z = b.z0; z < b.z1; z += 4) {
+        if (!inFlatRing(f, x, z)) continue;
+        const isle = islands.find((h) => inFlatRing(h, x, z));
+        if (isle) { island++; if (onRaised(x, z)) onIsland++; } else { water++; if (onRaised(x, z)) raisedOver++; }
+      }
+    }
+    assert.ok(water > 1000 && raisedOver === 0, `the raised lawn over a lake's water at ${raisedOver} of ${water} points`);
+    if (island > 20) assert.ok(onIsland > island * 0.8, `the raised lawn on ${onIsland} of ${island} points on a lake's islands`);
+  }
+});
+
+test('a lake is laid on the lawn\'s triangles: its water whole, round its islands, and cheap', { skip: !garden.some((t) => t.key === '2_2') && 'Centennial Park\'s tiles not held' }, async () => {
+  const { buildTileGarden, gardenMaterials } = await import('../js/garden.js');
+  const water = [];
+  for (const t of garden.filter((t) => /^[23]_[23]$/.test(t.key))) {
+    const it = buildTileGarden(t, null, (cells, target, material) => { if (material === gardenMaterials().pond) water.push(cells); });
+    while (!it.next().done);
+  }
+  // Every pond's water in those tiles, with its islands: its area against what's laid
+  const tris = [];
+  for (const cells of water) {
+    for (const c of cells.cells.values()) {
+      const P = c.position, I = c.index;
+      for (let i = 0; i < I.length; i += 3) tris.push([I[i], I[i + 1], I[i + 2]].map((k) => [P[k * 3], P[k * 3 + 2]]));
+    }
+  }
+  assert.ok(tris.length < 12000, `${tris.length} triangles of water`);
+  const islands = [...new Set(garden.flatMap((t) => (t.garden.islands || []).map((f) => JSON.stringify(f))))].map((f) => JSON.parse(f));
+  // Busbys Pond: its points every 3 m are under the water but on its islands
+  const busbys = garden.flatMap((t) => t.garden.ponds).find((f) => inFlatRing(f, 2614, 2538));
+  assert.ok(busbys, 'no Busbys Pond');
+  const covered = (x, z) => tris.some(([a, b, c]) => {
+    const d = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+    const l1 = ((b[1] - c[1]) * (x - c[0]) + (c[0] - b[0]) * (z - c[1])) / d, l2 = ((c[1] - a[1]) * (x - c[0]) + (a[0] - c[0]) * (z - c[1])) / d;
+    return l1 >= -1e-6 && l2 >= -1e-6 && 1 - l1 - l2 >= -1e-6;
+  });
+  let n = 0, dry = 0, wet = 0;
+  // (Off the half metre, where the islands' points are)
+  for (let x = 2400.37; x < 2800; x += 3) {
+    for (let z = 2380.37; z < 2700; z += 3) {
+      if (!inFlatRing(busbys, x, z)) continue;
+      const isle = islands.some((h) => inFlatRing(h, x, z));
+      if (isle) { if (covered(x, z)) wet++; continue; }
+      n++;
+      if (!covered(x, z)) dry++;
+    }
+  }
+  assert.ok(n > 3000 && dry <= n * 0.002, `Busbys Pond's water missing at ${dry} of ${n} points`);
+  assert.equal(wet, 0, 'water over an island');
 });

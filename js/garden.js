@@ -9,6 +9,7 @@ import {
   trianglesOf
 } from './drawn-ground.js';
 import { areaOf, drape, drapePolygon } from './drape.js';
+import { outsideTunnelMouths } from './tunnel-mouths.js';
 
 // A garden's ground, laid over a tile's lawns (tools/build-garden.mjs): its footpaths, beds, hedges, ponds and the gates on its paths, and in
 // a formal park the lawn raised over its paved paths, kerbed along every edge. Only a few areas have them yet: the Royal Botanic Garden,
@@ -57,11 +58,16 @@ const PIECE = 3; // m: a bed's or pond's triangles are cut no longer than this, 
 // outline and the shore's are each traced from the land to within a metre, and the lawn can reach out past the shore by that much.
 const PARAPET = { height: 0.6, thickness: 0.45, out: 1.0, coping: 0.07, overhang: 0.05, stop: 1.1 };
 
+// Each left out where it falls in a tunnel's mouth, as the map's ground is (js/tunnel-mouths.js): a garden can lie over one
+const masked = (m) => {
+  m.maskNode = outsideTunnelMouths();
+  return m;
+};
 const over = (m) => {
   m.polygonOffset = true;
   m.polygonOffsetFactor = -2;
   m.polygonOffsetUnits = -2;
-  return m;
+  return masked(m);
 };
 // The raised lawn is drawn in the map's own lawn material, which js/city-grid.js hands over as it makes it (useMapLawn()): the same grass
 // at the same place, so there's nothing more to compile, and two lawns 8 cm apart can't be seen to fight far off
@@ -85,7 +91,7 @@ function gardenMaterials() {
     ])),
     pond: over(createPondMaterial()),
     wall: createSandstoneWallMaterial({ waterLevel: CITY_BOUNDS.waterLevel }),
-    stone: new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.8 }),
+    stone: masked(new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.8 })),
     hedge: new THREE.MeshStandardNodeMaterial({ color: 0x35612f, roughness: 0.9 })
   };
   return shared;

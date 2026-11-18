@@ -312,6 +312,25 @@ function deriveTunnels() {
   return { tunnels: Object.fromEntries(tunnels.map((l) => [l.id, [l.openA, l.openB, l.length]])), portals };
 }
 
+/**
+ * The tunnel a mouth opens into (a PORTALS entry, or one made the same way): its link, how far along the link the portal is, and which
+ * way along it is in (+1 or -1). null if that link isn't held.
+ */
+function tunnelAtPortal(p) {
+  let best = null;
+  for (const seg of segCells.get(Math.floor(p.x / CELL) * 100000 + Math.floor(p.z / CELL)) || []) {
+    if (seg.link.kind !== KIND.TUNNEL) continue;
+    const along = seg.ux * p.ux + seg.uz * p.uz;
+    if (Math.abs(along) < 0.95) continue;
+    const q = project(seg, p.x, p.z);
+    if (q.d < 0.05 && (!best || q.d < best.d)) best = { d: q.d, link: seg.link, s: seg.s0 + seg.len * q.t, dir: along > 0 ? 1 : -1 };
+  }
+  return best && { link: best.link, s: best.s, dir: best.dir };
+}
+
+/** The links that meet at a node */
+const linksAt = (node) => linksAtNode.get(node) || [];
+
 // Where (x, z) falls on a segment: the distance along it (t, 0-1), across it (off, to the right of travel) and from it
 function project(seg, x, z) {
   const t = Math.max(0, Math.min(1, ((x - seg.ax) * seg.ux + (z - seg.az) * seg.uz) / seg.len));
@@ -1449,5 +1468,5 @@ function roadRoute(waypoints, step = 8) {
 export {
   setFloor, clearFloor, onFloor, decksAt, DECK_DEPTH, ROOM, freeFromDeck, setBridgeDeck, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, ROAD_CLASS, ROAD_CLASSES, deriveTunnels, linkById, roadClass, SAME_LEVEL, SEGMENTS, STATION_STEP, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
   clearOfWater, EDGE_GAP, edgeHeight, edgeNeighbour, floorBelow, laneAt, linkEdges, linkStations, moveOver, offsetLine, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, ownLaneOffsets, roadHeight, roadRoute, roomUnderDeck, sameLevel,
-  structureAt, structuresAt, surfaceHeight, surfaceSlope, tunnelCovered
+  linksAt, structureAt, structuresAt, surfaceHeight, surfaceSlope, tunnelAtPortal, tunnelCovered
 };

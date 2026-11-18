@@ -455,6 +455,36 @@ function* addRoadDeck(cells, wanted, links = LINKS, fills = heldTiles().flatMap(
 
 // A plain dark ground under everything on land, so a seam anywhere above it shows ground and never the harbour. Each
 // point lies BASE_DROP under the lowest ground around it, so it can't come up through the road.
+// A corner of the base's grid, `step` apart: under the lowest of the nine points round it
+function baseCorner(x, z, step = HCELL) {
+  let y = Infinity;
+  for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) y = Math.min(y, groundHeight(x + a * step * 0.5, z + b * step * 0.5));
+  return y - BASE_DROP;
+}
+/**
+ * The base's height at (x, z) as addBase() draws it, by the same triangles (with no model's basement under it, nor land to stand on):
+ * js/tunnel-mouths.js works out from it how far the ground climbs into a tunnel's mouth. `corners` keeps the corners worked out.
+ */
+function baseHeight(x, z, corners = null, step = HCELL) {
+  const x0 = Math.floor(x / step) * step, z0 = Math.floor(z / step) * step;
+  const corner = (cx, cz) => {
+    const key = cx * 1e6 + cz;
+    let y = corners?.get(key);
+    if (y === undefined) {
+      y = baseCorner(cx, cz, step);
+      corners?.set(key, y);
+    }
+    return y;
+  };
+  const fx = (x - x0) / step, fz = (z - z0) / step;
+  // Split along the diagonal from (x0 + step, z0) to (x0, z0 + step), as addBase()'s two triangles are
+  if (fx + fz <= 1) {
+    const v0 = corner(x0, z0);
+    return v0 + (corner(x0 + step, z0) - v0) * fx + (corner(x0, z0 + step) - v0) * fz;
+  }
+  const v2 = corner(x0 + step, z0 + step);
+  return v2 + (corner(x0, z0 + step) - v2) * (1 - fx) + (corner(x0 + step, z0) - v2) * (1 - fz);
+}
 // `box`: stay within it, to save looking at the whole map
 function* addBase(cells, wanted, step = HCELL, box = null, under = null) {
   const { detail } = GEO.frame;
@@ -465,10 +495,8 @@ function* addBase(cells, wanted, step = HCELL, box = null, under = null) {
     const key = x * 1e6 + z;
     let y = lows.get(key);
     if (y === undefined) {
-      y = Infinity;
-      for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) y = Math.min(y, groundHeight(x + a * step * 0.5, z + b * step * 0.5));
-      if (under) y = Math.min(y, under(x, z));
-      y -= BASE_DROP;
+      y = baseCorner(x, z, step);
+      if (under) y = Math.min(y, under(x, z) - BASE_DROP);
       lows.set(key, y);
     }
     return y;
@@ -535,6 +563,6 @@ function wheelContacts(x, z, heading, sid = 0, near = null, track = 0.8, axle = 
 }
 
 export {
-  GroundCells, SIDEWALK_TOP, STACK_CLEARANCE, addBase, addCurb, addRoadDeck, addSurface, allLinks, denseRing, kerbRing,
+  GroundCells, SIDEWALK_TOP, STACK_CLEARANCE, addBase, addCurb, baseHeight, addRoadDeck, addSurface, allLinks, denseRing, kerbRing,
   groundLinks, kerbFootAt, offsetLine, pointInPolygonXZ, roadSurfaceMeshes, wheelContacts, wheelGround
 };

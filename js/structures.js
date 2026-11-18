@@ -3,6 +3,7 @@ import { color, float, smoothstep } from 'three/tsl';
 import { GroundCells } from './ground-geometry.js';
 import { DECK_DEPTH, DECK_STRUCTURE, KIND, LINKS, STATION_STEP as STEP, STRUCTURES, TUNNEL_HEIGHT, groundHeight, linkEdges, linkStations as stations, offsetLine, onGroundRoad, structuresAt, tunnelCovered } from './surfaces.js';
 import { onDeckSpan } from './bridge.js';
+import { mouthReach, portalOf } from './tunnel-mouths.js';
 import { BASE_FACE, STONE_FACE, cityUniforms, createPalisadeMaterial, createStructureMaterial } from './tsl-materials.js';
 
 // Every road off the ground, drawn from its own heights (js/surfaces.js): bridges and viaducts as decks, tunnels as
@@ -12,7 +13,7 @@ import { BASE_FACE, STONE_FACE, cityUniforms, createPalisadeMaterial, createStru
 const BARRIER = { height: 0.9, width: 0.4 };
 const SOLID_BELOW = 4.5; // m: lower than this over the ground a deck stands on a wall (an abutment, an embankment)
 const PIER_EVERY = 26; // m
-const ROOF = 0.3, ROOF_INSIDE = 12; // m: a tunnel's roof over its ceiling, and how far it's drawn inside a mouth
+const ROOF = 0.3; // m: a tunnel's roof over its ceiling, drawn inside a mouth as far as its corridor reaches (js/tunnel-mouths.js)
 // Along the top of a cutting's wall where it drops more than `drop` to the road: a sandstone coping, `coping` m high and `width` wide, and
 // on it a steel palisade `height` m high, `offset` m back from the wall's face
 const FENCE = { drop: 2, coping: 0.25, width: 0.45, height: 1.5, offset: 0.22, stop: 2.2 };
@@ -94,6 +95,74 @@ function noses(concrete, w, row, st, list, side, top) {
     quad(concrete, w, a0, b0, b1, a1, { x: -ux, y: 0, z: -uz });
     quad(concrete, w, d0, c0, c1, d1, { x: ux, y: 0, z: uz });
     quad(concrete, w, b0, c0, c1, b1, { x: at.nx, y: 0, z: at.nz });
+  }
+}
+// Where the ground under a deck climbs from open air into its slab (a bank under its end over a street or a cutting, or where a deck rises
+// off the ground), its abutment: a face in stone from the soffit down to the ground in front of it, along the line where the ground
+// meets the slab, so from under the deck the bank doesn't run up into the soffit. That line is looked for every `step` across the deck and
+// every `along` down it; a face is drawn only where it's at least `least` high.
+const ABUT = { step: 1, along: 0.5, clear: 0.3, front: 1, least: 0.8, join: 6 };
+function abutments(concrete, w, st, half) {
+  const L = st[st.length - 1].s;
+  if (L < 2) return;
+  // The deck's line every ABUT.along: where it is, which way is left of it, and its road's height
+  const line = [];
+  for (let s = 0, i = 1; s <= L; s += ABUT.along) {
+    while (i < st.length - 1 && st[i].s < s) i++;
+    const a = st[i - 1], b = st[i], span = b.s - a.s, t = span > 1e-6 ? Math.min(1, (s - a.s) / span) : 0, M = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+    line.push({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t, y: a.y + (b.y - a.y) * t, nx: -(b.z - a.z) / M, nz: (b.x - a.x) / M });
+  }
+  const n = Math.max(2, Math.round((2 * half - 0.6) / ABUT.step) + 1);
+  const offs = Array.from({ length: n }, (_, j) => -half + 0.3 + (j * (2 * half - 0.6)) / (n - 1));
+  const at = (k, a) => ({ x: line[k].x + line[k].nx * a, z: line[k].z + line[k].nz * a });
+  const inside = (k, a) => {
+    const p = at(k, a);
+    return groundHeight(p.x, p.z) > line[k].y - DECK_DEPTH - ABUT.clear;
+  };
+  // Where the ground might cross the slab's underside: first along its middle and its two edges, then across all of it only near those
+  const near = new Uint8Array(line.length), pad = Math.ceil(ABUT.join / ABUT.along);
+  for (const a of [offs[0], 0, offs[n - 1]]) {
+    let was = null;
+    for (let k = 0; k < line.length; k += 2) {
+      const now = inside(k, a);
+      if (was !== null && now !== was) near.fill(1, Math.max(0, k - 2 - pad), Math.min(line.length, k + pad + 1));
+      was = now;
+    }
+  }
+  // Each offset's crossings: the last point inside the slab, and which way along the deck the air is (+1 on, -1 back)
+  const crossings = offs.map((a) => {
+    const out = [];
+    let was = null;
+    for (let k = 0; k < line.length; k++) {
+      if (!near[k]) { was = null; continue; }
+      const now = inside(k, a);
+      if (was !== null && now !== was) out.push(now ? { k, dir: -1 } : { k: k - 1, dir: 1 });
+      was = now;
+    }
+    return out;
+  });
+  const face = (k, a, dir) => {
+    const p = at(k, a), f = at(Math.max(0, Math.min(line.length - 1, k + dir * Math.round(ABUT.front / ABUT.along))), a);
+    return { x: p.x, z: p.z, top: line[k].y - DECK_DEPTH + 0.02, foot: groundHeight(f.x, f.z) - 0.3 };
+  };
+  for (let j = 0; j + 1 < n; j++) {
+    for (const c of crossings[j]) {
+      const d = crossings[j + 1].filter((e) => e.dir === c.dir).sort((e, g) => Math.abs(e.k - c.k) - Math.abs(g.k - c.k))[0];
+      if (!d || Math.abs(d.k - c.k) * ABUT.along > ABUT.join) continue;
+      const p = face(c.k, offs[j], c.dir), q = face(d.k, offs[j + 1], c.dir);
+      if (p.top - p.foot < ABUT.least && q.top - q.foot < ABUT.least) continue;
+      // Facing the air: across the face's line, the way along the deck the air is
+      const ex = q.x - p.x, ez = q.z - p.z, E = Math.hypot(ex, ez) || 1, dx = line[c.k].nz * c.dir, dz = -line[c.k].nx * c.dir;
+      let nx = -ez / E, nz = ex / E;
+      if (nx * dx + nz * dz < 0) { nx = -nx; nz = -nz; }
+      const corners = [[p, p.foot], [q, q.foot], [q, q.top], [p, p.top]].map(([o, y]) => ({ x: o.x, y: Math.min(y, o.top), z: o.z }));
+      const v = corners.map((o) => concrete.vertex(w, o.x, o.y, o.z, nx, 0, nz));
+      w.uv.splice(v[0] * 2, 8, offs[j], STONE_FACE, offs[j + 1], STONE_FACE, offs[j + 1], STONE_FACE, offs[j], STONE_FACE);
+      // Wound to face (nx, 0, nz), as quad() winds
+      const [a0, a1, a2] = corners, ux = a1.x - a0.x, uy = a1.y - a0.y, uz = a1.z - a0.z, bx = a2.x - a0.x, by = a2.y - a0.y, bz = a2.z - a0.z;
+      const facing = (uy * bz - uz * by) * nx + (ux * by - uy * bx) * nz;
+      w.index.push(...(facing >= 0 ? [v[0], v[1], v[2], v[0], v[2], v[3]] : [v[0], v[2], v[1], v[0], v[3], v[2]]));
+    }
   }
 }
 // A median barrier halfway between this road's edge and the edge of the road beside carrying traffic the other way
@@ -260,6 +329,7 @@ function* buildStructures(group, roadMat, links = LINKS, touching = links, wante
       const soffitL = left.map((p) => ({ x: p.x, z: p.z, y: p.y - DECK_DEPTH }));
       const soffitR = right.map((p) => ({ x: p.x, z: p.z, y: p.y - DECK_DEPTH }));
       strip(concrete, w, soffitR, soffitL, () => ({ x: 0, y: -1, z: 0 }));
+      abutments(concrete, w, st, half);
       // Piers under the middle, wherever it stands high, kept off the streets beneath and out of the lanes of any other road
       // that passes between their feet and the deck: a tunnel's approach in its cutting, a ramp, a lower viaduct
       const r = half > 7 ? 1.3 : 0.9;
@@ -306,14 +376,18 @@ function* buildStructures(group, roadMat, links = LINKS, touching = links, wante
       }
       // Over the tube for its first metres inside each mouth, its roof: the ground there is left out below the ceiling (js/tunnel-mouths.js),
       // since the ground's lattice can only slope from the cutting's floor up over the tube, and from above, behind the portal's face,
-      // you'd look down into the tube, its lights and the dark under it. Under the ground wherever the ground is drawn, and where it
-      // isn't, the plain dark ground's colour, as round it.
+      // you'd look down into the tube, its lights and the dark under it. As far in as the ground is left out. Under the ground wherever
+      // the ground is drawn, and where it isn't, the plain dark ground's colour, as round it.
       const mouthsAt = [];
-      for (let i = 1; i < st.length; i++) if (covered[i] !== covered[i - 1]) mouthsAt.push(st[covered[i] ? i : i - 1].s);
+      for (let i = 1; i < st.length; i++) {
+        if (covered[i] === covered[i - 1]) continue;
+        const portal = portalOf(link, covered[i]);
+        mouthsAt.push({ s: st[covered[i] ? i : i - 1].s, reach: portal ? mouthReach(portal) : 12 });
+      }
       if (mouthsAt.length) {
         const roof = (row, side) => row.map((p, i) => ({ x: p.x + across(i, side).x * 0.4, z: p.z + across(i, side).z * 0.4, y: st[i].y + TUNNEL_HEIGHT + ROOF, s: st[i].s, v: BASE_FACE }));
         const roofL = roof(left, 1), roofR = roof(right, -1);
-        for (const r of runs(st.length, (i) => covered[i] && mouthsAt.some((s) => Math.abs(st[i].s - s) <= ROOF_INSIDE + STEP))) {
+        for (const r of runs(st.length, (i) => covered[i] && mouthsAt.some((m) => Math.abs(st[i].s - m.s) <= m.reach + STEP))) {
           strip(concrete, w, slice(roofL, r), slice(roofR, r), up);
         }
       }

@@ -18,13 +18,18 @@
 //   height y and runs at a straight grade between two, and the solve fits the roads round it. Each point lies on one of the ways;
 //   water: [{ id: 'way/1' | 'relation/1', sea: true | false, expect: { tag: value }, why }]: a water area the sea's rule
 //   (tools/sea-water.mjs) reads wrong, put in the sea (drawn at its level, tools/build-geodata.mjs) or taken out of it (a pond,
-//   tools/build-ponds.mjs) }
+//   tools/build-ponds.mjs);
+//   move: [{ id: OSM way id, points: [[x, z], ...], expect: { from: [x, z], to: [x, z] }, why }]: a road OSM draws where it overlaps
+//   another, moved: each of the way's nodes, in OSM's order and ends included, to its point. A node moves for every way through it, so
+//   a junction takes its other roads with it; two edits moving one node must agree. `expect` is where its first and last nodes are in
+//   OSM: if they've moved more than half a metre, or the way has another number of nodes, the build stops }
 // `expect` is what the ways' tags were when the edit was made: if OSM has changed them since, the build stops and says so, as the
 // edit may no longer be right. A tag set to null is taken away. Each way an edit names is marked `local` (its area's file): the
 // build takes in some ways only where an area has been looked at by hand, as bus-only roads (tools/build-geodata.mjs).
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fromWorld, toWorld } from './geo-common.mjs';
 
 const DIR = fileURLToPath(new URL('./local/', import.meta.url));
 
@@ -50,6 +55,7 @@ const ON_WAY = 3; // m: a level's point further than this from all its ways mean
  * points in the game's frame by toWorld(lon, lat). The build stops if a way named is gone, its `expect` fails, or a point is off its ways.
  */
 export function localLevels(elements, toWorld, areas = localAreas()) {
+  moveNodes(elements, localMoves(elements, areas));
   const byId = new Map(elements.map((e) => [e.id, e]));
   const out = [];
   for (const area of areas) {
@@ -85,12 +91,81 @@ export function localWater(areas = localAreas()) {
   }));
 }
 
-/** Applies every area's way edits to OSM's road elements, in place. Returns them, without those removed, and a line to log. */
-export function editWays(elements) {
+const MOVE_ENDS = 0.5; // m: a moved way's end further than this from where its edit expects it means OSM has moved it since
+const SAME_PLACE = 0.05; // m two edits moving one node may differ by
+/**
+ * Every area's moves, checked against OSM's road elements as the snapshot has them (before any move): Map(node id -> { x, z, name }),
+ * each moved node's new place in the game's frame. The build stops if a way is gone, has another number of nodes than the edit has
+ * points, its ends aren't where the edit expects them, or two edits move one node to different places.
+ */
+export function localMoves(elements, areas = localAreas()) {
+  const byId = new Map(elements.filter((e) => e.nodes).map((e) => [e.id, e]));
+  const moved = new Map();
+  for (const area of areas) {
+    for (const edit of area.move || []) {
+      const name = `tools/local/${area.file}, the move of way ${edit.id} (${edit.why})`;
+      const way = byId.get(edit.id);
+      if (!way) throw new Error(`${name}: the way is gone from the snapshot`);
+      if (!Array.isArray(edit.points) || edit.points.length !== way.nodes.length) {
+        throw new Error(`${name}: OSM has ${way.nodes.length} nodes on it now and the edit ${edit.points?.length} points: check the edit`);
+      }
+      const ends = [way.geometry[0], way.geometry[way.geometry.length - 1]].map((g) => toWorld(g.lon, g.lat));
+      for (const [end, want, which] of [[ends[0], edit.expect?.from, 'first'], [ends[1], edit.expect?.to, 'last']]) {
+        if (!Array.isArray(want)) throw new Error(`${name}: needs expect: { from: [x, z], to: [x, z] }, where its ends are in OSM`);
+        const d = Math.hypot(end[0] - want[0], end[1] - want[1]);
+        if (d > MOVE_ENDS) throw new Error(`${name}: its ${which} node is at (${end.map((v) => v.toFixed(1)).join(', ')}) in OSM now, ${d.toFixed(1)} m from where the edit expects it: check the edit`);
+      }
+      way.nodes.forEach((n, i) => {
+        const [x, z] = edit.points[i];
+        const [ox, oz] = toWorld(way.geometry[i].lon, way.geometry[i].lat);
+        if (Math.hypot(x - ox, z - oz) < 0.02) return; // left where OSM has it
+        const had = moved.get(n);
+        if (had && Math.hypot(had.x - x, had.z - z) > SAME_PLACE) {
+          throw new Error(`${name}: moves node ${n} to (${x}, ${z}), and ${had.name} to (${had.x}, ${had.z})`);
+        }
+        moved.set(n, { x, z, name });
+      });
+    }
+  }
+  return moved;
+}
+
+/** Puts each node `moved` names where it says, in every element that has it (ways' geometry, and OSM's nodes), in place. Returns how many */
+export function moveNodes(elements, moved) {
+  let n = 0;
+  if (!moved.size) return n;
+  for (const e of elements) {
+    if (e.type === 'node') {
+      const m = moved.get(e.id);
+      if (m) {
+        [e.lon, e.lat] = fromWorld(m.x, m.z);
+        n++;
+      }
+      continue;
+    }
+    if (!e.nodes || !e.geometry) continue;
+    for (let i = 0; i < e.nodes.length; i++) {
+      const m = moved.get(e.nodes[i]);
+      if (!m) continue;
+      const [lon, lat] = fromWorld(m.x, m.z);
+      e.geometry[i] = { lon, lat };
+      n++;
+    }
+  }
+  return n;
+}
+
+/**
+ * Applies every area's way edits to OSM's road elements, in place: tags, ways taken out, and moves. Returns them, without those removed,
+ * a line to log, and the nodes moved (localMoves()), for anything else that has them (OSM's nodes: moveNodes()).
+ */
+export function editWays(elements, areas = localAreas()) {
   const byId = new Map(elements.map((e) => [e.id, e]));
   const removed = new Set();
   let edited = 0;
-  for (const area of localAreas()) {
+  const moved = localMoves(elements, areas);
+  moveNodes(elements, moved);
+  for (const area of areas) {
     for (const edit of area.ways || []) {
       for (const id of edit.ids) {
         const way = byId.get(id);
@@ -106,5 +181,6 @@ export function editWays(elements) {
       }
     }
   }
-  return { elements: removed.size ? elements.filter((e) => !removed.has(e.id)) : elements, summary: `${edited} ways edited by hand, ${removed.size} taken out (tools/local/)` };
+  const summary = `${edited} ways edited by hand, ${removed.size} taken out, ${moved.size} nodes moved (tools/local/)`;
+  return { elements: removed.size ? elements.filter((e) => !removed.has(e.id)) : elements, summary, moved };
 }

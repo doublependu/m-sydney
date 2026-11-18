@@ -1,0 +1,9 @@
+{
+  "name": "Cammeray: the Warringah Fwy's bridges over Brook St, and the on-ramp beside it",
+  "box": [-1100, -5780, -950, -5620],
+  "move": [
+    {"id":173259459,"points":[[-1043.01,-5728.03],[-1016.53,-5699.29]],"expect":{"from":[-1043,-5728],"to":[-1020.6,-5703.7]},"why":"The Warringah Fwy's southbound bridge over Brook St ends 11 m from Brook St's middle in OSM, so the motorway on the ground after it reached 0.6 m into Brook St's carriageway, 5-6 m higher (check-layers: ground 5.7 m over Brook St at (-1024, -5710)). Its end moved 6 m on along its line: the bridge is 39 m long, clear of Brook St and the wall beside it"},
+    {"id":728287835,"points":[[-1020.12,-5676.5],[-1049.59,-5705.38]],"expect":{"from":[-1024.4,-5680.7],"to":[-1049.6,-5705.4]},"why":"The Warringah Fwy's northbound bridge over Brook St, as the southbound's: its start moved 6 m back along its line, clear of Brook St (check-layers: ground 5.9 m over Brook St at (-1028, -5685))"},
+    {"id":173265038,"points":[[-1019.48,-5777.19],[-1012.1,-5762.28],[-1010.05,-5757.38],[-1004.9,-5745],[-1001.64,-5735.87],[-998,-5728.86],[-963.55,-5682.87]],"expect":{"from":[-1019.5,-5777.2],"to":[-963.6,-5682.9]},"why":"The Brook St on-ramp where it leaves Brook St south of the bridges: OSM draws its carriageway a metre into Brook St's. With the bridges longer (above), Brook St's cutting under them is 0.5 m shallower and the ramp no longer sinks with it: it parts from Brook St 1.6 m higher, and in the trial build a car on its edge stopped dead at (-1017, -5756). Moved east up to 2.5 m, onto the island between them in NSW's aerial"}
+  ]
+}

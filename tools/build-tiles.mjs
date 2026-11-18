@@ -51,11 +51,57 @@ const PLACES_FILE = path.join(SRC, 'places.bin.gz');
 const PLACES = fs.existsSync(PLACES_FILE) ? (await import('./population/places.mjs')).loadPlaces(PLACES_FILE) : null;
 if (!PLACES) console.warn('[tiles] no places.bin.gz: tiles have no grid of residents and land use (node tools/build-population.mjs)');
 const { placeGrid, workersByCell } = await import('./tiles/place-grid.mjs');
+// The height grid, on 20 m cells, in 0.25 m steps
+const H = GEO.frame.heights;
+const grid = new Int32Array(H.w * H.h);
+{
+  const data = zlib.gunzipSync(fs.readFileSync(path.join(SRC, 'height-grid.bin.gz')));
+  let cursor = 0;
+  for (let j = 0; j < H.h; j++) {
+    let v = 0;
+    for (let i = 0; i < H.w; i++) {
+      let z = 0, shift = 0, byte;
+      do { byte = data[cursor++]; z |= (byte & 127) << shift; shift += 7; } while (byte & 128);
+      v += (z >>> 1) ^ -(z & 1);
+      grid[j * H.w + i] = v;
+    }
+  }
+}
+const gridAt = (x, z) => {
+  const i = Math.max(0, Math.min(H.w - 1, Math.round((x - H.x0) / H.cell))), j = Math.max(0, Math.min(H.h - 1, Math.round((z - H.z0) / H.cell)));
+  return grid[j * H.w + i];
+};
 // Tunnels side by side, moved apart to make room for a wall between them (tools/tiles/separate-tubes.mjs)
 {
   const { separateTubes } = await import('./tiles/separate-tubes.mjs');
   const s = separateTubes(RG);
   console.log(`[tiles] tunnels: ${s.before} m inside another tube, ${s.after} m once ${s.links} links were moved apart`);
+}
+// Bridges side by side at different heights, moved apart to make room for their barriers (tools/tiles/separate-decks.mjs), never
+// into a building standing up into the deck
+{
+  const { separateDecks } = await import('./tiles/separate-decks.mjs');
+  const C = 50, cells = new Map();
+  REAL_BUILDINGS.forEach((b, i) => {
+    for (let ix = Math.floor(b.minX / C); ix <= Math.floor(b.maxX / C); ix++) {
+      for (let iz = Math.floor(b.minZ / C); iz <= Math.floor(b.maxZ / C); iz++) (cells.get(ix * 100000 + iz) || cells.set(ix * 100000 + iz, []).get(ix * 100000 + iz)).push(i);
+    }
+  });
+  const inRing = (ring, x, z) => {
+    let c = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const a = ring[i], b = ring[j];
+      if ((a.z > z) !== (b.z > z) && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) c = !c;
+    }
+    return c;
+  };
+  // A building whose roof is within a metre of the deck's soffit (js/surfaces.js DECK_DEPTH) or over it, at (x, z)
+  const building = (x, z, y) => (cells.get(Math.floor(x / C) * 100000 + Math.floor(z / C)) || []).some((i) => {
+    const b = REAL_BUILDINGS[i];
+    return x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ && gridAt(x, z) * 0.25 + b.height > y - 2.4 && b.polygons.some((p) => inRing(p.outer, x, z));
+  });
+  const s = separateDecks(RG, { building });
+  console.log(`[tiles] decks: ${s.before} m overlapping another alongside, ${s.after} m once ${s.links} links were moved apart`);
 }
 // Every road, node and structure keeps the id the last build gave it, so a change in one place rewrites only the tiles around it
 // (tools/tiles/stable-ids.mjs). From the tiles in public/tiles, before they're replaced. --fresh-ids numbers them all afresh.
@@ -303,26 +349,6 @@ function packTrees(list) {
   return Buffer.from(out);
 }
 
-// The height grid, on 20 m cells, in 0.25 m steps
-const H = GEO.frame.heights;
-const grid = new Int32Array(H.w * H.h);
-{
-  const data = zlib.gunzipSync(fs.readFileSync(path.join(SRC, 'height-grid.bin.gz')));
-  let cursor = 0;
-  for (let j = 0; j < H.h; j++) {
-    let v = 0;
-    for (let i = 0; i < H.w; i++) {
-      let z = 0, shift = 0, byte;
-      do { byte = data[cursor++]; z |= (byte & 127) << shift; shift += 7; } while (byte & 128);
-      v += (z >>> 1) ^ -(z & 1);
-      grid[j * H.w + i] = v;
-    }
-  }
-}
-const gridAt = (x, z) => {
-  const i = Math.max(0, Math.min(H.w - 1, Math.round((x - H.x0) / H.cell))), j = Math.max(0, Math.min(H.h - 1, Math.round((z - H.z0) / H.cell)));
-  return grid[j * H.w + i];
-};
 const SAMPLES = SIZE / H.cell + 1 + MARGIN * 2;
 function packHeights(ix, iz) {
   const gx = H.x0 + Math.ceil((ix * SIZE - MARGIN * H.cell - H.x0) / H.cell) * H.cell;

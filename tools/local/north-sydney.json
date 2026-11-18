@@ -1,0 +1,8 @@
+{
+  "name": "North Sydney: Arthur St beside the Warringah Fwy",
+  "box": [-300, -3950, -150, -3700],
+  "move": [
+    {"id":1526332973,"points":[[-237.68,-3897.79],[-237.75,-3889.56],[-238.01,-3863.04],[-237.67,-3842.48],[-238,-3799.1]],"expect":{"from":[-237.7,-3897.8],"to":[-236,-3799.1]},"why":"Arthur St beside the Warringah Fwy's motorway link south of Mount St: OSM draws it 2.4 m east of where it is in NSW's aerial, and its carriageway 0.75-2.4 m into the link's, 4-6 m lower in its cutting, so the ground under its outer lane was the link's (check-layers: ground 4.1 m under it at (-230, -3812)). Moved west to its kerbs in the aerial, leaving 0.9-1.5 m for the wall between"},
+    {"id":1082469788,"points":[[-238,-3799.1],[-237.34,-3790.4],[-236.64,-3777.03],[-235.18,-3772.82],[-233.97,-3769.47],[-233.39,-3768.5]],"expect":{"from":[-236,-3799.1],"to":[-233.4,-3768.5]},"why":"Arthur St from Mount St to its bridge over the Warringah Fwy, beside the motorway link: moved west with the junction (above), back onto OSM's line where it turns onto the bridge"}
+  ]
+}

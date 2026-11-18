@@ -1,0 +1,8 @@
+{
+  "name": "The Domain: the Harbour Tunnel's south mouths and the Cahill Expressway round them",
+  "box": [380, -1360, 520, -1160],
+  "move": [
+    {"id":172775031,"points":[[407.4,-1344.5],[422.2,-1340.33],[428.17,-1338.56],[433.49,-1336.7],[441.2,-1333.65],[446.39,-1331.48],[452.37,-1328],[458,-1324],[462.21,-1320.5],[465.97,-1315.69],[470.1,-1308.35],[472.96,-1300.26],[474.52,-1292.57],[474.98,-1281.4],[474.44,-1272.15],[474.84,-1259.91],[474.13,-1251.41],[473,-1243.34],[471.25,-1233.88],[467.6,-1220.04],[461.46,-1198.83]],"expect":{"from":[407.4,-1344.5],"to":[461.5,-1198.8]},"why":"The Cahill Expressway eastbound off the viaduct, round the Harbour Tunnel's southbound mouth: OSM draws its curve 1.8 m into the tunnel's open cutting where it comes up at (463, -1307), 6 m lower (check-layers: ground 5.9 m under the Cahill's lane at (465, -1307)). Moved up to 3 m out from the loop's middle there, still on the road in NSW's aerial, which runs 3 m further out than OSM's lines; the tunnel passes under it covered"},
+    {"id":222399612,"points":[[407.4,-1344.5],[427.63,-1342.07],[431.11,-1341.42],[435.58,-1340.27],[439.26,-1339.12],[442.2,-1337.88],[446.02,-1336],[449.8,-1334.44],[454.21,-1332.47],[458.96,-1330.14],[463.93,-1326.24],[468.13,-1321.84],[471.62,-1317.26],[474.83,-1312.18],[477.36,-1307.23],[479.36,-1301.27],[480.76,-1294.15],[481.98,-1283.51],[481.81,-1273.39],[481.54,-1259.74],[479.9,-1241.27],[476.75,-1222.65],[475.05,-1215.33]],"expect":{"from":[407.4,-1344.5],"to":[475,-1215.3]},"why":"The Macquarie St off-ramp beside the Cahill Expressway eastbound: moved out with it (above), so the two stay as far apart as OSM has them"}
+  ]
+}

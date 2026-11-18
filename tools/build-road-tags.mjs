@@ -3,11 +3,12 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { inDetail, load, q1, rdp, toWorld } from './geo-common.mjs';
-import { editWays } from './local-edits.mjs';
+import { editWays, moveNodes } from './local-edits.mjs';
 
 const OUT = process.argv[2] || fileURLToPath(new URL('./data/generated/road-tags.js', import.meta.url));
 // With the hand edits (tools/local/), as tools/build-geodata.mjs reads them
-const ways = editWays(load('all_roads.json').elements.filter((e) => e.type === 'way' && e.geometry)).elements;
+const edited = editWays(load('all_roads.json').elements.filter((e) => e.type === 'way' && e.geometry));
+const ways = edited.elements;
 const worldOf = (w) => {
   const pts = w.geometry.map((g) => toWorld(g.lon, g.lat));
   return w.tags?.oneway === '-1' ? pts.reverse() : pts;
@@ -68,7 +69,10 @@ for (const w of load('cycleways.json').elements) {
   const pts = w.geometry.map((g) => toWorld(g.lon, g.lat));
   if (pts.some(([x, z]) => inDetail(x, z)) && lengthOf(pts) > 10) tags.cycleways.push(flat(rdp(pts, 0.5)));
 }
-for (const n of load('nodes.json').elements) {
+// A crossing on a road moved by hand (tools/local/ move) goes with it
+const osmNodes = load('nodes.json').elements;
+moveNodes(osmNodes, edited.moved);
+for (const n of osmNodes) {
   const t = n.tags || {};
   if (t.highway !== 'crossing') continue;
   const zebra = t.crossing === 'zebra' || /zebra/.test(t['crossing:markings'] || '');

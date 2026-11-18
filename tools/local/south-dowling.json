@@ -1,0 +1,9 @@
+{
+  "name": "Moore Park: South Dowling St beside the Eastern Distributor's cuttings",
+  "box": [1150, 1850, 1280, 2100],
+  "move": [
+    {"id":183759902,"points":[[1214.01,1961.03],[1217.15,1973.13],[1217.7,1993.4]],"expect":{"from":[1214,1961],"to":[1215.2,1993.4]},"why":"South Dowling St southbound over the Eastern Distributor's southbound mouth: OSM draws it 1-1.5 m west of where it is in NSW's aerial, its carriageway 2 m into the ED's cutting where it opens at (1208, 1981), 5-6 m lower (check-layers: ground 5.4 m under it at (1212, 1981)). Moved east to the cutting's wall, as in the aerial"},
+    {"id":713589864,"points":[[1217.7,1993.4],[1218.38,2046.79],[1222.26,2071.95],[1223.13,2080.49],[1226.59,2102.89],[1225.3,2143.55],[1225.08,2153.03],[1224.12,2192.62],[1223.41,2207.93],[1222.25,2222.36],[1220.04,2237.17],[1216.02,2257.21],[1213.8,2270.64],[1212.32,2284.68],[1211.23,2300.52],[1208.87,2354.03],[1204.76,2406.95],[1203.67,2422.53],[1202.52,2449.2],[1203.09,2551.95],[1202.17,2577.51],[1194.19,2800.83]],"expect":{"from":[1215.2,1993.4],"to":[1194.2,2800.8]},"why":"South Dowling St southbound beside the Eastern Distributor's southbound cutting, 2 m into it in OSM: moved east with its junction (above) to 1.2 m clear of it, back onto OSM's line by (1222, 2072), where the two part"},
+    {"id":575654570,"points":[[1194.25,1958.53],[1192.7,1948.15],[1191.31,1935.71],[1193.31,1910.24],[1195.56,1892.35]],"expect":{"from":[1194.3,1958.5],"to":[1195.6,1892.3]},"why":"South Dowling St northbound beside the Eastern Distributor's northbound cutting from its mouth at (1201, 1938): OSM draws it 0.5 m into the cutting, 5 m higher (check-layers: ground 5.4 m under it at (1197, 1938)). Moved west to 1.2 m clear of it; in NSW's aerial its kerb is at the cutting's wall"}
+  ]
+}

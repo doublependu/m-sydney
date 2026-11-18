@@ -15,7 +15,10 @@
 //   where OSM has none, paved as OSM's paved areas are there (tools/build-garden.mjs);
 //   levels: [{ ids: [OSM way id, ...], at: [[x, z, y], ...], expect: { tag: value }, why }]: a long section of a tunnel or bridge drawn by
 //   hand, the ways it runs along in order (tools/build-heights.mjs, tools/heights/levels.mjs): the road passes through each point at its
-//   height y and runs at a straight grade between two, and the solve fits the roads round it. Each point lies on one of the ways }
+//   height y and runs at a straight grade between two, and the solve fits the roads round it. Each point lies on one of the ways;
+//   water: [{ id: 'way/1' | 'relation/1', sea: true | false, expect: { tag: value }, why }]: a water area the sea's rule
+//   (tools/sea-water.mjs) reads wrong, put in the sea (drawn at its level, tools/build-geodata.mjs) or taken out of it (a pond,
+//   tools/build-ponds.mjs) }
 // `expect` is what the ways' tags were when the edit was made: if OSM has changed them since, the build stops and says so, as the
 // edit may no longer be right. A tag set to null is taken away. Each way an edit names is marked `local` (its area's file): the
 // build takes in some ways only where an area has been looked at by hand, as bus-only roads (tools/build-geodata.mjs).
@@ -72,6 +75,14 @@ export function localLevels(elements, toWorld, areas = localAreas()) {
     }
   }
   return out;
+}
+
+/** Every area's water edits: [{ key: 'way/1' | 'relation/1', sea, expect, why, file }]. tools/sea-water.mjs checks them against OSM. */
+export function localWater(areas = localAreas()) {
+  return areas.flatMap((area) => (area.water || []).map((edit) => {
+    if (!/^(way|relation)\/\d+$/.test(edit.id) || typeof edit.sea !== 'boolean') throw new Error(`tools/local/${area.file}: a water edit needs an id ('way/1' or 'relation/1') and sea: true or false (${edit.why})`);
+    return { key: edit.id, sea: edit.sea, expect: edit.expect, why: edit.why, file: area.file };
+  }));
 }
 
 /** Applies every area's way edits to OSM's road elements, in place. Returns them, without those removed, and a line to log. */

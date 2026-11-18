@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 import { BitRaster, flat, rdp } from './geo-common.mjs';
 import { beachBehind, beachTest, loadSand } from './sand-pieces.mjs';
+import { loadPonds } from './pond-pieces.mjs';
 import { onRegionEdge } from './geodata/regions.mjs';
 import { farFile, tileFile } from '../js/tiles/paths.js';
 
@@ -40,6 +41,8 @@ if (!GARDEN) console.warn('[tiles] no garden.json: no garden paths (node tools/b
 // Beaches, and the rock of the coast's headlands and shelves (tools/build-sand.mjs): [kind, outer, ...holes]
 const SAND = loadSand(SRC);
 if (!SAND.length) console.warn('[tiles] no sand.json: no beaches (node tools/build-sand.mjs)');
+// Still water outside the gardens, at a level of its own (tools/build-ponds.mjs): [level, outer, ...holes]
+const PONDS = loadPonds(SRC).pieces;
 
 const RG = GEO.roadGraph;
 const KIND_CUTTING = 3;
@@ -113,7 +116,7 @@ function cutMap(derived) {
     if (!tiles.has(key)) {
       tiles.set(key, { ix, iz, blocks: [], lawns: [], pavements: [], fills: [], signals: [], postBoxes: [], busShelters: [], nodes: new Map(), links: [], home: [],
         scenery: [], awnings: [], tags: { buses: [], cycles: [], cycleways: [], speeds: [], oneways: [], zebras: [], directions: [] }, buildings: [], trees: [],
-        garden: { paths: [], gates: [], hedges: [], ponds: [], beds: [], seawalls: [], lawns: [] }, sand: [] });
+        garden: { paths: [], gates: [], hedges: [], ponds: [], beds: [], seawalls: [], lawns: [] }, sand: [], lakes: [] });
     }
     return tiles.get(key);
   };
@@ -131,6 +134,7 @@ function cutMap(derived) {
   for (const rings of GEO.lawns) ringsHome(rings).lawns.push(rings);
   for (const rings of GEO.pavements) ringsHome(rings).pavements.push(rings);
   for (const [kind, ...rings] of SAND) ringsHome(rings).sand.push([kind, ...rings]);
+  for (const [level, ...rings] of PONDS) ringsHome(rings).lakes.push([level, ...rings]);
   for (const flat of GEO.fills) at(flat[0], flat[1]).fills.push(flat);
   const pairs = (list, field) => { for (let i = 0; i + 1 < list.length; i += 2) at(list[i], list[i + 1])[field].push(list[i], list[i + 1]); };
   pairs(GEO.signals, 'signals');
@@ -644,7 +648,8 @@ function write(derived, graded_ = null) {
       portals: (derived?.portals || []).filter((p) => KEY(...tileOf(p.x, p.z)) === KEY(t.ix, t.iz)),
       ...(place && { place }),
       ...(Object.values(t.garden).some((list) => list.length) && { garden: t.garden }),
-      ...(t.sand.length && { sand: t.sand })
+      ...(t.sand.length && { sand: t.sand }),
+      ...(t.lakes.length && { lakes: t.lakes })
     }));
     const buildings = packBuildings(t.buildings, derived?.floors), trees = packTrees(t.trees), heights = packHeights(t.ix, t.iz);
     const graded = packGround(graded_?.[KEY(t.ix, t.iz)]);

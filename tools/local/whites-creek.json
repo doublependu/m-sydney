@@ -1,0 +1,12 @@
+{
+  "name": "Whites Creek, Annandale: a tidal channel into Rozelle Bay, kept at the sea's level",
+  "box": [-3500, 310, -3215, 1185],
+  "water": [
+    {
+      "id": "relation/2931430",
+      "sea": true,
+      "expect": { "name": "Whites Creek", "natural": "water" },
+      "why": "A concrete channel under the trees from Annandale to Rozelle Bay, open to the tide (NSW's aerial), that OSM draws as untagged water ending 190 m short of the bay where it passes under The Crescent and the light rail: the sea's rule (tools/sea-water.mjs) would take it for a pond"
+    }
+  ]
+}

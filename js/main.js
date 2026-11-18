@@ -1268,10 +1268,11 @@ async function initApp() {
     // A garden lays its raised lawn, paths and ponds on the map's lawn as drawn (js/garden.js), and a lawn can be a neighbour's (a lawn's
     // 240 m square is the tile's its middle is in): the neighbours in the tiles' reach first, fetched while the rest of the ground is built,
     // which waits for them only at the garden. One out of reach isn't fetched (held, its roads and the rest would come into the traffic
-    // and the street furniture for nothing: the phone's city completed 3.7 s later); when it's built, the garden is built again
+    // and the street furniture for nothing: the phone's city completed 3.7 s later); when it's built, the garden is built again. A tile's
+    // still water outside the gardens (tile.lakes) is laid the same way, with its garden
     let gardenReady = null;
     const gardenWithout = [];
-    if (tile.garden) {
+    if (tile.garden || tile.lakes) {
       const { x, z } = controllerManager.getActiveEntity().position;
       const fetch = [];
       for (let dx = -1; dx <= 1; dx++) {

@@ -16,7 +16,7 @@
     "data:fetch": "node tools/fetch-data.mjs",
     "data:map": "npm run --silent build && node tools/build-map-images.mjs && npm run --silent build",
     "data:build": "node --max-old-space-size=20000 tools/build-geodata.mjs && node --max-old-space-size=20000 tools/build-heights.mjs && node --max-old-space-size=20000 tools/build-geodata.mjs --reuse-rasters && cp tools/data/generated/geodata.js tools/data/generated/geodata.before-heights.js && cp tools/data/generated/low-decks.json tools/data/generated/low-decks.before-heights.json && npm run --silent data:heights",
-    "data:heights": "cp tools/data/generated/geodata.before-heights.js tools/data/generated/geodata.js && node --max-old-space-size=20000 tools/build-heights.mjs && node --max-old-space-size=8000 tools/build-population.mjs && node --max-old-space-size=16000 tools/build-buildings.mjs && node --max-old-space-size=8000 tools/build-sand.mjs && node tools/build-garden.mjs && node tools/build-trees.mjs && node tools/build-awnings.mjs && node tools/build-road-tags.mjs && node tools/build-tiles.mjs && node tools/build-horizon.mjs",
+    "data:heights": "cp tools/data/generated/geodata.before-heights.js tools/data/generated/geodata.js && node --max-old-space-size=20000 tools/build-heights.mjs && node --max-old-space-size=8000 tools/build-population.mjs && node --max-old-space-size=16000 tools/build-buildings.mjs && node --max-old-space-size=8000 tools/build-sand.mjs && node --max-old-space-size=8000 tools/build-ponds.mjs && node tools/build-garden.mjs && node tools/build-trees.mjs && node tools/build-awnings.mjs && node tools/build-road-tags.mjs && node tools/build-tiles.mjs && node tools/build-horizon.mjs",
     "check": "node tools/check.mjs"
   },
   "dependencies": {

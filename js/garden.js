@@ -22,6 +22,8 @@ import { outsideTunnelMouths } from './tunnel-mouths.js';
 //   (a raised lawn's pieces, `kerb` what its kerbs are: 0 concrete, 1 sandstone; paved areas, as plazas round a fountain, and fountains,
 //   each the middle of one of its ponds and how far that is from the pond's edge, ponds edged with rocks, and islands in its ponds, with the
 //   tile their pond's in, where a tile has any)
+// And a tile's still water outside the gardens (tools/build-ponds.mjs), tile.lakes: [[level, [x, z, ...], ...holes]], laid as a garden's
+// ponds are, flat at its level over a hollow, with a plain bank round it: built here, as it lies on the map's lawn as drawn as they do.
 // In layers, each laid exactly on the triangles of what's under it (js/drape.js), so on a slope none comes up through another: the map's
 // lawn and paving (js/city-grid.js); the paths, just over them; the raised lawn 8 cm over the map's lawn, its kerbs' tops 1 cm over it
 // at their outer edge, their faces down to the paths; and tracks and beds on the raised lawn, or tracks on the map's lawn off it.
@@ -36,6 +38,11 @@ const BED_LIFT = 0.03; // a bed over the lawn it's dug in
 const BED_TOP = LAWN_TOP + BED_LIFT;
 const POND_TOP = LAWN_TOP + 0.02;
 const COPING = { width: 0.32, rise: 0.08 };
+// A lake's bank (tile.lakes): a band of damp earth astride its edge, low over the water and the lawn, as a coping is but plain; and how far
+// off its water and its bank are drawn, as one mesh each a tile, apart from a garden's clusters: a tile of golf course ponds is two draws
+const BANK = { width: 0.6, rise: 0.04, tint: linearHex(0x5a5242) };
+const LAKE_CULL = { water: 1200, bank: 400 };
+const NO_GARDEN = { paths: [], gates: [], hedges: [], ponds: [], beds: [] };
 // A fountain's basin (tools/build-garden.mjs `fountains`): its rim over the pond's level, its water under the rim's top, and its middle's
 // plinth, for a basin at least `plinthFrom` m from its middle to its edge (the Archibald Fountain's is 10.6): a smaller one, as East
 // Circular Quay's (4.2), has the rim alone
@@ -268,6 +275,36 @@ function addLaid(cells, tris, wearOf = null) {
 }
 
 /**
+ * Triangles laid on the ground (as addLaid() takes them), never under `y`: each split along the line where it crosses that height, the part
+ * under it raised flat to it, the rest as it was, so the surface is exactly the higher of the two (raising a big triangle's corners alone
+ * would lift it over the ground all across)
+ */
+function atLeast(tris, y) {
+  const out = [];
+  const put = (pts) => { for (let k = 1; k + 1 < pts.length; k++) out.push(...pts[0], ...pts[k], ...pts[k + 1]); };
+  for (let i = 0; i < tris.length; i += 9) {
+    const v = [0, 3, 6].map((k) => [tris[i + k], tris[i + k + 1], tris[i + k + 2]]);
+    const lo = Math.min(v[0][1], v[1][1], v[2][1]), hi = Math.max(v[0][1], v[1][1], v[2][1]);
+    if (lo >= y) { put(v); continue; }
+    if (hi <= y) { put(v.map(([x, , z]) => [x, y, z])); continue; }
+    // Round it in order: each corner on its side, and where an edge crosses, a point on both
+    const over = [], under = [];
+    for (let k = 0; k < 3; k++) {
+      const a = v[k], b = v[(k + 1) % 3];
+      (a[1] >= y ? over : under).push(a[1] >= y ? a : [a[0], y, a[2]]);
+      if ((a[1] - y) * (b[1] - y) < 0) {
+        const t = (y - a[1]) / (b[1] - a[1]), p = [a[0] + (b[0] - a[0]) * t, y, a[2] + (b[2] - a[2]) * t];
+        over.push(p);
+        under.push(p);
+      }
+    }
+    put(over);
+    put(under);
+  }
+  return out;
+}
+
+/**
  * A path `width` across along a polyline as flat pieces, one a segment, mitred where it bends as the paths always were (across()): each
  * { ring: [{ x, z } x 4], a, ux, uz, h }, its segment's start, its way along and its half width. A piece whose corners don't make a convex
  * quad (a short segment at a sharp bend) comes as its two triangles that do face up.
@@ -356,6 +393,28 @@ const boxOf = (pts) => {
 };
 const onSeam = (a, b) => (a.x === b.x && Math.abs(a.x / SQUARE - Math.round(a.x / SQUARE)) < 1e-9)
   || (a.z === b.z && Math.abs(a.z / SQUARE - Math.round(a.z / SQUARE)) < 1e-9);
+
+/** A ring's edges as polylines, each a run of edges that aren't on a seam between two squares' pieces (closed round, if none is) */
+function edgeRuns(ring) {
+  const n = ring.length;
+  const seam = ring.map((p, i) => onSeam(p, ring[(i + 1) % n]));
+  const start = seam.indexOf(true);
+  if (start < 0) return [[...ring, ring[0]]];
+  const runs = [];
+  let run = null;
+  for (let k = 1; k <= n; k++) {
+    const i = (start + k) % n;
+    if (seam[i]) {
+      if (run) runs.push(run);
+      run = null;
+      continue;
+    }
+    if (!run) run = [ring[i]];
+    run.push(ring[(i + 1) % n]);
+  }
+  if (run) runs.push(run);
+  return runs;
+}
 
 const BEND = 0.003; // m the lawn may bend under a kerb's top between two of its points
 
@@ -811,8 +870,8 @@ function gardenClusters(g) {
  * structures' are.
  */
 function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
-  const g = tile.garden;
-  if (!g) return [];
+  const g = tile.garden ?? NO_GARDEN, lakes = tile.lakes ?? [];
+  if (!tile.garden && !lakes.length) return [];
   const mats = gardenMaterials();
   const lawn = new GroundCells(1e6), paths = new TintedCells(true), beds = new TintedCells(), stone = new TintedCells(), pond = new GroundCells(1e6);
   const hedge = new GroundCells(1e6);
@@ -843,6 +902,7 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
     ...(g.lawns ?? []).map(([, outer]) => boxOf(pointsOf(outer))), ...(g.plazas ?? []).map(([, outer]) => boxOf(pointsOf(outer))),
     ...g.beds.map(([, ...ring]) => boxOf(pointsOf(ring))),
     ...[...g.ponds, ...(g.rockPonds ?? [])].map((ring) => boxOf(pointsOf(ring))),
+    ...lakes.map(([, outer]) => boxOf(pointsOf(outer))),
     ...g.paths.map(([, , width, ...line]) => { const b = boxOf(pointsOf(line)); return { x0: b.x0 - width, z0: b.z0 - width, x1: b.x1 + width, z1: b.z1 + width }; })
   ];
   for (const at of [lawnAt, pavingAt]) {
@@ -955,6 +1015,30 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   }
   stone.tint = SANDSTONE;
   yield;
+  // Still water outside the gardens, laid on the map's lawn and paving as drawn, as a garden's ponds are, but never under its level (the
+  // lowest ground round its edge, tools/build-ponds.mjs), so it lies flat over a hollow and follows the lawn only where that's higher; a
+  // plain bank along its edges, but not along the seams between its pieces, which are the 240 m squares'. Its water, as well as the bank,
+  // is what's stood on: over a hollow it's over the lawn
+  const lakeWater = new GroundCells(1e6), bank = new TintedCells(), lakeTops = [];
+  bank.tint = BANK.tint;
+  for (const [level, ...flats] of lakes) {
+    const rings = flats.map((f) => pointsOf(f));
+    if (rings[0].length < 3 || !wanted(rings[0][0].x, rings[0][0].z)) continue;
+    const b = boxOf(rings[0]);
+    const laid = [];
+    drapePolygon(rings, pavingAt.trianglesIn(b.x0, b.z0, b.x1, b.z1), SIDEWALK_TOP + POND_TOP - LAWN_TOP, laid, 0, 0);
+    drapePolygon(rings, lawnAt.trianglesIn(b.x0, b.z0, b.x1, b.z1), POND_TOP, laid, 0, 0);
+    const water = atLeast(laid, level + POND_TOP);
+    addLaid(lakeWater, water);
+    lakeTops.push(water);
+    // Its bank's water side at the water's height, its land side on the lawn: where the lawn as drawn dips under the level at the edge (its
+    // triangles are straight between the height grid's nodes), the water stands over it, and the bank slopes down from it to the lawn
+    const inside = (x, z) => insideRing(rings[0], x, z) && !rings.slice(1).some((h) => insideRing(h, x, z));
+    const bankAt = (x, z) => (inside(x, z) ? Math.max(heightAt(x, z), level) : heightAt(x, z));
+    for (const r of rings) for (const run of edgeRuns(r)) addRibbon(bank, run, BANK.width, POND_TOP + BANK.rise, bankAt);
+    if (due()) yield;
+  }
+  yield;
   // The paths, laid on the lawn's and the paving's triangles, a piece a segment: where both are drawn (the paving runs under the lawn's
   // edge) the one on the lawn is on top. A track is worn into the raised lawn, and into the map's lawn off it, where a paved path that
   // crosses it covers it
@@ -1015,8 +1099,10 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
     }
   }
   yield;
-  // What's walked on, ridden over and driven onto, as drawn: the raised lawn and its kerbs' tops, the paths, beds and the ponds' coping
-  setLayer(`garden:${tile.key}`, [trianglesOf(lawn), ...kerbTops, trianglesOf(paths), trianglesOf(beds), trianglesOf(coping)]);
+  // What's walked on, ridden over and driven onto, as drawn: the raised lawn and its kerbs' tops, the paths, beds and the ponds' coping, and
+  // the lakes' water and banks
+  setLayer(`garden:${tile.key}`, [trianglesOf(lawn), ...kerbTops, trianglesOf(paths), trianglesOf(beds), trianglesOf(coping), ...lakeTops,
+    trianglesOf(bank)]);
   yield;
   const before = target?.children.length ?? 0;
   // A small cluster's meshes culled at `far`; a big one's squares (string keys, gardenClusters()) at SQUARE_CULL's
@@ -1036,8 +1122,13 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   // What's the garden's, by material, for measuring what it costs (__gameDebug.gardenShown(), gardenMeshes())
   const names = new Map(Object.entries(mats).map(([k, v]) => [v, k]));
   for (const mesh of target?.children.slice(before) ?? []) mesh.userData.garden = names.get(mesh.material) ?? true;
+  // The lakes' water and banks, a mesh each for the tile, named apart
+  const lakesFrom = target?.children.length ?? 0;
+  buildCells(lakeWater, target, mats.pond, { cullDistance: LAKE_CULL.water });
+  buildCells(bank, target, mats.stone, { cullDistance: LAKE_CULL.bank });
+  for (const mesh of target?.children.slice(lakesFrom) ?? []) mesh.userData.garden = mesh.material === mats.pond ? 'lake' : 'bank';
   return colliders;
 }
 
-export { PATH_TOP, SURFACES as PATH_SURFACES, ROCKS as POND_ROCKS, TRACK, TRACK_TOP, buildTileGarden, gardenMaterials, lawnSurface, pathTop, pavingSurface,
-  useMapLawn };
+export { PATH_TOP, POND_TOP, SURFACES as PATH_SURFACES, ROCKS as POND_ROCKS, TRACK, TRACK_TOP, buildTileGarden, gardenMaterials, lawnSurface, pathTop,
+  pavingSurface, useMapLawn };

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 import { dataPath, inDetail, load, pointInRing, toWorld } from './geo-common.mjs';
+import { loadPonds, pondTest } from './pond-pieces.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const OUT = process.argv[2] || path.join(ROOT, 'tools/data/generated/tree-geodata.js');
@@ -25,6 +26,8 @@ const RULES = [
   [/plane|elm|oak|ash|poplar|zelkova|magnolia|pistacia|liquid|maple|tulip|robinia|nettle|flame/i, CLASS.broadleaf]
 ];
 const classOf = (name) => RULES.find(([re]) => re.test(name))?.[1] ?? CLASS.small;
+// No tree stands in still water (tools/build-ponds.mjs): a lake is lawn under its water, and the park's seeded trees would
+const inPond = pondTest(loadPonds(path.join(ROOT, 'tools/data/generated')).pieces);
 
 const register = load('cos_trees.json');
 const digest = crypto.createHash('sha256').update(fs.readFileSync(dataPath('cos_trees.json'))).digest('hex');
@@ -34,7 +37,7 @@ const key = (x, z) => Math.round(x / 2) * 100000 + Math.round(z / 2);
 for (const [lon, lat, name, height, status] of register) {
   if (name === 'Not Applicable' || (status && status !== 'Tree')) continue;
   const [x, z] = toWorld(lon, lat);
-  if (!inDetail(x, z)) continue;
+  if (!inDetail(x, z) || inPond(x, z)) continue;
   taken.add(key(x, z));
   trees.push({ x, z, kind: classOf(name), height: Math.min(40, parseInt(height, 10) || 0) });
 }
@@ -45,7 +48,7 @@ const west = Math.min(...trees.map((t) => t.x));
 for (const e of load('nodes.json').elements) {
   if (e.tags?.natural !== 'tree') continue;
   const [x, z] = toWorld(e.lon, e.lat);
-  if (!inDetail(x, z) || surveyed.has(`${Math.floor(x / 200)},${Math.floor(z / 200)}`) || inGarden(x, z)) continue;
+  if (!inDetail(x, z) || surveyed.has(`${Math.floor(x / 200)},${Math.floor(z / 200)}`) || inGarden(x, z) || inPond(x, z)) continue;
   if (taken.has(key(x, z))) continue;
   taken.add(key(x, z));
   trees.push({ x, z, kind: classOf(e.tags.species || e.tags['species:en'] || e.tags.genus || ''), height: parseInt(e.tags.height, 10) || 0 });
@@ -69,7 +72,7 @@ for (const [x, z, kind, height] of GARDEN.plants) {
   };
   const isSurveyed = (x, z) => surveyed.has(`${Math.floor(x / 200)},${Math.floor(z / 200)}`);
   const plant = (x, z) => {
-    if (!inDetail(x, z) || isSurveyed(x, z) || taken.has(key(x, z)) || inGarden(x, z)) return;
+    if (!inDetail(x, z) || isSurveyed(x, z) || taken.has(key(x, z)) || inGarden(x, z) || inPond(x, z)) return;
     taken.add(key(x, z));
     const r = seeded(x, z, 2);
     trees.push({ x, z, kind: r < 0.4 ? CLASS.broadleaf : r < 0.65 ? CLASS.small : r < 0.92 ? CLASS.gum : CLASS.jacaranda, height: 6 + Math.floor(seeded(x, z, 3) * 12) });

@@ -9,7 +9,7 @@ import { SITE_CUTS } from './model-sites.js';
 // - the map's paving and lawns (js/city-grid.js), laid on the height grid's nodes with addSurface(), and the beaches' sand and the coast's
 //   rock over them;
 // - a garden's raised lawn and the tops of its kerbs, its paths, steps, tracks, beds and its ponds' coping (js/garden.js), as each tile's
-//   garden was built;
+//   garden was built, and the still water outside the gardens and its bank (tile.lakes, built with the garden);
 // - near you, the nature strips' lawn and footpath (js/verge.js) and the lots' driveways, crossovers, laybacks and paths (js/lot-details.js).
 // The map's surfaces come with the tiles, and are looked through and their triangles made near you, a tile or a surface at a time as the
 // world's jobs have room once the city round you is complete (buildNear(): 5-20 ms a surface, as js/garden.js and the lots have always

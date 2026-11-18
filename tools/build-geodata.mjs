@@ -9,7 +9,8 @@ import {
 import { heightSampler } from './fetch-elevation.mjs';
 import { gardenAreas, inGardenArea } from './garden-areas.mjs';
 import { MARGIN, REGION, regionsOver, runJobs } from './geodata/regions.mjs';
-import { editWays } from './local-edits.mjs';
+import { editWays, localWater } from './local-edits.mjs';
+import { seaWaters, shoreLines } from './sea-water.mjs';
 
 const OUT = (process.argv[2]?.startsWith('--') ? null : process.argv[2]) || fileURLToPath(new URL('./data/generated/geodata.js', import.meta.url));
 const B = DETAIL_BOUNDS;
@@ -46,8 +47,9 @@ let land;
 let shores;
 const landFile = GENERATED + 'land.bin', shoresFile = GENERATED + 'shores.json';
 const riversAndPiers = () => {
-  // Rivers, canals and lagoons at the level of the sea, like the Cooks River. A pond in a park or a reservoir up a hill stays out of it: the water
-  // here is one sheet at sea level, and those would need one of their own.
+  // Rivers, canals and lagoons at the level of the sea, like the Cooks River, and whatever water reaches them or the shore. A pond in a park,
+  // a lake beside the river or a reservoir up a hill stays out of it: the water here is one sheet at sea level, and those are drawn at
+  // their own (tools/build-ponds.mjs), by one rule for both (tools/sea-water.mjs).
   const seaLevel = heightSampler(5);
   // Still water in a garden is the garden's: it draws its ponds at their own level (js/garden.js), untagged as one may be in OSM, like
   // the Royal Botanic Garden's Main Pond, low by Farm Cove. As sea, it was a hole down to the harbour with its waves.
@@ -56,7 +58,6 @@ const riversAndPiers = () => {
     const x = ring.reduce((t, p) => t + p[0], 0) / ring.length, z = ring.reduce((t, p) => t + p[1], 0) / ring.length;
     return inGardenArea(gardens, x, z);
   };
-  const rivers = [];
   const piers = [];
   for (const e of osmLand) {
     if (e.tags?.man_made === 'pier') {
@@ -68,17 +69,11 @@ const riversAndPiers = () => {
         if (!closed && width < 2.5) continue;
         piers.push({ ring, closed, width });
       }
-      continue;
     }
-    if (e.tags?.natural !== 'water' || /^(pond|basin|wastewater|reservoir|reflecting_pool|pool|stream_pool|fountain)$/.test(e.tags.water || '')) continue;
-    const { outer, inner } = elementRings(e);
-    const low = outer.filter((ring) => {
-      if (ring.length < 4 || Math.abs(ringArea(ring)) < 1500 || !ring.some(([x, z]) => inDetail(x, z)) || inGarden(ring)) return false;
-      const heights = ring.map(([x, z]) => seaLevel(...fromWorld(x, z))).filter((y) => y !== null);
-      return !heights.length || heights.reduce((t, y) => t + y, 0) / heights.length <= 3;
-    });
-    if (low.length) rivers.push({ outer: low, inner });
   }
+  const { sea, still } = seaWaters(osmLand, { heightAt: (x, z) => seaLevel(...fromWorld(x, z)), inGarden, shore: shoreLines(), edits: localWater() });
+  const rivers = sea.map(({ outer, inner }) => ({ outer, inner }));
+  log(`${still.length} still waters out of the sea (tools/build-ponds.mjs draws them)${sea.some((c) => c.edited) ? `; kept in it by hand: ${sea.filter((c) => c.edited).map((c) => c.e.tags?.name || c.key).join(', ')}` : ''}`);
   log(`${rivers.length} rivers, canals and lagoons, ${piers.length} piers`);
   return { rivers, piers };
 };

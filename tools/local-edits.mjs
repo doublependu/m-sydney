@@ -12,7 +12,10 @@
 //   another tree than `apart` m (4 unless it says);
 //   rock: [{ ring: [[x, z], ...], why }]: bare rock where OSM has none (tools/build-sand.mjs): on the land, or a shelf in the sea;
 //   paving: [{ ring: [[x, z], ...] | circle: [x, z, r], surface: 'paving' | 'asphalt' | 'gravel', why }]: a paved area in a garden's area
-//   where OSM has none, paved as OSM's paved areas are there (tools/build-garden.mjs) }
+//   where OSM has none, paved as OSM's paved areas are there (tools/build-garden.mjs);
+//   levels: [{ ids: [OSM way id, ...], at: [[x, z, y], ...], expect: { tag: value }, why }]: a long section of a tunnel or bridge drawn by
+//   hand, the ways it runs along in order (tools/build-heights.mjs, tools/heights/levels.mjs): the road passes through each point at its
+//   height y and runs at a straight grade between two, and the solve fits the roads round it. Each point lies on one of the ways }
 // `expect` is what the ways' tags were when the edit was made: if OSM has changed them since, the build stops and says so, as the
 // edit may no longer be right. A tag set to null is taken away. Each way an edit names is marked `local` (its area's file): the
 // build takes in some ways only where an area has been looked at by hand, as bus-only roads (tools/build-geodata.mjs).
@@ -28,6 +31,49 @@ export function localAreas() {
   return fs.readdirSync(DIR).filter((f) => f.endsWith('.json')).sort().map((f) => ({ file: f, ...JSON.parse(fs.readFileSync(path.join(DIR, f), 'utf8')) }));
 }
 
+/** Stops the build if a way an edit names is gone from the snapshot, or its tags aren't what the edit says they were */
+function checkWay(area, edit, way, id) {
+  if (!way) throw new Error(`tools/local/${area.file}: way ${id} is gone from the snapshot (${edit.why})`);
+  for (const [tag, value] of Object.entries(edit.expect || {})) {
+    if ((way.tags?.[tag] ?? null) !== value) {
+      throw new Error(`tools/local/${area.file}: way ${id} has ${tag}=${way.tags?.[tag]} in OSM now, not ${value}: check the edit (${edit.why})`);
+    }
+  }
+}
+
+const ON_WAY = 3; // m: a level's point further than this from all its ways means OSM has moved them since the level was drawn
+/**
+ * Every area's levels, checked against OSM's road elements: [{ name, ways: [[[x, z], ...], ...], at: [[x, z, y], ...] }], each way's
+ * points in the game's frame by toWorld(lon, lat). The build stops if a way named is gone, its `expect` fails, or a point is off its ways.
+ */
+export function localLevels(elements, toWorld, areas = localAreas()) {
+  const byId = new Map(elements.map((e) => [e.id, e]));
+  const out = [];
+  for (const area of areas) {
+    for (const [n, edit] of (area.levels || []).entries()) {
+      const ways = edit.ids.map((id) => {
+        const way = byId.get(id);
+        checkWay(area, edit, way, id);
+        return way.geometry.map((g) => toWorld(g.lon, g.lat));
+      });
+      const name = `tools/local/${area.file}, level ${n + 1} (${edit.why})`;
+      for (const [x, z] of edit.at) {
+        let d = Infinity;
+        for (const pts of ways) {
+          for (let i = 1; i < pts.length; i++) {
+            const [ax, az] = pts[i - 1], [bx, bz] = pts[i], dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz || 1;
+            const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / L2));
+            d = Math.min(d, Math.hypot(ax + dx * t - x, az + dz * t - z));
+          }
+        }
+        if (d > ON_WAY) throw new Error(`${name}: its point (${x}, ${z}) is ${d.toFixed(1)} m off its ways in OSM now: check the edit`);
+      }
+      out.push({ name, ways, at: edit.at });
+    }
+  }
+  return out;
+}
+
 /** Applies every area's way edits to OSM's road elements, in place. Returns them, without those removed, and a line to log. */
 export function editWays(elements) {
   const byId = new Map(elements.map((e) => [e.id, e]));
@@ -37,12 +83,7 @@ export function editWays(elements) {
     for (const edit of area.ways || []) {
       for (const id of edit.ids) {
         const way = byId.get(id);
-        if (!way) throw new Error(`tools/local/${area.file}: way ${id} is gone from the snapshot (${edit.why})`);
-        for (const [tag, value] of Object.entries(edit.expect || {})) {
-          if ((way.tags?.[tag] ?? null) !== value) {
-            throw new Error(`tools/local/${area.file}: way ${id} has ${tag}=${way.tags?.[tag]} in OSM now, not ${value}: check the edit (${edit.why})`);
-          }
-        }
+        checkWay(area, edit, way, id);
         if (edit.remove) removed.add(id);
         way.tags = { ...way.tags };
         way.local = area.file;

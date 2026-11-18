@@ -8,6 +8,8 @@ import zlib from 'node:zlib';
 import { BitRaster, GRID, Raster, fromWorld, load, toWorld } from './geo-common.mjs';
 import { heightSampler } from './fetch-elevation.mjs';
 import { easeRoads } from './heights/ease-profiles.mjs';
+import { levelSamples } from './heights/levels.mjs';
+import { localLevels } from './local-edits.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const { x0, z0, x1, z1, cell } = GRID;
@@ -108,7 +110,8 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
 // Bridges, viaducts and tunnels (KIND 1 and 2 in js/geodata.js) get a height at every point, written into each link as
 // its profile [y at a, y at each inner point..., y at b]. Each starts as a straight line between the heights where it
 // meets the ground, then rises (or, in a tunnel, sinks) wherever it must clear what it crosses, by STACK_CLEARANCE,
-// never steeper than MAX_GRADE. The Harbour Bridge's corridor keeps the profile of its own deck (js/bridge.js). Last, wherever
+// never steeper than MAX_GRADE. The Harbour Bridge's corridor keeps the profile of its own deck (js/bridge.js), and a tunnel given a long
+// section by hand keeps that (tools/local/*.json levels: where a dozen tunnels meet, no solve here keeps them all apart). Last, wherever
 // one's grade changes sharply, it's eased over a curve as long as the change needs (tools/heights/ease-profiles.mjs).
 {
   const STACK_CLEARANCE = 6.8; // surface to surface: 5.3 m of headroom and 1.5 m of deck (js/ground-geometry.js)
@@ -287,6 +290,17 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
     smp.kind = smp.ground ? 0 : smp.kinds & 4 ? 2 : 1;
   }
   const structures = others.filter((l) => l.kind);
+  // Long sections given by hand (tools/local/*.json levels): fixed, as the corridor is. A node among them is fixed for every road it joins
+  {
+    const levels = localLevels(load('all_roads.json').elements.filter((e) => e.geometry), toWorld);
+    const given = levelSamples(levels, { samples, links: others.map((l) => ({ pts: l.pts, chain: l.chain, structure: !!l.kind })), nbr });
+    for (const [idx, y] of given) {
+      if (samples[idx].ground) throw new Error(`a level at (${samples[idx].x.toFixed(1)}, ${samples[idx].z.toFixed(1)}) is where a road on the ground joins: keep levels off a tunnel's mouth and a bridge's ends`);
+      Object.assign(samples[idx], { y, fixed: true, level: true });
+    }
+    for (const [n, idx] of nodeSample) if (samples[idx].level) fixed.set(n, samples[idx].y);
+    if (levels.length) console.log(`[heights] ${levels.length} long sections given by hand fix ${given.size} points`);
+  }
 
   // Start: structures as straight lines between where they meet the ground, free nodes from their neighbours
   const nodeY = new Map([...fixed]);
@@ -311,6 +325,18 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
   for (const l of structures) {
     const ya = nodeY.get(l.a), yb = nodeY.get(l.b);
     const total = l.chain.length - 1;
+    // ...and through the points given by hand along it
+    const given = l.chain.flatMap((idx, k) => (k && k < total && samples[idx].level ? [k] : []));
+    if (given.length) {
+      const at = [0, ...given, total], ys = [ya, ...given.map((k) => samples[l.chain[k]].y), yb];
+      l.chain.forEach((idx, k) => {
+        const smp = samples[idx];
+        if (smp.fixed || smp.ground) return;
+        const j = at.findIndex((a) => a > k);
+        smp.y = ys[j - 1] + ((ys[j] - ys[j - 1]) * (k - at[j - 1])) / (at[j] - at[j - 1]);
+      });
+      continue;
+    }
     l.chain.forEach((idx, k) => {
       const smp = samples[idx];
       if (!smp.fixed && !smp.ground) smp.y = ya + ((yb - ya) * k) / total;

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 import { BitRaster, GRID, Raster, fromWorld, load, toWorld } from './geo-common.mjs';
 import { heightSampler } from './fetch-elevation.mjs';
+import { easeRoads } from './heights/ease-profiles.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const { x0, z0, x1, z1, cell } = GRID;
@@ -107,7 +108,8 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
 // Bridges, viaducts and tunnels (KIND 1 and 2 in js/geodata.js) get a height at every point, written into each link as
 // its profile [y at a, y at each inner point..., y at b]. Each starts as a straight line between the heights where it
 // meets the ground, then rises (or, in a tunnel, sinks) wherever it must clear what it crosses, by STACK_CLEARANCE,
-// never steeper than MAX_GRADE. The Harbour Bridge's corridor keeps the profile of its own deck (js/bridge.js).
+// never steeper than MAX_GRADE. The Harbour Bridge's corridor keeps the profile of its own deck (js/bridge.js). Last, wherever
+// one's grade changes sharply, it's eased over a curve as long as the change needs (tools/heights/ease-profiles.mjs).
 {
   const STACK_CLEARANCE = 6.8; // surface to surface: 5.3 m of headroom and 1.5 m of deck (js/ground-geometry.js)
   const MAX_GRADE = 0.08;
@@ -640,9 +642,60 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
   };
   easeFromStructures((idx) => samples[idx].ground && !samples[idx].fixed, 'y');
 
+  // Where a grade changes sharply (a ramp meeting a flat stretch, a dip meeting its floor), a curve as long as the change needs, kept
+  // within every point's bounds: the clearances over and under what it crosses, and a tunnel's cover. Bridges, tunnels and streets
+  // sunk into cuttings, whose heights are kept as worked out here; not the other roads on the ground, shaped below, as easing those
+  // would reach most of the map. Fixed points and links' ends stay where they are, and so do two roads where one runs inside the other
+  // before they meet (a ramp joining its motorway): eased apart there, a car on one meets the other as a step.
+  const q10 = (v) => Math.round(v * 10) / 10;
+  const sunk = new Set(others.filter((l) => !l.kind && l.chain.some((idx) => samples[idx].grid - samples[idx].y > 0.05)));
+  {
+    const partners = new Map(); // each point -> the points of other roads its bounds are worked out from, in bound()
+    const pair = (p, q) => {
+      (partners.get(p) || partners.set(p, []).get(p)).push(q);
+      (partners.get(q) || partners.set(q, []).get(q)).push(p);
+    };
+    for (const { a, b } of pairs) for (const p of [a.i, a.j]) for (const q of [b.i, b.j]) pair(p, q);
+    for (const { a, b } of stacks) for (const q of [b.i, b.j]) pair(a.i, q);
+    const roads = [...structures, ...sunk];
+    // Where one of them runs inside the carriageway of a road it meets (within NEAR along the network, which isn't a stack), both keep
+    // their heights there
+    const merging = new Set();
+    for (const l of roads) {
+      for (const idx of l.chain) {
+        const p = samples[idx], cx = Math.floor(p.x / CELLS), cz = Math.floor(p.z / CELLS);
+        for (let ix = cx - 1; ix <= cx + 1; ix++) {
+          for (let iz = cz - 1; iz <= cz + 1; iz++) {
+            for (const sh of segCells.get(ix * 100000 + iz) || []) {
+              if (sh.l === l || !nearTo(l).has(sh.l)) continue;
+              const r = samples[sh.i], t = samples[sh.j], dx = t.x - r.x, dz = t.z - r.z, L2 = dx * dx + dz * dz || 1;
+              const v = Math.max(0, Math.min(1, ((p.x - r.x) * dx + (p.z - r.z) * dz) / L2));
+              if (Math.hypot(r.x + dx * v - p.x, r.z + dz * v - p.z) <= Math.max(l.width, sh.l.width) / 2 - OVERLAP) merging.add(idx).add(sh.i).add(sh.j);
+            }
+          }
+        }
+      }
+    }
+    // A street on the ground that a structure's end lifts over the ground (easeFromStructures(), above) is a ramp down to it already:
+    // its foot may be rounded over the ground too, up to RAMP_RISE, where nothing but the ground holds it (the Warringah Fwy's on-ramp
+    // at North Sydney, off the end of the bridge carrying its other lanes, 5 m over the ground)
+    const RAMP_RISE = 2;
+    const rampFeet = [...sunk].filter((l) => l.chain.some((idx) => samples[idx].y - samples[idx].grid > 0.5)).flatMap((l) => l.chain);
+    const rebound = () => {
+      bound(true);
+      for (const idx of rampFeet) if (samples[idx].hi >= samples[idx].grid - 1e-9) samples[idx].hi = samples[idx].grid + RAMP_RISE;
+    };
+    // EASE_DUMP=<file> writes each road's points as the easing gets them ([x, z, y, lo, hi, fixed, the ground], null for no bound), so a change to
+    // the easing can be tried on them in seconds rather than after this whole solve
+    const dump = process.env.EASE_DUMP && (() => fs.writeFileSync(process.env.EASE_DUMP, JSON.stringify(roads.map((l) => ({
+      id: l.id, kind: l.kind || 3, pts: l.chain.map((idx) => { const q = samples[idx]; return [q10(q.x), q10(q.z), q.y, q.lo, q.hi, q.fixed || merging.has(idx) ? 1 : 0, q.grid].map((v, k) => (k > 1 && Number.isFinite(v) ? Math.round(v * 1000) / 1000 : Number.isFinite(v) ? v : null)); })
+    })))));
+    const eased = easeRoads({ samples, chains: roads.map((l) => l.chain), partners, rebound, held: merging, dump });
+    console.log(`[heights] grades eased: ${eased.curves} curves in ${eased.stretches} stretches, ${eased.undone} put back to keep a clearance, ${eased.moved} points moved; ${merging.size} held where roads meet`);
+  }
+
   // Profiles into the links: [y at a, y at each inner point..., y at b]. A street sunk into a cutting becomes KIND 3: on
   // the ground (js/surfaces.js lowers the ground along it), with a point every SAMPLE m so the cut keeps its shape.
-  const q10 = (v) => Math.round(v * 10) / 10;
   let cuttings = 0;
   for (const l of structures) {
     l.raw[9] = l.kind;
@@ -651,9 +704,8 @@ console.log('[heights]', (packed.length / 1024).toFixed(0), 'KB gzip;', Object.e
   for (const l of corridor) l.raw[12] = l.pts.map(([x, z]) => q10(deckHeight(sOf(x, z))));
   for (const l of others) {
     if (l.kind) continue;
-    const sunk = l.chain.some((idx) => samples[idx].grid - samples[idx].y > 0.05);
     l.raw[9] = 0;
-    if (!sunk) {
+    if (!sunk.has(l)) {
       l.raw.length = Math.min(l.raw.length, 12);
       continue;
     }

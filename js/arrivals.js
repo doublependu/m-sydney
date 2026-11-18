@@ -1,5 +1,5 @@
 import { blockAt, landAt } from './city-config.js';
-import { BRIDGE_LENGTH, DECK_REACH, DECK_SID, bridgeAt, bridgePoint, deckHeight, deckSpanAt } from './bridge.js';
+import { DECK_FOOTWAY, DECK_REACH, DECK_SID, bridgeAt, bridgePoint, deckHeight, deckSpanAt } from './bridge.js';
 import { onMap } from './geodata.js';
 import { KIND, LINKS, floorBelow, groundHeight, roadHeight, structureAt, structuresAt } from './surfaces.js';
 
@@ -13,9 +13,9 @@ const FLY = { AREA: 200, CLOSE: 40, OVER_ROOFS: 30, OVER_GROUND: 60, OVER_CLOSE:
 // The top of the Harbour Bridge's arch, which is scenery rather than a collider, and how close to its line it counts
 const ARCH_CLEAR = 150, ARCH_REACH = 45;
 
-// The Harbour Bridge's footway: metres past the east edge of the deck's roads, and how far from each end of the corridor it runs
-// (js/harbour-bridge.js draws it there)
-const FOOTWAY = { MIN: 1.0, MAX: 3.4, MIDDLE: 2.2, END: 70 };
+// The Harbour Bridge's footway: metres past the east edge of the deck's roads; how far in from each of its ends a walker is held (a railing
+// stands across each, js/harbour-bridge.js), and how far past them one is still held to it, coming along it
+const FOOTWAY = { MIN: 1.0, MAX: 3.4, MIDDLE: 2.2, END: 0.6, NEAR: 5 };
 
 const LANE_LEVEL = 4; // m: how far above or below your level a road can be and still count as on it
 const LEVEL_COST = 3; // m of distance a metre of height counts as, when choosing between roads on nearby levels
@@ -196,7 +196,7 @@ function archClearance(x, z) {
 /** Where to stand on the Harbour Bridge's footway from (x, z), or null where the corridor has none */
 function footwayNear(x, z) {
   const here = bridgeAt(x, z, DECK_REACH + 5);
-  if (!here || here.s < FOOTWAY.END || here.s > BRIDGE_LENGTH - FOOTWAY.END) return null;
+  if (!here || here.s < DECK_FOOTWAY.from + FOOTWAY.END || here.s > DECK_FOOTWAY.to - FOOTWAY.END) return null;
   const p = bridgePoint(here.s), off = deckSpanAt(here.s).east + FOOTWAY.MIDDLE;
   return { x: p.x - p.uz * off, z: p.z + p.ux * off, surface: DECK_SID };
 }
@@ -211,13 +211,15 @@ function deckUnder(x, z, y) {
   return { y: top };
 }
 
-/** Holds a walker on the footway: where they end up from (x, z), or null if they've reached its end */
+/** Holds a walker on the footway: where they end up from (x, z), or null away from it. Its ends are a dead end: the footway goes down
+ *  stairs there, to the streets beside the bridge, which the game doesn't have */
 function holdOnFootway(x, z) {
   const here = bridgeAt(x, z, DECK_REACH + 5);
-  if (!here || here.s < FOOTWAY.END || here.s > BRIDGE_LENGTH - FOOTWAY.END) return null;
-  const p = bridgePoint(here.s), east = deckSpanAt(here.s).east;
+  if (!here || here.s < DECK_FOOTWAY.from - FOOTWAY.NEAR || here.s > DECK_FOOTWAY.to + FOOTWAY.NEAR) return null;
+  const s = Math.max(DECK_FOOTWAY.from + FOOTWAY.END, Math.min(DECK_FOOTWAY.to - FOOTWAY.END, here.s));
+  const p = bridgePoint(s), east = deckSpanAt(s).east;
   const off = Math.max(east + FOOTWAY.MIN, Math.min(east + FOOTWAY.MAX, here.off));
-  return { x: p.x - p.uz * off, z: p.z + p.ux * off, y: here.y };
+  return { x: p.x - p.uz * off, z: p.z + p.ux * off, y: deckHeight(s) };
 }
 
 /** On structure `sid`: the edge of the road nearest (x, z), to stand clear of its traffic */

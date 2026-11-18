@@ -105,10 +105,15 @@ function deckGapAt(s) {
 
 // What's where across the deck s m along it, m east of the corridor's line (from OSM, the video of the drive over and Street
 // View pictures from the footway): the cycleway, the two railway tracks, the barrier, the roads, the barrier, the footway in its cage.
-// Near its ends the deck is its roads alone; between, its rail, cycleway and footway too (deckEdges()).
+// Each side has its own stretch along the deck (railwayOn(), footwayOn()); off it, that side of the deck is its roads alone (deckEdges()).
 const DECK_BARRIER = { width: 0.5, height: 0.9 };
 const RAIL_WIDTH = 10.6, CYCLE_WIDTH = 2.8, FOOT_WIDTH = 2.8;
-const FULL_FROM = 60; // m from each end: where the railway, cycleway and footway are on the deck
+const RAIL_FROM = 60; // m from each end: where the railway and cycleway are on the deck, west
+// m along the corridor: where the footway is on the deck, east. OSM's footway on the bridge comes up the Bridge Stairs off Cumberland St
+// onto the deck 180 m along, and leaves it down its stairs to Kirribilli 1,672 m along (the paths extract; NSW's aerial shows it so).
+// Short of those the roads that join the deck from the east run beside its roads at its level, where the footway would lie on their
+// lanes: the Western Distributor and the Bradfield Hwy's ramps at the south end, the Warringah Fwy's at the north.
+const DECK_FOOTWAY = { from: 180, to: 1672 };
 function deckAcross(s) {
   const span = deckSpanAt(s);
   const roadWest = span.west - 0.5, roadEast = span.east + 0.5; // the barriers' inner faces, half a metre past the lanes
@@ -116,16 +121,18 @@ function deckAcross(s) {
   const cycleTo = railFrom - 0.3, cycleFrom = cycleTo - CYCLE_WIDTH;
   const footFrom = roadEast + DECK_BARRIER.width, footTo = footFrom + FOOT_WIDTH;
   const gap = deckGapAt(s);
-  return { roadWest, roadEast, gap, railFrom, railTo, tracks: [railTo - 2.8, railTo - 7.6], cycleFrom, cycleTo, footFrom, footTo, edgeWest: cycleFrom - 0.3, edgeEast: footTo + 0.3 };
+  return { roadWest, roadEast, gap, railFrom, railTo, tracks: [railTo - 2.8, railTo - 7.6], cycleFrom, cycleTo, footFrom, footTo, edgeWest: cycleFrom - 0.3, edgeEast: footTo + 0.3,
+    rail: railwayOn(s), foot: footwayOn(s) };
 }
-/** Whether the railway, cycleway and footway are on the deck s m along it */
-const deckIsFull = (s) => s >= FULL_FROM && s <= LENGTH - FULL_FROM;
-/** The deck's outer edges s m along it, where its steel sides hang: past the railway and the footway between the ends, past the
- *  barriers near them, where the deck is its roads alone */
+/** Whether the railway and cycleway are on the deck s m along it, on its west side */
+const railwayOn = (s) => s >= RAIL_FROM && s <= LENGTH - RAIL_FROM;
+/** Whether the footway is on the deck s m along it, on its east side */
+const footwayOn = (s) => s >= DECK_FOOTWAY.from && s <= DECK_FOOTWAY.to;
+/** The deck's outer edges s m along it, where its steel sides hang: past the railway on the west and the footway on the east where
+ *  they're on it, past the barrier beside its roads where they aren't */
 function deckEdges(s) {
   const lay = deckAcross(s);
-  if (deckIsFull(s)) return { west: lay.edgeWest, east: lay.edgeEast };
-  return { west: lay.roadWest - DECK_BARRIER.width, east: lay.roadEast + DECK_BARRIER.width };
+  return { west: lay.rail ? lay.edgeWest : lay.roadWest - DECK_BARRIER.width, east: lay.foot ? lay.edgeEast : lay.roadEast + DECK_BARRIER.width };
 }
 /** The deck's underside over (x, z), anything of the deck counting (its railway and footway as well as its roads), `margin` m past its
  *  edges: null where it isn't over it */
@@ -496,5 +503,5 @@ function deckLines(s0, s1, busOnly = () => false, every = 3) {
   return lines.filter((line) => line.pts[line.pts.length - 1][2] - line.pts[0][2] >= 15).map(({ kind, pts }) => ({ solid: kind === 'solid', pts }));
 }
 
-export { DECK_BARRIER, DECK_REACH, DECK_STEP, DECK_SID, HALF_WIDTH, LENGTH as BRIDGE_LENGTH, SPAN as BRIDGE_SPAN, bridgeAt, bridgePoint, deckAcross, deckEdges, deckGapAt, deckHeight, deckIsFull, deckLanePoints, deckLanes, deckLines, deckLinkIds,
-  deckOver, deckRoadPoint, deckSpanAt, deckUndersideAt, onDeckSpan };
+export { DECK_BARRIER, DECK_FOOTWAY, DECK_REACH, DECK_STEP, DECK_SID, HALF_WIDTH, LENGTH as BRIDGE_LENGTH, RAIL_FROM, SPAN as BRIDGE_SPAN, bridgeAt, bridgePoint, deckAcross, deckEdges, deckGapAt, deckHeight, deckLanePoints, deckLanes, deckLines,
+  deckLinkIds, deckOver, deckRoadPoint, deckSpanAt, deckUndersideAt, footwayOn, onDeckSpan, railwayOn };

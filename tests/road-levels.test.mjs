@@ -452,7 +452,7 @@ test('north along Upper Fort St, a body stops at the railway\'s end, 60 m along 
   const pts = street.pts.filter((p) => { const h = B.bridgeAt(p.x, p.z, 60); return h && h.s > 30 && h.s < 80; }).map((p) => [p.x, p.z]);
   for (const [body, margin, room] of MARGINS) {
     let under = 0;
-    const r = await drive(0, roadHeight(street, ...pts[0]), pts, margin, room, (x, z, sid) => { if (!sid && B.deckIsFull(B.bridgeAt(x, z, 60).s) && B.deckUndersideAt(x, z) !== null) under++; });
+    const r = await drive(0, roadHeight(street, ...pts[0]), pts, margin, room, (x, z, sid) => { if (!sid && B.railwayOn(B.bridgeAt(x, z, 60).s) && B.deckUndersideAt(x, z) !== null) under++; });
     assert.equal(under, 0, `${body} was under the railway for ${under} steps`);
     assert.ok(!r.sid && r.left > 1 && B.bridgeAt(r.x, r.z, 60).s < 60, `${body} ends on ${r.sid}, ${B.bridgeAt(r.x, r.z, 60).s.toFixed(1)} m along`);
   }

@@ -1334,8 +1334,8 @@ class ThirdPersonControllerManager {
           if (held && Math.abs(held.y - groundHeight(last.x, last.z)) < 1) active.onFootway = true;
         }
       }
-      // Walking the Harbour Bridge's footway, between its railing and the barrier. It stops short of the ends, where
-      // the corridor narrows and you come out on the road.
+      // Walking the Harbour Bridge's footway, between its railing and the barrier, from one railing across it to the other (its ends,
+      // where it goes down stairs the game doesn't have). Put somewhere away from it, you're on the deck's nearest road.
       if (active.onFootway) {
         const held = holdOnFootway(pos.x, pos.z);
         if (held) {

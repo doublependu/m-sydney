@@ -1241,8 +1241,8 @@ function groundRoadDistance(x, z, limit = 30) {
 // less, the ground there is the deck's inside: from the ground, a body stops at the deck's side as at a wall, or gets on where the two
 // meet, within SWITCH of its top. A street on the ground under a deck too low for it stays open: OSM's roads too close in height, where
 // traffic drives on. Over the Harbour Bridge's railway, cycleway and footway, which aren't anything to stand on, only a street that
-// carries on from one of the bridge's own roads does: the Warringah Fwy off its north end, under the footway's edge as it goes down.
-// Upper Fort St, which runs into the railway's south end, doesn't.
+// carries on from one of the bridge's own roads does (the Warringah Fwy off its north end was, under the footway's edge, while the
+// footway ran on beside it). Upper Fort St, which runs into the railway's south end, doesn't.
 
 // The Harbour Bridge's deck across its whole width over (x, z), `margin` m round it counting: (x, z, margin) => { top, roads, ux, uz } or
 // null (js/bridge.js deckOver(), which sets it: it imports this module, so this one can't import it)

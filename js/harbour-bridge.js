@@ -2,7 +2,8 @@ import * as THREE from 'three/webgpu';
 import { abs, color, float, floor, fract, max, mix, mod, positionLocal, positionWorld, sin, smoothstep, sqrt, step, texture, time, uv, vec3 } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { cityUniforms } from './tsl-materials.js';
-import { BRIDGE_LENGTH, BRIDGE_SPAN, DECK_BARRIER as BARRIER, DECK_REACH, DECK_SID, bridgeAt, bridgePoint, deckEdges, deckGapAt, deckHeight, deckIsFull, deckLanes, deckAcross as layout, deckSpanAt } from './bridge.js';
+import { BRIDGE_LENGTH, BRIDGE_SPAN, DECK_BARRIER as BARRIER, DECK_FOOTWAY, DECK_REACH, DECK_SID, RAIL_FROM, bridgeAt, bridgePoint, deckEdges, deckGapAt, deckHeight, deckLanes, deckAcross as layout,
+  deckSpanAt } from './bridge.js';
 import { GEO } from './geodata.js';
 import { DECK_DEPTH, groundHeight } from './surfaces.js';
 
@@ -36,6 +37,7 @@ const PIER = 1.0; // m of granite at least between the roads and an opening
 const PYLON_FROM_MIDDLE = 282; // m along the deck from the middle of the arch to each pair of pylons
 const BEARINGS = 503; // m between the arch's hinges
 const KIND_CUTTING = 3; // a street on the ground sunk into a cutting (js/surfaces.js KIND)
+const KIND_TUNNEL = 2;
 // The sign gantry over the lanes coming off the bridge southbound, where they run side by side on the ground before they part
 // (a Street View picture of it from the lanes under it): across the line z = SOUTH_GANTRY.z, over the southbound roads within `reach`
 // of x. Its boards from the left
@@ -288,34 +290,55 @@ function harbourBridgeColliders(colliders) {
   }
 }
 
-// Where a ramp leaves the deck its barrier and side stop, for the ramp's width: (s, side) -> is it open there?
+// Where a ramp leaves the deck its barrier and side stop, for the ramp's width. And where a side of the deck is its roads alone (no
+// railway or footway there), wherever another road at the deck's level runs so close beside them that its lanes reach that side's
+// barrier: the roads joining the deck from the east, the Western Distributor and the Bradfield Hwy's ramps at the south end and the
+// Warringah Fwy's at the north, run into its roads there. (s, side) -> is it open there?
+const BESIDE = { level: 1.5, bin: 2, clear: 0.3 }; // m of height that counts as the deck's level; m along a bin; m clear of the barrier
 function rampOpenings() {
   const gaps = [];
+  const beside = { [-1]: new Set(), [1]: new Set() };
   for (const [, flat, width, deck, onDeck, ys, kind] of GEO.bridgeLinks) {
-    if (deck || !kind || !ys || !onDeck) continue;
+    if (deck || !kind || !ys) continue;
     const l = { half: width / 2 + 0.6, pts: [] };
-    for (let i = 0; i + 1 < flat.length; i += 2) l.pts.push({ x: flat[i], z: flat[i + 1] });
+    for (let i = 0; i + 1 < flat.length; i += 2) l.pts.push({ x: flat[i], z: flat[i + 1], y: ys[i / 2] });
+    // Only what comes near the deck, looked at every 20 m along it
+    const near = l.pts.some((p, i) => {
+      const q = l.pts[i + 1] || p, L = Math.hypot(q.x - p.x, q.z - p.z);
+      for (let d = 0; d <= L; d += 20) if (bridgeAt(p.x + ((q.x - p.x) * d) / (L || 1), p.z + ((q.z - p.z) * d) / (L || 1), DECK_REACH + 20)) return true;
+      return false;
+    });
+    if (!near) continue;
     let last = null;
     for (let i = 1; i < l.pts.length; i++) {
       const p = l.pts[i - 1], q = l.pts[i], L = Math.hypot(q.x - p.x, q.z - p.z);
       for (let d = 0; d <= L; d += 1) {
         const here = bridgeAt(p.x + ((q.x - p.x) * d) / (L || 1), p.z + ((q.z - p.z) * d) / (L || 1), DECK_REACH + 5);
-        const outside = (h) => {
-          const at = layout(h.s);
-          return h.off < at.roadWest || h.off > at.roadEast;
-        };
-        if (here && last && outside(here) !== outside(last)) {
-          // The shallower it leaves, the longer the gap along the deck
-          const slant = Math.max(0.2, Math.min(1, Math.abs(here.off - last.off) / Math.max(1e-3, Math.hypot(here.s - last.s, here.off - last.off))));
-          const reach = (l.half + 1.5) / slant;
-          const mid = layout(here.s);
-          gaps.push({ side: here.off < (mid.roadWest + mid.roadEast) / 2 ? -1 : 1, from: here.s - reach, to: here.s + reach });
+        if (!here) continue;
+        const at = layout(here.s);
+        if (onDeck) {
+          // Both a metre apart against the same line: where the deck's span steps out over a ramp as it joins it, the ramp isn't leaving
+          const outside = (h) => h.off < at.roadWest || h.off > at.roadEast;
+          if (last && outside(here) !== outside(last)) {
+            // The shallower it leaves, the longer the gap along the deck
+            const slant = Math.max(0.2, Math.min(1, Math.abs(here.off - last.off) / Math.max(1e-3, Math.hypot(here.s - last.s, here.off - last.off))));
+            const reach = (l.half + 1.5) / slant;
+            gaps.push({ side: here.off < (at.roadWest + at.roadEast) / 2 ? -1 : 1, from: here.s - reach, to: here.s + reach });
+          }
+          last = here;
         }
-        if (here) last = here;
+        const y = p.y + ((q.y - p.y) * d) / (L || 1);
+        if (kind === KIND_TUNNEL || here.s <= 0 || here.s >= BRIDGE_LENGTH || !(Math.abs(y - deckHeight(here.s)) < BESIDE.level)) continue;
+        const half = width / 2, k = Math.round(here.s / BESIDE.bin);
+        const reaches = [
+          [1, !at.foot && here.off + half > at.roadEast - BESIDE.clear && here.off - half < at.roadEast + BARRIER.width + BESIDE.clear],
+          [-1, !at.rail && here.off - half < at.roadWest + BESIDE.clear && here.off + half > at.roadWest - BARRIER.width - BESIDE.clear]
+        ];
+        for (const [side, open] of reaches) if (open) for (let j = k - 1; j <= k + 1; j++) beside[side].add(j);
       }
     }
   }
-  return (s, side) => gaps.some((g) => g.side === side && s > g.from && s < g.to);
+  return (s, side) => beside[side].has(Math.round(s / BESIDE.bin)) || gaps.some((g) => g.side === side && s > g.from && s < g.to);
 }
 
 // A tapering block, centred on the y axis: w across and d along at its foot, narrowing to w1 and d1. uv: metres across the
@@ -439,6 +462,8 @@ function buildHarbourBridge(group) {
   };
   const lanterns = [];
   const pylonPlaces = pylonStations();
+  // Where a side of the deck is open to a road joining it (rampOpenings()): no barrier, side or lamp standard there
+  const opening = rampOpenings();
 
   // The arch from hinge to hinge, short of the pylons: the approaches' trusses carry the deck between
   const archFrom = BRIDGE_SPAN.middle - BEARINGS / 2, archTo = BRIDGE_SPAN.middle + BEARINGS / 2;
@@ -531,6 +556,7 @@ function buildHarbourBridge(group) {
     }
     if (Math.floor(s0 / TRUSS_BAY) % 3 === 0) {
       for (const side of [-1, 1]) {
+        if (opening(s0, side)) continue;
         const lay = layout(s0), off = side < 0 ? lay.roadWest - 0.6 : lay.roadEast + 0.6, y = deckHeight(s0);
         strut(at(s0, off, y), at(s0, off, y + 8.6), 0.25, 0.25);
         strut(at(s0, off, y + 8.6), at(s0, off - side * 4, y + 8.8), 0.16, 0.16);
@@ -639,18 +665,27 @@ function buildHarbourBridge(group) {
   strut(at(middle, TRUSS_MID, upper(0) - 0.4), at(middle, TRUSS_MID, chordTop + 6), 0.5, 0.5);
   const beacon = at(middle, TRUSS_MID, chordTop + 6.4);
 
-  // Railings along the deck's outer edges, and masts for the railway's wires. Not through the pylons' arches: the granite's either side
+  // Railings along the deck's outer edges, and masts for the railway's wires. Not through the pylons' arches: the granite's either side.
+  // The west one along the cycleway, the east one along the footway, on its stretch, and across each of its ends
   const throughPylon = (a, b) => pylonPlaces.some((p) => b > p - PYLON_BASE[1] / 2 && a < p + PYLON_BASE[1] / 2);
-  for (let s = 60; s + 6 <= BRIDGE_LENGTH - 60; s += 6) {
-    if (s > 66 && s < BRIDGE_LENGTH - 66 && !throughPylon(s, s + 6)) {
-      for (const side of [-1, 1]) {
-        const here = layout(s), next = layout(s + 6);
-        const off = side < 0 ? here.edgeWest + 0.25 : here.edgeEast - 0.25, off1 = side < 0 ? next.edgeWest + 0.25 : next.edgeEast - 0.25;
-        const y = deckHeight(s) + 0.1, y1 = deckHeight(s + 6) + 0.1;
-        strut(at(s, off, y), at(s, off, y + 1.5), 0.08, 0.08);
-        strut(at(s, off, y + 1.5), at(s + 6, off1, y1 + 1.5), 0.08, 0.08);
-      }
-    }
+  const railing = (s, s1, side) => {
+    if (throughPylon(s, s1)) return;
+    const here = layout(s), next = layout(s1);
+    const off = side < 0 ? here.edgeWest + 0.25 : here.edgeEast - 0.25, off1 = side < 0 ? next.edgeWest + 0.25 : next.edgeEast - 0.25;
+    const y = deckHeight(s) + 0.1, y1 = deckHeight(s1) + 0.1;
+    strut(at(s, off, y), at(s, off, y + 1.5), 0.08, 0.08);
+    strut(at(s, off, y + 1.5), at(s1, off1, y1 + 1.5), 0.08, 0.08);
+  };
+  for (let s = DECK_FOOTWAY.from; s < DECK_FOOTWAY.to; s += 6) railing(s, Math.min(s + 6, DECK_FOOTWAY.to), 1);
+  for (const s of [DECK_FOOTWAY.from, DECK_FOOTWAY.to]) {
+    const lay = layout(s), base = deckHeight(s) + 0.1, top = base + 1.5, inner = lay.footFrom + 0.05, outer = lay.edgeEast - 0.25;
+    strut(at(s, outer, base), at(s, outer, top), 0.08, 0.08);
+    strut(at(s, inner, base + FOOTWAY_LIFT), at(s, inner, top), 0.08, 0.08);
+    strut(at(s, inner, top), at(s, outer, top), 0.08, 0.08);
+    strut(at(s, inner, base + 0.8), at(s, outer, base + 0.8), 0.05, 0.05);
+  }
+  for (let s = RAIL_FROM; s + 6 <= BRIDGE_LENGTH - RAIL_FROM; s += 6) {
+    if (s > RAIL_FROM + 6 && s < BRIDGE_LENGTH - RAIL_FROM - 6) railing(s, s + 6, -1);
     if (Math.round(s / 6) % 10 === 0) {
       const y = deckHeight(s);
       const lay = layout(s);
@@ -730,6 +765,10 @@ function buildHarbourBridge(group) {
   const stations = [];
   for (let s = 0; s <= BRIDGE_LENGTH + 0.1; s += STEP) stations.push(Math.min(s, BRIDGE_LENGTH));
   if (stations[stations.length - 1] < BRIDGE_LENGTH) stations.push(BRIDGE_LENGTH);
+  // Where the railway and the footway start and end, a station either side, a centimetre apart: their ends square across the deck
+  for (const [from, to] of [[RAIL_FROM, BRIDGE_LENGTH - RAIL_FROM], [DECK_FOOTWAY.from, DECK_FOOTWAY.to]]) stations.push(from - 0.01, from, to, to + 0.01);
+  stations.sort((a, b) => a - b);
+  for (let i = stations.length - 1; i > 0; i--) if (stations[i] - stations[i - 1] < 0.005) stations.splice(i, 1);
   const geometry = (rows) => {
     const position = [], normal = [], uv = [], index = [];
     for (let r = 0; r < rows.length; r++) {
@@ -757,14 +796,12 @@ function buildHarbourBridge(group) {
     return g;
   };
   // One row of vertex pairs per station, for each strip
-  const opening = rampOpenings();
   const strips = ['road', 'footway', 'rail', 'cycleway', 'barrierWest', 'barrierEast', 'separator', 'flankWest', 'flankEast', 'underside'];
   const rows = Object.fromEntries(strips.map((k) => [k, []]));
   for (const s of stations) {
     const y = deckHeight(s) - 0.04;
     const lay = layout(s);
-    // Near its ends the deck is its roads alone; between, its rail, cycleway and footway too
-    const full = deckIsFull(s);
+    // Each side has its own stretch: its railway and cycleway on the west, its footway on the east. Off it the deck is its roads alone
     const r = Object.fromEntries(strips.map((k) => [k, []]));
     // Each pair runs left to right seen from above, travelling north
     ribbon(r.road, s, lay.roadWest, lay.roadEast, y, y);
@@ -775,7 +812,7 @@ function buildHarbourBridge(group) {
       const [a, b] = side < 0 ? [outer, inner] : [inner, outer];
       ribbon(barrier, s, a, b, top, top); // its top
       ribbon(barrier, s, inner, inner, side < 0 ? top : y, side < 0 ? y : top, -side, 0, 0); // the face to the road
-      const edge = full ? (side < 0 ? lay.edgeWest : lay.edgeEast) : outer;
+      const edge = side < 0 ? (lay.rail ? lay.edgeWest : outer) : lay.foot ? lay.edgeEast : outer;
       ribbon(side < 0 ? r.flankWest : r.flankEast, s, edge, edge, side < 0 ? y - 2.6 : y + 1.1, side < 0 ? y + 1.1 : y - 2.6, side, 0, 0);
     }
     // Between the bus lane and the Cahill's lane where it runs apart: a barrier down the middle of the gap, both faces
@@ -788,12 +825,10 @@ function buildHarbourBridge(group) {
     // The underside, from one steel side to the other, facing down: the pairs run east to west, so it faces down as the road faces up
     const edges = deckEdges(s), under = y + 0.04 - DECK_DEPTH;
     ribbon(r.underside, s, edges.east, edges.west, under, under, 0, -1, 0);
-    if (full) {
-      if (!opening(s, 1)) ribbon(r.footway, s, lay.footFrom, lay.edgeEast, y + 0.04 + FOOTWAY_LIFT, y + 0.04 + FOOTWAY_LIFT);
-      if (!opening(s, -1)) {
-        ribbon(r.rail, s, lay.railFrom, lay.roadWest - BARRIER.width, y - 0.02, y - 0.02);
-        ribbon(r.cycleway, s, lay.edgeWest, lay.railFrom, y + 0.12, y + 0.12);
-      }
+    if (lay.foot && !opening(s, 1)) ribbon(r.footway, s, lay.footFrom, lay.edgeEast, y + 0.04 + FOOTWAY_LIFT, y + 0.04 + FOOTWAY_LIFT);
+    if (lay.rail && !opening(s, -1)) {
+      ribbon(r.rail, s, lay.railFrom, lay.roadWest - BARRIER.width, y - 0.02, y - 0.02);
+      ribbon(r.cycleway, s, lay.edgeWest, lay.railFrom, y + 0.12, y + 0.12);
     }
     for (const key of strips) rows[key].push(r[key]);
   }
@@ -1067,4 +1102,4 @@ function buildHarbourBridge(group) {
   return surface;
 }
 
-export { GANTRIES, LOOKOUT, bridgeFeet, buildHarbourBridge, gantryLights, harbourBridgeColliders, lookoutPlace };
+export { GANTRIES, LOOKOUT, bridgeFeet, buildHarbourBridge, gantryLights, harbourBridgeColliders, lookoutPlace, rampOpenings };

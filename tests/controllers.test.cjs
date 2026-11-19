@@ -894,6 +894,7 @@ test('on foot, stepping off a kerb is a step, not a jump; a jump crouches first,
   assert.ok(person.position.y > 0.5 && Math.max(...airs) > 0.5, `in the air, and the rig told (${person.position.y.toFixed(2)} m)`);
   assert.ok(Math.abs(person.position.y + shadow.position.y - 0.02) < 1e-9, 'the shadow stays on the road under the jump');
   assert.ok(shadow.scale.x < 0.85, 'and smaller, the higher the jump');
+  assert.ok(shadow.scale.z === shadow.scale.x && shadow.scale.y === 1, 'evenly: the disc lies in x and z, so a smaller disc, not a strip');
   step(60);
   assert.equal(person.jumping, false, 'landed');
   assert.equal(person.position.y, 0);

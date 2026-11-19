@@ -1150,3 +1150,34 @@ test('the rider is the walker: the same seed, build, hair and height, so the sam
   const look = (rig) => [...Array.from(rig.pose.slice((STRIDE - 1) * 4, STRIDE * 4)), rig.s];
   assert.deepEqual(look(rider), look(walker));
 });
+
+test("the walker and the bike have a shadow of their own only where the sun casts none, and never the cars' contact shadow", () => {
+  const noop = { addEventListener() {} };
+  const blobs = [];
+  const materials = standIn();
+  materials.createBlobShadowMaterial = (peak) => { blobs.push(peak); return standIn(); };
+  materials.createContactShadowMaterial = () => assert.fail('the cars\' contact shadow is for cars');
+  const { ThirdPersonControllerManager } = loadModule(controllersSource, {
+    globals: { window: noop, document: { ...noop, hidden: false, createElement: () => standIn() } },
+    imports: {
+      'three/webgpu': standIn(), './city-config.js': { SPAWN: { x: 0, z: 0, heading: 0 }, CITY_BOUNDS: {}, isTypingInField: () => false, blockAt: () => null },
+      './tsl-materials.js': materials, './cars.js': standIn(), './helicopter.js': standIn(),
+      './pedestrians.js': { PersonRig: class {}, PersonCrowd: class { constructor() { this.meshes = []; } } },
+      './vehicle-lights.js': standIn(), './bridge.js': { DECK_SID: 0 }, './arrivals.js': { FLY: { AREA: 200 } }, './surfaces.js': { ROOM: {}, STRUCTURES: {} },
+      './building-collision.js': {}, './interior-data.js': {}, './model-sites.js': { MODEL_SITES: [] }, './drawn-ground.js': {}
+    }
+  });
+  const controller = Object.create(ThirdPersonControllerManager.prototype);
+  controller.scene = standIn();
+  // Medium and high: the sun's shadow is theirs, as it is the crowd's
+  controller.sunShadows = true;
+  assert.equal(controller.createPersonEntity().shadow, null);
+  assert.equal(controller.createCyclistEntity().shadow, null);
+  assert.equal(blobs.length, 0);
+  // Low: a soft one each
+  controller.sunShadows = false;
+  assert.ok(controller.createPersonEntity().shadow);
+  assert.ok(controller.createCyclistEntity().shadow);
+  assert.equal(blobs.length, 2);
+  assert.ok(blobs.every((peak) => peak > 0 && peak < 0.88), 'lighter than the cars\' (0.88)');
+});

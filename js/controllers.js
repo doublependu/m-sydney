@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { CITY_BOUNDS, SPAWN, isTypingInField, blockAt } from './city-config.js';
-import { cityUniforms, createCarPaintMaterial, createContactShadowMaterial } from './tsl-materials.js';
+import { cityUniforms, createBlobShadowMaterial, createCarPaintMaterial, createContactShadowMaterial } from './tsl-materials.js';
 import {
   BODY_SPECS,
   buildCarGeometry,
@@ -254,10 +254,25 @@ const FALLING = 0.3; // m over the ground (in the flat simulation) that's a fall
 const BIKE_AXLE = 0.58; // m along the bike from its middle to each wheel's hub
 const HEAD_ON = 0.02; // cosine of the turn a wall makes in a walker's move (89 degrees), past which it's held square on, not sliding along
 
+// A soft shadow on the ground, `width` across and `length` along its owner, `peak` dark in the middle (js/tsl-materials.js)
+function groundBlob(width, length, peak) {
+  const geometry = new THREE.PlaneGeometry(width, length);
+  geometry.rotateX(-Math.PI * 0.5);
+  const blob = new THREE.Mesh(geometry, createBlobShadowMaterial(peak));
+  blob.position.y = 0.02;
+  blob.renderOrder = 998;
+  return blob;
+}
+
 class ThirdPersonControllerManager {
-  constructor(scene, colliders = []) {
+  /**
+   * `sunShadows`: whether the sun casts shadows on this graphics level (js/quality.js). Where it does, the walker's and the bike's shadows
+   * are the sun's, as the crowd's are; where it doesn't, each has a soft one of its own under it.
+   */
+  constructor(scene, colliders = [], { sunShadows = true } = {}) {
     this.scene = scene;
     this.colliders = colliders;
+    this.sunShadows = sunShadows;
     this._colliderCells = null; // built on first use, see nearColliders()
     // What holds the walker and nothing else, the fences between houses' lots (js/lot-details.js): cars keep to the roads, and the street
     // furniture, traffic and sounds never see these
@@ -812,13 +827,9 @@ class ThirdPersonControllerManager {
     crowd.meshes.forEach((m) => this.scene.add(anchorToOrigin(m)));
     const rig = new PersonRig({ ...PLAYER_LOOK, armSwing: 1.0 });
 
-    // Soft Under-Foot Contact Shadow (AO)
-    const shadowGeo = new THREE.PlaneGeometry(0.95, 0.95);
-    shadowGeo.rotateX(-Math.PI * 0.5);
-    const pedShadow = new THREE.Mesh(shadowGeo, createContactShadowMaterial());
-    pedShadow.position.y = 0.02;
-    pedShadow.renderOrder = 998;
-    root.add(pedShadow);
+    // Without the sun's shadows, a soft disc under the feet
+    const pedShadow = this.sunShadows ? null : groundBlob(0.8, 0.8, 0.7);
+    if (pedShadow) root.add(pedShadow);
 
     this.scene.add(root);
 
@@ -1095,12 +1106,9 @@ class ThirdPersonControllerManager {
     helmet.scale.set(0.95, 0.68, 1.28);
     this.scene.add(helmet);
 
-    const bikeShadowGeo = new THREE.PlaneGeometry(0.85, 2.25);
-    bikeShadowGeo.rotateX(-Math.PI * 0.5);
-    const bikeShadow = new THREE.Mesh(bikeShadowGeo, createContactShadowMaterial());
-    bikeShadow.position.set(0, 0.02, 0.0);
-    bikeShadow.renderOrder = 998;
-    root.add(bikeShadow);
+    // Without the sun's shadows, a soft oval along the bike, from tyre to tyre
+    const bikeShadow = this.sunShadows ? null : groundBlob(0.7, 2.1, 0.8);
+    if (bikeShadow) root.add(bikeShadow);
 
     const headLight = new THREE.SpotLight(0xf2f7ff, 0, 20, 0.34, 0.76, 1.25);
     headLight.position.set(0, 1.32, 0.62);
@@ -1124,6 +1132,7 @@ class ThirdPersonControllerManager {
       helmet,
       stand,
       headLight,
+      shadow: bikeShadow,
       position: new THREE.Vector3(SPAWN.x + 2, 0.0, SPAWN.z + 20),
       heading: SPAWN.heading,
       speed: 0,
@@ -1576,7 +1585,7 @@ class ThirdPersonControllerManager {
         if (p.shadow) {
           p.shadow.position.y = groundY - p.position.y + 0.02;
           const size = Math.max(0.45, 1 - Math.max(0, rigAir) * 0.35);
-          p.shadow.scale.set(size, size, 1);
+          p.shadow.scale.set(size, 1, size);
         }
         if (p.seat) p.rig.sit(p.seat.x, p.seat.z, p.seat.heading, p.seat.seatY);
         else p.rig.update(dt, p.position.x, p.position.z, p.heading, personGround, this, rigAir);

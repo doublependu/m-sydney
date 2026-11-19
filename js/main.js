@@ -171,7 +171,7 @@ async function initApp() {
 
   // 4. Initialize Third-Person Controllers (Person, Car, Cyclist, Helicopter) & Multi-Camera System
   await showLoadingStage('Preparing player, vehicles and controls...');
-  const controllerManager = new ThirdPersonControllerManager(scene, []);
+  const controllerManager = new ThirdPersonControllerManager(scene, [], { sunShadows: renderer.shadowMap.enabled });
   // Reuse teleport placement so saved players return at rest, close to their last positions.
   try {
     const saved = savedState;

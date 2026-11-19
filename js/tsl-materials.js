@@ -2972,6 +2972,24 @@ function createContactShadowMaterial() {
   return mat;
 }
 
+/**
+ * A soft shadow under the walker or the bike where the sun casts none (the low level, js/quality.js): an ellipse that fills its quad,
+ * `peak` dark a quarter of the way out, then fading to nothing at its rim. The G-buffer under it is kept, so it cuts no reflection out
+ * of the road.
+ */
+function createBlobShadowMaterial(peak) {
+  const mat = new THREE.MeshBasicNodeMaterial({
+    transparent: true,
+    depthWrite: false,
+    fog: false
+  });
+  const rim = length(uv().sub(vec2(0.5, 0.5)).mul(2.0)); // 0 in the middle, 1 on the ellipse's rim
+  mat.colorNode = color(0x020305);
+  mat.opacityNode = float(1.0).sub(smoothstep(0.25, 1.0, rim)).mul(peak);
+  mat.mrtNode = _transparentEffectMRT;
+  return mat;
+}
+
 // The fences of houses' lots (js/lot-details.js): one material for every panel, each an instance of a quad from (-0.5, 0) to (0.5, 1),
 // seen from both sides. Each instance's `fence` attribute: [its length (m), its height (m), its kind, its colour + a number in 0-1 of its
 // own in the fraction]. Kinds, between neighbours: 0 Colorbond (steel sheet in one of its four colours, its ribs, a capping rail along the
@@ -3127,6 +3145,7 @@ export {
   createGardenBedMaterial,
   createGardenPathMaterial,
   createContactShadowMaterial,
+  createBlobShadowMaterial,
   createFenceMaterial,
   createLotThingMaterial,
   createConcreteMaterial

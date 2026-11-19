@@ -40,7 +40,11 @@ function nearestOn(link, x, z) {
   return best;
 }
 const env = {
-  streetOf: (w) => ROADS.map((r) => nearestOn(r, w.cx, w.cz)).sort((a, b) => a.d - b.d)[0],
+  // The nearest street, or the one a building's `faces` names
+  streetOf: (w) => {
+    const named = ROADS.find((r) => r.name === w.pieces[0].faces);
+    return named ? nearestOn(named, w.cx, w.cz) : ROADS.map((r) => nearestOn(r, w.cx, w.cz)).sort((a, b) => a.d - b.d)[0];
+  },
   roadsNear: (x, z, r) => ROADS.map((l) => nearestOn(l, x, z)).filter((n) => n.d <= r),
   kerbFrom: () => KERB,
   groundAt: () => 0, lawnAt: () => 0, pavingAt: () => 0, roadAt: () => 0,
@@ -50,8 +54,8 @@ const env = {
 };
 const SQUARE = { x0: -100, z0: -100, x1: 100, z1: 100 };
 
-function run(houses = HOUSES) {
-  const job = squareLots(Object.values(houses).map((b) => ({ b, tile })), env, SQUARE);
+function run(houses = HOUSES, extra = {}) {
+  const job = squareLots(Object.values(houses).map((b) => ({ b, tile })), { ...env, ...extra }, SQUARE);
   let yields = 0, step = job.next();
   while (!step.done) { yields++; step = job.next(); }
   return { ...step.value, yields };
@@ -141,4 +145,107 @@ test('the work yields as it goes, as js/buildings.js addBuildings() does', () =>
   const result = run(many);
   assert.ok(result.yields >= 30, `${result.yields} yields for 30 houses`);
   assert.equal(result.lots.length, 30);
+});
+
+// --- Lots that don't overlap: each fence as the lot's edges have it, before the cut, kept off every building -----------------------
+
+const ring = (...pts) => pts.map(([x, z]) => ({ x, z }));
+// The part of convex ring `clip` that `subject` covers, and a ring's area
+const areaOf = (r) => { let s = 0; for (let i = 0, j = r.length - 1; i < r.length; j = i++) s += (r[j].x - r[i].x) * (r[j].z + r[i].z); return s / 2; };
+function clipped(subject, clip) {
+  let out = subject;
+  const s = Math.sign(areaOf(clip));
+  for (let i = 0; i < clip.length && out.length; i++) {
+    const a = clip[i], b = clip[(i + 1) % clip.length];
+    const side = (p) => s * ((b.x - a.x) * (p.z - a.z) - (b.z - a.z) * (p.x - a.x));
+    const inp = out;
+    out = [];
+    for (let k = 0; k < inp.length; k++) {
+      const p = inp[k], q = inp[(k + 1) % inp.length], sp = side(p), sq = side(q);
+      if (sp >= 0) out.push(p);
+      if ((sp >= 0) !== (sq >= 0)) { const t = sp / (sp - sq); out.push({ x: p.x + (q.x - p.x) * t, z: p.z + (q.z - p.z) * t }); }
+    }
+  }
+  return Math.abs(areaOf(out));
+}
+// Each line before the cut that runs 0.3 m or more inside a building other than its own house: [{ line, inside, building }]
+function intoBuildings(result, houses) {
+  const out = [];
+  for (const line of result.lines) {
+    const L = Math.hypot(line.b.x - line.a.x, line.b.z - line.a.z);
+    for (const [name, b] of Object.entries(houses)) {
+      if (b.kind === 4 || line.homes.some((h) => h.pieces.includes(b))) continue;
+      const inside = insideSpans(line.a, line.b, [b.polygons[0].outer]).reduce((sum, [t0, t1]) => sum + (t1 - t0) * L, 0);
+      if (inside >= 0.3) out.push({ line: `${line.kind?.line ? 'pair' : line.kind} (${line.a.x.toFixed(1)}, ${line.a.z.toFixed(1)}) to (${line.b.x.toFixed(1)}, ${line.b.z.toFixed(1)})`, inside: +inside.toFixed(2), building: name });
+    }
+  }
+  return out;
+}
+const maxZ = (lot) => Math.max(...lot.pts.map((p) => p.z));
+const minZ = (lot) => Math.min(...lot.pts.map((p) => p.z));
+
+test('a house behind, too far to one side to be chosen: the lot stops at the line halfway to it, and no line goes into it', () => {
+  // P's back neighbour would need 2 m of its width behind it: H has 1.5 m. Q, beside P, chooses H.
+  const houses = { Z: building(box(-14, 12, -4, 26)), P: building(box(0, 12, 10, 26)), Q: building(box(14, 12, 24, 26)), H: building(box(8.5, 40, 18.5, 54)) };
+  const result = run(houses, { lines: true });
+  const p = lotOf(result, houses.P);
+  assert.ok(maxZ(p) <= 33 + 0.01, `P's lot reaches z = ${maxZ(p).toFixed(2)}, past the line halfway to H at 33`);
+  assert.deepEqual(intoBuildings(result, houses), []);
+});
+
+test('back-to-back houses in two streets, staggered so none chooses another: no two lots overlap, and one fence runs between them', () => {
+  // A St's houses 10 m wide; C St's 6 m wide in line with A St's gaps, so each has 1 m of another's width behind it
+  const houses = {
+    F1: building(box(0, 12, 10, 26)), F2: building(box(14, 12, 24, 26)), F3: building(box(28, 12, 38, 26)),
+    B0: building(box(-5, 44, 1, 58)), B1: building(box(9, 44, 15, 58)), B2: building(box(23, 44, 29, 58))
+  };
+  const result = run(houses, { lines: true });
+  for (let i = 0; i < result.lots.length; i++) {
+    for (let j = i + 1; j < result.lots.length; j++) {
+      const a = result.lots[i], b = result.lots[j], area = clipped(a.pts, b.pts);
+      assert.ok(area < 1, `the lots of (${a.home.cx}, ${a.home.cz}) and (${b.home.cx}, ${b.home.cz}) overlap by ${area.toFixed(1)} m²`);
+    }
+  }
+  // Halfway between the backs of the two rows, z = 35
+  for (const k of ['F1', 'F2', 'F3']) assert.ok(maxZ(lotOf(result, houses[k])) <= 35.01, `${k}'s lot reaches z = ${maxZ(lotOf(result, houses[k])).toFixed(2)}`);
+  for (const k of ['B0', 'B1', 'B2']) assert.ok(minZ(lotOf(result, houses[k])) >= 34.99, `${k}'s lot reaches z = ${minZ(lotOf(result, houses[k])).toFixed(2)}`);
+  const along = result.fences.filter((f) => Math.abs(f.a.z - 35) < 0.05 && Math.abs(f.b.z - 35) < 0.05);
+  const metres = along.reduce((sum, f) => sum + Math.abs(f.b.x - f.a.x), 0);
+  assert.ok(metres >= 36, `${metres.toFixed(1)} m of fence along z = 35, from behind F1 to behind F3`);
+  assert.deepEqual(intoBuildings(result, houses), []);
+});
+
+test('a pair where one lot runs further back than the other\'s line with the house behind it: no line goes into that house', () => {
+  // P chooses H, behind it; Q, beside P, doesn't (H is beside Q's width, not behind it), but H reaches 1 m past P and Q's line
+  const houses = { P: building(box(0, 12, 10, 26)), Q: building(box(14, 12, 24, 26)), H: building(box(2, 36, 13, 50)) };
+  const result = run(houses, { lines: true });
+  assert.ok(maxZ(lotOf(result, houses.Q)) <= 31.01, `Q's lot reaches z = ${maxZ(lotOf(result, houses.Q)).toFixed(2)}, past H`);
+  assert.deepEqual(intoBuildings(result, houses), []);
+});
+
+test('a corner house over its side street\'s line: its side fence runs only behind it, from its back wall', () => {
+  // K faces A St and stands 2.2 m over B St's front line (less 0.3 m, x = 51.8)
+  const houses = { J: building(box(30, 12, 40, 26)), K: building(box(44, 12, 54, 24), { faces: 'A St' }) };
+  const result = run(houses, { lines: true });
+  const side = 60 - KERB - FOOTPATH - 0.3;
+  const onSide = (f) => Math.abs(f.a.x - side) < 0.05 && Math.abs(f.b.x - side) < 0.05;
+  const lines = result.lines.filter(onSide), fences = result.fences.filter(onSide);
+  assert.ok(lines.length >= 1 && fences.length >= 1, 'a fence along B St');
+  for (const f of [...lines, ...fences]) {
+    assert.ok(Math.min(f.a.z, f.b.z) >= 24 - 0.01, `a fence along B St from z = ${Math.min(f.a.z, f.b.z).toFixed(2)}, in front of K's back wall at 24`);
+  }
+  assert.ok(Math.max(...fences.map((f) => Math.max(f.a.z, f.b.z))) > 40, 'on to the back of the lot');
+});
+
+test('an L-shaped neighbour that no straight line separates from a house: neither lot is clipped by it, and it\'s listed', () => {
+  // L wraps round A0's back and its right side, 2 m off it
+  const L = building(ring([12, 12], [22, 12], [22, 36], [0, 36], [0, 30], [12, 30]));
+  const houses = { Z0: building(box(-14, 12, -4, 26)), A0: building(box(0, 12, 10, 26)), L };
+  const result = run(houses, { lines: true });
+  const a = lotOf(result, houses.A0);
+  assert.ok(maxZ(a) > 50, `A0's lot reaches its full depth behind it, z = ${maxZ(a).toFixed(1)}`);
+  assert.ok(Math.max(...a.pts.map((p) => p.x)) > 22, 'and past L to its right');
+  const listed = result.measure.unseparated.some((u) => [u.home, u.other].some((w) => w.pieces.includes(houses.A0)) && [u.home, u.other].some((w) => w.pieces.includes(L)));
+  assert.ok(listed, 'A0 and L are listed as a pair no straight line separates');
+  assert.ok(result.measure.rounds <= 4, `${result.measure.rounds} rounds`);
 });

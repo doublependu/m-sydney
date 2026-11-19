@@ -12,12 +12,17 @@ import { houseEntry } from './house-entry.js';
 //   back, along it; round a corner, both at once.
 // - Its lot is what's behind its front line and on its side of each of those lines, no more than BACK_MOST behind it, and kept off every
 //   other road's footpath: a corner lot's side runs along the side street's front line, and a lot with a lane behind stops at the lane's.
+// - Lots don't overlap: any house, building or site (as above) that a lot covers OVERLAP m² of becomes a pair with its house, and so do
+//   two houses whose lots overlap, each pair with its line; then the lots again, ROUNDS times at most. Two outlines that run into each
+//   other by TOUCH or less (a shared wall) still have a line between them; a pair that no straight line separates (an L-shaped neighbour
+//   round a house, outlines over each other) adds none, and what its lots cover is left to the fences' cut.
 // - Its car: a driveway up a side gap of DRIVE_GAP or more (the wider, or the one a shed or garage of the map's stands behind), to just
 //   past the front wall or to the shed; a project home's to the garage door in its front wall (js/house-entry.js); none for a terrace.
 //   A crossover from the kerb to the front line, and a layback over the kerb.
 // - Its fences: along every side of its lot but the front, from FENCE_BACK behind the front line, where the gap is NO_FENCE or more;
 //   never through a building or into a model's site, nor on the footpath (off the lawn as drawn, or in the inner city, which is paved
-//   right through, within the footpath's width of the kerb).
+//   right through, within the footpath's width of the kerb). A corner house standing over its side street's line has its fence along that
+//   street only behind it, from its back wall; one over a road's line behind it, the fence either side of it, up to its walls.
 // Everything is in steps (a generator, as js/buildings.js addBuildings() is), a square of the map at a time, near you (js/lot-details.js).
 
 const FOOTPATH = 3.5; // m paved from the kerb before the lawn
@@ -29,6 +34,9 @@ const BACK_MOST = 25; // m a lot reaches behind its house, at most
 const DRIVE_GAP = 3.0; // m beside a house for a driveway
 const DRIVE_PAST = 4; // m past the front wall that a driveway runs, beside the house
 const PARTNER_AREA = 80; // m²: a building of no house's this big bounds a lot; anything smaller stands in one, as a shed does
+const OVERLAP = 1; // m² of a building or another lot that a lot covers, for the two to be a pair
+const ROUNDS = 4; // times the lots are worked out, at most, with the pairs their overlaps add
+const TOUCH = 2; // m two buildings' outlines can run into each other, each up to half that over the line between them: a shared wall, outlines traced over each other
 const SHED = 4; // the map's kind of building (js/tiles/tile-file.js)
 const NEAR = 45; // m: neighbours, and roads, within this of a house's middle
 const PANEL = 2.4; // m: a fence's panels, each level, so a fence steps down a slope
@@ -82,6 +90,29 @@ function ringArea(ring) {
   let a = 0;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) a += ring[j].x * ring[i].z - ring[i].x * ring[j].z;
   return Math.abs(a / 2);
+}
+
+/** The area of ring `subject` inside convex ring `clip` (either way round) */
+function areaInside(subject, clip) {
+  let out = subject;
+  const s = Math.sign(ringSigned(clip));
+  for (let i = 0; i < clip.length && out.length; i++) {
+    const a = clip[i], b = clip[(i + 1) % clip.length];
+    const inp = out;
+    out = [];
+    for (let k = 0; k < inp.length; k++) {
+      const p = inp[k], q = inp[(k + 1) % inp.length];
+      const sp = s * ((b.x - a.x) * (p.z - a.z) - (b.z - a.z) * (p.x - a.x)), sq = s * ((b.x - a.x) * (q.z - a.z) - (b.z - a.z) * (q.x - a.x));
+      if (sp >= 0) out.push(p);
+      if ((sp >= 0) !== (sq >= 0)) { const t = sp / (sp - sq); out.push({ x: p.x + (q.x - p.x) * t, z: p.z + (q.z - p.z) * t }); }
+    }
+  }
+  return out.length < 3 ? 0 : ringArea(out);
+}
+function ringSigned(ring) {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) a += ring[j].x * ring[i].z - ring[i].x * ring[j].z;
+  return a / 2;
 }
 
 const boxOf = (pts) => {
@@ -199,7 +230,30 @@ function lineDistance(pts, x, z) {
   return best;
 }
 
-/** The line between two neighbours: { ux, uz, m, gap }, a's side where x * ux + z * uz < m */
+/** The convex hull of a building's points, kept on it */
+function hullOf(w) {
+  if (w.hull) return w.hull;
+  const pts = [...w.pts].sort((p, q) => p.x - q.x || p.z - q.z);
+  const cross = (o, p, q) => (p.x - o.x) * (q.z - o.z) - (p.z - o.z) * (q.x - o.x);
+  const lower = [], upper = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  w.hull = lower.slice(0, -1).concat(upper.slice(0, -1));
+  return w.hull;
+}
+
+/**
+ * The line between two neighbours: { ux, uz, m, gap }, a's side where x * ux + z * uz < m. Square to or along their streets where those
+ * show a gap between them; otherwise along whichever edge of either's outline (its hull) shows the widest, where they don't overlap
+ * (two houses set at an angle to their streets, or one diagonally behind the other); gap <= 0 where nothing separates them.
+ */
 function pairLine(a, b) {
   const axes = [];
   const frames = [a.frame, b.frame].filter(Boolean);
@@ -221,6 +275,19 @@ function pairLine(a, b) {
     const gap = bLo - aHi;
     if (!best || gap + bonus > best.score) best = { ux, uz, m: (aHi + bLo) / 2, gap, score: gap + bonus };
   }
+  if (best && best.gap > 0) return best;
+  for (const hull of [hullOf(a), hullOf(b)]) {
+    for (let i = 0; i < hull.length; i++) {
+      const p = hull[i], q = hull[(i + 1) % hull.length], L = Math.hypot(q.x - p.x, q.z - p.z);
+      if (L < 0.05) continue;
+      for (const sign of [1, -1]) {
+        const ux = (sign * (q.z - p.z)) / L, uz = (sign * -(q.x - p.x)) / L;
+        const [, aHi] = span(a.pts, ux, uz), [bLo] = span(b.pts, ux, uz);
+        const gap = bLo - aHi;
+        if (gap > best.gap) best = { ux, uz, m: (aHi + bLo) / 2, gap, score: gap };
+      }
+    }
+  }
   return best;
 }
 
@@ -228,10 +295,11 @@ function pairLine(a, b) {
 
 /**
  * The lots of the houses in a square of the map, with their fences, driveways and crossovers. A lot needs what's round it: its
- * neighbours, and theirs, since a pair is a pair if either chose the other. So `entries` must hold every building within MARGIN of
- * `square` ({ x0, z0, x1, z1 }); lots are worked out for those within LOT_MARGIN of it, so each pair's fence is the same in the squares
- * either side of it, and what's returned is what's in the square: each lot and its driveway by its house's middle, each fence by its
- * own. `entries`: [{ b, tile }], the buildings, in their tiles' order. `env`:
+ * neighbours, and theirs, since a pair is a pair if either chose the other, and the lots round it, which it mustn't overlap. So
+ * `entries` must hold every building within MARGIN of `square` ({ x0, z0, x1, z1 }); each house within PICK_MARGIN has its lot worked
+ * out for the overlaps, and those within LOT_MARGIN have theirs kept, so each pair's fence is the same in the squares either side of it;
+ * what's returned is what's in the square: each lot and its driveway by its house's middle, each fence by its own. `entries`: [{ b, tile }],
+ * the buildings, in their tiles' order. `env`:
  *   streetOf(whole): the street a house faces, { x, z, ux, uz, link } (js/street-front.js streetFront(), as its walls have it), or null
  *   roadsNear(x, z, r): [{ link, x, z, d }], each road on the ground's nearest point to (x, z) within r; a link has its `pts` and `width`
  *   kerbFrom(x, z, nx, nz, most, tx, tz): m from (x, z) along (nx, nz) that the kerb island (tx, tz) is on starts, or null within `most`
@@ -240,11 +308,15 @@ function pairLine(a, b) {
  *   roadAt(x, z): the road's surface
  *   sites: [{ rings }]: the model sites, which nothing of a lot reaches into, and which bound their neighbours' lots
  *   lotThings(lot, obstacles): what else stands in a lot (js/lot-things.js), { boxes, slabs, panels, fences }, or none
+ *   lines: true for the fences as the lots' edges have them, before they're cut, for measuring them
  * Yields as it goes; returns { lots, fences, panels, slabs, things, fronting }: `fronting`, every building near that faces a street and
- * bounds a lot, for the verges (js/verge.js squareVerge()).
+ * bounds a lot, for the verges (js/verge.js squareVerge()). With `lines`, also `lines`, each fence before the cut ({ a, b, homes, kind:
+ * 'pair' with its `line`, 'back', 'road' or 'row', own: whether it's the square's }), and `measure`: { obstacles, pairs, rounds, added,
+ * unseparated, left }, the pairs the overlaps added, those no line separates, and the overlaps still left after ROUNDS, each { home,
+ * other, why: 'building' or 'lot' }.
  */
 const PICK_MARGIN = 160; // m: houses whose neighbours are looked for, round the square
-const LOT_MARGIN = 80; // m: houses whose lots are worked out
+const LOT_MARGIN = 80; // m: houses whose lots are kept, and their fences drawn
 const MARGIN = 240; // m: buildings that must be given
 function* squareLots(entries, env, square) {
   const within = (w, m) => w.cx >= square.x0 - m && w.cx < square.x1 + m && w.cz >= square.z0 - m && w.cz < square.z1 + m;
@@ -266,13 +338,17 @@ function* squareLots(entries, env, square) {
     }
     if (w.house || (w.kind !== SHED && w.area >= PARTNER_AREA)) partners.push(w);
   }
+  const obstacles = wholes.map((w) => {
+    const small = !w.house && (w.kind === SHED || w.area < PARTNER_AREA);
+    return { rings: w.rings, box: w.box, whole: w, small, partner: small ? null : w };
+  });
   // The model sites stand where their houses are: lots stop short of them
   for (const site of env.sites || []) {
     const pts = site.rings.flat(), box = boxOf(pts);
-    partners.push({ key: site, site: true, rings: site.rings, pts, box, cx: (box.x0 + box.x1) / 2, cz: (box.z0 + box.z1) / 2 });
+    const partner = { key: site, site: true, rings: site.rings, pts, box, cx: (box.x0 + box.x1) / 2, cz: (box.z0 + box.z1) / 2 };
+    partners.push(partner);
+    obstacles.push({ rings: site.rings, box, site: true, partner });
   }
-  const obstacles = wholes.map((w) => ({ rings: w.rings, box: w.box, whole: w, small: !w.house && (w.kind === SHED || w.area < PARTNER_AREA) }));
-  for (const site of env.sites || []) obstacles.push({ rings: site.rings, box: boxOf(site.rings.flat()), site: true });
   // Obstacles in cells too, for what's in a fence's or a driveway's way
   const OCELL = 40, ogrid = new Map();
   for (const o of obstacles) {
@@ -374,11 +450,10 @@ function* squareLots(entries, env, square) {
     return line;
   };
 
-  const lots = [], lotOf = new Map();
-  const fenceSpans = new Map(); // a pair's line -> [{ s0, s1 }] from each of the two lots
-  const fences = [];
-  for (const h of homes) {
-    if (!within(h, LOT_MARGIN)) continue;
+  // A house's lot: behind its front line, on its side of each pair's line, no more than BACK_MOST behind it, off every other road's
+  // footpath; null where its middle isn't in that
+  const roadClips = new Map(); // home -> [[a, b, c]], its other roads' lines
+  const lotShape = (h) => {
     const f = h.frame;
     const half = Math.max(h.box.x1 - h.box.x0, h.box.z1 - h.box.z0) / 2 + BACK_MOST + 15;
     let poly = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sz]) => ({ x: h.cx + sx * half, z: h.cz + sz * half, tag: 'square' }));
@@ -390,13 +465,110 @@ function* squareLots(entries, env, square) {
       poly = clipHalf(poly, line.ux, line.uz, -line.m, { line: line.flipped ? lines.get(q).get(h) : line, gap: line.gap, partner: q });
     }
     // Off every other road's footpath
-    for (const r of env.roadsNear(h.cx, h.cz, NEAR)) {
-      if (r.link === h.street.link || r.d < 0.5) continue;
-      const nx = (h.cx - r.x) / r.d, nz = (h.cz - r.z) / r.d;
-      const k = kerbOf(r.link, r.x, r.z, nx, nz, h.cx, h.cz);
-      poly = clipHalf(poly, -nx, -nz, r.x * nx + r.z * nz + k + FOOTPATH + ROAD_INSET, 'road');
+    let clips = roadClips.get(h);
+    if (!clips) {
+      clips = [];
+      for (const r of env.roadsNear(h.cx, h.cz, NEAR)) {
+        if (r.link === h.street.link || r.d < 0.5) continue;
+        const nx = (h.cx - r.x) / r.d, nz = (h.cz - r.z) / r.d;
+        const k = kerbOf(r.link, r.x, r.z, nx, nz, h.cx, h.cz);
+        clips.push([-nx, -nz, r.x * nx + r.z * nz + k + FOOTPATH + ROAD_INSET]);
+      }
+      roadClips.set(h, clips);
     }
-    if (poly.length < 3 || !inRing(poly, h.cx, h.cz)) {
+    for (const [a, b, c] of clips) poly = clipHalf(poly, a, b, c, 'road');
+    return poly.length >= 3 && inRing(poly, h.cx, h.cz) ? poly : null;
+  };
+
+  // Every house's lot, then the overlaps: a house, building or site a lot covers OVERLAP m² of, or another lot, becomes a pair, unless no
+  // straight line separates the two; then the lots that gained a pair again. A lot only shrinks with each pair, so it settles.
+  const shapes = new Map(); // home -> its lot's points, or null
+  for (const [i, h] of homes.entries()) {
+    shapes.set(h, lotShape(h));
+    if (i % 32 === 31) yield;
+  }
+  const order = new Map(homes.map((h, i) => [h, i]));
+  const refused = new Map(); // home -> Set of those no line separates it from
+  const isRefused = (a, b) => refused.get(a)?.has(b) || refused.get(b)?.has(a);
+  const added = [], unseparated = [], left = [];
+  let rounds = 1, changed = homes;
+  for (;;) {
+    const LCELL = 40, lgrid = new Map(), lbox = new Map();
+    for (const [h, poly] of shapes) {
+      if (!poly) continue;
+      const b = boxOf(poly);
+      lbox.set(h, b);
+      for (let ix = Math.floor(b.x0 / LCELL); ix <= Math.floor(b.x1 / LCELL); ix++) {
+        for (let iz = Math.floor(b.z0 / LCELL); iz <= Math.floor(b.z1 / LCELL); iz++) {
+          const k = ix * 100000 + iz;
+          (lgrid.get(k) || lgrid.set(k, []).get(k)).push(h);
+        }
+      }
+    }
+    yield;
+    const recheck = new Set(changed);
+    const found = [];
+    let n = 0;
+    for (const h of changed) {
+      const poly = shapes.get(h);
+      if (!poly) continue;
+      if (++n % 16 === 0) yield;
+      const b = lbox.get(h), mine = pairs.get(h);
+      for (const o of obstaclesIn(b.x0, b.z0, b.x1, b.z1)) {
+        const q = o.partner;
+        if (!q || q === h || mine?.has(q) || isRefused(h, q)) continue;
+        if (o.rings.reduce((sum, r) => sum + areaInside(r, poly), 0) >= OVERLAP) found.push({ home: h, other: q, why: 'building' });
+      }
+      const near = new Set();
+      for (let ix = Math.floor(b.x0 / LCELL); ix <= Math.floor(b.x1 / LCELL); ix++) {
+        for (let iz = Math.floor(b.z0 / LCELL); iz <= Math.floor(b.z1 / LCELL); iz++) for (const g of lgrid.get(ix * 100000 + iz) || []) near.add(g);
+      }
+      for (const g of near) {
+        // Each pair once: from the first of the two in the homes' order, where both are looked at
+        if (g === h || mine?.has(g) || isRefused(h, g) || (recheck.has(g) && order.get(g) < order.get(h))) continue;
+        const gb = lbox.get(g);
+        if (gb.x0 >= b.x1 || gb.x1 <= b.x0 || gb.z0 >= b.z1 || gb.z1 <= b.z0) continue;
+        if (areaInside(shapes.get(g), poly) >= OVERLAP) found.push({ home: h, other: g, why: 'lot' });
+      }
+    }
+    if (!found.length) break;
+    if (rounds === ROUNDS) {
+      left.push(...found);
+      break;
+    }
+    const next = new Set();
+    for (const p of found) {
+      const { home: h, other: q } = p;
+      if (pairs.get(h)?.has(q) || isRefused(h, q)) continue;
+      if (!(lineOf(h, q).gap > -TOUCH)) {
+        if (!refused.has(h)) refused.set(h, new Set());
+        refused.get(h).add(q);
+        unseparated.push(p);
+        continue;
+      }
+      link(h, q);
+      added.push(p);
+      next.add(h);
+      if (q.frame) next.add(q);
+    }
+    if (!next.size) break;
+    rounds++;
+    changed = homes.filter((h) => next.has(h));
+    for (const [i, h] of changed.entries()) {
+      shapes.set(h, lotShape(h));
+      if (i % 32 === 31) yield;
+    }
+  }
+  yield;
+
+  const lots = [], lotOf = new Map();
+  const fenceSpans = new Map(); // a pair's line -> [{ s0, s1 }] from each of the two lots
+  const fences = [];
+  for (const h of homes) {
+    if (!within(h, LOT_MARGIN)) continue;
+    const f = h.frame;
+    const poly = shapes.get(h);
+    if (!poly) {
       yield;
       continue;
     }
@@ -407,7 +579,7 @@ function* squareLots(entries, env, square) {
     const row = HOUSE_STYLES[h.house]?.look?.terrace && h.frontWall ? houseEntry(h.frontWall, h.house)?.row : null;
     if (row) {
       lot.units = unitsOf(lot, row);
-      for (const fence of rowFences(lot, row)) fences.push(fence);
+      for (const fence of rowFences(lot, row)) fences.push({ ...fence, kind: 'row' });
     }
 
     // The fences along it: every side but the front, from FENCE_BACK behind the front line
@@ -424,6 +596,19 @@ function* squareLots(entries, env, square) {
       let a = p, b = q;
       if (dp < from) a = { x: p.x + (q.x - p.x) * ((from - dp) / (dq - dp)), z: p.z + (q.z - p.z) * ((from - dp) / (dq - dp)) };
       if (dq < from) b = { x: p.x + (q.x - p.x) * ((from - dp) / (dq - dp)), z: p.z + (q.z - p.z) * ((from - dp) / (dq - dp)) };
+      const da = depthOf(f, a.x, a.z), db = depthOf(f, b.x, b.z), L = Math.hypot(b.x - a.x, b.z - a.z);
+      if (tag === 'road' && Math.abs(db - da) > 0.3 * L) {
+        // A corner house over its side street's line: the fence along the street only behind it, from where the line leaves its back wall.
+        // (A house over a road's line behind it, which runs along its street, has the fence either side of it, meeting its walls.)
+        const inside = insideSpans(a, b, h.rings).filter(([t0, t1]) => (t1 - t0) * L > 0.3);
+        if (inside.length) {
+          const t = da < db ? Math.max(...inside.map((s) => s[1])) : Math.min(...inside.map((s) => s[0]));
+          const at = { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t };
+          if (da < db) a = at;
+          else b = at;
+          if (Math.hypot(b.x - a.x, b.z - a.z) < 0.3) continue;
+        }
+      }
       if (typeof tag === 'object') {
         // Along the pair's own line, from either lot's side of it
         const line = tag.line;
@@ -434,7 +619,7 @@ function* squareLots(entries, env, square) {
         entry.spans.push([Math.min(s0, s1), Math.max(s0, s1)]);
         entry.homes.push(h, tag.partner);
       } else {
-        fences.push({ a, b, homes: [h] });
+        fences.push({ a, b, homes: [h], kind: tag });
       }
     }
     yield;
@@ -446,7 +631,7 @@ function* squareLots(entries, env, square) {
     const flush = () => {
       if (cur && cur[1] - cur[0] > 0.3) {
         fences.push({ a: { x: line.ux * line.m + wx * cur[0], z: line.uz * line.m + wz * cur[0] },
-          b: { x: line.ux * line.m + wx * cur[1], z: line.uz * line.m + wz * cur[1] }, homes: owners });
+          b: { x: line.ux * line.m + wx * cur[1], z: line.uz * line.m + wz * cur[1] }, homes: owners, kind: 'pair', line });
       }
     };
     for (const s of spans) {
@@ -456,6 +641,8 @@ function* squareLots(entries, env, square) {
     flush();
   }
   yield;
+  // Asked for (env.lines): every fence as its lot's edges have it, before the cut, the square's own marked `own`
+  const before = env.lines ? fences.map((f) => ({ ...f, own: owns((f.a.x + f.b.x) / 2, (f.a.z + f.b.z) / 2) })) : null;
 
   // Each fence cut where it would go through a building, into a site, or onto a footpath: the square's own, by their middles
   const pieces = [];
@@ -561,7 +748,9 @@ function* squareLots(entries, env, square) {
     const street = env.streetOf(w);
     if (street) fronting.push({ street, house: 0, terrace: false, yard: 0, frontage: [[w.cx, w.cz], [w.cx, w.cz]], cx: w.cx, cz: w.cz, lot: null });
   }
-  return { lots: mine, fences: finished, panels, slabs, things, fronting };
+  const result = { lots: mine, fences: finished, panels, slabs, things, fronting };
+  if (before) Object.assign(result, { lines: before, measure: { obstacles, pairs, rounds, added, unseparated, left } });
+  return result;
 }
 
 // --- A row of terraces ------------------------------------------------------------------------------------------------------------

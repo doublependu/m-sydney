@@ -53,7 +53,7 @@ test('the models were built on the shells the game draws: their arches haven\'t 
       assert.ok(built, `${shell.id}: not in the model`);
       [0, line.length >> 1, line.length - 1].forEach((k, i) => {
         const d = dist(toModel(line[k]), built[i]);
-        assert.ok(d < 0.05, `${shell.id}'s arch is ${d.toFixed(2)} m from where its model was built: build the models again (README)`);
+        assert.ok(d < 0.05, `${shell.id}'s arch is ${d.toFixed(2)} m from where its model was built: build the models again`);
       });
     }
   }

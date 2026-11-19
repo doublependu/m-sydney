@@ -2321,7 +2321,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
       vehicleCursor = (vehicleCursor + 1) % vehicles.length;
       const d = v.edge ? Math.hypot(v.x - focusX, v.z - focusZ) : Infinity;
       // Traffic can still hold itself up at a merge. Someone stuck that long goes, out of sight if at all possible, which lets
-      // the queue behind them move. (A cause is still open: see ai/next_2.md.)
+      // the queue behind them move. (A cause is still open: cars can wait on each other where they straddle two lanes.)
       const stuck = v.edge && v.wait > (nearView(v.x, v.z, v.half + 4, VEHICLE_SPAWN_DISTANCE) ? STUCK_IN_VIEW : STUCK_OUT_OF_VIEW);
       if (stuck) {
         v.edge = null;

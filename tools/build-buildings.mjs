@@ -123,7 +123,7 @@ const hash = (...values) => {
   return (h >>> 0) / 4294967296;
 };
 // The mix of styles in each group of suburbs, by the ABS's SA4 (the first three digits of a Mesh Block's SA1): the period most of
-// its houses were built in (ai/plan_4.md, "Sydney's houses")
+// its houses were built in
 const S = STYLE;
 const HOUSE_MIX = {
   117: [[S['Victorian terrace'], 7], [S.Federation, 1], [S['Project home'], 2]], // City and Inner South
@@ -145,7 +145,7 @@ const TERRACE_SUBURBS = new Set(['117', '118', '120', '121']);
 const ROW_SUBURBS = new Set(['117', '118', '120']);
 const isRow = (r) => r.b.class === 'terrace';
 const SAME_STREET = 0.65; // of a block's houses, how many share its style
-// The CBD keeps the look it had: its buildings of no use stay as they were (ai/plan_4.md, Phase I)
+// The CBD keeps the look it had: its buildings of no use stay as they were
 const CBD = new Set(['Sydney (North) - Millers Point', 'Sydney (South) - Haymarket']);
 // How wide and long a footprint is, along its longest wall
 function shapeOf(r) {

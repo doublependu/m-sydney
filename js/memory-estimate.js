@@ -1,7 +1,7 @@
 // How much memory the game holds, by its own count. iOS gives a page no figure for its memory, and kills the tab when there's too
 // much, so the game counts what it made: every geometry's and texture's bytes, which go to the GPU, and the map data it holds.
-// It's an estimate, not what the browser holds, which has copies and overheads of its own; Phase F of ai/plan_4.md compares the
-// two. Walks the scene, a few thousand objects, in about a millisecond: often enough for the readout and the budget.
+// It's an estimate, not what the browser holds, which has copies and overheads of its own. Walks the scene, a few thousand objects,
+// in about a millisecond: often enough for the readout and the budget.
 
 const textureBytes = (texture) => {
   const image = texture?.image;

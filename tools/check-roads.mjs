@@ -700,8 +700,8 @@ else {
   }
 }
 
-// What plan 3's Phase F reached, on the part of the map npm run check holds (the CBD and around it, 80 km²), with a little room. Where it
-// fell short of the plan's limits, that's in ai/next_3.md. Tighten these as the roads improve.
+// What plan 3's Phase F reached, on the part of the map npm run check holds (the CBD and around it, 80 km²), with a little room.
+// Tighten these as the roads improve.
 if (strict) {
   const r = report;
   const limits = [

@@ -1,5 +1,5 @@
 // Buildings drawn from models of their own (js/interiors.js). The models come from scripts kept outside this repo, and what they build
-// is committed in public/models/ (README, "Building models").
+// is committed in public/models/.
 //   file: models/<file>.glb and <file>.json, the building's outside, drawn with its tile
 //   x, z, yaw: where its middle stands, and how it's turned (the game's rotation.y), in the game's frame
 //   y: its ground floor's height, or null to stand it on the ground under its walls

@@ -19,7 +19,7 @@ const PAINT_CELL_SIZE = 1200;
 const PAINT_CULL_DISTANCE = 1650;
 const PAINT_MAX_SEGMENT = 18; // short enough to follow the ground
 const WIDEN_SPHERE_PAD = 16; // createRoadPaintMaterial widens thin distant strips up to 16x in screen space
-const SMALL_STREET = 11; // m wide: narrower, a two-way local street has no centre line (one council's standard; see ai/plan_4.md)
+const SMALL_STREET = 11; // m wide: narrower, a two-way local street has no centre line (one council's standard: Central Coast Council's SD0900)
 const STUB = 15; // m of centre line where a small street meets a main road
 const SMALL_CLASSES = new Set([ROAD_CLASS.residential, ROAD_CLASS.unclassified, ROAD_CLASS.living_street]);
 

@@ -1117,7 +1117,7 @@ function makeCurve(e, i, f, j) {
     k0 = 0.552 * Math.abs(t);
     k3 = 0.552 * Math.hypot(x3 - (x0 + e.dx * t), z3 - (z0 + e.dz * t));
     // Where the two lanes' lines meet next to one end, that end's handle all but vanishes and the curve has a cusp there: its
-    // curvature runs to infinity, and a car crawls through it at walking pace (Palm Beach's queues, ai/next_3.md). A fifth
+    // curvature runs to infinity, and a car crawls through it at walking pace (Palm Beach's queues). A fifth
     // of the way across at the least.
     const chord = Math.hypot(x3 - x0, z3 - z0);
     k0 = Math.min(Math.max(k0, chord * 0.2), chord * 1.2);

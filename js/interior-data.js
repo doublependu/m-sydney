@@ -1,4 +1,4 @@
-// What a building's model says about walking in it (README, "Building models"): its floors, walls, doors, seats and rooms, as the
+// What a building's model says about walking in it: its floors, walls, doors, seats and rooms, as the
 // model's JSON has them, in the model's own frame. Nothing here draws anything, so the tests can use it as the game does.
 //   Model frame: x across, z along, y up from the model's ground floor; a site turns it by `yaw` and puts it at (x, y, z).
 
@@ -285,7 +285,7 @@ function doorStep(door, rooms, out = DOOR_STEP) {
 
 /**
  * Out of a site's inside, to the street (X, js/main.js), in the world's frame: { x, z, heading, y (the door's floor), via, door }, or
- * null. Where to (README, "Building models"):
+ * null. Where to:
  * - the site's own `exit` (js/model-sites.js): [x, z, heading, y over the site] in its frame (via 'exit'), or 'door' for the step
  *   outside its door (via 'door');
  * - otherwise the step outside its `front` door, or the first that leads in, and from there `footpath(x, z, y, heading)`: the footpath

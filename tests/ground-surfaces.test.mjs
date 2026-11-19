@@ -58,3 +58,35 @@ for (const [name, list] of [['footpaths', PAVEMENTS], ['lawns', LAWNS]]) {
     assert.ok(under / total < 0.015, `${((under / total) * 100).toFixed(1)}% of the area is over 0.5 m under the ground`);
   });
 }
+
+test('the sea wall is drawn in front of a kerb in its plane: where a kerb island reaches the water, its outline is the shore (the Opera House\'s Broadwalk)', async () => {
+  const { heldTiles } = await import('../js/geodata.js');
+  const { kerbRing } = await import('../js/ground-geometry.js');
+  const tiles = heldTiles();
+  // The shore along the Broadwalk's west side, in 0_-2; the island along it, the Domain's and the Botanic Garden's, is 1_-1's
+  const wall = tiles.find((t) => t.key === '0_-2')?.shore.find(([, ax, az, bx, bz]) => Math.hypot((ax + bx) / 2 - 438, (az + bz) / 2 + 1887) < 2);
+  if (!wall) return; // not in the tiles held
+  const [, ax, az, bx, bz] = wall;
+  const L = Math.hypot(bx - ax, bz - az), ux = (bx - ax) / L, uz = (bz - az) / L;
+  const off = (p) => Math.abs((p.x - ax) * uz - (p.z - az) * ux);
+  const along = (p) => Math.max(0, Math.min(L, (p.x - ax) * ux + (p.z - az) * uz));
+  // How much of the kerb, through the points js/ground-geometry.js draws it through, lies within a centimetre of the wall's face
+  let inPlane = 0;
+  for (const t of tiles) {
+    for (const b of t.placedBlocks) {
+      if (b.maxX < Math.min(ax, bx) - 1 || b.minX > Math.max(ax, bx) + 1 || b.maxZ < Math.min(az, bz) - 1 || b.minZ > Math.max(az, bz) + 1) continue;
+      for (const ring of [b.poly, ...b.holes]) {
+        const pts = kerbRing(ring);
+        for (let i = 0; i < pts.length; i++) {
+          const p = pts[i], q = pts[(i + 1) % pts.length];
+          if (off(p) < 0.01 && off(q) < 0.01) inPlane += Math.abs(along(q) - along(p));
+        }
+      }
+    }
+  }
+  assert.ok(inPlane > 20, `only ${inPlane.toFixed(1)} m of kerb in the plane of the ${L.toFixed(1)} m of sea wall`);
+  // ...so the wall has to win where the two are drawn in one place (js/city-grid.js groundMaterials())
+  const { groundMaterials } = await import('../js/city-grid.js');
+  const { seawall } = groundMaterials();
+  assert.ok(seawall.polygonOffset && seawall.polygonOffsetUnits < 0 && seawall.polygonOffsetFactor < 0, 'the sea wall isn\'t drawn in front of what lies in its plane');
+});

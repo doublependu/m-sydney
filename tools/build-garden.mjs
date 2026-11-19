@@ -352,7 +352,8 @@ log(`${plazaSource.length} paved areas in them, OSM's and by hand`);
 log(`${hedges.length} hedges, ${ponds.length} ponds and pools, ${fountains.length} of them fountains; ${rockPonds.length} edged with rocks; ${islands.length} islands in them`);
 
 // --- Sea walls: the shore round the parks themselves, where a sandstone parapet keeps people out of the water (js/garden.js) ------------
-// Not the boxes round the Opera House, whose model has its own sea wall, or the Quay's, where the ferries tie up. Each is
+// Not the boxes round the Opera House, whose Broadwalk has no parapet (its edge is the map's sea wall, js/city-grid.js: the model's
+// parapets are on the podium), or the Quay's, where the ferries tie up. Each is
 // [side, x, z, x, z, ...] along the shore, the land on the side `side` gives, as tools/build-tiles.mjs reckons a shore's (by its ring's
 // winding). Open where steps or a jetty reach the water.
 const WALL_REACH = 8; // m past a park's outline the shore can lie: its outline is often drawn along the top of the wall

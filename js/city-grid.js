@@ -226,8 +226,13 @@ function groundMaterials() {
     bollardBlack: new THREE.MeshStandardNodeMaterial({ color: 0x1c1c1c, roughness: 0.6 }),
     // Under all of it, a plain dark ground: a seam anywhere shows that, never the harbour
     base: new THREE.MeshStandardNodeMaterial({ color: 0x2c2b29, roughness: 1 }),
-    // Both sides: a few shores' rings are wound the other way round, and their walls would face the land
-    seawall: Object.assign(createSandstoneWallMaterial({ waterLevel: CITY_BOUNDS.waterLevel }), { side: THREE.DoubleSide }),
+    // Both sides: a few shores' rings are wound the other way round, and their walls would face the land. And drawn in front of what lies in
+    // its plane: where a kerb island reaches the water its outline is the shore, so the kerb's face (js/ground-geometry.js addCurb()) is on
+    // the wall's, from 0.3 m under the ground up to the wall's top, and the two fought in a band along the top of the wall, wherever no
+    // garden's parapet stands in front of it (the Opera House's Broadwalk). The kerb's tile and the shore's are often not the same tile, so
+    // neither can leave its face out for the other
+    seawall: Object.assign(createSandstoneWallMaterial({ waterLevel: CITY_BOUNDS.waterLevel }),
+      { side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
     sand: createSandMaterial({ waterLevel: CITY_BOUNDS.waterLevel }),
     rock: createCoastRockMaterial({ waterLevel: CITY_BOUNDS.waterLevel })
   };

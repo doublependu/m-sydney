@@ -13,6 +13,10 @@ process.env.VITE_APP_VERSION = commitPrefix();
 
 export default defineConfig({
   base: './',
+  // recordings/ holds copies of old builds and their tiles (tens of thousands of files, and links back to public/):
+  // watching it uses up Linux's inotify watches (ENOSPC), and its old index.html copies would be scanned for deps.
+  server: { watch: { ignored: ['**/recordings/**'] } },
+  optimizeDeps: { entries: ['index.html'] },
   build: {
     target: 'esnext', // the geodata modules use top-level await
     chunkSizeWarningLimit: 6000

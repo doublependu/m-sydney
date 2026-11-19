@@ -394,6 +394,33 @@ async function face(human, target) {
   await human.releaseAll();
 }
 
+// On foot into a model site's inside through its door `doorId`: to the step outside it (again once the site's in: a teleport onto its floor
+// before it's there is pushed off), the door opened if it's shut, and in 1.5 m past its middle. True once in a room under its roof, in
+// first person (as exitBuildingScenario() goes in)
+async function goInside(human, page, id, doorId) {
+  const S = MODEL_SITES.find((site) => site.id === id);
+  const at = (x, z) => ({ x: S.x + x * Math.cos(S.yaw) + z * Math.sin(S.yaw), z: S.z - x * Math.sin(S.yaw) + z * Math.cos(S.yaw) });
+  const json = (name) => JSON.parse(readFileSync(new URL(`../../public/models/${name}.json`, import.meta.url), 'utf8'));
+  const d = json(S.file.replace('models/', '')).doors.find((dd) => dd.id === doorId);
+  const local = doorStep(d, json(d.inside).rooms);
+  const mid = at((d.hinge[0] + d.latch[0]) / 2, (d.hinge[1] + d.latch[1]) / 2), step = at(local.x, local.z);
+  const interior = () => page.evaluate(() => window.__gameDebug.interior());
+  const toStep = () => page.evaluate(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...step, h: Math.atan2(mid.x - step.x, mid.z - step.z) });
+  await toStep();
+  await page.waitForFunction((siteId) => window.__gameDebug.interior().sites.find((site) => site.id === siteId)?.out, id, { timeout: 90000, polling: 250 });
+  await toStep();
+  await face(human, mid);
+  await human.wait(400);
+  if (((await interior()).doors.find((dd) => dd.site === id && dd.id === doorId)?.angle ?? 0) < 1.5) await human.press('KeyF');
+  const opened = await page.waitForFunction(({ id, doorId }) => window.__gameDebug.interior().doors.find((dd) => dd.site === id && dd.id === doorId)?.angle >= 1.5
+    && window.__gameDebug.interior().held.includes(id), { id, doorId }, { timeout: 20000, polling: 200 }).then(() => true, () => false);
+  if (!opened) return false;
+  const s = await human.state(), ux = mid.x - s.x, uz = mid.z - s.z, L = Math.hypot(ux, uz);
+  await walkTo(human, { x: mid.x + (ux / L) * 1.5, z: mid.z + (uz / L) * 1.5 }, { timeout: 8000 });
+  return page.waitForFunction(() => window.__gameDebug.interior().inside && window.__gameDebug.camera().preset === 'pov', null, { timeout: 3000, polling: 100 })
+    .then(() => true, () => false);
+}
+
 // Into the Pylon Lookout (js/model-sites.js, pylon-lookout), in the Harbour Bridge's south-east pylon: along the footway to its door,
 // in, round the foyer, up the stair to the gallery and down, and out onto the footway again
 function lookoutScenario() {
@@ -2527,8 +2554,13 @@ export const SCENARIOS = {
       await human.wait(1500);
       await human.releaseAll();
 
+      // Onto the bike where you stand (js/controllers.js switchMode())
+      const stood = await human.state();
       await human.press('Digit3');
       await human.react();
+      const mounted = await human.state();
+      const bikeFrom = Math.hypot(mounted.x - stood.x, mounted.z - stood.z);
+      expect(mounted.mode === 'cyclist' && bikeFrom < 0.5, `the bicycle started ${bikeFrom.toFixed(1)} m from where you stood`);
       await human.down('KeyW');
       await human.wait(3500);
       const cycling = await human.state();
@@ -2825,17 +2857,70 @@ export const SCENARIOS = {
       await human.releaseAll();
       await human.wait(600);
 
-      // On a street: out onto the footpath, back into the car where it was left
-      const car = await human.state();
+      // On a street: out beside the car's driver's door (js/arrivals.js besideVehicle()), in the road, the car left there; back into it
+      const parked = () => page.evaluate(() => window.__gameDebug.parked());
       const walker = await go('person');
-      expect(walker.mode === 'person' && walker.footpath, `a walker from the car isn't on a footpath, at ${walker.x.toFixed(0)}, ${walker.z.toFixed(0)}`);
-      expect(at(walker, car) < 30, `the footpath was ${at(walker, car).toFixed(0)} m from the car`);
+      const [car] = await parked();
+      expect(car?.mode === 'car', `the car wasn't left where you got out: ${JSON.stringify(await parked())}`);
+      const fx = Math.sin(car.heading), fz = Math.cos(car.heading);
+      const door = { x: car.x + fx * 0.3 - fz * 0.86, z: car.z + fz * 0.3 + fx * 0.86 };
+      expect(walker.mode === 'person' && at(walker, door) < 2, `out of the car ${at(walker, door).toFixed(1)} m from its driver's door`);
+      expect(!walker.footpath, `out of the car onto the footpath at ${walker.x.toFixed(0)}, ${walker.z.toFixed(0)}, not beside it`);
+      expect(Math.abs(wrapTurn(walker.heading - car.heading)) < 0.05, 'out of the car facing another way than it does');
+      metric('outFromDriversDoor', +at(walker, door).toFixed(2));
       const back = await go('car');
       expect(at(back, car) < 0.5, `back in the car ${at(back, car).toFixed(1)} m from where it was left`);
+      expect((await parked()).length === 0, 'back in the car, it\'s still left there too');
+      // Out again, a run up the street, and it's gone after 10 s of the game's time: 2 puts a car in the lane nearest you
+      await go('person');
+      const [again] = await parked();
+      await human.down('ShiftLeft');
+      await human.hold('KeyW', 2200);
+      await human.up('ShiftLeft');
+      const ran = await human.state();
+      expect(at(ran, again) > 5, `ran only ${at(ran, again).toFixed(1)} m from the car`);
+      const gone = await human.until((list) => list.length === 0, { timeout: 40000, read: parked });
+      expect(gone, `the car was still there long after 10 s: ${JSON.stringify(await parked())}`);
+      const fresh = await go('car');
+      expect(fresh.mode === 'car' && fresh.surface === 0 && !fresh.footpath, `no car in the lane: ${JSON.stringify(fresh).slice(0, 160)}`);
+      expect(at(fresh, again) > 3, `the new car is where the old one was left, ${at(fresh, again).toFixed(1)} m from it`);
+      // From the car to the bike: the bike where the car was, and the car gone at once; back to the car, the bike gone
       const rider = await go('cyclist');
-      expect(at(rider, back) < 25, `the bicycle started ${at(rider, back).toFixed(0)} m from the car`);
+      expect(at(rider, fresh) < 0.5, `the bicycle started ${at(rider, fresh).toFixed(1)} m from where the car was`);
+      expect((await parked()).length === 0, `the car's still there beside the bike: ${JSON.stringify(await parked())}`);
+      const driver = await go('car');
+      expect(driver.mode === 'car' && driver.surface === 0, 'from the bike, no car in the lane');
+      expect((await parked()).length === 0, `the bike's still there beside the car: ${JSON.stringify(await parked())}`);
+      // From the car onto the bike again, and off it: beside it on its left, towards the kerb, the bike standing empty on its stand; back on
+      // it where it stood within 10 s; left again, gone after 10 s. Then from your feet onto the bike where you stand, and the rider's you
+      const looks = () => page.evaluate(() => window.__gameDebug.looks());
+      await go('cyclist');
+      const riding = await looks();
+      expect(riding.riderShown && riding.helmet && !riding.stand, `riding, the bike isn't drawn ridden: ${JSON.stringify(riding)}`);
+      expect(JSON.stringify(riding.rider) === JSON.stringify(riding.walker), `the rider isn't the walker: ${JSON.stringify(riding)}`);
+      const off = await go('person');
+      const bike = (await parked()).find((p) => p.mode === 'cyclist');
+      expect(bike, `the bike wasn't left where you got off: ${JSON.stringify(await parked())}`);
+      expect(at(off, bike) >= 0.6 && at(off, bike) <= 1.2, `off the bike ${at(off, bike).toFixed(2)} m from its middle`);
+      metric('offBikeFromItsMiddle', +at(off, bike).toFixed(2));
+      const empty = await looks();
+      expect(!empty.riderShown && !empty.helmet && empty.stand && empty.lean < -0.15, `the bike left isn't empty on its stand: ${JSON.stringify(empty)}`);
+      const backOn = await go('cyclist');
+      expect(at(backOn, bike) < 0.5, `back on the bike ${at(backOn, bike).toFixed(1)} m from where it was left`);
+      const upright = await looks();
+      expect(Math.abs(upright.lean) < 0.05 && !upright.stand && upright.riderShown, `back on the bike, it's still on its stand: ${JSON.stringify(upright)}`);
+      await go('person');
+      const bikeGone = await human.until((list) => list.length === 0, { timeout: 40000, read: parked });
+      expect(bikeGone, `the bike was still there long after 10 s: ${JSON.stringify(await parked())}`);
+      expect(!(await looks()).bikeShown, 'the bike gone is still drawn');
+      const standing = await human.state();
+      const onBike = await go('cyclist');
+      expect(at(onBike, standing) < 0.5, `the bike started ${at(onBike, standing).toFixed(1)} m from where you stood`);
+      expect((await looks()).riderShown, 'on the bike from your feet, nobody rides it');
+      const driven = await go('car');
+      expect((await parked()).length === 0, `the bike's still there beside the car: ${JSON.stringify(await parked())}`);
       const flyer = await go('helicopter');
-      expect(at(flyer, rider) < 2, `the helicopter started ${at(flyer, rider).toFixed(0)} m across from the bicycle`);
+      expect(at(flyer, driven) < 2, `the helicopter started ${at(flyer, driven).toFixed(0)} m across from the car`);
       expect(flyer.y >= 58, `the helicopter arrived only ${flyer.y.toFixed(0)} m up`);
       metric('flyHeightOverMacquarieSt', Math.round(flyer.y));
 
@@ -2885,6 +2970,13 @@ export const SCENARIOS = {
       expect(inTunnel.surface !== 0, 'should start in the tunnel');
       const tunnelWalker = await go('person');
       expect(tunnelWalker.surface === inTunnel.surface, 'out of the car in a tunnel, you stay in the tunnel');
+
+      // In a room of an inside (test-interior, a debug site): onto the bike on the footpath in front, facing out from its door
+      expect(await goInside(human, page, 'test-interior', 'front'), 'never got into test-interior');
+      const exit = (await page.evaluate(() => window.__gameDebug.interior())).exit;
+      const outside = await go('cyclist');
+      expect(exit && outside.mode === 'cyclist' && at(outside, exit) < 0.5, `onto the bike inside, it started ${exit ? at(outside, exit).toFixed(1) : '?'} m from the way out`);
+      expect(exit && Math.abs(wrapTurn(outside.heading - exit.heading - Math.PI)) < 0.05, 'onto the bike inside, it faces the door');
     }
   },
 

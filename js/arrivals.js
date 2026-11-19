@@ -1,10 +1,11 @@
 import { blockAt, landAt } from './city-config.js';
 import { DECK_FOOTWAY, DECK_REACH, DECK_SID, bridgeAt, bridgePoint, deckHeight, deckSpanAt } from './bridge.js';
 import { onMap } from './geodata.js';
-import { KIND, LINKS, floorBelow, groundHeight, roadHeight, structureAt, structuresAt } from './surfaces.js';
+import { KIND, LINKS, ROOM, STRUCTURES, chooseSurface, clearOfWater as offWater, floorBelow, groundHeight, roadHeight, structureAt, structuresAt } from './surfaces.js';
 
-// Where a new travel mode starts from where the last one left off: walkers on the nearest footpath, drivers in the
-// nearest lane, riders on whichever is nearer, flyers straight up above the buildings around. "Nearest" means on the
+// Where a new travel mode starts from where the last one left off: walkers on the nearest footpath (out of a car or off a
+// bike, beside it: besideVehicle()), drivers in the nearest lane, riders on whichever is nearer (js/controllers.js first
+// tries where the car was, or where you stand), flyers straight up above the buildings around. "Nearest" means on the
 // level you're on: getting out on a bridge doesn't drop you off it.
 
 // Surrounding buildings are the roofs within AREA. A helicopter arrives above most of them (the 90th percentile), clear
@@ -232,6 +233,39 @@ function roadEdge(sid, x, z) {
   return { x: px - seg.uz * side * out, z: pz + seg.ux * side * out, surface: sid };
 }
 
+// Out of a vehicle and onto your feet beside it: the places to try, in its frame ([m to its right, m ahead of its middle]), the first
+// that's clear. The car is right-hand drive: its driver's door, then the passenger's, then behind it and in front. The bike: its left,
+// where its stand is, level with its saddle, then its right, then behind it.
+const CAR_DOORS = [[1.5, 0.3], [-1.5, 0.3], [0, -3], [0, 3]];
+const BIKE_SIDES = [[-0.85, -0.28], [0.85, -0.28], [0, -1.5]];
+const WALKER_MARGIN = 0.48 * 0.6; // m a walker's middle is kept in from a deck's barrier or a tunnel's wall (js/controllers.js)
+
+/**
+ * Where you get out of a vehicle at { x, z, heading, y (its surface's height), surface }: the first of `sides` ([right, ahead] in its
+ * frame) on its level, facing its way. On its level is on the ground if it's on the ground, out of the water, and with room under any
+ * deck over it; on a deck or in a tunnel, inside its road, its margin in from the barrier or the wall. `world.isClear(x, z)`: nothing
+ * else in the way there (a wall, a fence, a parked car, traffic close by). On the Harbour Bridge's deck, beside its footway's stretch,
+ * the footway, which nowhere else reaches. { x, z, heading, surface, y, footway? }, or null where none of them is clear.
+ */
+function besideVehicle(vehicle, sides, world) {
+  const { x, z, heading } = vehicle, sid = vehicle.surface || 0;
+  if (sid && (sid === DECK_SID || STRUCTURES[sid]?.deck)) {
+    const footway = footwayNear(x, z);
+    if (footway) return { ...footway, heading, footway: true };
+  }
+  const fx = Math.sin(heading), fz = Math.cos(heading);
+  for (const [right, ahead] of sides) {
+    // Ahead is (fx, fz), right of it (-fz, fx)
+    const px = x + fx * ahead - fz * right, pz = z + fz * ahead + fx * right;
+    const on = chooseSurface(sid, vehicle.y, px, pz, WALKER_MARGIN, ROOM.foot);
+    if (!on || on.x !== undefined || !on.sid !== !sid) continue;
+    if (!sid && !offWater(px, pz)) continue;
+    if (!world.isClear(px, pz)) continue;
+    return { x: px, z: pz, heading, surface: on.sid, y: on.y };
+  }
+  return null;
+}
+
 /**
  * Where a mode starts from a place: { x, z, heading, surface, altitude?, footway? }, or null to stay put.
  * from: { x, z, heading, y (height above sea level), surface (0 on the ground), flying }.
@@ -274,4 +308,4 @@ function arrivalFor(mode, from, world) {
   return path && { x: path.x, z: path.z, heading, surface: 0 };
 }
 
-export { FLY, FOOTWAY, STREET, arrivalFor, flyingHeight, footpathFrom, footwayNear, holdOnFootway, nearestFootpath, nearestLane, roadEdge, walkable };
+export { BIKE_SIDES, CAR_DOORS, FLY, FOOTWAY, STREET, arrivalFor, besideVehicle, flyingHeight, footpathFrom, footwayNear, holdOnFootway, nearestFootpath, nearestLane, roadEdge, walkable };

@@ -456,7 +456,11 @@ async function initApp() {
   // The player changing how they travel: the new mode starts from where this one is, with a short fade over a long move. `gesture`: by a
   // key press or a click, which can lock the mouse, onto your feet in the first-person camera
   function switchTravelMode(mode, gesture = false) {
-    const moved = controllerManager.switchMode(mode);
+    // Onto the bike in a room of an inside: from the way out of the building, the footpath in front (js/interiors.js exitSpot()), facing
+    // out from the door, where X faces you back at the building
+    const out = mode === 'cyclist' && controllerManager.activeMode === 'person' && inBuilding ? interiors.exitSpot() : null;
+    const start = out && { ...out, heading: out.heading + Math.PI };
+    const moved = controllerManager.switchMode(mode, start);
     selectMode(mode);
     if (gesture && cameraSystem.firstPerson && finePointer.matches) cameraSystem.lockPointer();
     if (moved > 50) {
@@ -693,6 +697,8 @@ async function initApp() {
   }
 
   function teleportTo(x, z, heading = Math.PI, name = null) {
+    // A car or bike you left isn't there to come back to
+    controllerManager.clearParked();
     const destination = controllerManager.teleportActiveTo(x, z, heading);
     // The loading bar follows the map coming in around here, from now: whatever's being built for the last place can take a while yet
     arrival = { x: destination.x, z: destination.z, name };
@@ -1469,8 +1475,14 @@ async function initApp() {
       settled(trafficStage); // writes its own transforms on the ground every frame
       yield revealStage(trafficStage, tasks?.traffic);
       trafficSystem = made;
-      controllerManager.vehicleAt = (vx, vz, y) => [...made.cars, ...made.buses].some((v) => v.edge
-        && Math.abs(v.x - vx) < 6 && Math.abs(v.z - vz) < 6 && Math.abs((v.ry ?? y) - y) < 3);
+      // Traffic at (vx, vz) on the level y: any car or bus within 6 m, or with `reach`, whose body comes within that of it (out of a car
+      // beside it, js/controllers.js switchMode())
+      const bodyWithin = (v, vx, vz, reach) => {
+        const fx = Math.sin(v.yaw), fz = Math.cos(v.yaw), dx = vx - v.x, dz = vz - v.z;
+        return Math.hypot(Math.max(0, Math.abs(dx * fx + dz * fz) - v.half), Math.max(0, Math.abs(dz * fx - dx * fz) - v.halfWidth)) < reach;
+      };
+      controllerManager.vehicleAt = (vx, vz, y, reach = null) => [...made.cars, ...made.buses].some((v) => v.edge && Math.abs((v.ry ?? y) - y) < 3
+        && (reach === null ? Math.abs(v.x - vx) < 6 && Math.abs(v.z - vz) < 6 : bodyWithin(v, vx, vz, reach)));
       mapSystem.trafficSystem = made;
       audioSystem.attachCity({ trafficSystem, streetDetails });
       dynamicRoots.push(made.group);
@@ -1940,6 +1952,7 @@ async function initApp() {
         // On the deck, what's under (x, z) has to be held before it can be found
         await holdTiles(tilesNear(x, z, 60));
         let result = null;
+        controllerManager.clearParked();
         if (altitude !== null) controllerManager.teleportActiveTo(x, z, heading, altitude);
         else if (!deck) result = teleportTo(x, z, heading);
         else {
@@ -2057,6 +2070,18 @@ async function initApp() {
       recycled: () => trafficSystem?.recycled(),
       audioState: () => audioSystem.context?.state ?? 'none',
       input: () => ({ ...controllerManager.keys }),
+      // The car and the bike you left: [{ mode, x, z, heading, surface, left (s till it's gone), collider (in the way on the ground) }]
+      parked: () => controllerManager.parkedList(),
+      // Who you are walking and riding ([seed, female, girth, hair, scale], js/pedestrians.js PersonRig), and what of the bike's drawn: its
+      // rider, the helmet, the stand and its lean (rad, - to the left)
+      looks() {
+        const { person, cyclist } = controllerManager.entities;
+        const look = (rig) => [...Array.from(rig.pose.slice(-4)), rig.s];
+        return { walker: look(person.rig), rider: look(cyclist.riderRig), riderShown: !cyclist._riderHidden, helmet: !!cyclist.helmet?.visible,
+          stand: !!cyclist.stand?.visible, lean: cyclist.leanPivot.rotation.z, bikeShown: cyclist._shown !== false };
+      },
+      // Whether a mode's body fits at (x, z) among the buildings, the kerbs' cars and the car you left (js/controllers.js spotClear())
+      spotClear: (mode, x, z, heading = 0) => controllerManager.spotClear(mode, x, z, heading),
       player() {
         const entity = controllerManager.getActiveEntity();
         const { x, y, z } = entity.position;
@@ -2409,7 +2434,7 @@ async function initApp() {
     // Update 3rd-person controllers, camera, signals, traffic & vehicle collisions, building LODs, and dynamic shadow focus
     gamepadControls.update(dt);
     syncFirstPerson();
-    if (!awaitingGround) controllerManager.update(dt, elapsed, cameraSystem.initialized ? cameraSystem.currentPos : null);
+    if (!awaitingGround) controllerManager.update(dt, elapsed);
     // Outrunning the map: slow down near the edge of what's drawn, rather than drive off it
     if (worldCompleteAt !== null && controllerManager.activeMode !== 'helicopter') {
       const active = controllerManager.getActiveEntity();

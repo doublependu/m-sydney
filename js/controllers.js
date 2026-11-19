@@ -21,7 +21,7 @@ import { HEADLIGHTS, createVehicleHeadlight, placeVehicleHeadlight } from './veh
 import { anchorToOrigin } from './world-origin.js';
 import { polygonContact, polygonContains } from './building-collision.js';
 import { DECK_SID } from './bridge.js';
-import { FLY, arrivalFor, holdOnFootway } from './arrivals.js';
+import { BIKE_SIDES, CAR_DOORS, FLY, arrivalFor, besideVehicle, holdOnFootway } from './arrivals.js';
 import { ROOM, STRUCTURES, clearOfWater, floorBelow, freeFromDeck, groundHeight, moveOver, onFloor, structureAt, surfaceHeight } from './surfaces.js';
 import { WALKER } from './interior-data.js';
 import { MODEL_SITES } from './model-sites.js';
@@ -98,8 +98,16 @@ function driveSpeed(speed, throttle, dt, drive) {
 // within CAR_REACH: further round is a look, not somewhere to drive, and the camera swings back behind it as before.
 const VIEW = { gain: 3, carGain: 4, carDamping: 0.2, done: 0.02, settled: 0.03, carReach: Math.PI / 2 };
 
-// A car or bicycle you left: how close you have to be to get back in it where it is, and to still see it
-const RESUME_PARKED = 30, SHOW_PARKED = 200;
+// A car or bicycle you left: how close you have to be to get back in it where it is, to still see it, and how long it stands there (s of
+// the game's time, which stops while it's paused or hidden) before it's gone
+const RESUME_PARKED = 30, SHOW_PARKED = 200, PARKED_FOR = 10;
+const NEAR_TRAFFIC = 1.5; // m from a passing car's body that's too close to get out
+// The car you left, in the way on the ground as the cars parked at the kerbs are (js/traffic.js): its box, as high as theirs
+const PARKED_BOX = { hx: 0.86, hz: 2.18, top: 1.55 };
+// A bike left standing leans onto its kickstand, on its left: its lean (js/controllers.js leanPivot, - to the left)
+const STAND_LEAN = -10 * Math.PI / 180;
+// Who you are, walking or riding: one person, the same face, build, hair and clothes (js/pedestrians.js PersonRig)
+const PLAYER_LOOK = { seed: 4.2, scale: 1.0, girth: 1.02, hair: 0.18 };
 const FLY_AREA = FLY.AREA;
 const FOOTWAY_RISE = 0.18; // the Harbour Bridge's footway stands this far above its road (js/harbour-bridge.js)
 
@@ -415,10 +423,7 @@ class ThirdPersonControllerManager {
     if (active.mesh) active.mesh.visible = true;
     if (active.helmet) active.helmet.visible = true;
     if (mode === 'person') active._charHidden = false;
-    else if (mode === 'cyclist') {
-      active._riderHidden = false;
-      active._posedX = NaN;
-    }
+    else if (mode === 'cyclist') active._riderHidden = false;
     const car = this.entities.car;
     if (mode !== 'car' && car?.carState) car.carState.value.x = car.carState.value.w = 0;
   }
@@ -427,12 +432,13 @@ class ThirdPersonControllerManager {
     return this.entities[this.activeMode];
   }
 
-  // Whether (x, z) has room for this mode's body among the buildings: its surface says whether anything of the ground matters
-  spotClear(mode, x, z, heading) {
+  // Whether (x, z) has room for this mode's body among the buildings: its surface says whether anything of the ground matters. `except`: a
+  // collider not to count
+  spotClear(mode, x, z, heading, except = null) {
     const body = collisionBody(mode, mode === 'helicopter' ? 4.5 : mode === 'person' ? 0.48 : 0.65, heading, 0.1);
     const baseY = mode === 'helicopter' ? 0 : this.getGroundHeight(x, z, mode);
     for (const c of this.nearColliders(x, z, Math.max(body.extX, body.extZ))) {
-      if (buildingContact(c, x, baseY, z, body)) return false;
+      if (c !== except && buildingContact(c, x, baseY, z, body)) return false;
     }
     if (mode === 'person') for (const c of this.nearWalkerColliders(x, z, body.radius)) if (buildingContact(c, x, baseY, z, body)) return false;
     return true;
@@ -493,9 +499,12 @@ class ThirdPersonControllerManager {
     return out;
   }
 
-  // Changing travel mode: the new one starts from where this one is (js/arrivals.js). `blocked(x, z, y)`, if set, says when
-  // a vehicle is there. Returns how far the player moved.
-  switchMode(mode) {
+  // Changing travel mode: the new one starts from where this one is (js/arrivals.js). Out of the car or off the bike you stand beside it;
+  // from the car the bike's where the car was, and from your feet where you stand. A car or bike you leave stands where you left it for
+  // PARKED_FOR, unless you leave one for the other, when it's gone at once. `start` ({ x, z, heading, y }): somewhere else to start from,
+  // the way out of a building you're in (js/main.js). `vehicleAt(x, z, y, reach)`, if set, says when traffic is there. Returns how far
+  // the player moved.
+  switchMode(mode, start = null) {
     if (!this.entities[mode]) return 0;
     if (mode === this.activeMode) {
       this.setMode(mode);
@@ -505,28 +514,43 @@ class ThirdPersonControllerManager {
     const flying = this.activeMode === 'helicopter';
     const y = flying ? was.position.y + groundHeight(was.position.x, was.position.z)
       : was.surfaceY ?? surfaceHeight(was.surface || 0, was.position.x, was.position.z);
-    const from = { x: was.position.x, z: was.position.z, heading: was.heading, y, surface: was.surface || 0, flying };
+    let from = { x: was.position.x, z: was.position.z, heading: was.heading, y, surface: was.surface || 0, flying };
+    let onFootway = !!was.onFootway;
+    if (start) {
+      // Out of the building first: the Pylon Lookout's way out is onto the footway
+      const held = holdOnFootway(start.x, start.z);
+      onFootway = !!held && Math.abs(held.y - start.y) < 1;
+      from = { x: start.x, z: start.z, heading: start.heading, y: start.y, surface: onFootway ? DECK_SID : 0, flying: false };
+    }
     const next = this.entities[mode];
+    const vehicle = (e) => e.type === 'car' || e.type === 'cyclist';
+    // Nothing of the ground is in the way up on a structure
+    const clearFor = (m, except = null) => (x, z) => (!!from.surface || this.spotClear(m, x, z, from.heading, except)) && !this.vehicleAt?.(x, z, y, NEAR_TRAFFIC);
 
-    // A vehicle left nearby is still there: get back in it where it is
+    // A vehicle left nearby is still there: get back in it where it is. Out of its way first, so it doesn't stand in its own way
     let arrival = null;
     if (next._parked && Math.hypot(next.position.x - from.x, next.position.z - from.z) <= RESUME_PARKED
       && Math.abs((next.surfaceY ?? 0) - (flying ? floorBelow(from.x, from.z, y) : y)) < 3) {
       arrival = { x: next.position.x, z: next.position.z, heading: next.heading, surface: next.surface || 0 };
-    } else {
-      arrival = arrivalFor(mode, from, {
-        isClear: (x, z) => this.spotClear(mode, x, z, from.heading) && !this.vehicleAt?.(x, z, y),
-        roofs: (x, z) => this.roofsNear(x, z)
-      });
     }
+    if (vehicle(next)) this.removeParked(next);
+    if (!arrival && vehicle(was) && mode === 'person') arrival = besideVehicle(from, was.type === 'car' ? CAR_DOORS : BIKE_SIDES, { isClear: clearFor('person') });
+    // The bike where the car was, or where you stand: not on the Harbour Bridge's footway, which holds only a walker. Beside the car you've
+    // just got out of, its box is a few centimetres into the bike's round: it eases the bike off as it moves, rather than send it elsewhere
+    if (!arrival && mode === 'cyclist' && (was.type === 'car' || (was.type === 'person' && !onFootway))
+      && clearFor('cyclist', this.entities.car?._collider ?? null)(from.x, from.z)) {
+      arrival = { x: from.x, z: from.z, heading: from.heading, surface: from.surface };
+    }
+    arrival ??= arrivalFor(mode, from, {
+      isClear: (x, z) => this.spotClear(mode, x, z, from.heading) && !this.vehicleAt?.(x, z, y),
+      roofs: (x, z) => this.roofsNear(x, z)
+    });
 
-    // Stays where it was left, if it's the kind of thing you can leave somewhere
-    if (was.type === 'car' || was.type === 'cyclist') {
-      was._parked = true;
-      was.speed = 0;
-      was.vx = was.vz = 0;
+    // Stays where it was left, if it's the kind of thing you can leave somewhere, and you didn't take the other
+    if (vehicle(was)) {
+      if (vehicle(next)) this.removeParked(was);
+      else this.park(was);
     }
-    next._parked = false;
     this.setMode(mode);
     if (arrival) {
       this.teleportActiveTo(arrival.x, arrival.z, arrival.heading, arrival.altitude ?? null, arrival.surface || 0, true);
@@ -537,6 +561,55 @@ class ThirdPersonControllerManager {
       this.teleportActiveTo(from.x, from.z, from.heading);
     }
     return Math.hypot(next.position.x - from.x, next.position.z - from.z);
+  }
+
+  // A car or bike left where it is, stopped, for PARKED_FOR. The car on the ground is in the way, as the cars at the kerbs are; on a deck or
+  // in a tunnel nothing of the ground counts, so it isn't
+  park(e) {
+    e._parked = true;
+    e._parkedFor = 0;
+    e.speed = 0;
+    e.vx = e.vz = 0;
+    // The bike stands empty, leaning onto its stand (updateVisibility() shows it)
+    if (e.type === 'cyclist' && e.leanPivot) e.leanAngle = e.leanPivot.rotation.z = STAND_LEAN;
+    if (e.type === 'car' && !e.surface) {
+      const cs = Math.cos(e.heading), sn = Math.sin(e.heading), { hx, hz } = PARKED_BOX;
+      const ex = Math.abs(cs) * hx + Math.abs(sn) * hz, ez = Math.abs(sn) * hx + Math.abs(cs) * hz;
+      const { x, z } = e.position;
+      e._collider = { minX: x - ex, maxX: x + ex, minZ: z - ez, maxZ: z + ez, minY: 0, maxY: PARKED_BOX.top, obb: { cx: x, cz: z, hx, hz, cs, sn }, parked: true, player: true };
+      this.addColliders([e._collider]);
+    }
+  }
+
+  // ...and gone: not drawn, out of traffic's way and nobody's
+  removeParked(e) {
+    e._parked = false;
+    e._parkedFor = 0;
+    if (e._collider) {
+      this.removeColliders([e._collider]);
+      e._collider = null;
+    }
+  }
+
+  // Everything you left, gone: a teleport
+  clearParked() {
+    for (const e of Object.values(this.entities)) if (e._parked) this.removeParked(e);
+  }
+
+  // The car and bike left, for scripts: where each stands and the seconds it has left
+  parkedList() {
+    return Object.entries(this.entities).filter(([, e]) => e._parked).map(([mode, e]) => ({
+      mode, x: e.position.x, z: e.position.z, heading: e.heading, surface: e.surface || 0, left: Math.max(0, PARKED_FOR - (e._parkedFor || 0)), collider: !!e._collider
+    }));
+  }
+
+  // Each frame: what you left stands there for PARKED_FOR of the game's time
+  tickParked(dt) {
+    for (const e of Object.values(this.entities)) {
+      if (!e._parked) continue;
+      e._parkedFor = (e._parkedFor || 0) + dt;
+      if (e._parkedFor >= PARKED_FOR) this.removeParked(e);
+    }
   }
 
   /**
@@ -577,7 +650,7 @@ class ThirdPersonControllerManager {
           o.traverse((child) => { if (child.isLight) found = true; });
           return found;
         };
-        e.mesh.traverse?.((o) => { if (o.isMesh && !holdsLight(o)) e._body.push(o); });
+        e.mesh.traverse?.((o) => { if (o.isMesh && !o.userData?.ownVisibility && !holdsLight(o)) e._body.push(o); });
       }
       for (const mesh of e._body) mesh.visible = shown;
     };
@@ -586,6 +659,9 @@ class ThirdPersonControllerManager {
       const near = Math.hypot(e.position.x - active.position.x, e.position.z - active.position.z) <= SHOW_PARKED;
       show(e, e === active || ((e.type === 'car' || e.type === 'cyclist') && !!e._parked && near));
     }
+    // The bike's stand, while it stands
+    const bike = this.entities.cyclist;
+    if (bike?.stand) bike.stand.visible = bike !== active && !!bike._parked && bike._shown !== false;
   }
 
   // `surface`: the structure to arrive on (js/surfaces.js), or 0 for the ground under (x, z)
@@ -655,7 +731,6 @@ class ThirdPersonControllerManager {
       ent.wheelOver = null;
       this.standBike(ent);
       ent._riderHidden = false;
-      ent._posedX = NaN;
       if (ent.helmet) ent.helmet.visible = true;
     } else if (heli) {
       ent.verticalSpeed = ent.pitchAngle = ent.rollAngle = 0;
@@ -680,7 +755,8 @@ class ThirdPersonControllerManager {
     const entity = this.getActiveEntity();
     // Conservative body cylinders, including the taxi's corners, bicycle wheels and helicopter tail/rotor.
     const body = { person: [0.48, 1.9], car: [2.4, 1.9], cyclist: [1.0, 1.9], helicopter: [6.2, 3.2] };
-    const others = Object.values(this.entities).filter(e => e !== entity && e._shown !== false).map(e => ({
+    // The walker is only ever where you are, and a car or bike gone isn't anywhere
+    const others = Object.values(this.entities).filter(e => e !== entity && e.type !== 'person' && e._shown !== false && e._parked !== false).map(e => ({
       x: e.position.x, z: e.position.z, radius: body[e.type][0],
       bottom: e.position.y - (e.type === 'helicopter' ? 0.7 : 0), top: e.position.y + body[e.type][1]
     }));
@@ -734,7 +810,7 @@ class ThirdPersonControllerManager {
     // One skinned person, posed in world space every frame by its rig (walk, run, turn, jump)
     const crowd = new PersonCrowd(1, { farDistance: Infinity });
     crowd.meshes.forEach((m) => this.scene.add(anchorToOrigin(m)));
-    const rig = new PersonRig({ seed: 4.2, scale: 1.0, girth: 1.02, hair: 0.18, armSwing: 1.0 });
+    const rig = new PersonRig({ ...PLAYER_LOOK, armSwing: 1.0 });
 
     // Soft Under-Foot Contact Shadow (AO)
     const shadowGeo = new THREE.PlaneGeometry(0.95, 0.95);
@@ -997,11 +1073,24 @@ class ThirdPersonControllerManager {
     }
     leanPivot.add(crankPivot);
 
+    // A kickstand under the left chainstay, behind the bottom bracket, down to the ground at the bike's lean while it stands parked
+    // (STAND_LEAN), its foot 0.2 m out to the left, as low as the tyres touch the ground (0.008 m under the frame's 0, where the lean
+    // turns round) less half its thickness. Shown only then (updateVisibility())
+    const standTop = new THREE.Vector3(0.045, 0.3, -0.26);
+    const standFoot = new THREE.Vector3(0.2, (-0.003 - 0.2 * Math.sin(STAND_LEAN)) / Math.cos(STAND_LEAN), -0.4);
+    const standAlong = standFoot.clone().sub(standTop);
+    const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.011, standAlong.length(), 6), frameMat);
+    stand.position.copy(standTop).add(standFoot).multiplyScalar(0.5);
+    stand.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), standAlong.normalize());
+    stand.visible = false;
+    stand.userData.ownVisibility = true;
+    leanPivot.add(stand);
+
     // Skinned rider (see pedestrians.js), posed every frame with its hands on the grips and feet on the pedals; the
-    // helmet rides on its head
+    // helmet rides on its head. It's you: the walker's look. A bike left standing has nobody on it
     const riderCrowd = new PersonCrowd(1, { farDistance: Infinity });
     riderCrowd.meshes.forEach((m) => this.scene.add(anchorToOrigin(m)));
-    const riderRig = new PersonRig({ seed: 12.8, scale: 1.0, girth: 0.97, hair: 0.1 });
+    const riderRig = new PersonRig({ ...PLAYER_LOOK });
     const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.125, 14, 12), helmetMat);
     helmet.scale.set(0.95, 0.68, 1.28);
     this.scene.add(helmet);
@@ -1033,6 +1122,7 @@ class ThirdPersonControllerManager {
       riderCrowd,
       riderRig,
       helmet,
+      stand,
       headLight,
       position: new THREE.Vector3(SPAWN.x + 2, 0.0, SPAWN.z + 20),
       heading: SPAWN.heading,
@@ -1470,11 +1560,8 @@ class ThirdPersonControllerManager {
 
   // Pose the skinned characters once every entity has moved: the pedestrian's rig walks (or runs, turns, jumps) it to
   // where it now is, planting its feet on the ground; the cyclist sits on the bike, hands on the grips, feet on the
-  // pedals, helmet on its head
-  poseCharacters(dt, focusPos = null) {
-    const focus = focusPos || this.getActiveEntity()?.position;
-    const maxDistSq = 320 * 320;
-
+  // pedals, helmet on its head. Only the one you are is drawn: a bike left standing is empty
+  poseCharacters(dt) {
     const p = this.entities.person;
     if (p) {
       if (this.activeMode === 'person') {
@@ -1510,54 +1597,31 @@ class ThirdPersonControllerManager {
 
     const b = this.entities.cyclist;
     if (b) {
-      const dx = focus ? b.position.x - focus.x : 0;
-      const dz = focus ? b.position.z - focus.z : 0;
-      if (this.activeMode === 'cyclist' || (b._parked && dx * dx + dz * dz <= maxDistSq)) {
+      if (this.activeMode === 'cyclist') {
         if (b.helmet) b.helmet.visible = true;
-        // What it stands on can change under a parked bike, as the ground there arrives
-        const base = surfaceHeight(b.surface || 0, b.position.x, b.position.z, b.surfaceY ?? null);
-        const moved =
-          this.activeMode === 'cyclist' ||
-          b._riderHidden ||
-          b._posedBase !== base ||
-          b._posedX !== b.position.x ||
-          b._posedY !== b.position.y ||
-          b._posedZ !== b.position.z ||
-          b._posedH !== b.heading ||
-          b._posedLean !== b.leanAngle ||
-          b._posedPedal !== b.pedalPhase;
         b._riderHidden = false;
-        if (moved) {
-          // Posed from the bike as the simulation has it, flat, then stood on the bike's surface as the bike itself is drawn.
-          // Before, the crowd stood the rider on the ground at (0, 0), 22.5 m whatever the bike was on.
-          b.riderRig.ride(b.leanPivot, b.pedalPhase, b.bikeFrame);
-          b.riderCrowd.begin();
-          b.riderCrowd.add(b.riderRig, 0, base);
-          b.riderCrowd.end();
-          b.helmet.quaternion.copy(b.riderRig.headQuaternion);
-          b.helmet.position.set(0, 0.175, -0.012).applyQuaternion(b.helmet.quaternion).add(b.riderRig.headPosition);
-          b.helmet.position.y += base;
-          b._posedX = b.position.x;
-          b._posedY = b.position.y;
-          b._posedZ = b.position.z;
-          b._posedH = b.heading;
-          b._posedLean = b.leanAngle;
-          b._posedPedal = b.pedalPhase;
-          b._posedBase = base;
-        }
+        // Posed from the bike as the simulation has it, flat, then stood on the bike's surface as the bike itself is drawn.
+        // Before, the crowd stood the rider on the ground at (0, 0), 22.5 m whatever the bike was on.
+        const base = surfaceHeight(b.surface || 0, b.position.x, b.position.z, b.surfaceY ?? null);
+        b.riderRig.ride(b.leanPivot, b.pedalPhase, b.bikeFrame);
+        b.riderCrowd.begin();
+        b.riderCrowd.add(b.riderRig, 0, base);
+        b.riderCrowd.end();
+        b.helmet.quaternion.copy(b.riderRig.headQuaternion);
+        b.helmet.position.set(0, 0.175, -0.012).applyQuaternion(b.helmet.quaternion).add(b.riderRig.headPosition);
+        b.helmet.position.y += base;
       } else if (!b._riderHidden) {
         b.riderCrowd.begin();
         b.riderCrowd.end();
         if (b.riderCrowd.updates > 2) {
           if (b.helmet) b.helmet.visible = false;
           b._riderHidden = true;
-          b._posedX = NaN;
         }
       }
     }
   }
 
-  update(dt, elapsed, focusPos = null) {
+  update(dt, elapsed) {
     const heli = this.entities.helicopter;
     heli.mainRotorPivot.rotation.y += dt * 24.0;
     heli.tailRotorPivot.rotation.x += dt * 32.0;
@@ -1571,6 +1635,7 @@ class ThirdPersonControllerManager {
     } else if (this.activeMode === 'helicopter') {
       this.updateHelicopter(dt, elapsed);
     }
+    this.tickParked(dt);
     // A bike left somewhere stands on what's drawn there, which can come in after it was left (a nature strip near you)
     const parkedBike = this.entities.cyclist;
     if (parkedBike?._parked && parkedBike._shown !== false && this.activeMode !== 'cyclist') this.standBike(parkedBike);
@@ -1598,7 +1663,7 @@ class ThirdPersonControllerManager {
     }
 
     this.updateVisibility();
-    this.poseCharacters(dt, focusPos);
+    this.poseCharacters(dt);
   }
 
   /**

@@ -653,7 +653,7 @@ test('renderPed skips hidden rig updates beyond 50m while preserving <=50m foots
   assert.equal(farVisible.drawn, 1);
 });
 
-test('poseCharacters skips stationary inactive cyclist IK/uploads and culls parked characters beyond 320m', () => {
+test('poseCharacters draws only the one you are: nobody on a parked bike, no walker in a vehicle, and no crowd calls once hidden', () => {
   const noopTarget = { addEventListener() {} };
   const { ThirdPersonControllerManager } = loadModule(controllersSource, {
     globals: { window: noopTarget, document: { ...noopTarget, hidden: false } },
@@ -719,14 +719,15 @@ test('poseCharacters skips stationary inactive cyclist IK/uploads and culls park
   const car = { type: 'car', position: { x: 3.6, y: 0, z: 0 }, carState: { value: { x: 0, w: 0 } } };
   controller.entities = { person, cyclist, car };
 
-  // Within 320m: a parked bicycle's rider poses once then skips IK & uploads. Nobody walks about unless it's the player
+  // A parked bicycle stands empty, no rider and no helmet, however near (plan 9.5). Nobody walks about unless it's the player
   cyclist._parked = true;
   for (let i = 0; i < 5; i++) controller.poseCharacters(1 / 60, { x: 0, y: 2, z: 0 });
   assert.equal(personUpdates, 0);
-  assert.equal(bikeRides, 1, 'stationary parked cyclist solves ride IK only once');
-  assert.equal(cyclist.riderCrowd.adds, 1);
+  assert.equal(bikeRides, 0, 'nobody rides a parked bike');
+  assert.equal(cyclist.riderCrowd.adds, 0);
+  assert.equal(cyclist.helmet.visible, false, 'nor is its helmet drawn');
 
-  // Move focus > 320m away (e.g. One WTC at z = 4000): warm-up finishes, then both stop updating & hide crowds
+  // A few frames on, the crowds have drawn their last and are hidden
   for (let i = 0; i < 6; i++) controller.poseCharacters(1 / 60, { x: 0, y: 2, z: 4000 });
   assert.equal(person.mesh.visible, false);
   assert.equal(person.rig.placed, false);
@@ -735,15 +736,15 @@ test('poseCharacters skips stationary inactive cyclist IK/uploads and culls park
 
   const endsBeforeIdle = person.crowd.ends + cyclist.riderCrowd.ends;
   for (let i = 0; i < 10; i++) controller.poseCharacters(1 / 60, { x: 0, y: 2, z: 4000 });
-  assert.equal(person.crowd.ends + cyclist.riderCrowd.ends, endsBeforeIdle, 'zero crowd calls while parked >320m away');
+  assert.equal(person.crowd.ends + cyclist.riderCrowd.ends, endsBeforeIdle, 'zero crowd calls once hidden');
   assert.equal(personUpdates, 0);
-  assert.equal(bikeRides, 1);
+  assert.equal(bikeRides, 0);
 
   // Switching mode to cyclist immediately restores visibility & poses even when camera has not caught up yet
   controller.setMode('cyclist');
   controller.poseCharacters(1 / 60, { x: 0, y: 2, z: 4000 });
   assert.equal(cyclist.helmet.visible, true);
-  assert.equal(bikeRides, 2);
+  assert.equal(bikeRides, 1);
 
   // Switching to walking brings the walker back at once, however far away the camera still is
   controller.setMode('person');
@@ -1109,4 +1110,43 @@ test('PersonRig sat down and stood up again starts walking cleanly, with nothing
     fresh.update(dt, 2, z, 0, () => 0);
     assert.ok(Math.abs(rig.pelvisY - fresh.pelvisY) < 1e-9 && Math.abs(rig.feet[0].az - fresh.feet[0].az) < 1e-9, `frame ${f}: walks off as a fresh rig does`);
   }
+});
+
+// The player's entities made without a scene: anything three.js or the materials make is a stand-in that takes whatever's done to it
+const standIn = () => {
+  const own = {};
+  return new Proxy(function () {}, {
+    get: (t, k) => (k === Symbol.toPrimitive ? () => 0 : k === Symbol.iterator ? undefined : k in own ? own[k] : (own[k] = standIn())),
+    set: (t, k, v) => { own[k] = v; return true; },
+    apply: () => standIn(),
+    construct: () => standIn()
+  });
+};
+
+test('the rider is the walker: the same seed, build, hair and height, so the same person', () => {
+  const ped = loadModule(pedestriansSource, {
+    imports: {
+      'three/webgpu': { Vector3, Quaternion, Matrix4, BufferAttribute, BufferGeometry, Float32BufferAttribute, MeshStandardNodeMaterial, Mesh },
+      'three/tsl': tslStub,
+      'three/addons/utils/BufferGeometryUtils.js': { mergeGeometries },
+      './surfaces.js': { edgeHeight: () => 0, groundHeight: () => 0, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), moveOver: (sid, y, fx, fz, x, z) => ({ x, z, sid: 0, y: 0, held: false }), structureAt: () => null, structuresAt: () => [], LINKS: [] }
+    }
+  });
+  const noop = { addEventListener() {} };
+  const { ThirdPersonControllerManager } = loadModule(controllersSource, {
+    globals: { window: noop, document: { ...noop, hidden: false, createElement: () => standIn() } },
+    imports: {
+      'three/webgpu': standIn(), './city-config.js': { SPAWN: { x: 0, z: 0, heading: 0 }, CITY_BOUNDS: {}, isTypingInField: () => false, blockAt: () => null },
+      './tsl-materials.js': standIn(), './cars.js': standIn(), './helicopter.js': standIn(),
+      './pedestrians.js': { PersonRig: ped.PersonRig, PersonCrowd: class { constructor() { this.meshes = []; } } },
+      './vehicle-lights.js': standIn(), './bridge.js': { DECK_SID: 0 }, './arrivals.js': { FLY: { AREA: 200 } }, './surfaces.js': { ROOM: {}, STRUCTURES: {} },
+      './building-collision.js': {}, './interior-data.js': {}, './model-sites.js': { MODEL_SITES: [] }, './drawn-ground.js': {}
+    }
+  });
+  const controller = Object.create(ThirdPersonControllerManager.prototype);
+  controller.scene = standIn();
+  const walker = controller.createPersonEntity().rig, rider = controller.createCyclistEntity().riderRig;
+  // [seed, female, girth, hair], the pose's last four numbers, which dress and shape them in the shader, and how tall
+  const look = (rig) => [...Array.from(rig.pose.slice((STRIDE - 1) * 4, STRIDE * 4)), rig.s];
+  assert.deepEqual(look(rider), look(walker));
 });

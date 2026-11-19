@@ -643,7 +643,7 @@ test('failed or invalid teleports keep the current position and stop the player 
   assert.deepEqual({ ...controller.teleportActiveTo(NaN, Infinity) }, { x: 400, z: 400 });
 });
 
-test('successive mode teleports keep parked players out of the arrival and default chase view', () => {
+test('successive mode teleports keep parked vehicles out of the arrival and default chase view, and not the walker left behind', () => {
   const { controller, ent: car } = teleportHarness('car');
   const person = teleportHarness('person').ent;
   const cyclist = teleportHarness('cyclist').ent;
@@ -667,7 +667,8 @@ test('successive mode teleports keep parked players out of the arrival and defau
       assert.ok(Math.hypot(dx + along, dz) > radii[parked.type] + 0.5, 'the complete default chase corridor must be clear');
     }
     assert.deepEqual([car.position.x, car.position.z], [0, 0], 'switching modes leaves the parked car in place');
-    arrivals.push(ent);
+    // The walker is only ever where you are (plan 9.5): left behind, it isn't in anyone's way
+    if (mode !== 'person') arrivals.push(ent);
   }
 });
 
@@ -983,4 +984,271 @@ test('on foot you stand on what\'s drawn under you, or on the paving\'s height o
   assert.equal(controller.getGroundHeight(0, 1, 'person'), 0.22, 'a kerb\'s island, nothing known over it');
   assert.equal(controller.getGroundHeight(6, 1, 'person'), 0.32, 'a garden\'s path');
   assert.equal(controller.getGroundHeight(6, 1, 'car'), 0, 'a car\'s wheels are js/ground-geometry.js wheelContacts()\'s');
+});
+
+// Changing how you travel (plan 9.5): every mode's entity, enough of each for switchMode(), teleportActiveTo() and update(). js/arrivals.js
+// is stood in for: `spots.beside` is what besideVehicle() finds (or null), `spots.arrival` what arrivalFor() does, each given what was asked
+function switchHarness({ colliders = [] } = {}) {
+  const spots = { beside: null, arrival: null, asked: [] };
+  const arrivals = {
+    besideVehicle: (from, sides, world) => { spots.asked.push({ fn: 'beside', from, sides, world }); return typeof spots.beside === 'function' ? spots.beside(from, sides, world) : spots.beside; },
+    arrivalFor: (mode, from, world) => { spots.asked.push({ fn: 'arrival', mode, from, world }); return typeof spots.arrival === 'function' ? spots.arrival(mode, from, world) : spots.arrival; }
+  };
+  const harness = keyboardHarness({ CITY_BOUNDS: { minX: -1000, maxX: 1000, minZ: -1000, maxZ: 1000, sidewalkHeight: 0.22 }, blockAt: () => null }, {}, arrivals);
+  const { controller } = harness;
+  const position = (x = 0, y = 0, z = 0) => ({ x, y, z, copy(p) { this.x = p.x; this.y = p.y; this.z = p.z; return this; } });
+  const vec = () => ({ x: 0, y: 0, z: 0, set(x, y, z) { Object.assign(this, { x, y, z }); return this; }, copy(p) { Object.assign(this, { x: p.x, y: p.y, z: p.z }); return this; }, applyQuaternion() { return this; }, add() { return this; } });
+  const mesh = () => ({ visible: true, position: position(), rotation: { x: 0, y: 0, z: 0 } });
+  const crowd = () => ({ updates: 0, posed: 0, begin() { this.updates++; }, add() { this.posed++; }, end() {} });
+  const chase = { person: [4.3, 1.95], car: [6.9, 2.12], cyclist: [4.8, 2.05], helicopter: [11.4, 3.3] };
+  const common = (type, x, z) => ({ type, position: position(x, 0, z), heading: 0, speed: 0, mesh: mesh(), chaseDistance: chase[type][0], chaseHeight: chase[type][1] });
+  const person = { ...common('person', -50, 0), sideSpeed: 0, verticalVel: 0, jumping: false, jumpPrep: 0, rig: { placed: true, reset() {}, update() {} }, crowd: crowd() };
+  const car = {
+    ...common('car', 0, 0), vx: 0, vz: 0, angularVel: 0, steerAngle: 0, pitchVel: 0, rollVel: 0, heaveY: 0, heaveVel: 0, wheelSpin: 0,
+    chassisPivot: { position: position(), rotation: { x: 0, z: 0 } }, wheels: [], headLights: [], carState: { value: { x: 0, w: 0 } }
+  };
+  const cyclist = {
+    ...common('cyclist', 60, 0), leanAngle: 0, pedalPhase: 0, leanPivot: { rotation: { z: 0 } }, frontWheel: { rotation: { x: 0 } }, rearWheel: { rotation: { x: 0 } },
+    crankPivot: { rotation: { x: 0 } }, pedals: [], bikeFrame: {}, riderCrowd: crowd(), stand: { visible: false },
+    riderRig: { ride() {}, headQuaternion: {}, headPosition: {} }, helmet: { visible: true, quaternion: { copy() {} }, position: vec() }
+  };
+  const helicopter = {
+    ...common('helicopter', 0, -80), verticalSpeed: 0, pitchAngle: 0, rollAngle: 0,
+    tiltPivot: { position: position(), rotation: { x: 0, z: 0 } }, mainRotorPivot: { rotation: { y: 0 } }, tailRotorPivot: { rotation: { x: 0 } }
+  };
+  helicopter.position.y = 120;
+  Object.assign(controller, { activeMode: 'car', colliders, _colliderCells: null, _walkerCells: new Map(), entities: { person, car, cyclist, helicopter } });
+  const run = (seconds, dt = 0.05) => { for (let t = 0; t < seconds - 1e-9; t += dt) controller.update(dt, 0); };
+  return { ...harness, spots, person, car, cyclist, helicopter, run };
+}
+
+test('out of the car you stand beside it, facing its way; with nowhere beside it clear, on the nearest footpath as before', () => {
+  const { controller, spots, person, car } = switchHarness();
+  Object.assign(car.position, { x: 10, z: 20 });
+  car.heading = 0.4;
+  spots.beside = (from) => ({ x: from.x + 1.4, z: from.z + 0.5, heading: from.heading, surface: 0 });
+  spots.arrival = { x: 40, z: 40, heading: 2, surface: 0 };
+  controller.switchMode('person');
+  assert.equal(controller.activeMode, 'person');
+  assert.deepEqual([person.position.x, person.position.z, person.heading], [11.4, 20.5, 0.4], 'where besideVehicle() put it, on the car\'s heading');
+  const asked = spots.asked.find((a) => a.fn === 'beside');
+  assert.deepEqual(asked.sides, [[1.5, 0.3], [-1.5, 0.3], [0, -3], [0, 3]], 'the car\'s doors, then behind and in front');
+  assert.ok(!spots.asked.some((a) => a.fn === 'arrival'), 'no footpath looked for');
+  // Nothing clear beside it
+  const again = switchHarness();
+  again.spots.arrival = { x: 40, z: 40, heading: 2, surface: 0 };
+  again.controller.switchMode('person');
+  assert.deepEqual([again.person.position.x, again.person.position.z], [40, 40], 'arrivalFor()\'s spot');
+});
+
+test('out of the car, what besideVehicle() is told is clear: no wall or parked car, no traffic within 1.5 m of the spot', () => {
+  const { controller, spots } = switchHarness({ colliders: [{ minX: 3, maxX: 6, minZ: -10, maxZ: 10, maxY: 30 }] });
+  const reaches = [];
+  controller.vehicleAt = (x, z, y, reach) => { reaches.push(reach); return x < -2; };
+  controller.switchMode('person');
+  const { world } = spots.asked.find((a) => a.fn === 'beside');
+  assert.equal(world.isClear(1.5, 0), true);
+  assert.equal(world.isClear(3.2, 0), false, 'a wall');
+  assert.equal(world.isClear(-3, 0), false, 'traffic');
+  assert.ok(reaches.length && reaches.every((r) => r === 1.5), 'traffic asked for within 1.5 m');
+});
+
+test('a car you leave stands there 10 s of the game\'s time, then it\'s gone', () => {
+  const { controller, car, run } = switchHarness();
+  controller.switchMode('person');
+  assert.equal(controller.parkedList().length, 1);
+  run(9.9);
+  assert.equal(car._parked, true, 'still there at 9.9 s');
+  car._shown = true;
+  assert.equal(controller.parkedCar(), car, 'traffic goes round it');
+  run(0.2);
+  assert.equal(car._parked, false, 'gone at 10.1 s');
+  assert.equal(car._shown, false, 'and no longer drawn');
+  assert.equal(controller.parkedCar(), null, 'nor in traffic\'s way');
+  assert.equal(controller.parkedList().length, 0);
+});
+
+test('back to the car within 10 s you\'re in it where it stood; after 10 s, a new car where the arrival rule says', () => {
+  for (const [seconds, back] of [[9, true], [11, false]]) {
+    const { controller, spots, person, car, run } = switchHarness();
+    Object.assign(car.position, { x: 10, z: 20 });
+    car.heading = 0.4;
+    spots.beside = (from) => ({ x: from.x + 1.5, z: from.z, heading: from.heading, surface: 0 });
+    controller.switchMode('person');
+    run(seconds);
+    // Walked 5 m off
+    Object.assign(person.position, { x: 10, z: 25 });
+    spots.arrival = { x: 100, z: 120, heading: 3, surface: 0 };
+    controller.switchMode('car');
+    assert.equal(controller.activeMode, 'car');
+    if (back) assert.deepEqual([car.position.x, car.position.z, car.heading], [10, 20, 0.4], `back at ${seconds} s: the same car where it stood`);
+    else assert.deepEqual([car.position.x, car.position.z, car.heading], [100, 120, 3], `back at ${seconds} s: a new arrival`);
+    assert.equal(car._parked, false);
+  }
+});
+
+test('from the car to the bike: the bike where the car was, and the car gone; from the bike to the car, the bike gone', () => {
+  const { controller, spots, car, cyclist } = switchHarness();
+  Object.assign(car.position, { x: 10, z: 20 });
+  car.heading = 0.4;
+  spots.arrival = { x: 300, z: 300, heading: 1, surface: 0 };
+  controller.switchMode('cyclist');
+  assert.deepEqual([cyclist.position.x, cyclist.position.z, cyclist.heading], [10, 20, 0.4], 'at the car\'s middle, on its heading');
+  assert.equal(car._parked, false, 'the car\'s gone at once');
+  assert.equal(controller.parkedList().length, 0);
+  spots.arrival = { x: 15, z: 26, heading: 0.5, surface: 0 };
+  controller.switchMode('car');
+  assert.deepEqual([car.position.x, car.position.z], [15, 26], 'the car where the arrival rule says');
+  assert.equal(cyclist._parked, false, 'the bike\'s gone at once');
+  assert.equal(controller.parkedList().length, 0);
+  // Where the bike doesn't fit, as before
+  const walled = switchHarness({ colliders: [{ minX: -1, maxX: 1, minZ: -1, maxZ: 1, maxY: 30 }] });
+  walled.spots.arrival = { x: 30, z: 0, heading: 0, surface: 0 };
+  walled.controller.switchMode('cyclist');
+  assert.deepEqual([walled.cyclist.position.x, walled.cyclist.position.z], [30, 0]);
+});
+
+test('a teleport takes away the car and bike you left', () => {
+  const { controller, car, cyclist, spots } = switchHarness();
+  spots.beside = (from) => ({ x: from.x + 1.5, z: from.z, heading: from.heading, surface: 0 });
+  controller.switchMode('person');
+  cyclist._parked = true;
+  assert.equal(controller.parkedList().length, 2);
+  controller.clearParked();
+  assert.equal(car._parked, false);
+  assert.equal(cyclist._parked, false);
+  assert.ok(!controller.colliders.some((c) => c.player), 'nor its box');
+});
+
+test('the car you leave on the ground is in a walker\'s way while it stands; on a deck it isn\'t', () => {
+  const { controller, spots, car, person, run } = switchHarness();
+  Object.assign(car.position, { x: 10, z: 20 });
+  spots.beside = (from) => ({ x: from.x + 1.5, z: from.z, heading: from.heading, surface: 0 });
+  controller.switchMode('person');
+  assert.equal(controller.spotClear('person', 10, 20, 0), false, 'its middle');
+  assert.equal(controller.spotClear('person', 11.5, 20, 0), true, 'beside its door');
+  assert.equal(controller.spotClear('person', 10, 22.5, 0), false, 'its boot');
+  // Walking into its side is held off it
+  Object.assign(person.position, { x: 12, z: 20 });
+  person.position.landed = { x: 12, z: 20 };
+  person.heading = -Math.PI / 2;
+  controller.keys.forward = true;
+  run(1, 1 / 60);
+  controller.keys.forward = false;
+  assert.ok(person.position.x >= 10 + 0.86 + 0.48 - 1e-6, `held at its side, at ${person.position.x.toFixed(2)}`);
+  // Back in it: no box, so it doesn't stand in its own way
+  controller.switchMode('car');
+  assert.ok(!controller.colliders.some((c) => c.player));
+  // Left again, and gone after 10 s: the box goes with it
+  controller.switchMode('person');
+  assert.equal(controller.colliders.filter((c) => c.player).length, 1);
+  run(10.1);
+  assert.ok(!controller.colliders.some((c) => c.player));
+  // On a deck
+  const deck = switchHarness();
+  deck.car.surface = 7;
+  deck.spots.beside = (from) => ({ x: from.x + 1.5, z: from.z, heading: from.heading, surface: 7 });
+  deck.controller.switchMode('person');
+  assert.equal(deck.car._parked, true);
+  assert.ok(!deck.controller.colliders.some((c) => c.player), 'nothing of the ground counts on a deck');
+});
+
+test('the walker you leave is nowhere: a car put where it stood lands where it was asked', () => {
+  const { controller, person, car } = switchHarness();
+  controller.activeMode = 'person';
+  Object.assign(person.position, { x: 0, z: 0 });
+  controller.switchMode('car');
+  assert.equal(controller.activeMode, 'car');
+  assert.deepEqual({ ...controller.teleportActiveTo(0, 0, 0) }, { x: 0, z: 0 }, 'not 4 m off');
+  assert.deepEqual([car.position.x, car.position.z], [0, 0]);
+});
+
+test('a car or bike left for the helicopter stands there 10 s too', () => {
+  const { controller, car, run } = switchHarness();
+  controller.switchMode('helicopter');
+  assert.equal(car._parked, true);
+  run(10.1);
+  assert.equal(car._parked, false);
+});
+
+// The bike (plan 9.5, part 2): you ride it, you get off beside it, and it stands empty on its stand
+test('off the bike you stand beside it, where besideVehicle() puts you with the bike\'s spots', () => {
+  const { controller, spots, person, cyclist } = switchHarness();
+  controller.activeMode = 'cyclist';
+  Object.assign(cyclist.position, { x: 5, z: 6 });
+  cyclist.heading = 1.1;
+  spots.beside = (from) => ({ x: from.x + 0.8, z: from.z - 0.3, heading: from.heading, surface: 0 });
+  spots.arrival = { x: 90, z: 90, heading: 0, surface: 0 };
+  controller.switchMode('person');
+  assert.deepEqual([person.position.x, person.position.z, person.heading], [5.8, 5.7, 1.1]);
+  assert.deepEqual(spots.asked.find((a) => a.fn === 'beside').sides, [[-0.85, -0.28], [0.85, -0.28], [0, -1.5]], 'its left, its right, behind it');
+  assert.ok(!spots.asked.some((a) => a.fn === 'arrival'));
+  assert.equal(cyclist._parked, true, 'it stands there');
+});
+
+test('onto the bike from walking: where you stand, facing your way; where it doesn\'t fit, the nearest footpath or lane as before', () => {
+  const { controller, spots, person, cyclist } = switchHarness();
+  controller.activeMode = 'person';
+  Object.assign(person.position, { x: 12, z: -7 });
+  person.heading = 2.2;
+  spots.arrival = { x: 90, z: 90, heading: 0, surface: 0 };
+  controller.switchMode('cyclist');
+  assert.deepEqual([cyclist.position.x, cyclist.position.z, cyclist.heading], [12, -7, 2.2], 'exactly where the walker was');
+  assert.ok(!spots.asked.some((a) => a.fn === 'arrival'));
+  // A wall 0.6 m off: a bike's 0.65 m round doesn't fit
+  const walled = switchHarness({ colliders: [{ minX: 12.6, maxX: 20, minZ: -20, maxZ: 20, maxY: 30 }] });
+  walled.controller.activeMode = 'person';
+  Object.assign(walled.person.position, { x: 12, z: -7 });
+  walled.spots.arrival = { x: 90, z: 90, heading: 0, surface: 0 };
+  walled.controller.switchMode('cyclist');
+  assert.deepEqual([walled.cyclist.position.x, walled.cyclist.position.z], [90, 90], 'arrivalFor()\'s spot');
+  // On the Harbour Bridge's footway a bike isn't held: the deck's nearest lane
+  const footway = switchHarness();
+  footway.controller.activeMode = 'person';
+  footway.person.onFootway = true;
+  footway.spots.arrival = { x: 70, z: 80, heading: 0, surface: 0 };
+  footway.controller.switchMode('cyclist');
+  assert.deepEqual([footway.cyclist.position.x, footway.cyclist.position.z], [70, 80]);
+  // Beside the car you've just got out of, its box doesn't send the bike elsewhere
+  const beside = switchHarness();
+  beside.spots.beside = (from) => ({ x: from.x + 1.5, z: from.z + 0.3, heading: from.heading, surface: 0 });
+  beside.spots.arrival = { x: 90, z: 90, heading: 0, surface: 0 };
+  beside.controller.switchMode('person');
+  beside.controller.switchMode('cyclist');
+  assert.deepEqual([beside.cyclist.position.x, beside.cyclist.position.z], [1.5, 0.3], 'on the bike where you got out');
+});
+
+test('onto the bike from a room of an inside: from the way out, the footpath in front', () => {
+  const { controller, spots, person, cyclist } = switchHarness();
+  controller.activeMode = 'person';
+  Object.assign(person.position, { x: 12, z: -7 });
+  spots.arrival = { x: 90, z: 90, heading: 0, surface: 0 };
+  controller.switchMode('cyclist', { x: 30, z: 31, heading: 0.7, y: 0 });
+  assert.deepEqual([cyclist.position.x, cyclist.position.z, cyclist.heading], [30, 31, 0.7], 'on the footpath in front');
+  // Where the bike doesn't fit there, the arrival rule from there
+  const walled = switchHarness({ colliders: [{ minX: 29, maxX: 31, minZ: 30, maxZ: 32, maxY: 30 }] });
+  walled.controller.activeMode = 'person';
+  walled.spots.arrival = (mode, from) => ({ x: from.x + 5, z: from.z, heading: from.heading, surface: 0 });
+  walled.controller.switchMode('cyclist', { x: 30, z: 31, heading: 0.7, y: 0 });
+  assert.deepEqual([walled.cyclist.position.x, walled.cyclist.position.z], [35, 31]);
+});
+
+test('a parked bike leans 10 degrees to its left on its stand; back on it, it\'s upright and the stand is away', () => {
+  const { controller, spots, cyclist, run } = switchHarness();
+  controller.activeMode = 'cyclist';
+  spots.beside = (from) => ({ x: from.x - 0.85, z: from.z, heading: from.heading, surface: 0 });
+  controller.switchMode('person');
+  run(0.1);
+  assert.ok(Math.abs(cyclist.leanPivot.rotation.z + 10 * Math.PI / 180) < 1e-9, `leans ${(cyclist.leanPivot.rotation.z * 180 / Math.PI).toFixed(1)} degrees`);
+  assert.equal(cyclist.leanAngle, cyclist.leanPivot.rotation.z);
+  assert.equal(cyclist.stand.visible, true, 'on its stand');
+  controller.switchMode('cyclist');
+  run(0.1);
+  assert.equal(cyclist.leanPivot.rotation.z, 0, 'upright');
+  assert.equal(cyclist.stand.visible, false, 'the stand away');
+  // Gone after its 10 s, stand and all
+  controller.switchMode('person');
+  run(10.1);
+  assert.equal(cyclist._parked, false);
+  assert.equal(cyclist.stand.visible, false);
 });

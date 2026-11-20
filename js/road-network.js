@@ -1,7 +1,7 @@
 import { CITY_BOUNDS, DRIVE_SIDE, BLOCKS, blockAt, landAt } from './city-config.js';
 import { GEO, heldTiles } from './geodata.js';
 import { polygonBoxOverlaps } from './building-collision.js';
-import { KIND, ROAD_CLASS, linkById, ownLaneOffsets, roadClass } from './surfaces.js';
+import { KIND, ROAD_CLASS, edgeHeight, groundHeight, linkById, ownLaneOffsets, roadClass } from './surfaces.js';
 import { deckLanePoints, deckLinkIds, deckRoadPoint } from './bridge.js';
 import { TRACK, pathTop, raisedLawnTest } from './drawn-ground.js';
 
@@ -38,6 +38,110 @@ const OSM_LANES_CLASSES = new Set([ROAD_CLASS.motorway, ROAD_CLASS.link]);
 const LAID_BEND = 30;
 const inOsmLanesArea = ({ x, z }) => x >= OSM_LANES_AREA.minX && x <= OSM_LANES_AREA.maxX && z >= OSM_LANES_AREA.minZ && z <= OSM_LANES_AREA.maxZ;
 const keepsOsmLanes = (l) => l.lanes > 0 && OSM_LANES_CLASSES.has(l.cls) && (inOsmLanesArea(l.pts[0]) || inOsmLanesArea(l.pts[l.pts.length - 1]));
+// Roads converging into one: each road in within 30° of the road out
+const MERGE_COS = Math.cos(Math.PI / 6);
+// m a junction's road may be over or under the ground at a signal head and still be the head's (step 8): the worst of the CBD's 821
+// heads is 0.99 m
+const SIGNAL_LEVEL = 1.5;
+// Two lanes of different roads whose ways through a merge come closer than this are one lane there: cars are 1.72-1.92 m wide, and on a
+// long curve through a merge they lag up to a metre or so behind its line (where three roads meet on 40 m curves at (-92, -5124), two
+// ways 2.2 m apart had cars through each other)
+const MERGE_APART = 2.3;
+// ...within this of the same place along the way (m short of the road out): cars that far apart along it are side by side, or overlap
+// end to end
+const CAR_LENGTH = 4.5;
+
+/**
+ * The road every road into node n goes on to, if n is a merge: no signal, two roads or more in, and every way on from each of them the
+ * same road, within 30° of it. Where its lanes don't get in each other's way either (lanesClash()), nobody crosses anybody's way
+ * there, and js/traffic.js takes it for no junction (n.merge): cars from each road take turns for a lane, but there's no box to wait
+ * for and no road to give way to.
+ */
+function mergeOnto(n) {
+  if (n.signal || n.in.length < 2) return null;
+  let f = null;
+  for (const e of n.in) {
+    if (!e.moves.length) return null;
+    for (const m of e.moves) {
+      if (f && m.to !== f) return null;
+      f = m.to;
+    }
+    if (e.dx * f.dx + e.dz * f.dz < MERGE_COS) return null;
+  }
+  return f;
+}
+
+/** Each lane into n that goes on to f: its edge, move and index, and where its stop line is across f (towards f's kerb, from n) */
+function lanesAcross(n, f) {
+  const lanes = [];
+  for (const e of n.in) {
+    const m = e.moves.find((q) => q.to === f);
+    if (!m) continue;
+    const x = e.sx + e.dx * e.len - n.x, z = e.sz + e.dz * e.len - n.z;
+    for (let i = 0; i < e.lanes.length; i++) {
+      if (m.out[i] >= 0) lanes.push({ e, m, i, at: (x + e.rx * e.lanes[i]) * f.rx + (z + e.rz * e.lanes[i]) * f.rz });
+    }
+  }
+  return lanes.sort((p, q) => p.at - q.at);
+}
+
+/**
+ * Would two lanes' ways through n onto f get in each other's way? They cross, if one nearer f's kerb at their stop lines goes to a
+ * lane of f further from it; and two lanes of different roads going to different lanes of f must keep MERGE_APART apart all the way
+ * (lanesApart()). `pick(k)`: the lane of f the k-th of lanesAcross() goes to, the one it goes to now if not given.
+ */
+function lanesClash(n, f, lanes = lanesAcross(n, f), pick = (k) => lanes[k].m.out[lanes[k].i], apart = lanesApart(lanes, f)) {
+  for (let k = 1; k < lanes.length; k++) {
+    if (pick(k) < pick(k - 1)) return true;
+    for (let q = 0; q < k; q++) {
+      if (lanes[q].e !== lanes[k].e && pick(q) !== pick(k) && !apart(q, pick(q), k, pick(k))) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * apart(q, jq, k, jk): do lanes q and k of `lanes`, going on to lanes jq and jk of f, keep MERGE_APART from each other on their way
+ * through, from 5 m short of their stop lines to f? Each point of one way against the other's within CAR_LENGTH of as far short of f.
+ */
+function lanesApart(lanes, f) {
+  const curves = new Map(), known = new Map();
+  const curve = (k, j) => {
+    let c = curves.get(k * 64 + j);
+    if (!c) curves.set(k * 64 + j, (c = makeCurve(lanes[k].e, lanes[k].i, f, j)));
+    return c;
+  };
+  // the point u m short of f on lane k's way to lane j: on its curve, or before its stop line (null: off its edge's start)
+  const point = (k, c, u, out) => {
+    if (u <= c.len) return curvePoint(c, c.len - u, out);
+    const { e, i } = lanes[k];
+    const s = e.len - (u - c.len);
+    if (s < 0) return null;
+    out.x = e.sx + e.dx * s + e.rx * e.lanes[i];
+    out.z = e.sz + e.dz * s + e.rz * e.lanes[i];
+    return out;
+  };
+  const a = { x: 0, z: 0, dx: 0, dz: 0 }, b = { x: 0, z: 0, dx: 0, dz: 0 };
+  return (q, jq, k, jk) => {
+    const key = ((q * 64 + jq) * 64 + k) * 64 + jk;
+    let ok = known.get(key);
+    if (ok === undefined) {
+      ok = true;
+      const cq = curve(q, jq), ck = curve(k, jk);
+      for (let u = 0; ok && u <= cq.len + 5; u += 0.5) {
+        if (!point(q, cq, u, a)) break;
+        for (let w = Math.max(0, u - CAR_LENGTH); w <= Math.min(ck.len + 5, u + CAR_LENGTH); w += 0.5) {
+          if (point(k, ck, w, b) && Math.hypot(a.x - b.x, a.z - b.z) < MERGE_APART) {
+            ok = false;
+            break;
+          }
+        }
+      }
+      known.set(key, ok);
+    }
+    return ok;
+  };
+}
 
 // `area`: { x, z, radius }, the roads to take in. All those held if there's none.
 function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null) {
@@ -727,6 +831,52 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
     }
     e.moves = e.moves.filter((m) => m.out.some((j) => j >= 0));
   }
+  // A merge's lanes laid out again across the road out, f (see 8.): in the order they come in, two of different roads too close to pass
+  // side by side into the same lane (lanesClash()), using as many of f's lanes as they can, then with as few going into any one as can
+  // be, then with the least sideways shift (from where each comes in across f to its lane there). Unless a curve that takes would clip
+  // a kerb: then they stay as they were.
+  function orderLanes(n, f) {
+    const lanes = lanesAcross(n, f);
+    const count = lanes.length, wide = f.lanes.length;
+    if (count > 12) return;
+    const fx = f.sx - n.x, fz = f.sz - n.z;
+    const across = f.lanes.map((o) => fx * f.rx + fz * f.rz + o);
+    const better = (p, q) => (p[0] !== q[0] ? p[0] > q[0] : p[1] !== q[1] ? p[1] < q[1] : p[2] < q[2]);
+    const pick = new Array(count);
+    const picked = (k) => pick[k];
+    const apart = lanesApart(lanes, f);
+    let best = null;
+    let bestScore = null;
+    // every way of sending them on in order: each lane to the same lane of f as the one before it, or one nearer f's kerb
+    const tryFrom = (k, least) => {
+      if (k === count) {
+        if (lanesClash(n, f, lanes, picked, apart)) return;
+        const load = new Array(wide).fill(0);
+        let shift = 0;
+        for (let q = 0; q < count; q++) {
+          load[pick[q]]++;
+          shift += Math.abs(lanes[q].at - across[pick[q]]);
+        }
+        const score = [load.filter((c) => c > 0).length, Math.max(...load), shift];
+        if (!bestScore || better(score, bestScore)) {
+          bestScore = score;
+          best = pick.slice();
+        }
+        return;
+      }
+      for (let j = least; j < wide; j++) {
+        pick[k] = j;
+        tryFrom(k + 1, j);
+      }
+    };
+    tryFrom(0, 0);
+    if (!best) return;
+    for (let k = 0; k < count; k++) {
+      const { e, m, i } = lanes[k];
+      if (best[k] !== m.out[i] && !pathClear(e, i, f, best[k])) return;
+    }
+    for (let k = 0; k < count; k++) lanes[k].m.out[lanes[k].i] = best[k];
+  }
   for (const e of edges) e.from.out.push(e);
   for (const e of edges) {
     if (++sliced % 40 === 0) yield;
@@ -960,17 +1110,34 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
   nodes.forEach((n, i) => (n.id = i));
 
   yield;
-  // 8. Signalized intersections are exactly the ones with signal heads (street-details.js)
+  // 8. Signalized intersections are exactly the ones with signal heads (street-details.js): each head's is the nearest junction node
+  //    with a road on its level. A head is a bare point on the ground, and a deck or a tunnel can meet another road within its reach:
+  //    one of the node's roads, at the node and on its own link (a structure's nearest link can be another one passing over), must be
+  //    within SIGNAL_LEVEL of the ground at the head.
   for (const s of signalIntersections) {
     let n = null, best = 16; // OSM's junction nodes merge into one here, so its signals land a little off centre
+    let ground = null;
     for (const m of nodes) {
       const d = Math.hypot(m.x - s.x, m.z - s.z);
-      if (d < best && !m.shape) { best = d; n = m; }
+      if (d >= best || m.shape) continue;
+      ground ??= groundHeight(s.x, s.z);
+      if (!m.in.some((e) => Math.abs(edgeHeight(e, m.x, m.z) - ground) < SIGNAL_LEVEL) && !m.out.some((e) => Math.abs(edgeHeight(e, m.x, m.z) - ground) < SIGNAL_LEVEL)) continue;
+      best = d;
+      n = m;
     }
     if (n) {
       n.signal = true;
       (n.points ||= []).push(s); // the heads drawn for it (js/street-details.js)
     }
+  }
+  // Where roads converge into one (mergeOnto()), their lanes are laid out across it together, by where each comes in (orderLanes()).
+  // Each road's were laid out on its own (6.), to as many lanes ahead as it could take, so two roads side by side often each took all
+  // of them, their paths crossing inside: 30 of the CBD's 70 merges did, the Clarence St ramp's onto the Western Distributor among
+  // them. A merge whose lanes keep out of each other's way is no junction to traffic (n.merge), with no box to keep them apart.
+  for (const n of nodes) {
+    const f = mergeOnto(n);
+    if (f) orderLanes(n, f);
+    n.merge = !!f && !lanesClash(n, f);
   }
 
   yield;
@@ -1169,4 +1336,4 @@ function curvePoint(c, s, out) {
   return out;
 }
 
-export { buildRoadNetwork, buildRoadNetworkSteps, CROSSWALK };
+export { buildRoadNetwork, buildRoadNetworkSteps, CROSSWALK, mergeOnto, lanesClash };

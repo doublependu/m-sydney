@@ -174,6 +174,8 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
   }
   // A joint between two pieces of road is no junction: nobody crosses it, and no two lanes lead into one. A road parting in two is
   // the same. Over a third of all nodes are this, and drivers treating each as a junction kept stopping for no reason you could see.
+  // A merge (n.merge, js/road-network.js: roads converging into one, their lanes kept out of each other's way) is no junction either,
+  // but two lanes can lead into one there: cars take turns for it (room(), mergingAhead()), and only that.
   for (const n of nodes) {
     const opposite = n.in.length === 2 && n.in[0].dx * n.in[1].dx + n.in[0].dz * n.in[1].dz < -0.5;
     const targets = new Set();
@@ -1023,15 +1025,23 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     return precedence(o, os) > precedence(v, vs);
   }
 
+  // Where v, s metres along its edge, would be on lane j of f now, through its curve there (from f's start: less than 0). At a merge,
+  // which of two cars from different roads goes first is by this: how long each one's road is says nothing about who's nearer.
+  function onto(v, s, f, j) {
+    return s - v.edge.len - connector(v.edge, v.lane, f, j).len;
+  }
+
   function room(f, j, v) {
     let free = f.len - 1;
     // A car driving away takes up less of the road than one standing: by the time v gets there, it's further on
     for (const o of f.occ[j]) if (o.v !== v && o.s - o.v.half < f.len) free -= Math.max(0, 2 * o.v.half + o.v.driver.s0 - o.v.speed * MOVING_ROOM);
+    const merge = f.from.merge;
+    const vs = merge ? onto(v, v.s, f, j) : v.s;
     for (const a of f.from.in) {
       for (const list of a.occ) {
         const o = leadOf(list);
         if (!o || o.v.claimed || !o.v.move || o.v.move.to !== f || o.v.move.out[o.v.lane] !== j) continue;
-        if (goesFirst(o.v, o.s, v, v.s)) free -= 2 * o.v.half + o.v.driver.s0;
+        if (goesFirst(o.v, merge ? onto(o.v, o.s, f, j) : o.s, v, vs)) free -= 2 * o.v.half + o.v.driver.s0;
       }
     }
     return free >= Math.min(2 * v.half + 0.5, f.len - 1);
@@ -1071,22 +1081,28 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
   }
 
   // The lead of another of v's lanes that goes first into lane j of f or, turning where a bus is involved, into a lane
-  // beside it (turning buses swing wide): v falls in behind it. As an entry { v, s } of f's lane: where it would be on
-  // f now.
+  // beside it (turning buses swing wide): v falls in behind it. At a merge, so does the lead of another road's lane that goes
+  // first into lane j, by where each would be on f now (onto()): v eases in behind it at speed. As an entry { v, s } of f's
+  // lane: where it would be on f now.
   const merger = { v: null, s: 0 };
   function mergingAhead(v, f, j) {
     const e = v.edge;
+    const merge = e.to.merge;
+    const vs = merge ? onto(v, v.s, f, j) : v.s;
     merger.v = null;
-    for (let i = 0; i < e.lanes.length; i++) {
-      const o = i === v.lane ? null : leadOf(e.occ[i]);
-      if (!o || o.v === v || o.v.claimed || o.v.move.to !== f || !goesFirst(o.v, o.s, v, v.s)) continue;
-      if (o.v.bus && besideTail(o.v)) continue; // it waits for the bus beside its tail
-      const oj = o.v.move.out[o.v.lane];
-      if (oj < 0 || (oj !== j && !(Math.abs(oj - j) === 1 && v.move.turn !== 'S' && (v.bus || o.v.bus)))) continue;
-      const s = o.s - e.len - connector(e, o.v.lane, f, oj).len;
-      if (!merger.v || s < merger.s) {
-        merger.v = o.v;
-        merger.s = s;
+    for (const a of merge ? e.to.in : [e]) {
+      for (let i = 0; i < a.lanes.length; i++) {
+        const o = a === e && i === v.lane ? null : leadOf(a.occ[i]);
+        if (!o || o.v === v || o.v.claimed || o.v.move.to !== f) continue;
+        const oj = o.v.move.out[o.v.lane];
+        if (oj < 0 || (oj !== j && !(a === e && Math.abs(oj - j) === 1 && v.move.turn !== 'S' && (v.bus || o.v.bus)))) continue;
+        const s = onto(o.v, o.s, f, oj);
+        if (!goesFirst(o.v, merge ? s : o.s, v, vs)) continue;
+        if (o.v.bus && besideTail(o.v)) continue; // it waits for the bus beside its tail
+        if (!merger.v || s < merger.s) {
+          merger.v = o.v;
+          merger.s = s;
+        }
       }
     }
     return merger.v ? merger : null;
@@ -1128,7 +1144,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
       }
       return true;
     }
-    if (boxBusy(n, e.axisIndex)) return false; // crossing traffic inside
+    if (!n.merge && boxBusy(n, e.axisIndex)) return false; // crossing traffic inside (nobody crosses at a merge)
     const lead = ahead(e.occ[v.lane], v.s, v);
     if (lead && lead.v.yielding) return false; // the vehicle ahead waits inside to turn: wait behind the line
     if (v.bus && besideTail(v)) return false; // its tail would swing out over that bus as it starts to turn
@@ -1140,7 +1156,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     const across = m.turn === 'L' && !!e.opposite;
     const wait = first ? (across ? yieldPoint(v, c, e) : c.len - 3 - v.half) : -1; // < 0: no room inside to wait
     if (m.turn === 'L' ? across && wait < 0 && yieldOncoming(e.opposite, v.wait > 8, v) : e.opposite && e.opposite.lefts > 0) return false;
-    if ((n.signal ? v.isPolice && phase !== 'green' : e.axisIndex !== 0) && yieldToCrossTraffic(v, n)) return false;
+    if ((n.signal ? v.isPolice && phase !== 'green' : e.axisIndex !== 0 && !n.merge) && yieldToCrossTraffic(v, n)) return false;
     // nobody on the crosswalks while it passes over them, on the way in and on the way out, and a free place to
     // clear the intersection to, taking turns with lanes merging into it
     if (pedestrianOn(n, e.inSide, laneCoord(e, v.lane), 0, timeTo(v, d + 2.5 + 2 * v.half))) return false;
@@ -1244,6 +1260,9 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
         const vs = c ? v.s - e.len - c.len : 0; // position on f, measured from its start
         if (!go) {
           worst = Math.min(worst, stopAt(v, d));
+          // At a merge the roads in run close, and a curve through it can pass over another road short of its line: a car already
+          // in it, ahead of where v would be, is one v follows, whether v may go yet or not
+          if (c && e.to.merge) worst = Math.min(worst, follow(v, f.occ[j], vs));
         } else {
           worst = Math.min(worst, follow(v, f.occ[j], vs), signalAhead(v, f, f.len - vs - v.half));
           // pulling in to wait inside: slow down for that spot already if it will have to wait there
@@ -1254,7 +1273,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
         const o = c && !v.claimed && mergingAhead(v, f, j);
         if (o) worst = Math.min(worst, Math.max(-v.driver.b, brake(v, o.s - o.v.half - vs - v.half, o.v.speed)));
         let vt = c ? bendSpeed(v, c) : Infinity;
-        const cautious = e.to.signal ? v.isPolice && phaseOf(e) !== 'green' : !e.to.joint && e.axisIndex !== 0;
+        const cautious = e.to.signal ? v.isPolice && phaseOf(e) !== 'green' : !e.to.joint && !e.to.merge && e.axisIndex !== 0;
         if (cautious) vt = Math.min(vt, 5);
         cap = Math.sqrt(vt * vt + 5 * Math.max(0, d));
       }
@@ -2208,13 +2227,13 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
       return why.join('; ');
     }
     if (phase !== 'green') why.push(`light ${phase}`);
-    if (boxBusy(n, e.axisIndex)) why.push(`box busy ${n.box.join()} (mine ${e.axisIndex})`);
+    if (!n.merge && boxBusy(n, e.axisIndex)) why.push(`box busy ${n.box.join()} (mine ${e.axisIndex})`);
     const lead = ahead(e.occ[v.lane], v.s, v);
     if (lead) why.push(`lead ${(lead.s - v.s).toFixed(1)} m ahead${lead.v.yielding ? ', yielding' : ''}`);
     if (v.bus && besideTail(v)) why.push('bus tail');
     if (e.opposite && m.turn === 'L' && yieldOncoming(e.opposite, v.wait > 8, v)) why.push('oncoming');
     if (e.opposite && m.turn !== 'L' && e.opposite.lefts > 0) why.push('oncoming lefts');
-    if (e.axisIndex !== 0 && !n.signal && yieldToCrossTraffic(v, n)) why.push('cross traffic');
+    if (e.axisIndex !== 0 && !n.signal && !n.merge && yieldToCrossTraffic(v, n)) why.push('cross traffic');
     if (pedestrianOn(n, e.inSide, laneCoord(e, v.lane), 0, timeTo(v, d + 2.5 + 2 * v.half))) why.push('people on the way in');
     const c = connector(e, v.lane, f, j);
     if (pedestrianOn(n, f.outSide, laneCoord(f, j), timeTo(v, d + c.len - 3), timeTo(v, d + c.len + 2 * v.half))) why.push('people on the way out');

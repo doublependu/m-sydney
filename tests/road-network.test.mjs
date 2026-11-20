@@ -4,13 +4,13 @@ import test from 'node:test';
 
 globalThis.fetch = async (url) => new Response(fs.readFileSync(new URL(url)));
 console.info = () => {};
-const { buildRoadNetworkSteps } = await import('../js/road-network.js');
+const { buildRoadNetworkSteps, mergeOnto, lanesClash } = await import('../js/road-network.js');
 const { BRIDGE_LENGTH, DECK_REACH, bridgeAt, onDeckSpan } = await import('../js/bridge.js');
 const { linkById } = await import('../js/surfaces.js');
 const steps = buildRoadNetworkSteps([], []);
 let step;
 do step = steps.next(); while (!step.done);
-const { edges } = step.value;
+const { edges, nodes } = step.value;
 
 const near = (x, z, radius) => edges.filter((e) => {
   const s = Math.max(0, Math.min(e.len, (x - e.sx) * e.dx + (z - e.sz) * e.dz));
@@ -82,4 +82,81 @@ test('every edge kept has a way on and a way in', () => {
     assert.ok(e.moves.length, `dead end at ${Math.round(e.sx)}, ${Math.round(e.sz)}`);
     assert.ok(entered.has(e), `no way in at ${Math.round(e.sx)}, ${Math.round(e.sz)}`);
   }
+});
+
+// Merges: roads converging into one, nobody crossing anybody's way, which traffic takes for no junction (no box, no road giving way).
+// The three where roads join the Harbour Bridge's structure at its south end, along the corridor from its start: the Bradfield Hwy and
+// the Cahill's link at 0 m, the Clarence St ramp and the Western Distributor at 134 m, and that and the corridor at 169 m.
+const nodeAt = (x, z) => nodes.reduce((best, n) => (Math.hypot(n.x - x, n.z - z) < Math.hypot(best.x - x, best.z - z) ? n : best));
+test('the roads joining the Harbour Bridge at its south end merge: no junction, their lanes in order', () => {
+  for (const [x, z, lanesIn, lanesOut] of [[-321, -1383, [1, 2], 4], [-270, -1505, [2, 2], 2], [-260, -1540, [2, 4], 4]]) {
+    const n = nodeAt(x, z);
+    assert.ok(Math.hypot(n.x - x, n.z - z) < 3, `a node at ${x}, ${z}`);
+    const f = mergeOnto(n);
+    assert.ok(f, `${x}, ${z} is a merge`);
+    assert.deepEqual(n.in.map((e) => e.lanes.length).sort(), lanesIn);
+    assert.equal(f.lanes.length, lanesOut);
+    assert.equal(lanesClash(n, f), false, `${x}, ${z}: lanes in order`);
+    assert.equal(n.merge, true);
+  }
+});
+
+test('every merge flagged keeps its lanes out of each other\'s way, and every junction left is no merge or can\'t', () => {
+  let merges = 0;
+  for (const n of nodes) {
+    const f = mergeOnto(n);
+    assert.equal(!!n.merge, !!f && !lanesClash(n, f));
+    if (n.merge) merges++;
+  }
+  assert.ok(merges > 0);
+});
+
+// Made-up nodes: a T junction, two roads converging whose lanes cross, and two whose lanes come in too close to go on side by side
+const edge = (heading, lanes, to, sx, sz, len = 10) => {
+  const dx = Math.sin(heading), dz = -Math.cos(heading); // heading clockwise from north (-z)
+  return { dx, dz, rx: dz, rz: -dx, lanes, sx, sz, len, moves: [] }; // the kerb on the left
+};
+test('a T junction is no merge, and converging roads whose lanes cross or crowd each other clash', () => {
+  const n = { x: 0, z: 0 };
+  const f = edge(0, [-1.8, 1.8], null, 0, -2);
+  // from the west and from the east, both turning north into f
+  const west = edge(Math.PI / 2, [1.8], n, -12, 0);
+  const east = edge(-Math.PI / 2, [1.8], n, 12, 0);
+  west.moves.push({ to: f, out: [1] });
+  east.moves.push({ to: f, out: [0] });
+  n.in = [west, east];
+  assert.equal(mergeOnto(n), null, 'the T junction');
+  // two roads from the south, 10° either side of north, the left one (west) going to f's centre lane and the right one to its kerb
+  // lane: the kerb is on the left, so their paths cross
+  const left = edge(0.17, [1.8], n, -1.9 - 1.7, 9.9);
+  const right = edge(-0.17, [1.8], n, 1.9 + 1.7, 9.9);
+  left.moves.push({ to: f, out: [0] });
+  right.moves.push({ to: f, out: [1] });
+  n.in = [left, right];
+  assert.equal(mergeOnto(n), f);
+  assert.equal(lanesClash(n, f), true, 'crossing');
+  left.moves[0].out[0] = 1;
+  right.moves[0].out[0] = 0;
+  assert.equal(lanesClash(n, f), false, 'in order');
+  // ...and the two lanes brought within a metre of each other at their stop lines: one lane, so they go on into the same one
+  left.sx += 1.4;
+  right.sx -= 1.4;
+  assert.equal(lanesClash(n, f), true, 'too close to pass side by side');
+  left.moves[0].out[0] = 0;
+  assert.equal(lanesClash(n, f), false, 'one lane, taking turns');
+});
+
+// A signal head is a bare point on the ground: it goes to the nearest junction with a road on its level, not to one on a deck or in a
+// tunnel that happens to be nearer. East of Woolloomooloo a junction 24 m off the ground (1086, 26) is 7.9 m from one on it (1078, 28).
+test('a signal head goes to the junction on its own level, not a nearer one on a deck or in a tunnel', () => {
+  const head = { x: 1084, z: 26 };
+  const job = buildRoadNetworkSteps([], [head], { x: head.x, z: head.z, radius: 300 });
+  let s;
+  do s = job.next(); while (!s.done);
+  const at = (x, z) => s.value.nodes.find((n) => Math.hypot(n.x - x, n.z - z) < 1.5);
+  const off = at(1085.9, 25.8), on = at(1078.4, 28.2);
+  assert.ok(off && on, 'both junctions');
+  assert.ok(Math.hypot(off.x - head.x, off.z - head.z) < Math.hypot(on.x - head.x, on.z - head.z), 'the head is nearer the other level\'s');
+  assert.ok(!off.signal, 'not the junction off the ground');
+  assert.ok(on.signal, 'the one on the ground');
 });

@@ -63,6 +63,84 @@ test('police still wait for crossing traffic, pedestrians and a blocked exit', (
   assert.equal(mayEnter(car, 18), true);
 });
 
+// A merge (js/road-network.js, n.merge): roads converging into one, nobody crossing anybody's way. No box to wait for, no road to
+// give way to; people crossing and the room ahead still count.
+test('at a merge, a car from the minor road ignores the box and cross traffic, but waits for people and for room', () => {
+  const { car, state, mayEnter } = intersectionHarness();
+  Object.assign(car.edge.to, { signal: false, merge: true });
+  car.edge.axisIndex = 1;
+  state.phase = 'green';
+  state.occupied = true;
+  state.conflict = true;
+  assert.equal(mayEnter(car, 18), true, 'box and cross traffic');
+  state.pedestrians = true;
+  assert.equal(mayEnter(car, 18), false, 'people crossing');
+  state.pedestrians = false;
+  state.space = false;
+  assert.equal(mayEnter(car, 18), false, 'no room');
+  // the same junction, not a merge: the box and the main road hold it
+  state.space = true;
+  car.edge.to.merge = false;
+  assert.equal(mayEnter(car, 18), false, 'box busy');
+  state.occupied = false;
+  assert.equal(mayEnter(car, 18), false, 'cross traffic');
+  state.conflict = false;
+  assert.equal(mayEnter(car, 18), true);
+});
+
+// Two roads into one lane of f: whose car goes first is by where each would be on f now, not by how far along its own road
+function mergeHarness() {
+  const precedence = source.match(/^ {2}const precedence = .*$/m)?.[0];
+  assert.ok(precedence, 'precedence is present');
+  const context = {
+    leadOf: (list) => list.at(-1),
+    besideTail: () => false,
+    connector: () => ({ len: 10 }),
+    merger: { v: null, s: 0 }
+  };
+  vm.runInNewContext(precedence.replace(/^\s*const /, 'var '), context);
+  for (const name of ['goesFirst', 'onto', 'mergingAhead', 'room']) context[name] = trafficFunction(name, context);
+  const f = { len: 100, lanes: [0], occ: [[]] };
+  const n = { merge: true, in: [] };
+  f.from = n;
+  const road = (len) => {
+    const e = { to: n, len, lanes: [0], occ: [[]] };
+    n.in.push(e);
+    return e;
+  };
+  const car = (e, s) => {
+    const v = { edge: e, lane: 0, s, half: 2.25, wait: 0, claimed: false, bus: false, speed: 10, driver: { s0: 2 }, move: { to: f, out: [0], turn: 'S' } };
+    e.occ[0].push({ v, s });
+    return v;
+  };
+  return { context, f, n, road, car };
+}
+
+test('at a merge, a car eases in behind the other road\'s car that goes first, by where each would be on the road out', () => {
+  const { context, f, n, road, car } = mergeHarness();
+  const v = car(road(50), 40); // 10 m to its line: -20 on f
+  const near = car(road(50), 45); // 5 m to its line: -15 on f
+  let o = context.mergingAhead(v, f, 0);
+  assert.equal(o?.v, near);
+  assert.equal(o.s, -15);
+  assert.equal(context.mergingAhead(near, f, 0), null);
+  // another road's car further along its longer road, but further from the merge: both go first, and it falls in behind the nearer
+  const far = car(road(200), 170); // 30 m to its line: -40 on f
+  assert.equal(context.mergingAhead(far, f, 0)?.v, v);
+  assert.equal(context.mergingAhead(v, f, 0)?.v, near);
+  near.claimed = true; // committed: it holds its place in f's lane, where alongside() and room() see it
+  assert.equal(context.mergingAhead(v, f, 0), null);
+  // ...and room on f is shared out in the same order
+  f.len = 12;
+  assert.equal(context.room(f, 0, v), true);
+  assert.equal(context.room(f, 0, far), false, 'v goes first and takes the room');
+  // not a merge: only v's own road's other lanes
+  n.merge = false;
+  near.claimed = false;
+  o = context.mergingAhead(v, f, 0);
+  assert.equal(o, null);
+});
+
 test('police running a red yield to fast cross traffic regardless of how long they waited', () => {
   const car = { edge: { axisIndex: 0 }, wait: 20 };
   const lead = { s: 85, v: { speed: 10 } };

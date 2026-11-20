@@ -115,8 +115,8 @@ async function measure(name, seed) {
       // The car at the front of this lane says why the queue is here
       let front = v, at = v.s;
       for (const o of v.edge.occ?.[v.lane] ?? []) if (o.s > at && o.v.speed < STOPPED) { front = o.v; at = o.s; }
-      // Standing in the curve through a joint is only a queue going through it
-      const cause = front.conn && front.edge.to.joint ? 'following' : causeOf(system.holdingBack(front));
+      // Standing in the curve through a joint or a merge is only a queue going through it
+      const cause = front.conn && (front.edge.to.joint || front.edge.to.merge) ? 'following' : causeOf(system.holdingBack(front));
       t.queues[cause] = (t.queues[cause] || 0) + 1;
       if (cause === 'no room ahead') {
         let u = front, end = 'a long chain';

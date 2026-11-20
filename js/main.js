@@ -10,6 +10,7 @@ import { addHarbourBridge, addTowerSigns, buildLandmarks } from './landmarks.js'
 import { buildMovingScenery } from './moving-scenery.js';
 import { createCityBlocks } from './buildings.js';
 import { footpathFrom, walkable } from './arrivals.js';
+import { stillWaterDepth, waterAt } from './still-water.js';
 import { ThirdPersonControllerManager } from './controllers.js';
 import { TouchControls } from './touch-controls.js';
 import { PhoneHud } from './phone-hud.js';
@@ -2082,6 +2083,8 @@ async function initApp() {
       },
       // Whether a mode's body fits at (x, z) among the buildings, the kerbs' cars and the car you left (js/controllers.js spotClear())
       spotClear: (mode, x, z, heading = 0) => controllerManager.spotClear(mode, x, z, heading),
+      // Still water on land at (x, z) (js/still-water.js): { kind, dry } or null; `mode` given, how far its body there is into it instead
+      water: (x, z, mode = null, heading = 0) => (mode ? stillWaterDepth(mode, x, z, heading) : waterAt(x, z)),
       player() {
         const entity = controllerManager.getActiveEntity();
         const { x, y, z } = entity.position;

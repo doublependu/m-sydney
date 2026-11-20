@@ -36,6 +36,8 @@ function loadModule(source, { imports = {}, globals = {}, filename = 'module.js'
     if (specifier === './surfaces.js' && Object.hasOwn(imports, specifier)) imports[specifier] = { ...ROAD_CLASS_STUB, ...imports[specifier] };
     // Who lives where (js/places.js): nowhere, so traffic and people do what they did before the map had it
     if (specifier === './places.js' && !Object.hasOwn(imports, specifier)) imports[specifier] = { busyAt: () => null, placesNear: () => ({ known: 0 }), placeAt: () => null, eachPlaceCell() {}, placeVersion: () => 0 };
+    // Still water on land (js/still-water.js): none, so nobody's held at a pond's shore unless a harness gives some
+    if (specifier === './still-water.js' && !Object.hasOwn(imports, specifier)) imports[specifier] = { inStillWater: () => false, stillWaterDepth: () => 0, shoreAlong: () => null, waterAt: () => null, dryAt: () => false };
     if (!Object.hasOwn(imports, specifier)) throw new Error(`Missing import stub: ${specifier}`);
     const namespace = /^\*\s+as\s+([\w$]+)$/.exec(bindings.trim());
     const target = `imports[${JSON.stringify(specifier)}]`;

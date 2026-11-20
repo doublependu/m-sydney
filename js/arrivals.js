@@ -2,6 +2,7 @@ import { blockAt, landAt } from './city-config.js';
 import { DECK_FOOTWAY, DECK_REACH, DECK_SID, bridgeAt, bridgePoint, deckHeight, deckSpanAt } from './bridge.js';
 import { onMap } from './geodata.js';
 import { KIND, LINKS, ROOM, STRUCTURES, chooseSurface, clearOfWater as offWater, floorBelow, groundHeight, roadHeight, structureAt, structuresAt } from './surfaces.js';
+import { inStillWater } from './still-water.js';
 
 // Where a new travel mode starts from where the last one left off: walkers on the nearest footpath (out of a car or off a
 // bike, beside it: besideVehicle()), drivers in the nearest lane, riders on whichever is nearer (js/controllers.js first
@@ -25,10 +26,10 @@ const SEARCH = 3000; // m: the furthest anyone is taken
 const SHORE = 2.5; // js/surfaces.js keeps everyone this far from the water, and nobody arrives on a road over it
 const clearOfWater = (x, z) => [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].every(([u, v]) => landAt(x + u * SHORE, z + v * SHORE));
 
-/** Could someone walk here: on a kerbed island of footpath or park, not a traffic island, not in the water? */
+/** Could someone walk here: on a kerbed island of footpath or park, not a traffic island, not in the water (the sea's, or a park's pond)? */
 function walkable(x, z) {
   const block = blockAt(x, z);
-  return !!block && !block.median && clearOfWater(x, z);
+  return !!block && !block.median && clearOfWater(x, z) && !inStillWater('person', x, z);
 }
 
 /** The nearest footpath to (x, z), rings outward. `isClear(x, z)`: nothing in the way. { x, z, d } or null */
@@ -259,7 +260,7 @@ function besideVehicle(vehicle, sides, world) {
     const px = x + fx * ahead - fz * right, pz = z + fz * ahead + fx * right;
     const on = chooseSurface(sid, vehicle.y, px, pz, WALKER_MARGIN, ROOM.foot);
     if (!on || on.x !== undefined || !on.sid !== !sid) continue;
-    if (!sid && !offWater(px, pz)) continue;
+    if (!sid && (!offWater(px, pz) || inStillWater('person', px, pz, heading))) continue;
     if (!world.isClear(px, pz)) continue;
     return { x: px, z: pz, heading, surface: on.sid, y: on.y };
   }

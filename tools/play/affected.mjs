@@ -61,6 +61,7 @@ export const COVERS = {
   helicopter: { files: /^js\/(helicopter|controllers|cameras|buildings|building-footprints|arrivals)\.js$/, area: null },
   'mode-map': { files: /^js\/(cameras|city-map|lighting|controllers|arrivals|main)\.js$/, area: null },
   'mode-switch': { files: /^js\/(controllers|arrivals|surfaces|bridge|main)\.js$/, area: null },
+  'still-water': { files: /^js\/(still-water|controllers|arrivals|garden|surfaces)\.js$/, area: [2400, 2750, 2380, 2500] },
   touch: { files: /^js\/(touch-controls|controllers)\.js$|^css\//, area: null },
   'orbit-follow': { files: /^js\/(cameras|controllers|pedestrians)\.js$/, area: null },
   'first-person': { files: /^js\/(cameras|controllers|interiors|interior-data|pause-menu|main)\.js$|^index\.html$/, area: null },

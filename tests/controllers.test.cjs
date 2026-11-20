@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { keyboardHarness } = require('./helpers/controllers.cjs');
+const { box, stillWater } = require('./helpers/still-water.cjs');
 
 test('releasing a movement key after focusing search stops movement', () => {
   const { controller, key } = keyboardHarness();
@@ -372,12 +373,12 @@ test('car turning, handbraking and impact recovery agree across display rates', 
   }
 });
 
-function teleportHarness(mode, colliders = [], shore = () => ({ westX: -500, eastX: 500 })) {
+function teleportHarness(mode, colliders = [], shore = () => ({ westX: -500, eastX: 500 }), water = undefined) {
   const harness = keyboardHarness({
     CITY_BOUNDS: { minX: -500, maxX: 500, minZ: -500, maxZ: 500, sidewalkHeight: 0.22 },
     landAt: (x, z) => { const s = shore(z); return x >= s.westX && x <= s.eastX; },
     blockAt: () => null
-  });
+  }, {}, {}, water);
   const { controller } = harness;
   const position = (x = 0, y = 0, z = 0) => ({ x, y, z, copy(p) { this.x = p.x; this.y = p.y; this.z = p.z; } });
   const pivot = () => ({ position: position(), rotation: { x: 0.1, y: 0, z: -0.2 } });
@@ -846,8 +847,8 @@ test('cyclist braking stops briskly, pauses at zero before reversing, and Space 
 });
 
 // The walker on its own, with a kerb along z = 0: the footpath (0.22 m up) where z < 0, the road beyond
-function walkerHarness(person = {}, colliders = []) {
-  const harness = keyboardHarness({ CITY_BOUNDS: { minX: -1000, maxX: 1000, minZ: -1000, maxZ: 1000, sidewalkHeight: 0.22 }, blockAt: (_x, z) => (z < 0 ? {} : null) });
+function walkerHarness(person = {}, colliders = [], water = undefined) {
+  const harness = keyboardHarness({ CITY_BOUNDS: { minX: -1000, maxX: 1000, minZ: -1000, maxZ: 1000, sidewalkHeight: 0.22 }, blockAt: (_x, z) => (z < 0 ? {} : null) }, {}, {}, water);
   const shadow = { position: { y: 0.02 }, scale: { x: 1, y: 1, z: 1, set(x, y, z) { Object.assign(this, { x, y, z }); } } };
   const airs = [];
   const p = {
@@ -989,13 +990,13 @@ test('on foot you stand on what\'s drawn under you, or on the paving\'s height o
 
 // Changing how you travel (plan 9.5): every mode's entity, enough of each for switchMode(), teleportActiveTo() and update(). js/arrivals.js
 // is stood in for: `spots.beside` is what besideVehicle() finds (or null), `spots.arrival` what arrivalFor() does, each given what was asked
-function switchHarness({ colliders = [] } = {}) {
+function switchHarness({ colliders = [], water = undefined } = {}) {
   const spots = { beside: null, arrival: null, asked: [] };
   const arrivals = {
     besideVehicle: (from, sides, world) => { spots.asked.push({ fn: 'beside', from, sides, world }); return typeof spots.beside === 'function' ? spots.beside(from, sides, world) : spots.beside; },
     arrivalFor: (mode, from, world) => { spots.asked.push({ fn: 'arrival', mode, from, world }); return typeof spots.arrival === 'function' ? spots.arrival(mode, from, world) : spots.arrival; }
   };
-  const harness = keyboardHarness({ CITY_BOUNDS: { minX: -1000, maxX: 1000, minZ: -1000, maxZ: 1000, sidewalkHeight: 0.22 }, blockAt: () => null }, {}, arrivals);
+  const harness = keyboardHarness({ CITY_BOUNDS: { minX: -1000, maxX: 1000, minZ: -1000, maxZ: 1000, sidewalkHeight: 0.22 }, blockAt: () => null }, {}, arrivals, water);
   const { controller } = harness;
   const position = (x = 0, y = 0, z = 0) => ({ x, y, z, copy(p) { this.x = p.x; this.y = p.y; this.z = p.z; return this; } });
   const vec = () => ({ x: 0, y: 0, z: 0, set(x, y, z) { Object.assign(this, { x, y, z }); return this; }, copy(p) { Object.assign(this, { x: p.x, y: p.y, z: p.z }); return this; }, applyQuaternion() { return this; }, add() { return this; } });
@@ -1252,4 +1253,204 @@ test('a parked bike leans 10 degrees to its left on its stand; back on it, it\'s
   run(10.1);
   assert.equal(cyclist._parked, false);
   assert.equal(cyclist.stand.visible, false);
+});
+
+// Still water on land (js/still-water.js): a pond whose shore runs along z = 2, the water beyond it, 100 m wide
+const pond = (garden = {}, roads = undefined) => stillWater([{ key: '0_0', garden: { ponds: [box(-50, 2, 50, 30)], ...garden } }], roads);
+
+test('on foot, a pond holds you 0.3 m off its water, you slide along it at a slant, and walk away from it at once', () => {
+  const square = walkerHarness({ position: { x: 0, y: 0, z: 0.5 } }, [], pond());
+  square.controller.keys.forward = true;
+  square.step(120);
+  assert.ok(square.person.position.z <= 1.7 + 1e-9 && square.person.position.z > 1.65, `held 0.3 m off it (z ${square.person.position.z.toFixed(3)})`);
+  assert.ok(square.person.speed < 0.05, `square on, no speed builds up (${square.person.speed})`);
+  Object.assign(square.controller.keys, { forward: false, backward: true });
+  square.step();
+  assert.ok(square.person.speed < 0 && square.person.position.z < 1.7, 'backing away moves at once');
+
+  const slant = walkerHarness({ position: { x: 0, y: 0, z: 1.69 }, heading: Math.PI / 4 }, [], pond());
+  slant.controller.keys.forward = true;
+  slant.step(60);
+  const x0 = slant.person.position.x;
+  slant.step(60);
+  assert.ok(slant.person.position.z <= 1.7 + 1e-9, 'it stays out of the water');
+  assert.ok(slant.person.position.x - x0 > 1.5 * Math.SQRT1_2 - 0.05, `and slides along the shore at 45 degrees (${(slant.person.position.x - x0).toFixed(2)} m/s)`);
+});
+
+test('at a pond whose shore is at a slant to the world\'s axes, the walker, the bike and the car slide along the shore itself', () => {
+  // The shore runs 16.5 degrees off the x axis through (0, 2), the water beyond it (north); each comes at it 45 degrees off square
+  const tilt = 0.2879, nx = Math.sin(tilt), nz = Math.cos(tilt), tx = nz, tz = -nx;
+  const corner = (s, d) => [s * tx + d * nx, 2 + s * tz + d * nz];
+  const ring = [corner(-60, 0), corner(60, 0), corner(60, 40), corner(-60, 40)].flat();
+  const water = stillWater([{ key: '0_0', garden: { ponds: [ring] } }]);
+  for (const [mode, radius, front] of [['person', 0.48, 0.3], ['cyclist', 0.65, 0.97], ['car', 1.35, 2.18]]) {
+    const { controller, ent } = teleportHarness(mode, [], undefined, water);
+    const heading = tilt + Math.PI / 4;
+    const [x0, z0] = corner(0, -front - 1);
+    Object.assign(ent.position, { x: x0, z: z0 });
+    ent.position.landed = null;
+    ent.heading = mode === 'person' ? 0 : heading;
+    let deepest = 0;
+    for (let i = 0; i < 300; i++) {
+      ent.position.x += Math.sin(heading) * 0.02;
+      ent.position.z += Math.cos(heading) * 0.02;
+      controller.resolveHorizontalCollision(ent.position, radius, mode === 'car' ? ent : null, mode === 'person' ? undefined : ent);
+      deepest = Math.max(deepest, water.stillWaterDepth(mode, ent.position.x, ent.position.z, ent.heading));
+    }
+    const along = (ent.position.x - x0) * tx + (ent.position.z - z0) * tz;
+    assert.equal(deepest, 0, `${mode} never in the water`);
+    // 6 m pushed at 45 degrees: 4.2 m along the shore, less the metre it took to reach it
+    assert.ok(along > 3.4, `${mode} slid ${along.toFixed(2)} m along the shore`);
+  }
+});
+
+test('a bike and a car ridden and driven into a pond are held with their fronts at its shore, slide along it, and the car loses speed', () => {
+  for (const [mode, radius, front] of [['cyclist', 0.65, 0.97], ['car', 1.35, 2.18]]) {
+    const { controller, ent } = teleportHarness(mode, [], undefined, pond());
+    Object.assign(ent.position, { x: 0, z: -2 });
+    ent.position.landed = null;
+    ent.heading = 0;
+    const step = (dx, dz) => {
+      ent.speed = 10;
+      ent.position.x += dx;
+      ent.position.z += dz;
+      controller.resolveHorizontalCollision(ent.position, radius, mode === 'car' ? ent : null, ent);
+    };
+    for (let i = 0; i < 80; i++) step(0, 0.05);
+    assert.ok(ent.position.z + front <= 2 + 1e-9 && ent.position.z + front > 1.94, `${mode}: its front at the shore (${(ent.position.z + front).toFixed(3)})`);
+    step(0, 0.05);
+    if (mode === 'car') assert.ok(Math.abs(ent.speed - 4) < 1e-9, `the car's speed is cut to 0.4 at a held step (${ent.speed})`);
+    const { x, z } = ent.position;
+    step(0.05, 0.05);
+    assert.deepEqual([ent.position.x, ent.position.z], [x + 0.05, z], `${mode}: slides along it`);
+  }
+});
+
+test('on a garden\'s path across a pond, or a road over it on the ground, nobody is held', () => {
+  // A 3 m path across the pond along x = 0, and a road along x = 20 (its carriageway 4 m each side)
+  const water = pond({ paths: [[0, 0, 3, 0, -5, 0, 40]] }, (x) => Math.abs(x - 20) < 4);
+  for (const [mode, radius, x] of [['person', 0.48, 0], ['cyclist', 0.65, 0], ['car', 1.35, 20]]) {
+    const { controller, ent } = teleportHarness(mode, [], undefined, water);
+    Object.assign(ent.position, { x, z: -2 });
+    ent.position.landed = null;
+    ent.heading = 0;
+    for (let i = 0; i < 400; i++) {
+      ent.position.z += 0.05;
+      controller.resolveHorizontalCollision(ent.position, radius, mode === 'car' ? ent : null, mode === 'person' ? undefined : ent);
+    }
+    assert.ok(Math.abs(ent.position.z - 18) < 1e-6, `${mode} crosses the pond on the ${mode === 'car' ? 'road' : 'path'} (z ${ent.position.z})`);
+  }
+});
+
+test('at a fountain the walker is held 0.575 m off its water, and the bike\'s front tyre and the car\'s front at its rim\'s face', () => {
+  const water = stillWater([{ key: '0_0', garden: { ponds: [box(-6, 2, 6, 14)], fountains: [[0, 8, 6]] } }]);
+  for (const [mode, radius, front] of [['person', 0.48, 0], ['cyclist', 0.65, 0.97], ['car', 1.35, 2.18]]) {
+    const { controller, ent } = teleportHarness(mode, [], undefined, water);
+    Object.assign(ent.position, { x: 0, z: -3 });
+    ent.position.landed = null;
+    ent.heading = 0;
+    for (let i = 0; i < 500; i++) {
+      ent.position.z += 0.01;
+      controller.resolveHorizontalCollision(ent.position, radius, mode === 'car' ? ent : null, mode === 'person' ? undefined : ent);
+    }
+    const stop = 2 - (mode === 'person' ? 0.575 : 0.275);
+    assert.ok(ent.position.z + front <= stop + 1e-9 && ent.position.z + front > stop - 0.011, `${mode} stops at ${(ent.position.z + front).toFixed(3)}, not ${stop}`);
+  }
+});
+
+test('put in the water already (its tile came after), a walker can walk out, and is held once it\'s out', () => {
+  const { controller, ent } = teleportHarness('person', [], undefined, pond());
+  Object.assign(ent.position, { x: 0, z: 3 });
+  ent.position.landed = null;
+  for (let i = 0; i < 40; i++) {
+    ent.position.z -= 0.05;
+    controller.resolveHorizontalCollision(ent.position, 0.48);
+  }
+  assert.ok(Math.abs(ent.position.z - 1) < 1e-6, `walked out (z ${ent.position.z})`);
+  for (let i = 0; i < 40; i++) {
+    ent.position.z += 0.05;
+    controller.resolveHorizontalCollision(ent.position, 0.48);
+  }
+  assert.ok(ent.position.z <= 1.7 + 1e-9, `and held at the shore going back (z ${ent.position.z})`);
+});
+
+test('a car turned where it\'s held, its nose over the water, backs away, and gets no deeper going on', () => {
+  // Alongside the shore, its side 0.04 m off the water; then steered towards it: its round front end swings out over it
+  const water = pond();
+  const { controller, ent } = teleportHarness('car', [], undefined, water);
+  Object.assign(ent.position, { x: 0, z: 1.1 });
+  ent.position.landed = null;
+  ent.heading = Math.PI / 2;
+  controller.resolveHorizontalCollision(ent.position, 1.35, ent);
+  assert.deepEqual([ent.position.x, ent.position.z], [0, 1.1], 'alongside it, clear');
+  ent.heading = Math.PI / 2 - 0.3;
+  const depth = () => water.stillWaterDepth('car', ent.position.x, ent.position.z, ent.heading);
+  const before = depth();
+  assert.ok(before > 0, 'its nose is over the water');
+  const go = (d) => {
+    ent.position.x += Math.sin(ent.heading) * d;
+    ent.position.z += Math.cos(ent.heading) * d;
+    controller.resolveHorizontalCollision(ent.position, 1.35, ent);
+  };
+  go(0.05);
+  assert.ok(depth() <= before + 1e-9, 'driving on gets it no deeper');
+  assert.ok(ent.position.x > 0.04, 'but it slides along the shore');
+  go(-0.5);
+  assert.ok(depth() < before, 'backing away moves');
+  // Turning a little and pushing on, over and over, never takes its middle into the water: only the swing of its nose
+  let worst = 0;
+  for (let i = 0; i < 60; i++) {
+    ent.heading = Math.max(0, ent.heading - 0.03);
+    go(0.05);
+    worst = Math.max(worst, depth());
+    assert.equal(water.waterAt(ent.position.x, ent.position.z), null, `its middle in the water at turn ${i}`);
+  }
+  assert.ok(worst < 1.32 + 0.86, `its nose no further over than its swing reaches (${worst.toFixed(2)} m)`);
+});
+
+test('a teleport into a pond lands each mode on its shore, its whole body clear; the helicopter where it was asked', () => {
+  const water = pond();
+  for (const mode of ['person', 'cyclist', 'car']) {
+    const { controller, ent } = teleportHarness(mode, [], undefined, water);
+    const at = controller.teleportActiveTo(0, 10, 0);
+    assert.notDeepEqual({ ...at }, { x: 0, z: 10 }, `${mode} moved`);
+    assert.equal(water.stillWaterDepth(mode, at.x, at.z, ent.heading), 0, `${mode} clear of it at (${at.x.toFixed(1)}, ${at.z.toFixed(1)})`);
+    assert.ok(Math.hypot(at.x, at.z - 10) < 30, `${mode} near where it was asked`);
+  }
+  const heli = teleportHarness('helicopter', [], undefined, water);
+  assert.deepEqual({ ...heli.controller.teleportActiveTo(0, 10, 0) }, { x: 0, z: 10 });
+});
+
+test('3 at a pond\'s shore puts the bike where you stand only if its whole length is clear of the water', () => {
+  for (const [z, here] of [[1.5, false], [0.5, true]]) {
+    const { controller, person, cyclist, water } = switchHarness({ water: pond() });
+    controller.switchMode('person');
+    Object.assign(person.position, { x: 10, z });
+    person.heading = 0;
+    controller.switchMode('cyclist');
+    assert.equal(controller.activeMode, 'cyclist');
+    const at = [cyclist.position.x, cyclist.position.z];
+    if (here) assert.deepEqual(at, [10, z], 'its front tyre 0.53 m off the water: where you stand');
+    else assert.notDeepEqual(at, [10, z], 'its front tyre 0.47 m over the water: not where you stand');
+    assert.equal(water.stillWaterDepth('cyclist', ...at, cyclist.heading), 0, `clear of it at (${at.map((v) => v.toFixed(2))})`);
+  }
+});
+
+test('out of the car, and arriving on a footpath, nowhere over the water is clear', () => {
+  // Away from the car just left, whose box is in the way for its 10 s
+  const { controller, spots } = switchHarness({ water: pond() });
+  controller.switchMode('person');
+  const { world } = spots.asked.find((a) => a.fn === 'beside');
+  assert.equal(world.isClear(10, 1.5), true, '0.5 m off it');
+  assert.equal(world.isClear(10, 1.8), false, '0.2 m off it');
+  // The bike where you stand would be over it, so a footpath or a lane is looked for
+  const bike = switchHarness({ water: pond() });
+  bike.controller.switchMode('person');
+  Object.assign(bike.person.position, { x: 10, z: 1.5 });
+  bike.person.heading = 0;
+  bike.controller.switchMode('cyclist');
+  const asked = bike.spots.asked.find((a) => a.fn === 'arrival' && a.mode === 'cyclist');
+  assert.ok(asked, 'a footpath or lane looked for');
+  assert.equal(asked.world.isClear(10, 0.5), true);
+  assert.equal(asked.world.isClear(10, 1.5), false, 'the bike\'s front over it');
 });

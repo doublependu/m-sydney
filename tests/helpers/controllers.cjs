@@ -5,6 +5,7 @@ const { loadModule } = require('./module.cjs');
 
 const source = readFileSync(join(__dirname, '../../js/controllers.js'), 'utf8');
 const polygonCollision = loadModule(readFileSync(join(__dirname, '../../js/building-collision.js'), 'utf8'));
+const { stillWater } = require('./still-water.cjs');
 
 function eventTarget() {
   const listeners = new Map();
@@ -19,8 +20,9 @@ function eventTarget() {
   };
 }
 
-// `arrivals`: stand-ins for js/arrivals.js' functions (arrivalFor(), besideVehicle()), which find nothing unless given
-function keyboardHarness(nyc = {}, drawn = {}, arrivals = {}) {
+// `arrivals`: stand-ins for js/arrivals.js' functions (arrivalFor(), besideVehicle()), which find nothing unless given. `water`:
+// js/still-water.js itself (tests/helpers/still-water.cjs), with no still water unless given made-up tiles
+function keyboardHarness(nyc = {}, drawn = {}, arrivals = {}, water = stillWater()) {
   const window = eventTarget();
   const document = { ...eventTarget(), hidden: false };
   const config = {
@@ -47,6 +49,7 @@ function keyboardHarness(nyc = {}, drawn = {}, arrivals = {}) {
       './building-collision.js': polygonCollision,
       './interior-data.js': { WALKER: 0.22 },
       './model-sites.js': { MODEL_SITES: [] },
+      './still-water.js': water,
       // Nothing drawn over the ground: the paving's height on a kerb's island, the road's off it
       './drawn-ground.js': { buildNear: () => false, drawnOver: () => null, ...drawn }
     }
@@ -57,6 +60,7 @@ function keyboardHarness(nyc = {}, drawn = {}, arrivals = {}) {
   controller.bindKeyboard();
   return {
     controller,
+    water,
     window,
     document,
     key(type, code, tagName = 'BODY') {

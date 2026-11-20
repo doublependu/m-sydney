@@ -1130,5 +1130,5 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   return colliders;
 }
 
-export { PATH_TOP, POND_TOP, SURFACES as PATH_SURFACES, ROCKS as POND_ROCKS, TRACK, TRACK_TOP, buildTileGarden, gardenMaterials, lawnSurface, pathTop,
+export { FOUNTAIN, PATH_TOP, POND_TOP, SURFACES as PATH_SURFACES, ROCKS as POND_ROCKS, TRACK, TRACK_TOP, buildTileGarden, gardenMaterials, lawnSurface, pathTop,
   pavingSurface, useMapLawn };

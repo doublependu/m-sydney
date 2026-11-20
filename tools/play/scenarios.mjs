@@ -2720,6 +2720,99 @@ export const SCENARIOS = {
     }
   },
 
+  // Still water on land holds the walker, the bike and the car at its shore (js/still-water.js): at Busbys Pond in Centennial Park, each
+  // walked, ridden or driven in square on from 14 m out, W held till it stops, its front off the water by the walker's 0.3 m and the
+  // vehicles' 0; the walker sliding along it at 45 degrees; 3 at the shore, the bike put where its whole length is clear; and a car along
+  // Holker St at Sydney Olympic Park, its side over the lake the carriageway runs 0.3 m into, never held (a road on the ground is dry)
+  'still-water': {
+    minutes: 5,
+    async run({ human, page, metric, expect }) {
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      // A straight 40 m of Busbys Pond's shore through (2470.65, 2435.1), the way in square on to it, and how far each one's front is
+      // ahead of its middle
+      const shore = { x: 2470.65, z: 2435.1 }, heading = 0.2879, fx = Math.sin(heading), fz = Math.cos(heading);
+      const front = { person: 0, cyclist: 0.97, car: 2.18 };
+      const off = (s, mode) => (shore.x - s.x) * fx + (shore.z - s.z) * fz - front[mode];
+      const wet = (s) => page.evaluate(([x, z, m, h]) => window.__gameDebug.water(x, z, m, h), [s.x, s.z, s.mode, s.heading]);
+      const pushOn = async () => {
+        let last = await human.state();
+        const began = human.now();
+        await human.down('KeyW');
+        while (human.now() - began < 20000) {
+          await human.wait(300);
+          const s = await human.state();
+          if (human.now() - began > 1000 && Math.hypot(s.x - last.x, s.z - last.z) < 0.01) return s;
+          last = s;
+        }
+        return human.state();
+      };
+      for (const mode of ['person', 'cyclist', 'car']) {
+        await page.evaluate(([x, z, h, m]) => window.__gameDebug.goto(x, z, h, m), [shore.x - fx * 14, shore.z - fz * 14, heading, mode]);
+        await human.wait(1500);
+        const held = await pushOn();
+        const gap = off(held, mode);
+        metric(`${mode}Off`, Number(gap.toFixed(3)));
+        expect(held.mode === mode, `${mode}: became ${held.mode}`);
+        expect(Math.abs(gap - (mode === 'person' ? 0.3 : 0)) < 0.05, `${mode}: its front stopped ${gap.toFixed(3)} m off the water`);
+        expect(await wet(held) === 0, `${mode}: in the water at (${held.x.toFixed(2)}, ${held.z.toFixed(2)})`);
+        if (mode === 'person') {
+          // On the bike where you stand, 0.3 m off the water and facing it: its front would be over it, so it's put where it fits
+          await human.releaseAll();
+          await human.wait(500);
+          await human.press('Digit3');
+          await human.wait(800);
+          const bike = await human.state();
+          const moved = Math.hypot(bike.x - held.x, bike.z - held.z);
+          metric('bikeFromShore', Number(moved.toFixed(2)));
+          expect(bike.mode === 'cyclist', `3 at the shore left you ${bike.mode}`);
+          expect(await wet(bike) === 0 && moved > 0.3 && moved < 30, `3 at the shore put the bike ${moved.toFixed(2)} m off, ${await wet(bike)} m into the water`);
+          // Along the shore at 45 degrees into it, from 1.5 m off: never in, and on along it
+          await page.evaluate(([x, z, h]) => window.__gameDebug.goto(x, z, h, 'person'), [shore.x - fx * 1.5, shore.z - fz * 1.5, heading + Math.PI / 4]);
+          await human.wait(1500);
+          const from = await human.state();
+          await human.down('KeyW');
+          let deepest = 0;
+          for (let i = 0; i < 25; i++) {
+            await human.wait(200);
+            deepest = Math.max(deepest, await wet(await human.state()));
+          }
+          await human.releaseAll();
+          const to = await human.state();
+          const along = Math.abs((to.x - from.x) * fz - (to.z - from.z) * fx);
+          metric('walkerSlide', Number(along.toFixed(2)));
+          expect(deepest === 0, `sliding along the shore, ${deepest.toFixed(3)} m into the water`);
+          expect(along > 2.5, `slid only ${along.toFixed(2)} m along the shore in 5 s`);
+        }
+        await human.releaseAll();
+      }
+      // Holker St north-east, its middle 5 m left of the carriageway's centre line, 0.7 m in from its edge: its side over the lake for
+      // about 10 m, and its middle on the road, so it's never held
+      const A = { x: -13643.5, z: -2408.2 }, u = { x: 0.8098, z: 0.5867 }, left = { x: 0.5867, z: -0.8098 };
+      const line = (s) => ({ x: A.x + u.x * s + left.x * 5, z: A.z + u.z * s + left.z * 5 });
+      const start = line(-5), end = line(80);
+      await page.evaluate(([x, z, h]) => window.__gameDebug.goto(x, z, h, 'car'), [start.x, start.z, Math.atan2(u.x, u.z)]);
+      await human.wait(1500);
+      await human.down('KeyW');
+      let cut = 0, prev = null, last = null;
+      const began = human.now();
+      while (human.now() - began < 15000) {
+        const s = await human.state();
+        last = s;
+        if ((s.x - A.x) * u.x + (s.z - A.z) * u.z > 60) break;
+        // W held: only a hold takes speed away between two looks
+        if (prev && Math.abs(prev.speed) > 3) cut = Math.max(cut, 1 - Math.abs(s.speed) / Math.abs(prev.speed));
+        prev = s;
+        await human.steerTowards(s, end, 0.04);
+        await human.wait(60);
+      }
+      await human.releaseAll();
+      const passed = (last.x - A.x) * u.x + (last.z - A.z) * u.z;
+      metric('holkerSpeedCut', Number(cut.toFixed(3)));
+      expect(passed > 60, `along Holker St only ${passed.toFixed(1)} m past the lake's start`);
+      expect(cut < 0.2, `along Holker St the car lost ${(cut * 100).toFixed(0)}% of its speed between two looks`);
+    }
+  },
+
   // Dragging the camera round, by mouse or by a finger on the right half of a phone, never loses you; and moving forward turns
   // you to where it looks, with the camera staying put (js/cameras.js, steerToView() in js/controllers.js)
   'orbit-follow': orbitFollowScenario('laptop'),

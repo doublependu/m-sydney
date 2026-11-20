@@ -22,7 +22,8 @@ import { anchorToOrigin } from './world-origin.js';
 import { polygonContact, polygonContains } from './building-collision.js';
 import { DECK_SID } from './bridge.js';
 import { BIKE_SIDES, CAR_DOORS, FLY, arrivalFor, besideVehicle, holdOnFootway } from './arrivals.js';
-import { ROOM, STRUCTURES, clearOfWater, floorBelow, freeFromDeck, groundHeight, moveOver, onFloor, structureAt, surfaceHeight } from './surfaces.js';
+import { ROOM, STRUCTURES, clearOfWater, floorBelow, freeFromDeck, groundHeight, moveOver, onFloor, structureAt, structuresAt, surfaceHeight } from './surfaces.js';
+import { inStillWater, shoreAlong, stillWaterDepth } from './still-water.js';
 import { WALKER } from './interior-data.js';
 import { MODEL_SITES } from './model-sites.js';
 import { buildNear, drawnOver } from './drawn-ground.js';
@@ -539,8 +540,9 @@ class ThirdPersonControllerManager {
     }
     const next = this.entities[mode];
     const vehicle = (e) => e.type === 'car' || e.type === 'cyclist';
-    // Nothing of the ground is in the way up on a structure
-    const clearFor = (m, except = null) => (x, z) => (!!from.surface || this.spotClear(m, x, z, from.heading, except)) && !this.vehicleAt?.(x, z, y, NEAR_TRAFFIC);
+    // Nothing of the ground is in the way up on a structure; on the ground, its body clear of still water (js/still-water.js) too
+    const clearFor = (m, except = null) => (x, z) => (!!from.surface || (this.spotClear(m, x, z, from.heading, except) && !inStillWater(m, x, z, from.heading)))
+      && !this.vehicleAt?.(x, z, y, NEAR_TRAFFIC);
 
     // A vehicle left nearby is still there: get back in it where it is. Out of its way first, so it doesn't stand in its own way
     let arrival = null;
@@ -556,8 +558,10 @@ class ThirdPersonControllerManager {
       && clearFor('cyclist', this.entities.car?._collider ?? null)(from.x, from.z)) {
       arrival = { x: from.x, z: from.z, heading: from.heading, surface: from.surface };
     }
+    // A lane on the ground is dry over still water, and one on a deck or in a tunnel over it or under it isn't held by it
     arrival ??= arrivalFor(mode, from, {
-      isClear: (x, z) => this.spotClear(mode, x, z, from.heading) && !this.vehicleAt?.(x, z, y),
+      isClear: (x, z) => this.spotClear(mode, x, z, from.heading) && !this.vehicleAt?.(x, z, y)
+        && (!inStillWater(mode, x, z, from.heading) || structuresAt(x, z).length > 0),
       roofs: (x, z) => this.roofsNear(x, z)
     });
 
@@ -780,7 +784,7 @@ class ThirdPersonControllerManager {
     const clampPoint = (px, pz) => {
       pz = Math.max(CITY_BOUNDS.minZ + (heli ? -6000 : 30), Math.min(CITY_BOUNDS.maxZ + margin, pz));
       px = Math.max(CITY_BOUNDS.minX - margin, Math.min(CITY_BOUNDS.maxX + margin, px));
-      if (!heli && !clearOfWater(px, pz)) return null;
+      if (!heli && (!clearOfWater(px, pz) || inStillWater(this.activeMode, px, pz, heading))) return null;
       return { x: px, z: pz };
     };
     const clear = (p) => {
@@ -1472,19 +1476,37 @@ class ThirdPersonControllerManager {
         // On a structure nothing of the ground is in the way: not the water, not the buildings under it
         last.x = pos.x;
         last.z = pos.z;
+        last.wet = false;
         return;
       }
-      // ...nor on a model's floor (js/surfaces.js onFloor()), which its own walls bound: a jetty out over the water (js/model-sites.js)
-      if (clearOfWater(pos.x, pos.z) || (this.activeMode === 'person' && onFloor(pos.x, pos.z))) {
+      // ...nor on a model's floor (js/surfaces.js onFloor()), which its own walls bound: a jetty out over the water (js/model-sites.js).
+      // Still water on land (js/still-water.js: ponds, fountains, lakes) holds the whole body at its shore, as the sea does: no move takes
+      // it further in than it is where it was, turned as it is now, which is nowhere unless it turned there (a car steering while it's
+      // held), so it can't get deeper by turning and moving in turn. One put in the water (`wet`: there before the water's tile was held)
+      // isn't held by it till it's out, so it can walk or drive out.
+      const mode = this.activeMode, heading = entity ? entity.heading : 0;
+      last.wet ??= stillWaterDepth(mode, last.x, last.z, heading) > 0;
+      const allowed = last.wet ? Infinity : stillWaterDepth(mode, last.x, last.z, heading);
+      const dry = (x, z) => clearOfWater(x, z) && (last.wet || stillWaterDepth(mode, x, z, heading) <= allowed);
+      if ((mode === 'person' && onFloor(pos.x, pos.z)) || dry(pos.x, pos.z)) {
         last.x = pos.x;
         last.z = pos.z;
       } else {
-        // Slide along the shore where only one axis would reach the water
-        if (clearOfWater(pos.x, last.z)) pos.z = last.z;
-        else if (clearOfWater(last.x, pos.z)) pos.x = last.x;
-        else { pos.x = last.x; pos.z = last.z; }
+        // Slide along the shore where only one axis would reach the water; at still water whose shore runs at a slant to both axes, along
+        // the shore itself (the part of the move along its nearest edge). Where it slid to is clear: the next step starts from there
+        const along = shoreAlong(mode, last.x, last.z, heading);
+        const k = along ? (pos.x - last.x) * along.x + (pos.z - last.z) * along.z : 0;
+        if (dry(pos.x, last.z)) pos.z = last.z;
+        else if (dry(last.x, pos.z)) pos.x = last.x;
+        else if (along && dry(last.x + along.x * k, last.z + along.z * k)) {
+          pos.x = last.x + along.x * k;
+          pos.z = last.z + along.z * k;
+        } else { pos.x = last.x; pos.z = last.z; }
+        last.x = pos.x;
+        last.z = pos.z;
         if (carEntity && carEntity.speed) carEntity.speed *= 0.4;
       }
+      if (last.wet) last.wet = stillWaterDepth(mode, last.x, last.z, heading) > 0;
     }
 
     const body = collisionBody(this.activeMode, radius, carEntity ? carEntity.heading : 0);

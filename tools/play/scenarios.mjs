@@ -1107,12 +1107,15 @@ function walkInScenario() {
       const fetched = () => debug(() => performance.getEntriesByType('resource').map((r) => r.name).filter((n) => /\/models\//.test(n)));
       const near = (a, b, d = 0.05) => Math.abs(a - b) < d;
       await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
-      // Nothing of any model, or its loader, before the game could be played; and no inside before its door
+      // Before the game could be played, no model but a far version (which stands in from the first view once the ground
+      // under its site is built: the start is beside Customs House), and its loader only with one; and no inside before its door
       const early = await debug(() => {
         const ready = window.__gameDebug.load().interactiveAt ?? Infinity;
         return performance.getEntriesByType('resource').filter((r) => /\/models\/|GLTFLoader|meshopt/.test(r.name) && r.startTime < ready).map((r) => r.name);
       });
-      expect(!early.length, `came with the first view: ${early.join(', ')}`);
+      const farEarly = early.some((n) => /\/models\/[^/]+-far\.glb/.test(n));
+      const tooEarly = early.filter((n) => /\/models\//.test(n) ? !/\/models\/[^/]+-far\.glb/.test(n) : !farEarly);
+      expect(!tooEarly.length, `came with the first view: ${tooEarly.join(', ')}`);
       expect(!(await fetched()).some((n) => /-in\.|-i\./.test(n)), 'an inside was fetched before any door was opened');
       const memoryBefore = await debug(() => window.__gameDebug.gpuMemory());
 

@@ -2,7 +2,7 @@
 // surfaces the way the game draws them and reports:
 //   wheels     how far a car's wheels sit under the drawn road, over every lane position in the city
 //   kerbs      just outside each kerb: no surface at all (the harbour shows), the road below the kerb's foot (a slit),
-//              or the road lying over the footpath
+//              or the road lying over the footpath; lawn there is a surface, counted apart
 //   crossings  roads that cross with no junction, and how far apart their surfaces are there
 //   buildings  whether the ground beside any wall rises over its foot, and how much stone shows under floors
 //   grid       steps between neighbouring cells of the height grid on land
@@ -13,7 +13,7 @@ import fs from 'node:fs';
 // The modules fetch their binary data at import: serve it from disk
 globalThis.fetch = async (url) => new Response(fs.readFileSync(new URL(url)));
 const { GEO } = await import('../js/geodata.js');
-const { BLOCKS, landAt } = await import('../js/city-config.js');
+const { BLOCKS, LAWNS, landAt } = await import('../js/city-config.js');
 const ground = await import('../js/ground-geometry.js');
 const { groundHeight, structuresAt } = await import('../js/surfaces.js');
 const { heldTiles, isHeld, tileKeyAt } = await import('../js/geodata.js');
@@ -133,8 +133,30 @@ function drawnRoad(x, z, near = Infinity, below = 1) {
   };
   const onBlock = (x, z) => (blockCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || [])
     .some((b) => inPoly(b.poly, x, z) && !b.holes.some((h) => inPoly(h, x, z)));
-  let samples = 0, open = 0, slit = 0, over = 0;
-  const where = { open: [], slit: [] };
+  // The map's lawn, off the kerb islands: in the country the ground past a kerb is lawn, not road, and that's a surface too
+  const lawnCells = new Map();
+  for (const rings of LAWNS) {
+    const xs = rings[0].map((p) => p.x), zs = rings[0].map((p) => p.z);
+    for (let ix = Math.floor(Math.min(...xs) / CELL); ix <= Math.floor(Math.max(...xs) / CELL); ix++) {
+      for (let iz = Math.floor(Math.min(...zs) / CELL); iz <= Math.floor(Math.max(...zs) / CELL); iz++) {
+        const k = ix * 100000 + iz;
+        if (!lawnCells.has(k)) lawnCells.set(k, []);
+        lawnCells.get(k).push(rings);
+      }
+    }
+  }
+  const onLawn = (x, z) => (lawnCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || [])
+    .some(([outer, ...holes]) => inPoly(outer, x, z) && !holes.some((h) => inPoly(h, x, z)));
+  // Where they are: counted by 2 km square, so the list shows them spread over the map, the most first, not the first few found
+  const SQUARE = 2000;
+  const squares = { open: new Map(), slit: new Map() };
+  const note = (kind, x, z, extra = []) => {
+    const k = `${Math.floor(x / SQUARE)},${Math.floor(z / SQUARE)}`;
+    const square = squares[kind].get(k);
+    if (square) square.n++;
+    else squares[kind].set(k, { at: [Math.round(x), Math.round(z), ...extra], n: 1 });
+  };
+  let samples = 0, open = 0, slit = 0, over = 0, lawn = 0;
   for (const b of BLOCKS) {
     for (const ring of [b.poly, ...b.holes]) {
       let area = 0;
@@ -160,19 +182,24 @@ function drawnRoad(x, z, near = Infinity, below = 1) {
           const road = drawnRoad(ox, oz);
           const kerb = ground.kerbFootAt(x, z);
           if (road === -Infinity) {
-            open++;
-            if (where.open.length < 6 && open % 97 === 1) where.open.push([Math.round(ox), Math.round(oz)]);
+            if (onLawn(ox, oz)) lawn++;
+            else {
+              open++;
+              note('open', ox, oz);
+            }
           } else if (road < kerb.foot - 0.02) {
             slit++;
-            if (where.slit.length < 6 && slit % 197 === 1) where.slit.push([Math.round(ox), Math.round(oz), +(kerb.foot - road).toFixed(2)]);
+            note('slit', ox, oz, [+(kerb.foot - road).toFixed(2)]);
           } else if (road > kerb.top + 0.02) over++;
         }
       }
     }
   }
+  // [x, z, (how deep,) how many in its 2 km square]: the first found in each square
+  const most = (kind, count) => [...squares[kind].values()].sort((p, q) => q.n - p.n).slice(0, count).map(({ at, n }) => [...at, n]);
   report.kerbs = {
-    samples, noSurface: open, slitUnderKerb: slit, roadOverFootpath: over,
-    openShare: +((open + slit) / samples * 100).toFixed(2), where
+    samples, noSurface: open, slitUnderKerb: slit, roadOverFootpath: over, onLawn: lawn,
+    openShare: +((open + slit) / samples * 100).toFixed(2), where: { open: most('open', 12), slit: most('slit', 6) }
   };
 }
 
@@ -316,8 +343,9 @@ else {
   console.log(`wheels    ${r.wheels.samples} lane positions: ${r.wheels.over3cmShare}% more than 3 cm under the road, ${r.wheels.over15cmShare}% more than 15 cm`);
   console.log(`          ${JSON.stringify(Object.fromEntries(Object.entries(r.wheels).filter(([k]) => /cm$/.test(k) && !/Share/.test(k))))}`);
   if (r.wheels.worst.length) console.log(`          worst: ${r.wheels.worst.map(([s, n, x, z]) => `${s} m ${n} (${x}, ${z})`).join('; ')}`);
-  console.log(`kerbs     ${r.kerbs.samples} samples: ${r.kerbs.noSurface} with no surface, ${r.kerbs.slitUnderKerb} slits, ${r.kerbs.roadOverFootpath} road over the footpath (${r.kerbs.openShare}% open)`);
-  if (r.kerbs.where.open.length) console.log(`          open at ${r.kerbs.where.open.map((p) => p.join(',')).join('  ')}`);
+  console.log(`kerbs     ${r.kerbs.samples} samples: ${r.kerbs.noSurface} with no surface, ${r.kerbs.slitUnderKerb} slits, ${r.kerbs.roadOverFootpath} road over the footpath (${r.kerbs.openShare}% open); ${r.kerbs.onLawn} onto lawn`);
+  if (r.kerbs.where.open.length) console.log(`          open, by 2 km square, the most first (x,z: how many): ${r.kerbs.where.open.map(([x, z, n]) => `${x},${z}: ${n}`).join('  ')}`);
+  if (r.kerbs.where.slit.length) console.log(`          slits (x,z,depth: how many): ${r.kerbs.where.slit.map(([x, z, d, n]) => `${x},${z},${d}: ${n}`).join('  ')}`);
   console.log(`crossings ${r.crossings.total} without a junction (${JSON.stringify(r.crossings.byKinds)} by level: 0 ground, 1 bridge, 2 tunnel), ${r.crossings.tooClose} closer than ${ground.STACK_CLEARANCE} m`);
   for (const c of r.crossings.examples.slice(0, 6)) console.log(`          ${c.a} x ${c.b} at (${c.x}, ${c.z}): ${c.apart} m apart`);
   const bs = r.buildings;

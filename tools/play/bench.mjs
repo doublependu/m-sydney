@@ -47,10 +47,34 @@ for (const profile of profiles) {
     await game.page.waitForTimeout(3000);
     await game.page.evaluate(() => window.__gameDebug.frameCost());
     await game.page.waitForTimeout(8000);
-    const { fps, p50, p95, p99, ...cost } = await game.page.evaluate(() => ({ ...window.__gameDebug.frameCost(), ...window.__gameDebug.renderInfo() }));
+    const { fps, p50, p95, p99, ...timing } = await game.page.evaluate(() => window.__gameDebug.frameCost());
     const frames = { fps, p50, p95, p99 };
-    const { level } = await game.page.evaluate(() => window.__gameDebug.quality());
-    samples.push({ interactiveMs: Math.round(interactiveAt), level, stages, network, building, frames, cost, errors: game.errors.slice(0, 5) });
+    // The draws and triangles: the most over a second of frames. Read once, between two frames, they can be a pass that drew
+    // nothing, and say 0
+    const scene = await game.page.evaluate(() => new Promise((resolve) => {
+      let most = window.__gameDebug.renderInfo();
+      const until = performance.now() + 1000;
+      const sample = () => {
+        const info = window.__gameDebug.renderInfo();
+        if (info.drawCalls > most.drawCalls) most = info;
+        if (performance.now() < until) requestAnimationFrame(sample);
+        else resolve(most);
+      };
+      requestAnimationFrame(sample);
+    }));
+    const cost = { ...timing, ...scene };
+    // What Auto went by, in brief: a load that got a lower level than the others says why
+    const { level, auto } = await game.page.evaluate(() => {
+      const { choice, level, guess, seen: d } = window.__gameDebug.quality();
+      if (choice !== 'auto') return { level, auto: null };
+      const gpu = d.backend === 'webgpu' ? `WebGPU ${d.vendor || 'unnamed'}${d.isFallback ? ', a fallback adapter' : ''}` : `WebGL2 (${d.adapter})`;
+      return {
+        level,
+        auto: `${gpu}, ${d.cores} cores, ${d.memory} GB${d.coarse ? ', touch' : ''}${d.saveData ? ', saving data' : ''}`
+          + (level !== guess ? `; guessed ${guess}, ${level} from an earlier load` : '')
+      };
+    });
+    samples.push({ interactiveMs: Math.round(interactiveAt), level, auto, stages, network, building, frames, cost, errors: game.errors.slice(0, 5) });
     await browser.close();
     await new Promise((resolve) => setTimeout(resolve, 3000)); // as between the play scenarios: see tools/play/run.mjs
   }
@@ -64,11 +88,14 @@ for (const profile of profiles) {
   const budget = BUDGET_MS[profile];
   const pass = budget === undefined || median.interactiveMs <= budget;
   if (!pass || median.errors.length) failed = true;
-  results.push({ profile, budgetMs: budget, pass, ...median, totals, runs: samples.map(({ interactiveMs, level }) => ({ interactiveMs, level })) });
+  results.push({ profile, budgetMs: budget, pass, ...median, totals, runs: samples.map(({ interactiveMs, level, auto }) => ({ interactiveMs, level, auto })) });
   console.log(`\n${profile}: interactive at ${(median.interactiveMs / 1000).toFixed(2)} s (budget ${budget ? `${budget / 1000} s` : 'none'}) ${pass ? 'PASS' : 'OVER'}`);
   // Auto picks the level from the GPU's reported vendor, so one machine can land on different ones: a time means little
   // without the level it was measured at
   console.log(`  runs: ${samples.map(({ interactiveMs, level }) => `${(interactiveMs / 1000).toFixed(2)} s at ${level}`).join(', ')}`);
+  // What Auto saw, once for each different thing it saw: one line where every run saw the same
+  const seen = [...new Set(samples.map(({ auto }) => auto).filter(Boolean))];
+  if (seen.length) console.log(`  auto saw: ${seen.length === 1 ? seen[0] : samples.map(({ level, auto }, i) => `run ${i + 1} (${level}): ${auto}`).join('; ')}`);
   console.log(`  stages: ${Object.entries(totals).map(([name, ms]) => `${name} ${(ms / 1000).toFixed(2)}`).join(', ')}`);
   console.log(`  download: ${median.network.kilobytes} KB in ${median.network.requests} requests`);
   console.log(`  city complete ${(median.building.worldMs / 1000).toFixed(1)} s later, ${median.building.fps} FPS meanwhile, worst stall ${median.building.worstStallMs} ms, ${median.building.stalls} over 100 ms`);

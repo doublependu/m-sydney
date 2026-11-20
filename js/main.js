@@ -138,6 +138,8 @@ async function initApp() {
 
   await renderer.init();
   markInit('renderer');
+  // What draws: three.js falls back to WebGL2 where the browser has no WebGPU, or no adapter for it
+  document.getElementById('hud-backend').textContent = renderer.backend.isWebGPUBackend ? 'WebGPU' : 'WebGL2';
 
   // 2. Scene, atmosphere and lighting
   await showLoadingStage('Creating sky and environment lighting...');
@@ -2051,7 +2053,8 @@ async function initApp() {
       waitingForGround: () => !!awaitingGround,
       groundWaits: () => groundWaits.slice(),
       tileState: () => ({ known: Object.keys(GEO.tiles), built: [...builtTiles.keys()], done: [...builtTiles].filter(([, r]) => r.done).map(([k]) => k), held: heldTiles().map((t) => t.key), windowAt, colliders: controllerManager.colliders.length, gpu: { ...renderer.info.memory } }),
-      quality: () => ({ choice: quality.choice, level: quality.level, pixelRatio: renderer.getPixelRatio() }),
+      // guess: Auto's first guess from what it saw (seen), where level can be lower, learned from an earlier load's frame times
+      quality: () => ({ choice: quality.choice, level: quality.level, guess: quality.guess, pixelRatio: renderer.getPixelRatio(), seen: quality.seen }),
       trafficNear: (x, z, radius) => [...(trafficSystem?.cars ?? []), ...(trafficSystem?.buses ?? [])]
         .filter((v) => v.edge && Math.hypot(v.x - x, v.z - z) < radius)
         .map((v) => ({ x: v.x, z: v.z, y: v.ry, deck: !!v.edge.deck, sid: v.edge.sid || 0, speed: v.speed, struck: v.impactTime > 0 })),

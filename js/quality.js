@@ -69,9 +69,12 @@ function pickLevel(device, { search = '', storage } = {}) {
   return { choice, level: learned.level, guess, pixelScale: Number(learned.pixelScale) || 1 };
 }
 
+// What Auto goes by. `adapter` says why there's no WebGPU where there isn't: 'none' (the browser has it, but gave no adapter), 'no WebGPU'
+// or the error asking threw
 async function readDevice() {
   const device = {
     backend: 'webgl2',
+    adapter: navigator.gpu ? 'none' : 'no WebGPU',
     vendor: '',
     isFallback: false,
     cores: navigator.hardwareConcurrency || 4,
@@ -85,20 +88,25 @@ async function readDevice() {
     const adapter = await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' });
     if (adapter) {
       device.backend = 'webgpu';
+      device.adapter = 'found';
       device.vendor = (adapter.info?.vendor || '').toLowerCase();
       device.isFallback = Boolean(adapter.isFallbackAdapter ?? adapter.info?.isFallbackAdapter);
     }
-  } catch { /* three.js falls back to WebGL2 the same way. */ }
+  } catch (error) {
+    device.adapter = `error: ${error?.message || error}`; // three.js falls back to WebGL2 the same way
+  }
   return device;
 }
 
+// `seen`: what the device looked like to Auto, kept so that a load that got a lower level than usual can say why
 async function detectQuality() {
   const device = await readDevice();
   const picked = pickLevel(device, { search: location.search, storage: localStorage });
   return {
     ...LEVELS[picked.level],
     ...picked,
-    pixelRatio: pixelRatioFor(picked.level, device) * picked.pixelScale
+    pixelRatio: pixelRatioFor(picked.level, device) * picked.pixelScale,
+    seen: device
   };
 }
 

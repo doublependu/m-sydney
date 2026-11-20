@@ -1,13 +1,16 @@
-import { createSynthResources, createMotorVoice, setControlRate } from './audio-synthesis.js';
+import { createSynthResources, createMotorVoice, impulseBuffer, setControlRate } from './audio-synthesis.js';
 import { createEventResources, playEvent, createWindVoice } from './audio-events.js';
 
-// Sounds are worked out before there's an audio context to ask: the browser resamples them if its rate is different
+// Sounds are worked out before there's an audio context to ask: the browser resamples them if its rate is different. The
+// reverb's impulse is the one that can't be: it's made from the context itself (attachSounds()).
 const SOUND_RATE = 48000;
 import { CityAudioSources } from './audio-sources.js';
 import { CityAcoustics } from './audio-acoustics.js';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+// Under the parameter's maxValue, as smoothParameter() (js/audio-synthesis.js): a filter's is half the context's rate
 const smooth = (param, value, now, time = 0.035, immediate = false) => {
+  value = Math.min(value, param.maxValue);
   param.cancelScheduledValues(now);
   if (immediate) param.setValueAtTime(value, now);
   else param.setTargetAtTime(value, now, time);
@@ -232,7 +235,12 @@ class CityAudioSystem {
       this.prepareSounds();
       return;
     }
-    this.reverb.buffer = this.resources.impulse;
+    // A convolver refuses a buffer at another rate than its context's. Should it refuse this one anyway, the game plays on dry.
+    try {
+      this.reverb.buffer = impulseBuffer(context);
+    } catch (error) {
+      console.warn('[audio] No reverb', error);
+    }
     this.wind = createWindVoice(context, this.resources, this.mix);
   }
 

@@ -137,7 +137,8 @@ are a list in `tools/garden-areas.mjs`, so more can be added; the rest of the ma
 The generators write the whole map to `tools/data/generated/`, and `tools/build-tiles.mjs` cuts it up. What needs a 1 m raster is done a region at a
 time, each 7.2 km square with a margin, in worker threads (`tools/geodata/`), since one raster of it all wouldn't fit in memory. Lawns and
 footpaths come out of it as pieces of 240 m squares, each traced to its square's edges with every point on them kept through smoothing
-and simplifying (`tiledPolygons()`), so neighbours meet on the same points, with no gap and nothing drawn twice. `tools/geo-common.mjs` sets the world frame and the play area; `SYDNEY_AREA=inner` makes Inner Sydney instead, or `today` the old CBD map, for checking a generator still makes
+and simplifying (`tiledPolygons()`), so neighbours meet on the same points, with no gap and nothing drawn twice. Simplifying can push one
+edge of a piece past another; `build-tiles` untangles such a piece where it's written (`tools/tiles/simple-rings.mjs`, and logs each one). `tools/geo-common.mjs` sets the world frame and the play area; `SYDNEY_AREA=inner` makes Inner Sydney instead, or `today` the old CBD map, for checking a generator still makes
 what it did.
 
 | File | Holds | Fetched |

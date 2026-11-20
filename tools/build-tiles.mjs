@@ -15,6 +15,7 @@ import { BitRaster, flat, rdp } from './geo-common.mjs';
 import { beachBehind, beachTest, loadSand } from './sand-pieces.mjs';
 import { loadPonds } from './pond-pieces.mjs';
 import { onRegionEdge } from './geodata/regions.mjs';
+import { untangle } from './tiles/simple-rings.mjs';
 import { farFile, tileFile } from '../js/tiles/paths.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
@@ -155,6 +156,21 @@ function findStructures() {
   return { table, sid };
 }
 
+// The lawns and footpaths. One whose outline crosses itself (simplified in its 240 m square, tiledPolygons()) is untangled first: as it
+// was, it would be triangulated into shards over each other and the road (tools/tiles/simple-rings.mjs). The rest go as they are.
+const SURFACES = { lawns: [], pavements: [] };
+{
+  const untangled = [];
+  for (const field of ['lawns', 'pavements']) {
+    for (const rings of GEO[field]) {
+      const { pieces, changed, dropped } = untangle(rings);
+      if (changed) untangled.push(`${field === 'lawns' ? 'a lawn' : 'a footpath'} at ${rings[0][0]}, ${rings[0][1]}: ${pieces.length} piece${pieces.length > 1 ? 's' : ''}, ${dropped.toFixed(2)} m² dropped`);
+      SURFACES[field].push(...pieces);
+    }
+  }
+  console.log(`[tiles] outlines that crossed themselves, untangled: ${untangled.length ? untangled.join('; ') : 'none'}`);
+}
+
 function cutMap(derived) {
   const tiles = new Map();
   const tile = (ix, iz) => {
@@ -177,8 +193,8 @@ function cutMap(derived) {
     const flat = rings[0], m = (flat.length >> 2) << 1;
     return at(flat[m], flat[m + 1]);
   };
-  for (const rings of GEO.lawns) ringsHome(rings).lawns.push(rings);
-  for (const rings of GEO.pavements) ringsHome(rings).pavements.push(rings);
+  for (const rings of SURFACES.lawns) ringsHome(rings).lawns.push(rings);
+  for (const rings of SURFACES.pavements) ringsHome(rings).pavements.push(rings);
   for (const [kind, ...rings] of SAND) ringsHome(rings).sand.push([kind, ...rings]);
   for (const [level, ...rings] of PONDS) ringsHome(rings).lakes.push([level, ...rings]);
   for (const flat of GEO.fills) at(flat[0], flat[1]).fills.push(flat);

@@ -2360,17 +2360,27 @@ export const SCENARIOS = {
         // Stopped 15 m short of the line, facing it
         const heading = Math.atan2(a.dx, a.dz);
         await page.evaluate(({ x, z, heading }) => window.__gameDebug.goto(x, z, heading, 'car'), { x: a.x - a.dx * 15, z: a.z - a.dz * 15, heading });
-        const started = human.now();
-        let light = await showing(a);
-        while (light !== 'green' && human.now() - started < 40000) {
+        // Timed on the game's clock, which the lights run on: below 20 FPS it runs slower than the wall's, as with runs side by side
+        const started = await human.clock(), wallStarted = human.now();
+        // Whether anyone else came by: the one other car, the bus or the walker going through on the green, or crossing, holds it
+        const [jx, jz] = a.junction.split(',').map(Number);
+        const company = () => page.evaluate(([x, z]) => window.__gameDebug.trafficNear(x, z, 60).length + window.__gameDebug.walkers(x, z, 40).length, [jx, jz]);
+        let light = await showing(a), busy = false;
+        while (light !== 'green' && (await human.clock()) - started < 40 && human.now() - wallStarted < 120000) {
+          busy ||= (await company()) > 0;
           await human.wait(250);
           light = await showing(a);
         }
-        waits.push((human.now() - started) / 1000);
+        waits.push({ seconds: (await human.clock()) - started, busy });
       }
-      metric('secondsAtRed', waits.map((w) => +w.toFixed(1)));
+      metric('secondsAtRed', waits.map((w) => +w.seconds.toFixed(1)));
+      metric('withCompany', waits.filter((w) => w.busy).length);
       expect(waits.length >= 2, `only ${waits.length} reds to wait at`);
-      for (const w of waits) expect(w <= 11, `waited ${w.toFixed(1)} s at a red with nobody else about`);
+      // Nobody about: the green ends after its 6 s minimum, then 3 s of amber and 1 of all red. Somebody about: by its 24 s maximum
+      for (const { seconds, busy } of waits) {
+        if (busy) expect(seconds <= 29, `waited ${seconds.toFixed(1)} s at a red, longer than the lights' longest`);
+        else expect(seconds <= 11, `waited ${seconds.toFixed(1)} s at a red with nobody else about`);
+      }
     }
   },
 

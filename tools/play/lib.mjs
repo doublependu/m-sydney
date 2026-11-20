@@ -98,9 +98,13 @@ export async function screenshot(page, path) {
       return img.decode();
     }, world).catch(() => {});
   }
-  const shot = await page.screenshot().catch(() => null);
+  let failed = null;
+  const shot = await page.screenshot().catch((error) => { failed = error; return null; });
   await page.evaluate(() => document.getElementById('screenshot-world')?.remove()).catch(() => {});
+  // Said, not left out silently: a run's last picture is where to look first when it fails
   if (shot) writeFileSync(path, shot);
+  else console.warn(`[screenshot] no picture for ${path}: ${failed?.message.split('\n')[0] ?? 'none came back'}`);
+  if (shot && !world) console.warn(`[screenshot] ${path}: the game gave no picture of the world, so it's black behind the HUD`);
   return !!shot;
 }
 

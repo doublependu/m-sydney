@@ -218,6 +218,44 @@ function sirenSweepWave(context) {
   return context.createPeriodicWave(real, imaginary);
 }
 
+/**
+ * The shared reverb's impulse: a short noise tail and six early reflections, 0.7 s of stereo. A ConvolverNode only takes a buffer
+ * at its context's own rate, so this is made from the real context (a few milliseconds), not baked ahead with the other sounds.
+ * It's the same in seconds at any rate: the tail's filter and both parts' level are scaled from 48 kHz, where they're as tuned.
+ */
+export function impulseBuffer(context) {
+  const sampleRate = context.sampleRate;
+  const scale = 48000 / sampleRate;
+  // The tail's one-pole low-pass is 0.35 a sample at 48 kHz: its pole at the same frequency at any rate.
+  const smoothing = 1 - Math.pow(0.65, scale);
+  // A convolver sums every sample of its impulse, and there are more of them at a higher rate: noise as loud as at 48 kHz has
+  // its samples' power scaled by the rates' ratio.
+  const level = Math.sqrt(scale);
+  const impulse = context.createBuffer(2, Math.round(sampleRate * 0.7), sampleRate);
+  const reflections = [0.017, 0.034, 0.061, 0.097, 0.153, 0.231];
+  for (let channel = 0; channel < 2; channel++) {
+    const data = impulse.getChannelData(channel);
+    const rand = randomSequence(0x626c6f63 + channel * 7919);
+    let filtered = 0;
+    for (let i = 0; i < data.length; i++) {
+      const t = i / sampleRate;
+      filtered += (rand() * 2 - 1 - filtered) * smoothing;
+      const fadeIn = clamp((t - 0.012) / 0.035, 0, 1);
+      const fadeOut = Math.min(1, (data.length - 1 - i) / (sampleRate * 0.04));
+      data[i] = filtered * Math.exp(-t / 0.13) * fadeIn * fadeOut * 0.012 * level;
+    }
+    for (let tap = 0; tap < reflections.length; tap++) {
+      const start = Math.round((reflections[tap] + channel * (tap % 2 ? -0.0011 : 0.0017)) * sampleRate);
+      const width = Math.round(sampleRate * (0.0008 + tap * 0.0002));
+      const amplitude = 0.30 * Math.exp(-tap * 0.48) * level;
+      for (let i = 0; i < width; i++) {
+        data[start + i] += (rand() * 2 - 1) * Math.sin(Math.PI * i / width) * amplitude;
+      }
+    }
+  }
+  return impulse;
+}
+
 export function createSynthResources(context) {
   const sampleRate = context.sampleRate;
   const noise = context.createBuffer(1, Math.round(sampleRate * 2), sampleRate);
@@ -238,34 +276,10 @@ export function createSynthResources(context) {
   }
   normalizeLoop(noise, 0.30, 0.95);
 
-  const impulse = context.createBuffer(2, Math.round(sampleRate * 0.7), sampleRate);
-  const reflections = [0.017, 0.034, 0.061, 0.097, 0.153, 0.231];
-  for (let channel = 0; channel < 2; channel++) {
-    const data = impulse.getChannelData(channel);
-    const rand = randomSequence(0x626c6f63 + channel * 7919);
-    let filtered = 0;
-    for (let i = 0; i < data.length; i++) {
-      const t = i / sampleRate;
-      filtered += (rand() * 2 - 1 - filtered) * 0.35;
-      const fadeIn = clamp((t - 0.012) / 0.035, 0, 1);
-      const fadeOut = Math.min(1, (data.length - 1 - i) / (sampleRate * 0.04));
-      data[i] = filtered * Math.exp(-t / 0.13) * fadeIn * fadeOut * 0.012;
-    }
-    for (let tap = 0; tap < reflections.length; tap++) {
-      const start = Math.round((reflections[tap] + channel * (tap % 2 ? -0.0011 : 0.0017)) * sampleRate);
-      const width = Math.round(sampleRate * (0.0008 + tap * 0.0002));
-      const amplitude = 0.30 * Math.exp(-tap * 0.48);
-      for (let i = 0; i < width; i++) {
-        data[start + i] += (rand() * 2 - 1) * Math.sin(Math.PI * i / width) * amplitude;
-      }
-    }
-  }
-
   const wave = (harmonics) => context.createPeriodicWave(new Float32Array(harmonics.length), new Float32Array(harmonics));
   const helicopter = rotorBuffers(context);
   return {
     noise,
-    impulse,
     combustion: {
       sedan: combustionBuffers(context, 4, false, 0x73656461),
       suv: combustionBuffers(context, 6, false, 0x73757631),
@@ -285,9 +299,12 @@ export function createSynthResources(context) {
 // Keep only meaningful target changes. Replacing future events bounds the scheduling horizon; setTargetAtTime
 // starts from the value reached by the preceding ramp, including when an update interrupts that ramp.
 // Bring a future target forward even if its value is unchanged (for example, when a shift is interrupted).
+// A filter's frequency is held under half the context's rate (its maxValue): the browser would clamp it anyway, with a warning
+// every time, at an output of 22.05 kHz.
 function smoothParameter(parameter, timeConstant = 0.07, epsilon = 0.0001, snapInitial = false) {
   let target = NaN, scheduledTime = -Infinity;
   return (value, now, smoothing = timeConstant) => {
+    value = Math.min(value, parameter.maxValue);
     if (Math.abs(value - target) < epsilon && now >= scheduledTime) return;
     parameter.cancelScheduledValues(now);
     if (snapInitial && Number.isNaN(target)) parameter.setValueAtTime(value, now);

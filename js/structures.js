@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { color, float, smoothstep } from 'three/tsl';
+import { color, diffuseColor, float, smoothstep } from 'three/tsl';
 import { GroundCells } from './ground-geometry.js';
 import { DECK_DEPTH, DECK_STRUCTURE, KIND, LINKS, STATION_STEP as STEP, STRUCTURES, TUNNEL_HEIGHT, groundHeight, linkEdges, linkStations as stations, offsetLine, onGroundRoad, structuresAt, tunnelCovered } from './surfaces.js';
 import { onDeckSpan } from './bridge.js';
@@ -217,8 +217,11 @@ function structureMaterials() {
   lampMat.emissiveNode = color(0xfff1d0).mul(smoothstep(0.0, 1.0, cityUniforms.uInteriorGlow).mul(1.5).add(1.2));
 }
 // A road's material under a tunnel's roof: as on the open road, but with little of the sky's light, and none of its wet patches' shine
-// of the sky (what's left of it is its lights'). One for each road material
+// of the sky. What lights it is the strip lights along the ceiling: its own colour (markings, patches and wear as on the open road) in
+// their warm white, the same day and night but a little brighter after dark, as they are. The sun never reaches it, and the sky's light
+// alone left it black. One for each road material
 const UNDER_ROOF = 0.12;
+const LAMPLIT = { day: 0.4, night: 0.4 }; // the lamps' light on the road by day, and how much more after dark
 const tunnelRoads = new WeakMap();
 function tunnelRoadOf(roadMat) {
   let mat = tunnelRoads.get(roadMat);
@@ -226,6 +229,7 @@ function tunnelRoadOf(roadMat) {
     mat = roadMat.clone();
     mat.aoNode = float(UNDER_ROOF);
     mat.metalnessNode = float(0);
+    mat.emissiveNode = diffuseColor.rgb.mul(color(0xfff1d0)).mul(smoothstep(0.0, 1.0, cityUniforms.uInteriorGlow).mul(LAMPLIT.night).add(LAMPLIT.day));
     tunnelRoads.set(roadMat, mat);
   }
   return mat;

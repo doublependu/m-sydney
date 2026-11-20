@@ -1,5 +1,6 @@
 import { isHeld, tileKeyAt } from '../js/geodata.js';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 import { BLOCKS, ROADS, blockAt, getLocationLabel, landAt, nearestRoads, SPAWN, TELEPORT_LOCATIONS } from '../js/city-config.js';
 import { GEO, heldList } from '../js/geodata.js';
@@ -80,8 +81,13 @@ test('the elevated motorways are roads off the ground, and none runs along the H
 test('street furniture comes as x, z pairs inside the map', () => {
   assert.ok(heldList('postBoxes').length / 2 > 80);
   assert.ok(heldList('busShelters').length / 2 > 150);
+  // Inside the map's own bounds, whatever part of it is held: the whole map reaches 31 km from Town Hall
+  const { detail } = JSON.parse(fs.readFileSync(new URL('../public/tiles/world.json', import.meta.url))).frame;
+  const inside = (x, z) => detail.some((r) => x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1);
   for (const list of [heldList('postBoxes'), heldList('busShelters')]) {
     assert.equal(list.length % 2, 0);
-    for (const value of list) assert.ok(Number.isFinite(value) && Math.abs(value) < 12000);
+    for (let i = 0; i < list.length; i += 2) {
+      assert.ok(Number.isFinite(list[i]) && Number.isFinite(list[i + 1]) && inside(list[i], list[i + 1]), `${list[i]}, ${list[i + 1]}`);
+    }
   }
 });

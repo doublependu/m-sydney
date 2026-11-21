@@ -155,7 +155,9 @@ what it did.
 ## License and data
 
 This project is under the [GPL-3.0](LICENSE). It is built on Slop New York, © Mr.doob, used under the
-[MIT License](LICENSE-slop-newyork-MIT).
+[MIT License](LICENSE-slop-newyork-MIT). The concert's piano and trumpet (`js/audio-instruments.js`) are ported from
+[BeepBox](https://github.com/johnnesky/beepbox), © John Nesky and contributing authors, used under the [MIT License](LICENSE-beepbox-MIT).
+The tune they play, Waltzing Matilda (Marie Cowan's of 1903), is in the public domain.
 
 Map data keeps its own licences:
 

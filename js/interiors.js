@@ -468,7 +468,8 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
    * frame), and `head` the point over the player's head a following camera looks on from, or null for one that doesn't follow. The eye
    * is moved in, if a wall's in its way. Returns whether the player's in a room of an inside (`indoors`), and in one under a roof
    * (`building`: not a courtyard, a terrace or a balcony, which are `outdoor`), what F would do, whether the camera was kept clear of a
-   * building (`kept`), and whether that brought it so near that the player shouldn't be drawn (`close`).
+   * building (`kept`), and whether that brought it so near that the player shouldn't be drawn (`close`); and which site and room (`site`,
+   * `room`) and the room of the seat you're in (`seat`), for what happens there (the concert in the Opera House's hall).
    */
   function update(dt, player, mode, eye, look, head = null) {
     frameCount++;
@@ -547,7 +548,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     // sky its room is
     indoorLight.value = here?.room.glow ?? here?.site.inside.data.glow ?? 0.1;
     return { indoors: here !== null, building: here !== null && !here.room.outdoor, prompt: prompt && prompt.label, kept, close: kept && held < EYE_CLOSE,
-      shelter: here?.room.shelter ?? null };
+      shelter: here?.room.shelter ?? null, site: here?.site.id ?? null, room: here?.room.id ?? null, seat: seated?.room ?? null };
   }
 
   /**

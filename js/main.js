@@ -33,6 +33,7 @@ import { distanceToTile, planTiles } from './tiles/tile-manager.js';
 import { BLOCKS, CITY_BOUNDS } from './city-config.js';
 import { anchorToOrigin, auditPrecision, moveOriginNear, origin, rebaseMeshes, setOrigin } from './world-origin.js';
 import { createInteriors } from './interiors.js';
+import { OPERA_HOUSE, hallFrame } from './opera-house.js';
 import { addClearings, removeClearings } from './model-sites.js';
 import { ceilingOver, decksAt, groundHeight, groundRoadAt, inTunnel, roadRoute, structuresAt, surfaceHeight, surfaceSlope } from './surfaces.js';
 import { updateTunnelMouths } from './tunnel-mouths.js';
@@ -241,6 +242,14 @@ async function initApp() {
   touchControls.onStickPressed = () => phoneHud.hideHint();
   const soundButton = document.getElementById('btn-sound');
   const audioSystem = new CityAudioSystem({ controllerManager }, { onStateChange: updateSoundButton });
+  // The game's sound for what brings its own (a season's, the concert's): the context, where their sounds go in (through the game's
+  // mix), whether it's playing now, and how many voices the device can take
+  const gameSound = {
+    context: () => audioSystem.context,
+    output: () => audioSystem.mix,
+    live: () => audioSystem.ready && audioSystem.enabled && !audioSystem.paused && audioSystem.context?.state === 'running' && !document.hidden,
+    voices: audioSystem.limits.events
+  };
   function updateSoundButton() {
     if (!soundButton) return;
     soundButton.disabled = !audioSystem.supported;
@@ -1185,6 +1194,26 @@ async function initApp() {
     footpath: (x, z, y, heading) => footpathFrom(x, z, y, heading, (px, pz) => controllerManager.spotClear('person', px, pz, 0)),
     debug: new URLSearchParams(location.search).get('debug') === '1'
   });
+  // The concert in the Opera House's Concert Hall (js/concert.js): nothing of it is fetched till you sit in one of the hall's seats; then
+  // a performance each time you sit, played on while you stay in the hall
+  let concert = null, concertLoading = null;
+  const concertSeed = (() => {
+    const v = new URLSearchParams(location.search).get('concertSeed');
+    return v !== null && /^\d+$/.test(v) ? Number(v) >>> 0 : null;
+  })();
+  function updateConcert(dt, where) {
+    const inHall = where.site === 'opera-house' && where.room === 'hall';
+    const seated = inHall && where.seat === 'hall' && controllerManager.activeMode === 'person';
+    if (seated && !concert && !concertLoading) {
+      concertLoading = import('./concert.js').then(({ createConcert }) => {
+        concert = createConcert({ sound: gameSound, seed: concertSeed, frame: hallFrame(OPERA_HOUSE.halls.find((h) => h.id === 'concert')) });
+      }).catch((error) => {
+        console.error('[concert]', error);
+        concertLoading = null;
+      });
+    }
+    concert?.update(dt, { inHall, seated });
+  }
   let indoors = false;
   let indoorShelter = 0.85; // how far the room you're in shuts out the sky (js/interiors.js): a glazed foyer less, a concert hall all of it
   // Inside a house the city stays drawn, for the view from its windows: only the walk slows, and the sky's light dims
@@ -1699,12 +1728,7 @@ async function initApp() {
         // The harbour: the sea's sheet, the Opera House's shells and the Harbour Bridge's lines, for what's drawn on them
         harbour: { sea: () => seaSheet, sails: () => operaShells, bridge: bridgeOutline },
         // The sound: the context and where a season's sounds go in (through the game's mix), and whether it's playing now
-        sound: {
-          context: () => audioSystem.context,
-          output: () => audioSystem.mix,
-          live: () => audioSystem.ready && audioSystem.enabled && !audioSystem.paused && audioSystem.context?.state === 'running' && !document.hidden,
-          voices: audioSystem.limits.events
-        }
+        sound: gameSound
       }, { load });
     }).catch((error) => console.error('[seasons]', error));
 
@@ -1934,6 +1958,9 @@ async function initApp() {
       mapImage: (x0, z0, size, px, buildings) => mapSystem.renderImage(x0, z0, size, px, buildings),
       farBuildings: async (key) => (await fetchFarFile(key)).buildings,
       interior: () => interiors.state(),
+      // The concert (js/concert.js): its state, or { seed } for a new performance with that seed, { at } to jump to a time in it (s);
+      // null till you've sat in the Concert Hall
+      concert: (command) => concert?.debug(command) ?? null,
       // X, as a scenario presses it: { x, z, footway, via } where it put you, or null
       exitBuilding: () => exitBuilding(),
       // What the walker can bump into within r of (x, z): each collider's bounds and heights, and whether it's a model's (`level`)
@@ -2585,6 +2612,7 @@ async function initApp() {
       const here = interiors.update(dt, followed, controllerManager.activeMode, eye, cameraSystem.camera.getWorldDirection(lookDirection), head);
       setIndoors(here.indoors);
       setInBuilding(here.building && controllerManager.activeMode === 'person');
+      updateConcert(dt, here);
       indoorShelter = here.shelter ?? 0.85;
       showPrompt(here.prompt);
       const near = here.kept || firstPerson ? 0.1 : 0.35;

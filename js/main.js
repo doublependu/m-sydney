@@ -30,9 +30,10 @@ import { GEO, TILE, fetchFarFile, heldBytes, heldTiles, holdTile, holdTiles, isH
 import { estimateMemory } from './memory-estimate.js';
 import { lastSessionNote, noteText, startSessionNote } from './session-note.js';
 import { distanceToTile, planTiles } from './tiles/tile-manager.js';
-import { BLOCKS } from './city-config.js';
+import { BLOCKS, CITY_BOUNDS } from './city-config.js';
 import { anchorToOrigin, auditPrecision, moveOriginNear, origin, rebaseMeshes, setOrigin } from './world-origin.js';
 import { createInteriors } from './interiors.js';
+import { addClearings, removeClearings } from './model-sites.js';
 import { ceilingOver, decksAt, groundHeight, groundRoadAt, inTunnel, roadRoute, structuresAt, surfaceHeight, surfaceSlope } from './surfaces.js';
 import { updateTunnelMouths } from './tunnel-mouths.js';
 import { wheelContacts, wheelGround } from './ground-geometry.js';
@@ -1669,13 +1670,34 @@ async function initApp() {
         },
         origin,
         anchor: anchorToOrigin,
-        houses: { look: buildingLook, roofFrame, entry: city.houseEntry }
+        houses: { look: buildingLook, roofFrame, entry: city.houseEntry },
+        water: CITY_BOUNDS.waterLevel,
+        // Room for what a season stands in the city: no street tree planted in these circles from the next time they're put out, and
+        // now if one stands in one
+        clear(circles) {
+          addClearings(circles);
+          const field = streetDetails?.treeField;
+          if (circles.some((c) => field?.treesNear(c.x, c.z, c.r).length)) detailsDue = true;
+          return () => removeClearings(circles);
+        },
+        // What you can't walk or drive through; the walkers near you keep off it from now
+        colliders: {
+          add(list) {
+            controllerManager.addColliders(list);
+            if (windowAt && list.some((c) => Math.hypot((c.minX + c.maxX) / 2 - windowAt.x, (c.minZ + c.maxZ) / 2 - windowAt.z) < TRAFFIC_RADIUS)) {
+              trafficDue = true;
+            }
+          },
+          remove: (list) => controllerManager.removeColliders(list)
+        }
       }, { load });
     }).catch((error) => console.error('[seasons]', error));
 
     // From here on, keep up with the player. One thing at a time, the ground under them first, so a frame never pays for much.
     // The season waits for the first time there's nothing else to do: its shaders compile then, not while the city is still filling in
     let caughtUp = false;
+    // Street furniture put out again, or the traffic's roads and paths made again, where you are: a season has made room for something
+    let detailsDue = false, trafficDue = false;
     let detailsAt = { x: startX, z: startZ };
     let detailsDoneAt = detailsAt; // where street furniture was last put out round, once it's done: null while it's being done
     let plannedAt = -Infinity, plannedX = Infinity, plannedZ = Infinity;
@@ -1702,13 +1724,15 @@ async function initApp() {
       } else if (!flying() && buildNear(x, z)) {
         // the triangles of a lawn or footpath near you made, for standing on (js/drawn-ground.js)
         activity.label = 'the ground near you';
-      } else if (Math.hypot(x - detailsAt.x, z - detailsAt.z) > REBUILD_AFTER * (flying() ? 1.5 : 1)) {
+      } else if (detailsDue || Math.hypot(x - detailsAt.x, z - detailsAt.z) > REBUILD_AFTER * (flying() ? 1.5 : 1)) {
+        detailsDue = trafficDue = false;
         detailsAt = { x, z };
         detailsDoneAt = null;
         yield* groundFirst(rebuildDetails());
         detailsDoneAt = { x, z };
         yield* groundFirst(rebuildTraffic(x, z));
-      } else if (Math.hypot(x - windowAt.x, z - windowAt.z) > TRAFFIC_RADIUS * (flying() ? 0.75 : 0.4)) {
+      } else if (trafficDue || Math.hypot(x - windowAt.x, z - windowAt.z) > TRAFFIC_RADIUS * (flying() ? 0.75 : 0.4)) {
+        trafficDue = false;
         yield* groundFirst(rebuildTraffic(x, z));
       } else if (lotDetails && !flying() && (yield* lotDetails.work(x, z))) {
         // a square's lots worked out, or what's drawn of them chosen again

@@ -1,7 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { abs, attribute, cameraProjectionMatrix, clamp, dot, float, floor, fract, length, max, min, mix, modelViewMatrix, mrt, screenSize, sin, smoothstep, step,
-  uniform, uv, varying, vec3, vec4 } from 'three/tsl';
 import { decorationsOf, hashAt } from './christmas.js';
+import { BULB, EFFECT, SPACING, christmasMaterials, lin } from './christmas-materials.js';
 
 // The houses' Christmas decorations in December (js/season-december.js), on the lots near you (js/lot-details.js), which ones by
 // js/christmas.js:
@@ -16,17 +15,12 @@ import { decorationsOf, hashAt } from './christmas.js';
 // - At night the bulbs glow with the night's glow (uInteriorGlow), as the windows do, and bloom spreads them; nothing casts light. By day
 //   they're small coloured points and the shapes are what they are.
 // - Drawn within the graphics level's houseDetail of you, nearest first, as many as the level has ROOM for, refilled as you move.
+// - Their two materials are shared with the city's big trees (js/christmas-materials.js).
 
-const BULB = 0.055; // m across
-const MIN_PX = 1.5; // on screen, at the least
-const HALO = 0.22; // m across: a bulb's glow at night
-const HALO_PX = 4.5; // on screen, at the least: so a street far off still reads as strings of light
-const SPACING = 0.28; // m between bulbs along a string
 const DROP = 0.11; // m between an icicle's bulbs
 const REFILL = 15; // m moved before what's drawn is chosen again
 // Bulbs, and shapes' vertices (a few hundred a heavy house), each level has room for
 const ROOM = { low: { bulbs: 6000, vertices: 12000 }, medium: { bulbs: 16000, vertices: 30000 }, high: { bulbs: 26000, vertices: 48000 } };
-const EFFECT = { steady: 0, twinkle: 1, chase: 2, fade: 3, alternate: 4 };
 const WARM = [1.0, 0.7, 0.36];
 const COOL = [0.75, 0.86, 1.0];
 const MULTI = [[1.0, 0.09, 0.05], [0.1, 0.85, 0.18], [0.12, 0.3, 1.0], [1.0, 0.52, 0.06], [0.95, 0.16, 0.62]];
@@ -35,8 +29,6 @@ const YARD = 2.5; // m of front yard, at least, for anything to stand on it
 // --- Shapes ------------------------------------------------------------------------------------------------------------------------
 // Each made once, in its own frame: x to its right, y up, z towards whoever it faces. Triangles, each vertex its position, normal, colour
 // and glow (how much it's lit from inside at night). `bulbs`: points on it that carry bulbs, in strings.
-
-const lin = (hex) => [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255].map((v) => (v / 255) ** 2.2);
 
 function shapeBuilder() {
   const pos = [], nor = [], col = [], glow = [];
@@ -583,58 +575,6 @@ function rebase(baked, ox, oz) {
   baked.oz = oz;
 }
 
-// --- Materials ---------------------------------------------------------------------------------------------------------------------
-
-/**
- * The bulbs: sprites from aBulb (x, y, z from the origin; s, m along its string) and aLook (r, g, b; the effect + the house's seed), added
- * to what's behind them: a bulb in the middle, as big as one near and MIN_PX on screen far, and at night a halo round it HALO across (or
- * HALO_PX on screen), so that strings far off run together into lines of light. `now`: the game's clock; `glow`: the night's glow.
- */
-function bulbMaterial(now, glow) {
-  const mat = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-  // What's under it stays in the G-buffer: reflections see the wall, not the bulb's quad
-  mat.mrtNode = mrt({ normal: vec4(0.0, 0.0, 0.0, 0.0), metalRough: vec4(0.0, 0.0, 0.0, 0.0) });
-  const bulb = attribute('aBulb', 'vec4'), look = attribute('aLook', 'vec4');
-  mat.positionNode = bulb.xyz;
-  // A pixel's size at its depth
-  const depth = modelViewMatrix.mul(vec4(bulb.xyz, 1.0)).z.negate().max(0.05);
-  const pixel = depth.mul(2.0).div(cameraProjectionMatrix[1].y.mul(screenSize.y));
-  const night = smoothstep(0.4, 1.1, glow);
-  const core = max(float(BULB), pixel.mul(MIN_PX));
-  // By day the sprite is the bulb alone: no halo to spend the pixels on
-  const size = mix(core, max(core, max(float(HALO), pixel.mul(HALO_PX))), night);
-  mat.scaleNode = size;
-  const effect = floor(look.w), seed = fract(look.w);
-  const t = now;
-  const r = fract(sin(dot(bulb.xyz, vec3(12.9898, 78.233, 37.719))).mul(43758.5453));
-  const pick = (k) => float(1.0).sub(min(abs(effect.sub(k)), 1.0));
-  const twinkle = smoothstep(-0.2, 0.8, sin(t.mul(r.mul(2.5).add(1.5)).add(r.mul(40.0)))).mul(0.8).add(0.2);
-  const chase = float(1.0).sub(smoothstep(0.3, 0.55, abs(fract(bulb.w.div(0.84).sub(t.mul(1.1))).sub(0.5)).mul(2.0))).mul(0.8).add(0.2);
-  const fade = sin(t.mul(0.9).add(seed.mul(20.0))).mul(0.32).add(0.68);
-  const alternate = step(0.5, fract(bulb.w.div(SPACING * 2).add(0.25).add(floor(t.mul(0.7).add(seed)).mul(0.5)))).mul(0.8).add(0.2);
-  const pattern = pick(0).add(pick(1).mul(twinkle)).add(pick(2).mul(chase)).add(pick(3).mul(fade)).add(pick(4).mul(alternate));
-  const on = mix(float(1.0), pattern, night);
-  // The bulb: dimmer as it's spread over more than its own size, so a string far off, its sprites run together, is a line no brighter
-  // than it is near; its halo only at night
-  const coreLit = varying(look.xyz.mul(mix(float(0.85), float(5.5), night)).mul(on).mul(clamp(float(BULB).div(core), 0.12, 1.0)));
-  const haloLit = varying(look.xyz.mul(night.mul(on).mul(0.55)).mul(clamp(float(HALO).div(size), 0.15, 1.0)));
-  const coreR = varying(core.div(size));
-  const d = length(uv().sub(0.5)).mul(2.0);
-  const inCore = float(1.0).sub(smoothstep(coreR.mul(0.55), coreR, d));
-  const halo = max(float(1.0).sub(d), 0.0).pow(2.5);
-  mat.colorNode = vec4(coreLit.mul(inCore).add(haloLit.mul(halo)), 1.0);
-  mat.opacityNode = float(1.0);
-  return mat;
-}
-
-/** The shapes: lit as anything else, and from inside by their aGlow at night */
-function shapeMaterial(glow) {
-  const mat = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.65, metalness: 0 });
-  const g = attribute('aGlow', 'float');
-  mat.emissiveNode = attribute('color', 'vec3').mul(g).mul(smoothstep(0.4, 1.1, glow)).mul(2.0);
-  return mat;
-}
-
 // --- The houses near you ------------------------------------------------------------------------------------------------------------
 
 /**
@@ -649,8 +589,7 @@ function createChristmasHouses({ level = 'high', reach = () => 260, squares = ()
   const room = ROOM[level] || ROOM.high;
   const group = new THREE.Group();
   group.name = 'ChristmasHouses';
-  const now = uniform(0);
-  let bulbMesh = null, shapeMesh = null, glow = null;
+  let bulbMesh = null, shapeMesh = null, materials = null;
 
   // Per square's result: its decorated lots, worked out a few at a time; and each lot's kit
   const done = new WeakMap(); // result -> { lots: [lot], next: index, kits: [baked], counted }
@@ -755,7 +694,7 @@ function createChristmasHouses({ level = 'high', reach = () => 260, squares = ()
 
   // The meshes, their materials compiled with one bulb and one triangle in them, out of sight
   function* show() {
-    glow = env.glow;
+    materials = christmasMaterials(env.glow);
     const quad = new THREE.PlaneGeometry(1, 1);
     const geometry = new THREE.InstancedBufferGeometry();
     geometry.index = quad.index;
@@ -765,7 +704,7 @@ function createChristmasHouses({ level = 'high', reach = () => 260, squares = ()
     geometry.setAttribute('aBulb', new THREE.InstancedBufferAttribute(new Float32Array(room.bulbs * 4), 4));
     geometry.setAttribute('aLook', new THREE.InstancedBufferAttribute(new Float32Array(room.bulbs * 4), 4));
     geometry.instanceCount = 1;
-    bulbMesh = new THREE.Mesh(geometry, bulbMaterial(now, glow));
+    bulbMesh = new THREE.Mesh(geometry, materials.bulbs);
     bulbMesh.name = 'ChristmasBulbs';
     const shapeGeometry = new THREE.BufferGeometry();
     shapeGeometry.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(room.vertices * 3), 3));
@@ -773,13 +712,12 @@ function createChristmasHouses({ level = 'high', reach = () => 260, squares = ()
     shapeGeometry.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(room.vertices * 3), 3));
     shapeGeometry.setAttribute('aGlow', new THREE.Float32BufferAttribute(new Float32Array(room.vertices), 1));
     shapeGeometry.setDrawRange(0, 3);
-    shapeMesh = new THREE.Mesh(shapeGeometry, shapeMaterial(glow));
+    shapeMesh = new THREE.Mesh(shapeGeometry, materials.shapes);
     shapeMesh.name = 'ChristmasShapes';
     shapeMesh.castShadow = false;
     shapeMesh.receiveShadow = true;
     for (const mesh of [bulbMesh, shapeMesh]) {
       mesh.userData.lifted = true; // written where they stand
-      mesh.userData.ownMaterial = true; // let go of with the group
       mesh.frustumCulled = false; // what's in them is chosen near you
       group.add(mesh);
     }
@@ -889,7 +827,7 @@ function createChristmasHouses({ level = 'high', reach = () => 260, squares = ()
     group,
     work,
     census,
-    update(elapsed) { now.value = elapsed; },
+    update(elapsed) { if (materials) materials.now.value = elapsed; },
     shown: () => !!bulbMesh,
     state: () => ({ decorated, drawn, at: filledAt && { x: Math.round(filledAt.x), z: Math.round(filledAt.z) },
       pending: squares().filter((e) => { const s = done.get(e.result); return !s || s.next < s.lots.length; }).length, lotsPending: !!lotsPending() }),

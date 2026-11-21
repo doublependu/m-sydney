@@ -273,9 +273,17 @@ const SITE_OUTLINES = MODEL_SITES.filter((s) => s.outline && !s.debug).flatMap((
   h, pts: ring.map(([x, z]) => toWorldOf(s, x, z))
 })));
 
-// Each site's clearings in the world's frame
+// Each site's clearings in the world's frame, and those something else stands in for a while (a season's: December's big trees)
 const SITE_CLEARINGS = MODEL_SITES.flatMap((s) => (s.clear || []).map(([x, z, r]) => ({ ...toWorldOf(s, x, z), r })));
+const ADDED_CLEARINGS = new Set();
 /** Whether (x, z) is outside every site's clearings: somewhere a street tree may stand */
-const clearOfSites = (x, z) => SITE_CLEARINGS.every((c) => (x - c.x) ** 2 + (z - c.z) ** 2 > c.r * c.r);
+function clearOfSites(x, z) {
+  for (const c of SITE_CLEARINGS) if ((x - c.x) ** 2 + (z - c.z) ** 2 <= c.r * c.r) return false;
+  for (const c of ADDED_CLEARINGS) if ((x - c.x) ** 2 + (z - c.z) ** 2 <= c.r * c.r) return false;
+  return true;
+}
+/** Clearings ({ x, z, r }) kept from the next time the street trees are planted, till they're taken away again */
+const addClearings = (list) => list.forEach((c) => ADDED_CLEARINGS.add(c));
+const removeClearings = (list) => list.forEach((c) => ADDED_CLEARINGS.delete(c));
 
-export { MODEL_SITES, SITE_CUTS, SITE_OUTLINES, clearOfSites, toWorldOf };
+export { MODEL_SITES, SITE_CUTS, SITE_OUTLINES, addClearings, clearOfSites, removeClearings, toWorldOf };

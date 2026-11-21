@@ -1,6 +1,6 @@
 // The seasons: what Sydney's calendar brings to the city. The date is Sydney's (Australia/Sydney), whatever the player's own time zone:
 // - November, 1-30 November: the jacarandas' carpets of fallen flowers, and petals on your car (js/season-november.js);
-// - December, 1-26 December: Christmas, the houses' lights and decorations (js/season-december.js);
+// - December, 1-26 December: Christmas, the city's big trees and the houses' lights and decorations (js/season-december.js);
 // - New Year, 27 December - 15 January: the fireworks.
 // ?date=2026-12-10 sets the date (for tests and pictures) and ?season=off turns them off.
 //
@@ -38,6 +38,11 @@
 //   houses              what a house's shape is worked out with: look(b, whole) (js/building-look.js buildingLook(): its pitch,
 //                       gabled, eaves), roofFrame(ring, record) (js/building-footprints.js) and entry(front, style) (js/house-entry.js
 //                       houseEntry(): its door and bays)
+//   water               the sea's level (m)
+//   clear(circles)      room for what the season stands in the city ([{ x, z, r }]): no street tree planted in them, from now (the
+//                       street furniture put out again if one stands in one); gives back a function that takes the room away again
+//   colliders           { add(list), remove(list) }: what the player can't walk or drive through (js/controllers.js colliders); the
+//                       walkers near you keep off them once their paths are made again
 
 const ZONE = 'Australia/Sydney';
 

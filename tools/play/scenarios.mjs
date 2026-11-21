@@ -3517,6 +3517,54 @@ export const SCENARIOS = {
     }
   },
 
+  // December's big trees (js/christmas-trees.js): those within reach of the start made and drawn whole, the rest a glow far off; at
+  // Martin Place its plinth on the paving, no street tree in its clearing, and its fence holds you off; the one on Cockle Bay afloat
+  'december-trees': {
+    minutes: 4,
+    query: 'date=2026-12-10',
+    async run({ human, page, metric, expect }) {
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      await page.waitForFunction(() => window.__gameDebug.season()?.running, null, { timeout: 60000, polling: 250 });
+      const made = (x, z) => page.waitForFunction(([px, pz]) => {
+        const t = window.__gameDebug.season()?.trees;
+        return t && t.pending === 0 && t.at && Math.hypot(t.at.x - px, t.at.z - pz) < 120 && t;
+      }, [x, z], { timeout: 90000, polling: 500 }).then((h) => h.jsonValue()).catch(() => null);
+      const here = await human.state();
+      const start = await made(here.x, here.z);
+      const city = ['martin-place', 'darling-harbour', 'barangaroo', 'the-rocks'];
+      expect(!!start && city.every((id) => start.made.includes(id)), `the city's trees near the start: ${JSON.stringify(start)}`);
+      expect(start?.drawn.trees >= 4 && start.drawn.bulbs > 4000 && start.drawn.beacons === 0, `drawn at the start: ${JSON.stringify(start?.drawn)}`);
+      metric('treesDrawn', start?.drawn.trees ?? 0);
+      metric('treeBulbs', start?.drawn.bulbs ?? 0);
+      metric('treeVertices', start?.drawn.vertices ?? 0);
+      // Martin Place, before the GPO: on foot, south of it, facing it
+      await page.evaluate(() => window.__gameDebug.goto(-6, -641, 0, 'person'));
+      await made(-6, -641);
+      const list = await page.evaluate(() => window.__gameDebug.season({ trees: true }));
+      const mp = list.find((t) => t.id === 'martin-place'), dh = list.find((t) => t.id === 'darling-harbour');
+      const paving = await page.evaluate(() => window.__gameDebug.drawnAt(-6, -625).top);
+      metric('plinthOverPaving', +(mp.base - paving).toFixed(2));
+      expect(mp.base !== null && mp.base - paving > 0.1 && mp.base - paving < 0.9, `Martin Place's plinth at ${mp.base}, the paving at ${paving}`);
+      expect(dh.base !== null && Math.abs(dh.base + 1.45) < 0.05, `Darling Harbour's afloat: its plinth at ${dh.base}`);
+      const clearings = await page.evaluate(() => window.__gameDebug.season({ clearings: true }));
+      expect(clearings.length >= 3 && clearings.every((c) => c.trees === 0), `street trees in the clearings: ${JSON.stringify(clearings)}`);
+      const fence = await page.evaluate(() => window.__gameDebug.collidersNear(-6, -625, 4).filter((c) => c.outer?.length === 16));
+      expect(fence.length === 1, `Martin Place's fence: ${fence.length} colliders`);
+      // Walk at it: held off at its fence
+      await human.hold('KeyW', 7000);
+      await human.wait(500);
+      const p = await human.state();
+      const off = Math.hypot(p.x + 6, p.z + 625);
+      metric('heldOffAt', +off.toFixed(2));
+      expect(p.z > -636 && off > 8.0 && off < 9.5, `walking at the tree, stopped ${off.toFixed(2)} m from its middle at (${p.x.toFixed(1)}, ${p.z.toFixed(1)})`);
+      // From North Sydney, past reach: the CBD's trees are a glow each
+      await page.evaluate(() => window.__gameDebug.goto(-541, -3570, Math.PI, 'person'));
+      const far = await made(-541, -3570);
+      metric('beaconsFromNorthSydney', far?.drawn.beacons ?? 0);
+      expect(far && far.drawn.beacons >= 4, `from North Sydney: ${JSON.stringify(far?.drawn)}`);
+    }
+  },
+
   // ?season=off: nothing of any season is fetched or drawn, only the calendar that says so
   'seasons-off': {
     minutes: 3,

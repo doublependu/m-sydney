@@ -6,11 +6,12 @@ import { bufferFor, releaseOf } from './audio-instruments.js';
 const LEVELS = { piano: 1.2, trumpet: 2.8 };
 
 // The stage in the Concert Hall's own frame (js/opera-house.js hallFrame(): s north along the hall, v east, y over the harbour), as
-// tools/models/opera_ch.py builds it: 12.3 m deep (s 49-61.3), its front to the north, the audience beyond; its floor 17.5 m up.
+// tools/models/opera_ch.py builds it: 12.3 m deep (s 49-61.3), its front to the north, the audience beyond; its floor 17.5 m up. Where
+// the performers' model (tools/models/opera_concert.py, its JSON's `sound`) has them.
 const STAGE = {
   hall: 'concert', floor: 17.5, front: 61.3, back: 49.0, width: 14.5,
-  piano: [55.2, -2.4], // s, v: the piano's middle, a little west of the stage's centre line
-  trumpet: [58.4, 1.4] // where the trumpeter stands, in the piano's curve
+  piano: [55.6, -0.12], // s, v: the piano's middle, its keyboard to the east, its lid open to the audience
+  trumpet: [57.8, -0.95] // where the trumpeter stands, in the piano's curve
 };
 /** A place on the stage in the world: [x, y, z] from (s, v) and a height over its floor; `frame` the hall's (hallFrame()) */
 const stagePoint = (frame, [s, v], up = 0) => frame(s, v, STAGE.floor + up);

@@ -212,6 +212,7 @@ class LightingSystem {
     this.hemiLight.position.set(0, 300, 0);
     this.scene.add(this.hemiLight);
     this.shelter = 0;
+    this.house = 1; // a show's house lights (the Concert Hall's concert): the sky's light left indoors goes down with them
 
     this.applyPreset('golden');
 
@@ -305,11 +306,19 @@ class LightingSystem {
     this.applyShelter();
   }
 
+  /** A show's house lights, 1 up to 0 out: under cover, what's left of the sky's light goes down with them */
+  setHouse(amount) {
+    if (Math.abs(amount - this.house) < 1e-3) return;
+    this.house = amount;
+    this.applyShelter();
+  }
+
   applyShelter() {
     const s = this.shelter;
-    this.sunLight.intensity = this.levels.sun * (1 - 0.95 * s);
-    this.hemiLight.intensity = this.levels.hemi * (1 - 0.75 * s);
-    this.scene.environmentIntensity = this.levels.env * (1 - 0.75 * s);
+    const house = 1 - (1 - this.house) * s;
+    this.sunLight.intensity = this.levels.sun * (1 - 0.95 * s) * house;
+    this.hemiLight.intensity = this.levels.hemi * (1 - 0.75 * s) * house;
+    this.scene.environmentIntensity = this.levels.env * (1 - 0.75 * s) * house;
   }
 
   update(focusPos) {

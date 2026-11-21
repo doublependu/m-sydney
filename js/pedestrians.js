@@ -743,9 +743,10 @@ const qrot = (q, v) => v.add(cross(q.xyz, cross(q.xyz, v).add(v.mul(q.w))).mul(2
  * Material for one crowd mesh. `pose` is its storage buffer (STRIDE vec4s per instance). The vertex stage morphs the
  * bind pose (girth, female, hair), skins it with two bones and resolves per-instance palette colours & style flags;
  * the near LOD (`detail = 1`) adds fine procedural facial/jacket/shoe detail per body part in the fragment stage,
- * while the far LOD (`detail = 0`) shades its part colours directly in the vertex stage.
+ * while the far LOD (`detail = 0`) shades its part colours directly in the vertex stage. `dress`: what one person wears whatever their
+ * seed, { coat, shirt, legs } as hex colours, a tailored jacket and leather shoes (a performer's suit); its skin and hair are the seed's.
  */
-function createPersonMaterial(pose, detail = 1) {
+function createPersonMaterial(pose, detail = 1, dress = null) {
   const mat = new THREE.MeshStandardNodeMaterial({ metalness: 0 });
   const base = int(instanceIndex).mul(STRIDE);
   const info = pose.element(base.add(STRIDE - 1)); // seed, female, girth, hair
@@ -787,17 +788,17 @@ function createPersonMaterial(pose, detail = 1) {
   const lane = (salt) => fract(sin(info.x.add(salt).mul(12.9898)).mul(43758.5453));
   const skinCol = vertexStage(pickColorFromPalette(SKIN_COLORS, lane(17.0))).toVar();
   const hairCol = vertexStage(pickColorFromPalette(HAIR_COLORS, lane(3.0))).toVar();
-  const coatCol = vertexStage(
+  const coatCol = dress ? color(dress.coat) : vertexStage(
     mix(pickColorFromPalette(COAT_COLORS, lane(29.0)), pickColorFromPalette(COAT_COLORS_F, lane(29.0)), female)
   ).toVar();
-  const shirtCol = vertexStage(pickColorFromPalette(SHIRT_COLORS, lane(71.0))).toVar();
-  const legsCol = vertexStage(
+  const shirtCol = dress ? color(dress.shirt) : vertexStage(pickColorFromPalette(SHIRT_COLORS, lane(71.0))).toVar();
+  const legsCol = dress ? color(dress.legs) : vertexStage(
     mix(pickColorFromPalette(LEG_COLORS, lane(47.0)), pickColorFromPalette(LEG_COLORS_F, lane(47.0)), female)
   ).toVar();
   const bald = vertexStage(step(lane(41.0), 0.08).mul(float(1.0).sub(female))).toVar();
-  const tailored = vertexStage(step(0.42, lane(89.0))).toVar();
-  const hemY = vertexStage(mix(mix(0.955, 0.88, female), 1.0, lane(61.0))).toVar();
-  const sneaker = vertexStage(step(0.4, lane(5.0))).toVar();
+  const tailored = dress ? float(1.0) : vertexStage(step(0.42, lane(89.0))).toVar();
+  const hemY = dress ? float(0.93) : vertexStage(mix(mix(0.955, 0.88, female), 1.0, lane(61.0))).toVar();
+  const sneaker = dress ? float(0.0) : vertexStage(step(0.4, lane(5.0))).toVar();
   const upperCol = vertexStage(
     mix(
       mix(color(0x201e1c), color(0x4a3524), lane(23.0)),
@@ -969,9 +970,10 @@ function createPersonMaterial(pose, detail = 1) {
 class PersonCrowd {
   /**
    * @param {number} maxCount - most people drawn at once
-   * @param {{ farDistance?: number, castShadow?: boolean }} options - beyond farDistance (m) people use the far LOD
+   * @param {{ farDistance?: number, castShadow?: boolean, dress?: object }} options - beyond farDistance (m) people use the far LOD;
+   *   `dress`: what they all wear (createPersonMaterial())
    */
-  constructor(maxCount, { farDistance = 34, castShadow = true } = {}) {
+  constructor(maxCount, { farDistance = 34, castShadow = true, dress = null } = {}) {
     this.farDistance = farDistance;
     this.updates = 0;
     const levels = Number.isFinite(farDistance) ? [1, 0] : [1];
@@ -979,7 +981,7 @@ class PersonCrowd {
       // WebGL2 has no storage buffers: three.js reads this one through a texture there, but only when marked as a PBO;
       // otherwise it reads element k of the buffer as vertex k's attribute, whatever index the shader asks for
       const pose = attributeArray(maxCount * STRIDE, 'vec4').toReadOnly().setPBO(true);
-      const mesh = new THREE.Mesh(buildPersonGeometry(detail), createPersonMaterial(pose, detail));
+      const mesh = new THREE.Mesh(buildPersonGeometry(detail), createPersonMaterial(pose, detail, dress));
       mesh.name = detail ? 'PeopleNear' : 'PeopleFar';
       mesh.count = 1; // one (degenerate) person until the crowd is placed, so the pipelines compile up front
       mesh.frustumCulled = false;
@@ -2284,7 +2286,55 @@ class PersonRig {
       this.writeFoot(i, ankle, _qa.copy(_qRoot).multiply(qX(_q, footPitch)), 0);
     }
   }
+
+  /**
+   * After update(): its legs as they stand or walk, then its chest, head and hands posed by hand, for what it holds or plays. The chest
+   * is turned (`chestYaw`), bent forward (`chestPitch`) and rolled (`chestRoll`) from the pelvis; the head turned and pitched (+ down)
+   * from the chest; each hand, [left, right], at a point (the palm, in the rig's frame: the world's x, z and its height over what it
+   * stands on), its elbow towards `poles[i]`, or left hanging if null. Its head after: headPosition, headQuaternion.
+   */
+  hold({ chestYaw = 0, chestPitch = 0, chestRoll = 0, headYaw = 0, headPitch = 0, hands = [null, null], poles = [null, null] } = {}) {
+    const s = this.s;
+    const yaw = this.yaw;
+    this.setPelvisRotation();
+    _pelvis.set(this.x + Math.cos(yaw) * this.sway, this.pelvisY, this.z - Math.sin(yaw) * this.sway);
+    qY(_qRoot, yaw);
+    _qChest.copy(_qPelvis).multiply(qY(_q, chestYaw)).multiply(qX(_q, 0.02 + chestPitch)).multiply(qZ(_q, chestRoll));
+    this.writeBone(BONE.CHEST, _qChest, this.jointFrom(BONE.PELVIS, BONE.CHEST, _qPelvis, _pelvis, _chest));
+    _qa.copy(_qChest).multiply(qY(_q, headYaw)).multiply(qX(_q, headPitch - 0.02));
+    this.jointFrom(BONE.CHEST, BONE.HEAD, _qChest, _chest, _v);
+    this.writeBone(BONE.HEAD, _qa, _v);
+    this.headPosition = (this.headPosition || new THREE.Vector3()).copy(_v);
+    this.headQuaternion = (this.headQuaternion || new THREE.Quaternion()).copy(_qa);
+    _fwd.set(0, 0, 1).applyQuaternion(_qChest);
+    for (let i = 0; i < 2; i++) {
+      const side = SIDES[i];
+      this.jointFrom(BONE.CHEST, LIMB.upperArm[i], _qChest, _chest, _shoulder);
+      const hand = hands[i];
+      if (hand) _target.copy(hand);
+      // hanging: a little forward and out, the elbow soft
+      else _target.set(side * 0.06, -0.56 * s, 0.07 * s).applyQuaternion(_qChest).add(_shoulder);
+      if (poles[i]) _pole.copy(poles[i]);
+      else _pole.set(side * 0.3, -1, -0.6).applyQuaternion(_qChest);
+      this.limb(LIMB.upperArm[i], LIMB.forearm[i], _shoulder, _target, UPPER_ARM * s, (FOREARM + 0.07) * s, _pole, _fwd, side * ARM_BIND_ABDUCTION);
+    }
+  }
+
+  /** Where a point given in a bone's bind pose (a hand's palm, `PERSON_BONES`) is now, in the rig's frame, written into `out` */
+  boneWorld(b, point, out) {
+    const a = this.pose;
+    const o = b * 8;
+    _q.set(a[o], a[o + 1], a[o + 2], a[o + 3]);
+    out.copy(point).multiplyScalar(a[o + 7]).applyQuaternion(_q);
+    return out.set(out.x + a[o + 4] + this.poseOriginX, out.y + a[o + 5], out.z + a[o + 6] + this.poseOriginZ);
+  }
+
+  /** A bone's turn now (the quaternion its bind pose is turned by), into `out` */
+  boneTurn(b, out) {
+    const o = b * 8;
+    return out.set(this.pose[o], this.pose[o + 1], this.pose[o + 2], this.pose[o + 3]);
+  }
 }
 
 
-export { BONE as PERSON_BONES, buildPersonGeometry, createPersonMaterial, PersonCrowd, PersonRig, PEDESTRIAN_DIVE_DURATION };
+export { BONE as PERSON_BONES, BIND as PERSON_BIND, buildPersonGeometry, createPersonMaterial, PersonCrowd, PersonRig, PEDESTRIAN_DIVE_DURATION };

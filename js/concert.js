@@ -11,10 +11,12 @@
 // What's sounding when, for whatever follows the music (the performers): now() is the score's time (s) as it's heard; sounding(i) and
 // next(i) the notes of 'piano' or 'trumpet' sounding now and starting next; place() the section, its part (who leads), the beat and the
 // phrase now. Each takes a score time too. Where they stand on the stage, the hall's reverb and how a note is played: js/concert-sound.js.
+// The performers on the stage who play it (js/concert-stage.js) come in this module's chunk too: the music waits for them (`hold`).
 import ConcertWorker from './concert-worker.js?worker&inline';
 import { bufferFor, renderBuffer } from './audio-instruments.js';
 import { STAGE, concertGraph, playNote, stagePoint, toAudio, touch } from './concert-sound.js';
 import { arrange, nextAfter, placeAt, soundingAt } from './concert-arranger.js';
+import { createConcertStage } from './concert-stage.js';
 
 const AHEAD = 1.0; // s: notes are scheduled this far ahead on the audio clock
 const LEAD_IN = 0.8; // s: from the first notes being ready to the first played
@@ -23,8 +25,9 @@ const RING = 4; // s: after the last note, before a performance is over
 
 /**
  * The concert. `sound`: the game's (js/main.js: { context(), output(), live() }); `frame`: the Concert Hall's (js/opera-house.js
- * hallFrame()), to place the stage; `seed`: the first performance's, or a new one each time. update(dt, { inHall, seated }) each frame:
- * sitting in the hall starts a performance if none is playing; leaving the hall fades it.
+ * hallFrame()), to place the stage; `seed`: the first performance's, or a new one each time. update(dt, { inHall, seated, hold }) each
+ * frame: sitting in the hall starts a performance if none is playing; leaving the hall fades it. `hold`: s the music, once it's ready,
+ * may still wait to start (for the performers to take their places).
  */
 function createConcert({ sound, frame, seed: firstSeed = null }) {
   const positions = { piano: stagePoint(frame, STAGE.piano, 1.0), trumpet: stagePoint(frame, STAGE.trumpet, 1.55) };
@@ -36,6 +39,7 @@ function createConcert({ sound, frame, seed: firstSeed = null }) {
   let t0 = null; // the context's time of the score's 0
   let gameClock = 0, gameT0 = null; // the score on the game's clock while there's no sound
   let fadeAt = null, endedAt = null;
+  let readyFor = 0; // s the music has been ready to start
   let scheduled = 0, skipped = 0, voices = [];
   let firstScheduledAt = null, sittingAt = null, arrangedMs = null, renderMs = null, rendered = 0;
   let count = 0;
@@ -67,6 +71,7 @@ function createConcert({ sound, frame, seed: firstSeed = null }) {
     next = 0;
     t0 = gameT0 = null;
     fadeAt = endedAt = null;
+    readyFor = 0;
     scheduled = skipped = 0;
     firstScheduledAt = null;
     sittingAt = performance.now();
@@ -188,7 +193,7 @@ function createConcert({ sound, frame, seed: firstSeed = null }) {
     if (voices.length > 64) voices = voices.filter((v) => v.ends > t);
   }
 
-  function update(dt, { inHall, seated }) {
+  function update(dt, { inHall, seated, hold = 0 }) {
     gameClock += dt;
     // sitting down (or seated when this first runs) starts one, unless one's playing: staying seated after it ends doesn't
     const sat = seated && inHall && !wasSeated;
@@ -196,7 +201,8 @@ function createConcert({ sound, frame, seed: firstSeed = null }) {
     if (sat && (state === 'idle' || state === 'ended' || state === 'fading')) begin(state === 'idle' ? firstSeed : null);
     if (!inHall && (state === 'loading' || state === 'playing')) fade();
     if (!inHall && state === 'ended' && buffers.size) buffers.clear();
-    if (state === 'loading' && score && ready) {
+    if (state === 'loading' && score && ready) readyFor += dt;
+    if (state === 'loading' && score && ready && readyFor >= hold) {
       // started on both clocks; the audio's if there's sound
       state = 'playing';
       gameT0 = gameClock + LEAD_IN;
@@ -336,4 +342,4 @@ function createConcert({ sound, frame, seed: firstSeed = null }) {
   };
 }
 
-export { createConcert };
+export { createConcert, createConcertStage };

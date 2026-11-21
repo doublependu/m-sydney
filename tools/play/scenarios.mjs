@@ -999,9 +999,9 @@ function bronteScenario() {
 }
 
 // The Opera House (js/model-sites.js, opera-house): up the Monumental Steps and the flight to the upper podium, in at the Concert Hall's
-// south doors, up its grand stair and round to the hall, a seat in the stalls (where the concert starts: js/concert.js), up the side aisle
-// to the top of the circle, and down the red stair to the northern foyer (the concert fading out as you leave the hall), to sit and look
-// out over the harbour
+// south doors, up its grand stair and round to the hall, a seat in the stalls (where the concert starts: js/concert.js, its performers
+// playing it on the stage: js/concert-stage.js), up the side aisle to the top of the circle, and down the red stair to the northern foyer
+// (the concert fading out as you leave the hall, and its performers let go of), to sit and look out over the harbour
 function operaHouseScenario() {
   return {
     query: 'concertSeed=7',
@@ -1084,13 +1084,15 @@ function operaHouseScenario() {
         return seats.length ? Math.min(...seats.map((s) => s.count)) : 0;
       };
       metric('seatsDrawn', await seatsDrawn('into the hall'));
-      // Along the fourth row of the stalls to a seat. Nothing of the concert is fetched till you sit.
+      // Along the fourth row of the stalls to a seat near its middle, the stage before it, both performers in view on a phone held upright
+      // (48 degrees across). Nothing of the concert is fetched till you sit, nor its performers.
       await walk(at(64.65, -13.3), 'up the side aisle to the fourth row');
-      await walk(at(64.65, -10.0), 'along the fourth row');
+      await walk(at(64.65, -1.6), 'along the fourth row', { timeout: 40000 });
       const concert = () => debug(() => window.__gameDebug.concert());
-      const concertFetched = () => debug(() => performance.getEntriesByType('resource').some((r) => /\/concert[-.]/.test(r.name)));
-      expect(!(await concertFetched()) && (await concert()) === null, 'the concert was fetched before sitting in the hall');
-      const sitting = await sit(at(65.2, -10.0), 'in the stalls');
+      const stage = () => debug(() => window.__gameDebug.concertStage());
+      const concertFetched = () => debug(() => performance.getEntriesByType('resource').some((r) => /\/concert[-.]|opera-house-concert/.test(r.name)));
+      expect(!(await concertFetched()) && (await concert()) === null, 'the concert or its performers were fetched before sitting in the hall');
+      const sitting = await sit(at(65.2, -1.6), 'in the stalls');
       // The concert starts: its first notes scheduled on the audio clock within 3 s of sitting (with the sound on, as a key's turned it on)
       const started = await human.until((c) => c?.scheduled > 0, { timeout: 8000, every: 100, read: concert });
       const playing = await concert();
@@ -1104,6 +1106,19 @@ function operaHouseScenario() {
       expect(later.t > 1 && later.playing > 0 && later.skipped === 0, `three seconds on, the concert at ${later.t} s, ${later.playing} notes sounding, ${later.skipped} skipped`);
       metric('fpsSeated', (await debug(() => window.__gameDebug.frameCost())).fps);
       await seatsDrawn('seated in the stalls');
+      // Both performers on the stage, drawn and in view, playing it: the robot's hands going to its keys and the keys going down, the
+      // trumpeter's horn raised for a phrase and its valves going down; the house lights down and the stage lit
+      const both = await human.until((st) => st?.phase === 'playing' && st.robot.keyPresses > 8 && st.robot.handTravel > 0.3
+        && st.trumpeter.raised > 0 && st.trumpeter.valvePresses > 2, { timeout: 15000, every: 250, read: stage });
+      const st = await stage();
+      expect(both, `the performers aren't seen playing: ${JSON.stringify(st)}`);
+      for (const [who, p] of [['the pianist', st.robot], ['the trumpeter', st.trumpeter]]) {
+        expect(p.shown && p.drawn !== null && p.drawn <= 3 && p.seen === true, `${who}: ${p.shown ? 'shown' : 'hidden'}, drawn ${p.drawn ?? 'never'} frames ago, ${p.seen ? 'in view' : 'out of view'}`);
+      }
+      expect(st.house < 0.5 && st.stageLight > 0.5, `while they play the house lights are at ${st.house} and the stage's at ${st.stageLight}`);
+      expect(st.draws <= 10 && st.triangles < 15000, `the stage draws ${st.draws} times, ${st.triangles} triangles`);
+      metric('stageDraws', st.draws);
+      metric('stageTriangles', st.triangles);
       await human.hold('KeyS', 150);
       await human.wait(500);
       expect(!(await interior()).seated, 'still sitting after moving');
@@ -1120,6 +1135,8 @@ function operaHouseScenario() {
       // Out of the hall, the concert fades out and stops, and its notes are let go of
       const ended = await human.until((c) => c?.state === 'ended', { timeout: 6000, every: 200, read: concert });
       expect(ended && ended.playing === 0 && ended.buffers === 0, `out of the hall, the concert ${JSON.stringify(await concert())}`);
+      const gone = await human.until((x) => x.held === null, { timeout: 3000, every: 200, read: async () => ({ held: await stage() }) });
+      expect(gone, 'out of the hall, its performers are still held');
       // Down the red stair, and to an ottoman by the glass
       await walk(at(107.2, -9.3), 'onto the red stair');
       await walk(at(117.3, -9.3), 'down the red stair', { timeout: 40000 });

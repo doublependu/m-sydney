@@ -38,6 +38,8 @@ const FAR_KEEP = 1000; // m past the far level's reach before a far version is l
 const ROUGH = { plaster: [0.9, 0], paint: [0.55, 0], timber: [0.45, 0], boards: [0.5, 0], stone: [0.85, 0], tile: [0.3, 0], metal: [0.4, 0.8],
   iron: [0.6, 0.6], fabric: [0.95, 0], ceramic: [0.2, 0], roof: [0.8, 0.1], leaf: [0.8, 0], lamp: [0.4, 0] };
 const indoorLight = uniform(0.1);
+// ...and their lamps: dimmed with the house's lights for a show (the Concert Hall's concert: setShow())
+const lampLight = uniform(1.4);
 const materials = new Map();
 function materialFor(name, inside) {
   const key = `${inside ? 'in' : 'out'}:${name}`;
@@ -85,7 +87,7 @@ function materialFor(name, inside) {
     const [roughness, metalness] = ROUGH[name] ?? [0.8, 0];
     // flat: the models carry no normals, every face is flat
     m = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness, metalness, flatShading: true });
-    if (name === 'lamp') m.emissiveNode = vertexColor().mul(inside ? 1.4 : smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow).mul(1.4));
+    if (name === 'lamp') m.emissiveNode = vertexColor().mul(inside ? lampLight : smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow).mul(1.4));
     else if (inside) m.emissiveNode = vertexColor().mul(indoorLight);
   }
   m.name = key;
@@ -199,6 +201,9 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
   let exit = null; // { site, spot }: the way out of the inside you're in, worked out once a visit
   let held = Infinity; // m from over your head the camera can be, eased back out (holdEye())
   const lightsOn = [];
+  // A show in a room (the concert on the Concert Hall's stage): { site, room, house (its lights' share, 0-1), lights: [{ at: [x, y, z],
+  // intensity, distance, color }] over the stage }, or null
+  let show = null;
 
   // --- Floors and walls ------------------------------------------------------------------------------------------------------
   function allFloors(site) {
@@ -542,11 +547,13 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       }
     }
 
-    placeLights(x, z);
+    const showing = show && here?.site.id === show.site && here.room.id === show.room ? show : null;
+    placeLights(x, z, showing);
     findPrompt(player, mode, look);
     // How much the inside's own colours glow (its room's `glow`, or its own, a house's 0.1 unless they say), and how sheltered from the
-    // sky its room is
-    indoorLight.value = here?.room.glow ?? here?.site.inside.data.glow ?? 0.1;
+    // sky its room is; less, and its lamps dimmer, while a show's house lights are down
+    indoorLight.value = (here?.room.glow ?? here?.site.inside.data.glow ?? 0.1) * (showing ? showing.house : 1);
+    lampLight.value = 1.4 * (showing ? 0.2 + 0.8 * showing.house : 1);
     return { indoors: here !== null, building: here !== null && !here.room.outdoor, prompt: prompt && prompt.label, kept, close: kept && held < EYE_CLOSE,
       shelter: here?.room.shelter ?? null, site: here?.site.id ?? null, room: here?.room.id ?? null, seat: seated?.room ?? null };
   }
@@ -584,8 +591,10 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     return true;
   }
 
-  function placeLights(x, z) {
+  function placeLights(x, z, showing = null) {
     const wanted = [];
+    // a show's lights over its stage first, then the room's lamps nearest you, as dim as its house lights
+    const staged = (showing?.lights ?? []).filter((l) => l.intensity > 0.01).slice(0, lights.length - 1);
     if (here) {
       const { site } = here;
       const p = toLocal(site, x, z);
@@ -597,7 +606,15 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       wanted.sort((a, b) => a.d - b.d);
     }
     lights.forEach((light, i) => {
-      const w = wanted[i];
+      if (i < staged.length) {
+        const l = staged[i];
+        light.position.set(...l.at);
+        light.intensity = l.intensity;
+        light.distance = l.distance;
+        light.color.setHex(l.color);
+        return;
+      }
+      const w = wanted[i - staged.length];
       if (!w) {
         light.intensity = 0;
         light.position.set(0, -1000, 0);
@@ -605,12 +622,12 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       }
       const at = toWorld(w.site, w.l[0], w.l[2]);
       light.position.set(at.x, w.site.y + w.l[1], at.z);
-      light.intensity = 5;
+      light.intensity = 5 * (showing ? showing.house : 1);
       light.distance = 9;
       light.color.setHex(0xffe6c4);
     });
     lightsOn.length = 0;
-    lightsOn.push(...wanted.slice(0, lights.length).map((w) => w.l));
+    lightsOn.push(...wanted.slice(0, lights.length - staged.length).map((w) => w.l));
   }
 
   function findPrompt(player, mode, look) {
@@ -722,7 +739,12 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     };
   }
 
-  return { update, use, stood, exitSpot, returnSpot, state, indoorLight };
+  /** A show's lights in a room, or null (see `show` above) */
+  function setShow(spec) {
+    show = spec;
+  }
+
+  return { update, use, stood, exitSpot, returnSpot, state, indoorLight, setShow };
 }
 
-export { createInteriors };
+export { createInteriors, loadModel, materialFor };

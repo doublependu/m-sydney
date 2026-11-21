@@ -32,7 +32,8 @@ import { lastSessionNote, noteText, startSessionNote } from './session-note.js';
 import { distanceToTile, planTiles } from './tiles/tile-manager.js';
 import { BLOCKS, CITY_BOUNDS } from './city-config.js';
 import { anchorToOrigin, auditPrecision, moveOriginNear, origin, rebaseMeshes, setOrigin } from './world-origin.js';
-import { createInteriors } from './interiors.js';
+import { createInteriors, loadModel, materialFor } from './interiors.js';
+import { PERSON_BIND, PERSON_BONES, PersonCrowd, PersonRig } from './pedestrians.js';
 import { OPERA_HOUSE, hallFrame } from './opera-house.js';
 import { addClearings, removeClearings } from './model-sites.js';
 import { ceilingOver, decksAt, groundHeight, groundRoadAt, inTunnel, roadRoute, structuresAt, surfaceHeight, surfaceSlope } from './surfaces.js';
@@ -1195,8 +1196,9 @@ async function initApp() {
     debug: new URLSearchParams(location.search).get('debug') === '1'
   });
   // The concert in the Opera House's Concert Hall (js/concert.js): nothing of it is fetched till you sit in one of the hall's seats; then
-  // a performance each time you sit, played on while you stay in the hall
-  let concert = null, concertLoading = null;
+  // a performance each time you sit, played on while you stay in the hall. Its performers (js/concert-stage.js) are placed on the stage
+  // when you sit, and let go of with the music once you've left the hall.
+  let concert = null, concertLoading = null, concertStage = null, makeConcertStage = null;
   const concertSeed = (() => {
     const v = new URLSearchParams(location.search).get('concertSeed');
     return v !== null && /^\d+$/.test(v) ? Number(v) >>> 0 : null;
@@ -1205,14 +1207,30 @@ async function initApp() {
     const inHall = where.site === 'opera-house' && where.room === 'hall';
     const seated = inHall && where.seat === 'hall' && controllerManager.activeMode === 'person';
     if (seated && !concert && !concertLoading) {
-      concertLoading = import('./concert.js').then(({ createConcert }) => {
-        concert = createConcert({ sound: gameSound, seed: concertSeed, frame: hallFrame(OPERA_HOUSE.halls.find((h) => h.id === 'concert')) });
+      concertLoading = import('./concert.js').then(({ createConcert, createConcertStage }) => {
+        const hall = OPERA_HOUSE.halls.find((h) => h.id === 'concert');
+        concert = createConcert({ sound: gameSound, seed: concertSeed, frame: hallFrame(hall) });
+        makeConcertStage = () => createConcertStage({
+          hall, frame: hallFrame(hall), load: (file) => loadModel(file), material: (name) => materialFor(name, true),
+          reveal: (group) => revealStage(group), dispose: (group) => disposeStage(group),
+          people: { PersonRig, PersonCrowd, PERSON_BIND, PERSON_BONES }, anchor: anchorToOrigin
+        });
       }).catch((error) => {
         console.error('[concert]', error);
         concertLoading = null;
       });
     }
-    concert?.update(dt, { inHall, seated });
+    if (seated && makeConcertStage && !concertStage) concertStage = makeConcertStage();
+    concert?.update(dt, { inHall, seated, hold: concertStage?.holdFor() ?? 0 });
+    concertStage?.update(dt, concert);
+    const show = concertStage?.show() ?? null;
+    interiors.setShow(show);
+    lightingSystem.setHouse(show && inHall ? show.house : 1);
+    // out of the hall and over: the performers go with the music's notes
+    if (concertStage && !inHall && concert?.state === 'ended') {
+      concertStage.dispose();
+      concertStage = null;
+    }
   }
   let indoors = false;
   let indoorShelter = 0.85; // how far the room you're in shuts out the sky (js/interiors.js): a glazed foyer less, a concert hall all of it
@@ -1961,6 +1979,8 @@ async function initApp() {
       // The concert (js/concert.js): its state, or { seed } for a new performance with that seed, { at } to jump to a time in it (s);
       // null till you've sat in the Concert Hall
       concert: (command) => concert?.debug(command) ?? null,
+      // ...and its stage (js/concert-stage.js): who's where doing what, whether they're drawn and on screen, the lights; null till you sit
+      concertStage: () => concertStage?.debug(cameraSystem.camera) ?? null,
       // X, as a scenario presses it: { x, z, footway, via } where it put you, or null
       exitBuilding: () => exitBuilding(),
       // What the walker can bump into within r of (x, z): each collider's bounds and heights, and whether it's a model's (`level`)

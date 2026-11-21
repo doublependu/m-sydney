@@ -52,6 +52,7 @@ export const COVERS = {
   'opera-house': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|opera-house|landmarks|surfaces|controllers|cameras|pedestrians|concert|concert-arranger|concert-sound|concert-stage|concert-worker|audio-instruments)\.js|public\/models\/opera-.*)$/, area: [440, 600, -1960, -1740] },
   'opera-house-phone': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|opera-house|landmarks|surfaces|controllers|cameras|pedestrians|concert|concert-arranger|concert-sound|concert-stage|concert-worker|audio-instruments)\.js|public\/models\/opera-.*)$/, area: [440, 600, -1960, -1740] },
   'st-marys': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|stained-light|landmarks|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/st-marys.*)$/, area: [500, 620, -350, -150] },
+  'art-gallery': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|art|art-paint|artworks|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/art-gallery.*)$/, area: [820, 980, -670, -520] },
   'walk-in-phone': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|buildings|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/.*)$/, area: null },
   'origin-move': { files: /^js\/(world-origin|main|scene-culling|traffic|pedestrians|buildings|trees)\.js$/, area: null },
   'origin-far': { files: /^js\/(world-origin|main|scene-culling|traffic|pedestrians|buildings|trees)\.js$/, area: null },

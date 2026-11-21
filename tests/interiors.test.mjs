@@ -98,7 +98,10 @@ test('every model\'s JSON names only nodes it has, and every door that leads in 
       assert.ok(nodes.has(s.node), `${name}: no ${s.node} to turn`);
       if (s.level) assert.ok(nodes.has(s.level.node), `${name}: no ${s.level.node} to carry round`);
     }
-    for (const file of new Set(out.doors.map((d) => d.inside).filter(Boolean))) {
+    // the files its doors name, and those their doors name in turn (a gallery's levels, each at the head of a stair down)
+    const files = [...new Set(out.doors.map((d) => d.inside).filter(Boolean))];
+    for (let k = 0; k < files.length; k++) for (const d of read(files[k]).doors) if (d.inside && !files.includes(d.inside)) files.push(d.inside);
+    for (const file of files) {
       const inner = read(file), innerNodes = nodeNames(file);
       for (const d of inner.doors) assert.ok(innerNodes.has(d.node) && (d.leaves !== 2 || innerNodes.has(`${d.node}_b`)), `${file}: ${d.node}`);
       for (const r of inner.rooms) assert.ok(innerNodes.has(r.node) || out.walls.length, `${file}: ${r.node}`);

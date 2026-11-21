@@ -1207,6 +1207,8 @@ async function initApp() {
     farReach: () => (worldCompleteAt === null ? 0 : quality.farRange),
     // The way out to the footpath, clear for a walker
     footpath: (x, z, y, heading) => footpathFrom(x, z, y, heading, (px, pz) => controllerManager.spotClear('person', px, pz, 0)),
+    // A gallery's paintings painted less finely on low (js/art.js)
+    artDetail: () => (quality.level === 'low' ? 0.6 : 1),
     debug: new URLSearchParams(location.search).get('debug') === '1'
   });
   // The concert in the Opera House's Concert Hall (js/concert.js): nothing of it is fetched till you sit in one of the hall's seats; then

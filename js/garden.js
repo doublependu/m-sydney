@@ -2,7 +2,8 @@ import * as THREE from 'three/webgpu';
 import { groundHeight } from './surfaces.js';
 import { createGardenBedMaterial, createGardenPathMaterial, createParkLawnMaterial, createPondMaterial, createSandstoneWallMaterial } from './tsl-materials.js';
 import { CITY_BOUNDS, LAWNS, PAVEMENTS } from './city-config.js';
-import { GroundCells, SIDEWALK_TOP, addSurface } from './ground-geometry.js';
+import { GroundCells, SIDEWALK_TOP, addSurface, pointInPolygonXZ } from './ground-geometry.js';
+import { SITE_CUTS } from './model-sites.js';
 import { TILE } from './geodata.js';
 import {
   KERB_PROUD, LAWN_TOP, PATH_TOP, RAISED_TOP, TRACK, TRACK_LIFT, TRACK_TOP, buildSurface, heightInTriangle, heightOn, pathTop, setLayer, surfaceOf,
@@ -869,6 +870,31 @@ function gardenClusters(g) {
  * A tile's garden, into `target` with `buildCells` (js/city-grid.js). Returns colliders for the gates' pillars and the fountains' plinths, as
  * structures' are.
  */
+/** Whether a triangle's middle is in one of the cuts */
+function inCut(cuts, x, z) {
+  for (const c of cuts) if (x > c.minX && x < c.maxX && z > c.minZ && z < c.maxZ && pointInPolygonXZ(c.poly, x, z)) return true;
+  return false;
+}
+/** The cells' triangles with their middles outside the cuts */
+function leaveOutCuts(cells, cuts) {
+  for (const c of cells.cells.values()) {
+    const P = c.position, I = c.index, kept = [];
+    for (let i = 0; i < I.length; i += 3) {
+      const a = I[i] * 3, b = I[i + 1] * 3, d = I[i + 2] * 3;
+      if (!inCut(cuts, (P[a] + P[b] + P[d]) / 3, (P[a + 2] + P[b + 2] + P[d + 2]) / 3)) kept.push(I[i], I[i + 1], I[i + 2]);
+    }
+    c.index = kept;
+  }
+}
+/** Triangles (x, y, z of each corner) with their middles outside the cuts */
+function trianglesOutside(tris, cuts) {
+  const kept = [];
+  for (let k = 0; k < tris.length; k += 9) {
+    if (!inCut(cuts, (tris[k] + tris[k + 3] + tris[k + 6]) / 3, (tris[k + 2] + tris[k + 5] + tris[k + 8]) / 3)) for (let j = 0; j < 9; j++) kept.push(tris[k + j]);
+  }
+  return new Float32Array(kept);
+}
+
 function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   const g = tile.garden ?? NO_GARDEN, lakes = tile.lakes ?? [];
   if (!tile.garden && !lakes.length) return [];
@@ -1099,6 +1125,14 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
     }
   }
   yield;
+  // Nothing of it in a model site's cut (js/model-sites.js): the model has its own floors there, and rooms under the ground, which the
+  // raised lawn and its paths would run through (the Art Gallery's, in the Domain)
+  const cuts = SITE_CUTS.filter((c) => c.maxX > tile.ix * TILE - 240 && c.minX < (tile.ix + 1) * TILE + 240 && c.maxZ > tile.iz * TILE - 240
+    && c.minZ < (tile.iz + 1) * TILE + 240);
+  if (cuts.length) {
+    for (const cells of [lawn, paths, beds, stone, pond, hedge, coping, walls]) leaveOutCuts(cells, cuts);
+    for (let i = 0; i < kerbTops.length; i++) kerbTops[i] = trianglesOutside(kerbTops[i], cuts);
+  }
   // What's walked on, ridden over and driven onto, as drawn: the raised lawn and its kerbs' tops, the paths, beds and the ponds' coping, and
   // the lakes' water and banks
   setLayer(`garden:${tile.key}`, [trianglesOf(lawn), ...kerbTops, trianglesOf(paths), trianglesOf(beds), trianglesOf(coping), ...lakeTops,

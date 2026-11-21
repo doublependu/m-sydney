@@ -82,6 +82,8 @@ if (fullest[1] > MAX_IN_FOLDER) problems.push(`${fullest[0]} has ${fullest[1]} e
 if (repoFullest[1] > MAX_IN_FOLDER) problems.push(`${repoFullest[0]} has ${repoFullest[1]} entries in the repository, over ${MAX_IN_FOLDER}`);
 for (const name of firstNames) if (/^seasons?[-.]/.test(name)) problems.push(`${name} is in the first download: a season's code is fetched only in its season`);
 for (const name of firstNames) if (/^pool-water[-.]/.test(name)) problems.push(`${name} is in the first download: a pool's water is fetched only near it`);
+// ...nor a gallery's art, fetched with its inside (js/art.js)
+for (const name of firstNames) if (/^art(works|-paint)?[-.]/.test(name)) problems.push(`${name} is in the first download: a gallery's art comes with its inside`);
 if (wrangler.main || wrangler.assets?.run_worker_first) problems.push('wrangler.jsonc runs a Worker: the site has to stay static files on the free plan');
 for (const problem of problems) console.error(problem);
 process.exit(problems.length ? 1 : 0);

@@ -91,7 +91,9 @@ const EXITS = {
   // Down long drives, the street's out of reach
   'quarry-rd': 'door', 'parklea-close': 'door', 'parklea-cottage': 'door', 'wolseley-rd': 'door',
   // St Mary's Cathedral: out of its main doors onto the terrace at the head of its steps, over the forecourt
-  'st-marys': 'door'
+  'st-marys': 'door',
+  // The Art Gallery: out of its main doors onto the portico, at the head of its steps over the forecourt
+  'art-gallery': 'door'
 };
 const model = (name) => JSON.parse(fs.readFileSync(new URL(`../public/models/${name}.json`, import.meta.url), 'utf8'));
 const withInside = MODEL_SITES.filter((s) => model(s.file.replace('models/', '')).doors?.some((d) => d.inside));

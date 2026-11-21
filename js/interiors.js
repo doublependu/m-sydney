@@ -19,7 +19,11 @@ import {
 //   says whether there's anything behind its front door.
 // - At a door, within reach and facing it, F opens it (a hand button on touch, X on a gamepad). If there's an inside, that's when it's
 //   fetched: the door swings to a little open while it comes, then all the way. It's let go of RELEASE metres after you leave.
-// - Inside, its own doors are open when it comes in, unless they're locked; F shuts one.
+// - A big inside is several files (a gallery's levels): a door inside can name another (`inside`), the door at the head of a stair down
+//   to the level below, and that file's fetched when it's opened, as the outside's doors fetch theirs. Its rooms, walls, floors and doors
+//   join the others' (rooms are named across files: a stair's room in one, the lobby at its foot in the next). What's held stays till
+//   you leave the building.
+// - Inside, its own doors are open when it comes in, unless they're locked or lead to a file not fetched yet; F shuts one.
 // - Inside, only the rooms you can see are drawn: the one you're in, and those through open doorways from it (interior-data.js).
 // - In it or beside it, the camera behind you is kept clear of its walls, floors and ceilings, so it never looks through one.
 // - Its door leaves are drawn as one shut piece until you're near (`doors_shut`), and the whole model only within NEAR of the camera
@@ -326,12 +330,16 @@ function turn(spinner, angle) {
  * `footpath(x, z, y, heading)`: the footpath in front of a door's step there, out from it along `heading` (js/arrivals.js footpathFrom()),
  * with what's clear for a walker, for the way out (exitSpot()).
  */
-function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () => false, farReach = () => 0, footpath = null, debug = false }) {
+/**
+ * `artDetail()`: how finely a gallery's paintings are painted, 1 on medium and high, less on low (js/art.js).
+ */
+function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () => false, farReach = () => 0, footpath = null, debug = false,
+  artDetail = () => 1 }) {
   const sites = MODEL_SITES.filter((s) => debug || !s.debug).map((s) => ({
-    ...s, y: s.y ?? null, reach: s.reach ?? RELEASE, near: s.near ?? NEAR, out: null, inside: null, loading: false, failed: false, ref: null,
-    drawn: false, shape: 'first', far: s.far ? { group: null, loading: false, failed: false } : null
+    ...s, y: s.y ?? null, reach: s.reach ?? RELEASE, near: s.near ?? NEAR, out: null, loading: false, failed: false, ref: null,
+    drawn: false, shape: 'first', far: s.far ? { group: null, loading: false, failed: false } : null, insides: new Map()
   }));
-  let here = null; // { site, room } the player is in
+  let here = null; // { site, room, inside } the player is in, and the inside's file it's in
   let prompt = null; // { kind: 'door' | 'seat', site, door | seat, label }
   let seated = null;
   let exit = null; // { site, spot }: the way out of the inside you're in, worked out once a visit
@@ -342,18 +350,25 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
   let show = null;
   let spinTime = 0; // s of the game's clock that what turns in the models has turned for
 
+  // --- The insides a site holds ---------------------------------------------------------------------------------------------
+  /** Its inside's files that are in: { file, state, group, data, doors, rooms, ... } */
+  const ready = (site) => [...site.insides.values()].filter((r) => r.state === 'ready');
+  const isHeld = (site, file) => site.insides.get(file)?.state === 'ready';
+  /** A list from each file that's in (floors, walls, rooms, links, seats, lights) */
+  const joined = (site, key) => ready(site).flatMap((r) => r.data[key] ?? []);
+
   // --- Floors and walls ------------------------------------------------------------------------------------------------------
   function allFloors(site) {
-    return [...(site.out?.data.floors ?? []), ...(site.inside?.data?.floors ?? [])];
+    return [...(site.out?.data.floors ?? []), ...joined(site, 'floors')];
   }
   function allWalls(site) {
-    const walls = [...(site.out?.data.walls ?? []), ...(site.inside?.data?.walls ?? [])];
+    const walls = [...(site.out?.data.walls ?? []), ...joined(site, 'walls')];
     for (const door of doorsOf(site)) if (door.angle < 0.05) walls.push({ a: door.d.hinge, b: door.d.latch, t: 0.08, y0: door.d.y0, y1: door.d.y1 });
     return walls;
   }
   /** What the camera keeps clear of: the walls, and every door's leaf where it's swung to */
   function eyeWalls(site) {
-    const walls = [...(site.out?.data.walls ?? []), ...(site.inside?.data?.walls ?? [])];
+    const walls = [...(site.out?.data.walls ?? []), ...joined(site, 'walls')];
     for (const door of doorsOf(site)) {
       for (const sign of door.d.leaves === 2 ? [1, -1] : [1]) {
         // a pair: two leaves, each half the doorway, the second hung from the latch side and turning the other way
@@ -384,7 +399,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
 
   // --- Doors -------------------------------------------------------------------------------------------------------------------
   function doorsOf(site) {
-    return [...(site.out?.doors.values() ?? []), ...(site.inside?.doors?.values() ?? [])];
+    return [...(site.out?.doors.values() ?? []), ...ready(site).flatMap((r) => [...r.doors.values()])];
   }
   function addDoors(site, list, group, part, walls) {
     const doors = new Map();
@@ -495,7 +510,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
   }
 
   function dropOutside(site) {
-    if (site.inside) letGoInside(site);
+    if (site.insides.size) letGoInside(site);
     const out = site.out;
     site.out = null;
     colliders.remove(out.walls);
@@ -554,12 +569,13 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     site.far.group = null;
   }
 
+  /** One of a site's inside's files, `file` as a door names it, fetched into the others it holds */
   async function fetchInside(site, file) {
-    site.inside = { file, state: 'loading', doors: new Map() };
-    const record = site.inside;
+    const record = { file, state: 'loading', doors: new Map() };
+    site.insides.set(file, record);
     try {
-      const { scene, data } = await loadModel(file);
-      if (site.inside !== record) return;
+      const { scene, data } = await loadModel(`models/${file}`);
+      if (site.insides.get(file) !== record) return;
       prepare(scene, true);
       const instanced = instance(scene, data.instances);
       // The sun's coloured light through its stained glass, for an inside whose JSON has its windows' pictures (js/stained-light.js)
@@ -570,47 +586,61 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
         sunlight.update();
         scene.add(sunlight.mesh);
       }
-      const group = groupFor(site, scene, `Inside_${site.id}`);
+      // Its art, for a gallery's (js/art.js, the works in js/artworks.js): made here, its paintings painted in a worker as it comes
+      let art = null;
+      if (data.hangs?.length || data.plinths?.length) {
+        try {
+          const { createArt } = await import('./art.js');
+          art = createArt({ site: site.id, data, scene, materialFor: (name) => materialFor(name, true), glow: indoorLight, detail: artDetail() });
+        } catch (e) {
+          console.warn('[interiors]', `${file}: its art`, e);
+        }
+      }
+      const group = groupFor(site, scene, `Inside_${site.id}_${file}`);
       for (const r of data.rooms) {
         const node = scene.getObjectByName(r.node);
         if (node) node.visible = false;
       }
       await reveal(group);
-      if (site.inside !== record) {
+      if (site.insides.get(file) !== record) {
         dispose(group);
         sunlight?.dispose();
+        art?.dispose();
         return;
       }
       record.group = group;
       record.data = data;
       record.instanced = instanced;
       record.sunlight = sunlight;
+      record.art = art;
       record.walls = data.walls.map((w) => wallCollider(site, w));
       colliders.add(record.walls);
       record.doors = addDoors(site, data.doors, scene, 'in', [...data.walls, ...site.out.data.walls]);
-      // Its own doors, between its rooms, are open unless locked; those in the outside, to the street and the house's terraces, as
-      // they were left
-      for (const door of record.doors.values()) if (!door.d.locked) openNow(door);
       record.rooms = new Map(data.rooms.map((r) => [r.id, scene.getObjectByName(r.node)]));
       record.state = 'ready';
+      // Its own doors, between its rooms, are open unless locked, or they lead to another of its files not here yet (the head of a
+      // stair down); those in the outside, to the street and the house's terraces, as they were left
+      for (const door of record.doors.values()) if (!door.d.locked && !(door.d.inside && !isHeld(site, door.d.inside))) openNow(door);
       placeFloors(site);
       // Doors held ajar while it came open the rest of the way
-      for (const door of site.out.doors.values()) if (door.target > 0) door.target = Math.abs(door.d.turn);
+      for (const door of doorsOf(site)) if (door.d.inside === file && door.target > 0) door.target = Math.abs(door.d.turn);
     } catch (e) {
       console.warn('[interiors]', file, e);
-      site.inside = null;
-      for (const door of site.out?.doors.values() ?? []) if (door.d.inside === file) door.target = 0;
+      if (site.insides.get(file) === record) site.insides.delete(file);
+      for (const door of doorsOf(site)) if (door.d.inside === file) door.target = 0;
     }
   }
 
   function letGoInside(site) {
-    const inside = site.inside;
-    site.inside = null;
-    if (inside.state === 'ready') {
+    const records = [...site.insides.values()];
+    site.insides.clear();
+    for (const inside of records) {
+      if (inside.state !== 'ready') continue;
       colliders.remove(inside.walls);
       removeDoors(inside.doors);
       dispose(inside.group);
       inside.sunlight?.dispose();
+      inside.art?.dispose();
     }
     // The ways in shut behind you
     for (const door of site.out?.doors.values() ?? []) {
@@ -658,7 +688,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
         showFirstShape(site.id, shape);
       }
       // ...and its inside with it, or it would stand there alone
-      if (site.inside?.group) site.inside.group.visible = drawn;
+      for (const r of site.insides.values()) if (r.group) r.group.visible = drawn;
       if (site.far) {
         const away = Math.hypot(site.x - eye.x, site.z - eye.z);
         // From the first view only for a site with no first shape of the map's: one that replaces none of the map's buildings
@@ -676,19 +706,20 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       // Which floor counts, where there are floors over floors: the one under the player's feet now
       const away = Math.hypot(site.x - x, site.z - z);
       if (mode === 'person' && !player.surface && away < site.reach) site.ref = player.surfaceY ?? site.ref;
-      if (site.inside && away > site.reach && here?.site !== site) letGoInside(site);
+      if (site.insides.size && away > site.reach && here?.site !== site) letGoInside(site);
       for (const door of doorsOf(site)) swing(door, dt);
     }
 
     // Where the player is
     here = null;
-    if (exit && !exit.site.inside) exit = null;
+    if (exit && !exit.site.insides.size) exit = null;
     if (mode === 'person') {
       for (const site of sites) {
-        if (site.inside?.state !== 'ready') continue;
         const p = toLocal(site, x, z);
-        const room = roomAt(site.inside.data.rooms, p.x, (site.ref ?? site.y) - site.y + 0.1, p.z);
-        if (room) here = { site, room };
+        for (const inside of ready(site)) {
+          const room = roomAt(inside.data.rooms, p.x, (site.ref ?? site.y) - site.y + 0.1, p.z);
+          if (room) here = { site, room, inside };
+        }
       }
     }
 
@@ -696,24 +727,29 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
 
     // What's drawn of each inside: the rooms seen from the camera, where it's been kept to, and from the player
     for (const site of sites) {
-      const inside = site.inside;
-      if (inside?.state !== 'ready') continue;
+      const insides = ready(site);
+      if (!insides.length) continue;
+      // across its files: a stair's room is in one, the lobby at its foot in the next
+      const doors = new Map(doorsOf(site).map((door) => [door.d.id, door]));
       const open = (id) => {
-        const door = inside.doors.get(id) ?? site.out.doors.get(id);
+        const door = doors.get(id);
         return !door || door.angle > 0.05;
       };
+      const links = joined(site, 'links'), rooms = joined(site, 'rooms');
       const e = toLocal(site, eye.x, eye.z);
-      const eyeRoom = roomAt(inside.data.rooms, e.x, eye.y - site.y, e.z)?.id ?? 'out';
-      const seen = visibleRooms(inside.data.links, eyeRoom, open, SEEN_DEPTH);
-      if (here?.site === site) for (const r of visibleRooms(inside.data.links, here.room.id, open, 1)) seen.add(r);
-      for (const [id, node] of inside.rooms) if (node) node.visible = seen.has(id);
-      for (const door of inside.doors.values()) {
-        const shown = door.d.rooms.some((r) => seen.has(r));
-        if (door.node) door.node.visible = shown;
-        if (door.pair) door.pair.visible = shown;
+      const eyeRoom = roomAt(rooms, e.x, eye.y - site.y, e.z)?.id ?? 'out';
+      const seen = visibleRooms(links, eyeRoom, open, SEEN_DEPTH);
+      if (here?.site === site) for (const r of visibleRooms(links, here.room.id, open, 1)) seen.add(r);
+      for (const inside of insides) {
+        for (const [id, node] of inside.rooms) if (node) node.visible = seen.has(id);
+        for (const door of inside.doors.values()) {
+          const shown = door.d.rooms.some((r) => seen.has(r));
+          if (door.node) door.node.visible = shown;
+          if (door.pair) door.pair.visible = shown;
+        }
+        // the sun through its glass, thrown again if the time of day has moved it
+        inside.sunlight?.update();
       }
-      // the sun through its glass, thrown again if the time of day has moved it
-      inside.sunlight?.update();
     }
 
     const showing = show && here?.site.id === show.site && here.room.id === show.room ? show : null;
@@ -721,7 +757,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     findPrompt(player, mode, look);
     // How much the inside's own colours glow (its room's `glow`, or its own, a house's 0.1 unless they say), and how sheltered from the
     // sky its room is; less, and its lamps dimmer, while a show's house lights are down
-    indoorLight.value = (here?.room.glow ?? here?.site.inside.data.glow ?? 0.1) * (showing ? showing.house : 1);
+    indoorLight.value = (here?.room.glow ?? here?.inside.data.glow ?? 0.1) * (showing ? showing.house : 1);
     lampLight.value = 1.4 * (showing ? 0.2 + 0.8 * showing.house : 1);
     return { indoors: here !== null, building: here !== null && !here.room.outdoor, prompt: prompt && prompt.label, kept, close: kept && held < EYE_CLOSE,
       shelter: here?.room.shelter ?? null, site: here?.site.id ?? null, room: here?.room.id ?? null, seat: seated?.room ?? null };
@@ -748,7 +784,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     const a = toLocal(site, head.x, head.z), b = toLocal(site, eye.x, eye.z);
     const from = { x: a.x, y: head.y - site.y, z: a.z }, to = { x: b.x, y: eye.y - site.y, z: b.z };
     // where there's no floor over it, no higher than the top floor's ceiling: over a stairwell too, which is open up to that
-    const roof = here ? Math.max(...site.inside.data.rooms.map((r) => r.y1)) - 0.7 : Infinity;
+    const roof = here ? Math.max(...joined(site, 'rooms').map((r) => r.y1)) - 0.7 : Infinity;
     const reach = eyeReach(eyeWalls(site), allFloors(site), from, to, roof);
     const length = Math.hypot(to.x - from.x, reach.y - from.y, to.z - from.z);
     const want = reach.t * length;
@@ -768,7 +804,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       const { site } = here;
       const p = toLocal(site, x, z);
       const feet = (site.ref ?? site.y) - site.y;
-      for (const l of site.inside.data.lights) {
+      for (const l of joined(site, 'lights')) {
         const d = Math.hypot(l[0] - p.x, l[2] - p.z) + Math.abs(l[1] - feet - 2) * 2;
         if (d < LIGHTS_REACH) wanted.push({ l, d, site });
       }
@@ -821,8 +857,8 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
         const door = doors.find((dd) => dd.d === reach.door);
         if (!door.d.locked) best = { kind: 'door', site, door, d: reach.d, label: door.target > 0 ? 'Close' : 'Open' };
       }
-      if (site.inside?.state === 'ready' && here?.site === site) {
-        const sr = seatInReach(site.inside.data.seats, p.x, feet, p.z);
+      if (here?.site === site) {
+        const sr = seatInReach(joined(site, 'seats'), p.x, feet, p.z);
         if (sr && (!best || sr.d < best.d)) best = { kind: 'seat', site, seat: sr.seat, d: sr.d, label: 'Sit' };
       }
     }
@@ -840,9 +876,9 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     if (prompt.kind === 'door') {
       const { door, site } = prompt;
       if (door.target > 0) door.target = 0;
-      else if (door.d.inside && site.inside?.state !== 'ready') {
+      else if (door.d.inside && !isHeld(site, door.d.inside)) {
         door.target = Math.abs(door.d.turn) * AJAR;
-        if (!site.inside) fetchInside(site, `models/${door.d.inside}`);
+        if (!site.insides.has(door.d.inside)) fetchInside(site, door.d.inside);
       } else door.target = Math.abs(door.d.turn);
       return true;
     }
@@ -852,7 +888,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       const heading = s.facing + site.yaw;
       const floor = (site.ref ?? site.y);
       // Up again where there's room: in front, unless there's a desk there, then round it
-      const spot = standSpot(allWalls(site), site.inside.data.rooms, s);
+      const spot = standSpot(allWalls(site), joined(site, 'rooms'), s);
       const stand = spot && toWorld(site, spot.x, spot.z);
       if (stand && sit({ x: at.x, z: at.z, heading, seatY: site.y + s.at[1] - floor, stand })) seated = s;
       return true;
@@ -872,7 +908,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
   function exitSpot() {
     if (!here) return null;
     const { site } = here;
-    if (exit?.site !== site) exit = { site, spot: findExit(site, [...site.out.doors.values()].map((dd) => dd.d), site.inside.data.rooms, footpath) };
+    if (exit?.site !== site) exit = { site, spot: findExit(site, [...site.out.doors.values()].map((dd) => dd.d), joined(site, 'rooms'), footpath) };
     return exit.spot;
   }
 
@@ -881,11 +917,19 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     return exitSpot();
   }
 
+  /** A site's inside as one: 'ready' once any of its files is in, 'loading' while the first comes, or null */
+  function insideState(site) {
+    const states = [...site.insides.values()].map((r) => r.state);
+    return states.includes('ready') ? 'ready' : states.length ? 'loading' : null;
+  }
+
   function state() {
     return {
-      sites: sites.map((s) => ({ id: s.id, y: s.y, out: !!s.out, inside: s.inside?.state ?? null, failed: s.failed, drawn: s.drawn, shape: s.shape,
+      sites: sites.map((s) => ({ id: s.id, y: s.y, out: !!s.out, inside: insideState(s), failed: s.failed, drawn: s.drawn, shape: s.shape,
         leaves: s.out?.leaves ?? null, far: s.far ? (s.far.group ? (s.far.group.visible ? 'drawn' : 'held') : s.far.failed ? 'failed' : null) : undefined })),
-      held: sites.filter((s) => s.inside?.state === 'ready').map((s) => s.id),
+      held: sites.filter((s) => ready(s).length).map((s) => s.id),
+      // each inside's file a site holds, and whether it's in
+      files: sites.flatMap((s) => [...s.insides.values()].map((r) => ({ site: s.id, file: r.file, state: r.state }))),
       inside: here?.site.id ?? null,
       room: here?.room.id ?? null,
       floor: here ? here.site.ref : null,
@@ -894,18 +938,20 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       prompt: prompt?.label ?? null,
       eye: Number.isFinite(held) ? +held.toFixed(2) : null, // m from over your head the camera's kept to, beside a building
       doors: sites.flatMap((s) => doorsOf(s).map((dd) => ({ site: s.id, id: dd.d.id, angle: +dd.angle.toFixed(3), target: +dd.target.toFixed(3) }))),
-      drawn: sites.flatMap((s) => (s.inside?.state === 'ready' ? [...s.inside.rooms].filter(([, n]) => n?.visible).map(([id]) => id) : [])),
+      drawn: sites.flatMap((s) => ready(s).flatMap((r) => [...r.rooms].filter(([, n]) => n?.visible).map(([id]) => id))),
       // what a held inside draws many of from one (a hall's seats): how many of the JSON's it draws, whether it and all it's in are shown
       // and in the scene, and how many frames ago it was last drawn (null: never)
-      instances: sites.flatMap((s) => (s.inside?.state === 'ready' ? s.inside.instanced.map((mesh) => {
+      instances: sites.flatMap((s) => ready(s).flatMap((r) => r.instanced.map((mesh) => {
         let shown = true, o = mesh;
         for (; o.parent; o = o.parent) shown &&= o.visible;
-        const want = s.inside.data.instances.find((i) => i.node === mesh.userData.node).at.length;
+        const want = r.data.instances.find((i) => i.node === mesh.userData.node).at.length;
         return { site: s.id, node: mesh.userData.node, name: mesh.name, count: mesh.count, want, shown: shown && o.isScene === true,
           drawn: mesh.userData.drawnAt === undefined ? null : frameCount - mesh.userData.drawnAt };
-      }) : [])),
+      }))),
       // the sun through a held inside's stained glass: how many windows throw it, in how many triangles, how strong
-      sunlight: sites.flatMap((s) => (s.inside?.sunlight ? [{ site: s.id, ...s.inside.sunlight.state() }] : [])),
+      sunlight: sites.flatMap((s) => ready(s).filter((r) => r.sunlight).map((r) => ({ site: s.id, ...r.sunlight.state() }))),
+      // a gallery's art in each file held: its paintings and sculptures, whether their pictures are painted yet, how many are drawn
+      art: sites.flatMap((s) => ready(s).filter((r) => r.art).map((r) => ({ site: s.id, file: r.file, ...r.art.state() }))),
       lights: lightsOn.length,
       // what turns in each model drawn (a wheel): its node, the angle it's turned to, and how many it carries round level
       spins: sites.flatMap((s) => (s.out?.spins ?? []).map((sp) => ({ site: s.id, node: sp.node.name, angle: +sp.angle.toFixed(4), level: sp.at.length,

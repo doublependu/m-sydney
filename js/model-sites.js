@@ -296,6 +296,23 @@ const MODEL_SITES = [
         [-19.3, -17.8], [-29.2, -17.8], [-29.2, -4.6], [-26.2, -1.3]],
       y: -2.4
     }
+  },
+  // The Art Gallery of New South Wales, its old (south) building, Naala Nura, on Art Gallery Road in the Domain: the sandstone front
+  // and its Ionic portico to the west over the forecourt and its pools, the Grand Courts behind it, the wings behind those down the
+  // slope to Woolloomooloo. In place of the map's box of its outline. Its frame: the portico's axis, +z west out through the main doors
+  // (the front's face at z 50), +x south along it; its ground floor, a flight of steps up from the forecourt. Inside, a file a level
+  // (each fetched when a door to it opens: the front doors, and the door at the head of each stair down): the ground with the
+  // entrance court, the welcome hub, the Grand Courts, the 20th-century galleries and the shop; lower level 1, the Asian galleries,
+  // more 20th-century galleries and the restaurant; lower levels 2 and 3, the exhibitions. Its cut takes in the building, for the
+  // levels under the ground. Its art is made in the browser (js/artworks.js).
+  {
+    id: 'art-gallery', file: 'models/art-gallery', x: 898.8, z: -593.8, yaw: -2.154, y: 25.6, far: true, replaces: [[0, 20]], reach: 120,
+    clear: [[0, 52.0, 3.0], [0, 62.0, 4.0]], exit: 'door',
+    cut: {
+      poly: [[-40.6, 49.7], [40.6, 49.7], [40.6, 55.4], [51.7, 55.4], [51.7, 5.3], [8.2, 5.3], [8.2, -7.1], [33.2, -7.1], [33.2, -50.7],
+        [-24.0, -50.7], [-24.0, -7.7], [-38.0, -7.7], [-38.0, 5.3], [-51.7, 5.3], [-51.7, 55.4], [-40.6, 55.4]],
+      y: -18.4
+    }
   }
 ];
 

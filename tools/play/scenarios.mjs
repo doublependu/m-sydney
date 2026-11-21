@@ -1104,6 +1104,142 @@ function stMarysScenario() {
   };
 }
 
+// The Art Gallery of NSW's old building (js/model-sites.js, art-gallery): from the forecourt up the steps to the portico, in at the main
+// doors (the ground level's file fetched only then), through the vestibule and the hub into a Grand Court, then down every level: each
+// stair's door fetches the level below, its switchback down into that level's lobby, into a gallery there; back up every stair, and out
+// of the main doors. The art is made on each level as it comes, and its pictures painted.
+function artGalleryScenario() {
+  const S = MODEL_SITES.find((s) => s.id === 'art-gallery');
+  const at = (x, z) => ({ x: S.x + x * Math.cos(S.yaw) + z * Math.sin(S.yaw), z: S.z - x * Math.sin(S.yaw) + z * Math.cos(S.yaw) });
+  const start = at(2.0, 70.0);
+  const LEVEL = { g: 0, l1: -6, l2: -12, l3: -18 };
+  // each stair down: the door at its head (z), its first flight's middle (z), and its second's
+  const STAIRS = [['l1', -3.2, -6.0], ['l2', 2.9, 0.1], ['l3', -3.2, -6.0]];
+  return {
+    minutes: 9,
+    storage: JSON.stringify({ version: 1, activeMode: 'person', entities: { person: { x: start.x, y: 0, z: start.z, heading: 0, surface: 0 } } }),
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const level = async () => (await human.state()).surfaceY - S.y;
+      const local = async () => {
+        const s = await human.state(), dx = s.x - S.x, dz = s.z - S.z, c = Math.cos(S.yaw), n = Math.sin(S.yaw);
+        return `(${(dx * c - dz * n).toFixed(2)}, ${(dx * n + dz * c).toFixed(2)}) at ${(s.surfaceY - S.y).toFixed(2)} m`;
+      };
+      const walk = async (x, z, why, opts) => expect(await walkTo(human, at(x, z), opts), `never got ${why}, stuck at ${await local()}`);
+      const fetched = (file) => debug((f) => performance.getEntriesByType('resource').map((r) => r.name).filter((n) => n.includes(`/models/${f}.`)), file);
+      const inRoom = async (want, y, why) => {
+        const i = await interior();
+        expect(i.inside === 'art-gallery' && (want === null || i.room === want) && Math.abs((await level()) - y) < 0.1,
+          `${why}: in ${i.inside} ${i.room} at ${await local()}`);
+      };
+      const open = async (doorId, toward, why) => {
+        await face(human, toward);
+        await human.wait(300);
+        expect((await interior()).prompt === 'Open', `${why}: the prompt is ${(await interior()).prompt}, at ${await local()}`);
+        await human.press('KeyF');
+        expect(await human.until(async () => (await interior()).doors.find((d) => d.site === 'art-gallery' && d.id === doorId)?.angle >= 1.59,
+          { timeout: 20000, read: interior }), `${why}: the door never opened`);
+      };
+      const art = async (file) => {
+        const ok = await human.until(async () => ((await interior()).art ?? []).find((a) => a.file === file)?.painted === true, { timeout: 20000, read: interior });
+        const a = ((await interior()).art ?? []).find((r) => r.file === file);
+        expect(ok && a.paintings > 10, `${file}: its art isn't painted: ${JSON.stringify(a)}`);
+        return a;
+      };
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      const toward = at(0, 55);
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...start, h: Math.atan2(toward.x - start.x, toward.z - start.z) });
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'art-gallery')?.out, null, { timeout: 60000, polling: 250 });
+      const drawn = await page.waitForFunction(() => window.__gameDebug.firstShapes()['art-gallery']?.shape === 'model', null, { timeout: 30000, polling: 250 })
+        .then(() => true, () => false);
+      expect(drawn, 'its model isn\'t drawn in place of its first shape');
+      expect((await fetched('art-gallery-g')).length === 0, 'its ground level was fetched before a door was opened');
+      // Up the steps to the portico and in at the main doors
+      await walk(0.5, 63.4, 'to the foot of the steps');
+      expect((await level()) < -0.5, `at the foot of the steps at ${(await level()).toFixed(2)} m`);
+      await walk(0.4, 50.4, 'up the steps, across the portico to the doors', { timeout: 30000 });
+      expect(Math.abs(await level()) < 0.05, `on the portico at ${(await level()).toFixed(2)} m`);
+      await open('front', at(0, 48.5), 'at the main doors');
+      expect((await fetched('art-gallery-g')).length > 0, 'its ground level wasn\'t fetched at the doors');
+      expect((await fetched('art-gallery-l1')).length === 0, 'lower level 1 was fetched with the ground');
+      await walk(0.0, 46.0, 'in through the doors');
+      await inRoom('vestibule', 0, 'in the vestibule');
+      const g = await art('art-gallery-g');
+      metric('paintingsGround', g.paintings);
+      metric('fpsVestibule', (await debug(() => window.__gameDebug.frameCost())).fps);
+      // Through the hub, beside the welcome desk and the sculptures down its middle, into a Grand Court, and back
+      await walk(4.5, 39.0, 'to the arch into the hub');
+      await walk(6.5, 33.0, 'into the hub, beside the desk');
+      await walk(6.5, 30.0, 'along the hub');
+      await inRoom('hub', 0, 'in the hub');
+      await walk(14.0, 30.0, 'through an arch into a Grand Court');
+      await inRoom('court-s1', 0, 'in a Grand Court');
+      metric('fpsGrandCourt', (await debug(() => window.__gameDebug.frameCost())).fps);
+      await walk(6.5, 30.0, 'back into the hub');
+      await walk(6.5, 8.0, 'down the hub');
+      await walk(-5.0, 0.0, 'into the lobby');
+      await inRoom('g-lobby', 0, 'in the lobby');
+      // Down each stair: its door fetches the level below; the switchback down into its lobby
+      let lv = 'g';
+      for (const [low, zA, zB] of STAIRS) {
+        const y = LEVEL[lv];
+        await walk(-17.0, zA, `to the door down to ${low}`);
+        await open(`down-${low}`, at(-18.6, zA), `at the door down to ${low}`);
+        expect((await fetched(`art-gallery-${low}`)).length > 0, `${low} wasn't fetched at its door`);
+        await walk(-19.0, zA, `onto the stair's head (${lv})`);
+        await walk(-26.3, zA, `down its first flight (${lv})`, { timeout: 30000 });
+        expect(Math.abs((await level()) - (y + LEVEL[low]) / 2) < 0.12, `on the half landing at ${await local()}`);
+        await walk(-26.3, zB, `across the half landing (${lv})`);
+        await walk(-19.0, zB, `down its second flight (${lv})`, { timeout: 30000 });
+        await walk(-16.0, zB, `out into the lobby on ${low}`);
+        lv = low;
+        await inRoom(`${low}-lobby`, LEVEL[low], `in the lobby on ${low}`);
+        const a = await art(`art-gallery-${low}`);
+        metric(`paintings_${low}`, a.paintings);
+        if (low === 'l1') {
+          // the Asian galleries, through the hall
+          await walk(0.0, 9.0, 'into the hall on lower level 1');
+          await walk(15.0, 17.0, 'into the Asian galleries');
+          await inRoom('l1-asian', -6, 'in the Asian galleries');
+          await walk(0.0, 9.0, 'back into the hall');
+          await walk(-10.0, 2.9, 'back into the lobby');
+        } else if (low === 'l2') {
+          await walk(-5.0, -12.0, 'into the east exhibition hall');
+          await inRoom('l2-ex-2', -12, 'in an exhibition hall on lower level 2');
+          await walk(-10.0, -3.2, 'back into the lobby');
+        } else {
+          await walk(-5.0, -14.0, 'into the exhibition hall on lower level 3');
+          await inRoom('l3-ex', -18, 'in the exhibition hall on lower level 3');
+          metric('fpsLowest', (await debug(() => window.__gameDebug.frameCost())).fps);
+          await walk(-14.0, -6.0, 'back to the stair\'s foot');
+        }
+      }
+      const files = (await interior()).files.filter((f) => f.site === 'art-gallery' && f.state === 'ready').map((f) => f.file);
+      expect(files.length === 4, `holding ${files.join(', ')}`);
+      // ...and back up every stair, and out
+      for (const [low, zA, zB] of [...STAIRS].reverse()) {
+        const up = { l1: 'g', l2: 'l1', l3: 'l2' }[low];
+        await walk(-19.0, zB, `into the stair's foot on ${low}`);
+        await walk(-26.3, zB, `up its second flight from ${low}`, { timeout: 30000 });
+        await walk(-26.3, zA, 'across the half landing');
+        await walk(-19.0, zA, `up its first flight to ${up}`, { timeout: 30000 });
+        await walk(-16.4, zA, `out through its door onto ${up}`);
+        await inRoom(`${up}-lobby`, LEVEL[up], `back in the lobby on ${up}`);
+      }
+      await walk(0.0, 4.0, 'into the lobby\'s middle');
+      await walk(6.5, 8.0, 'into the hub');
+      await walk(6.5, 33.0, 'up the hub');
+      await walk(4.5, 39.0, 'through the arch into the vestibule');
+      await walk(0.0, 46.0, 'across the vestibule');
+      await walk(0.0, 48.8, 'to the main doors');
+      await walk(0.0, 52.5, 'out through the doors onto the portico');
+      const i = await interior();
+      expect(i.inside === null && Math.abs(await level()) < 0.05, `out on the portico? in ${i.inside} at ${(await level()).toFixed(2)} m`);
+    }
+  };
+}
+
 // A house on three levels over Bronte beach (js/model-sites.js, bronte-pacific): from Pacific St in at the front door, through to the
 // living room and out onto its terrace to sit; down the stair to the family room and out onto the deck; down again to the rumpus room
 // and out onto the pool's terrace. Its inside isn't fetched until the front door opens.
@@ -2594,6 +2730,7 @@ export const SCENARIOS = {
   'opera-house': operaHouseScenario(),
   'opera-house-phone': { ...operaHouseScenario(), profile: 'phone' },
   'st-marys': stMarysScenario(),
+  'art-gallery': artGalleryScenario(),
   'origin-move': originScenario(''),
   'origin-far': originScenario('originTest=85000'),
   'signal-wait': {

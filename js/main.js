@@ -234,7 +234,8 @@ async function initApp() {
   function savePlayerState() {
     try {
       // Inside a building, what's inside it won't be there on a reload: back outside the door you came in by
-      const outside = controllerManager.activeMode === 'person' ? interiorReturn?.() ?? null : null;
+      // ...and in a pool's water, beside it
+      const outside = controllerManager.activeMode === 'person' ? interiorReturn?.() ?? controllerManager.poolside() : null;
       const entities = Object.fromEntries(Object.entries(controllerManager.entities).map(([mode, entity]) => [mode, outside && mode === 'person'
         ? { x: outside.x, y: 0, z: outside.z, heading: outside.heading, surface: 0 }
         : { x: entity.position.x, y: entity.position.y, z: entity.position.z, heading: entity.heading, surface: entity.surface || 0 }]));
@@ -446,7 +447,10 @@ async function initApp() {
     firstPersonLocked: [[['W', 'S'], 'Walk'], [['A', 'D'], 'Step aside'], [['←', '→'], 'Turn'], [['Mouse'], 'Look'], [['Shift'], 'Run'], [['Space'], 'Jump'], [['Esc'], 'Free the mouse']],
     car: [[['W', 'S'], 'Drive / Reverse'], [['A', 'D'], 'Steer'], [['B'], 'Horn'], [['Drag'], 'Orbit']],
     cyclist: [[['W', 'S'], 'Pedal / Brake'], [['Space'], 'Brake'], [['A', 'D'], 'Lean & Turn'], [['Drag'], 'Orbit']],
-    helicopter: [[['W', 'S'], 'Pitch'], [['A', 'D'], 'Yaw'], [['Space', 'E'], 'Ascend'], [['Q', 'C'], 'Descend']]
+    helicopter: [[['W', 'S'], 'Pitch'], [['A', 'D'], 'Yaw'], [['Space', 'E'], 'Ascend'], [['Q', 'C'], 'Descend']],
+    // In a pool's water (js/swimming.js)
+    swim: [[['W', 'S'], 'Swim'], [['Shift'], 'Faster'], [['A', 'D'], 'Turn'], [['Q'], 'Under'], [['Space'], 'Climb out'], [['Drag'], 'Orbit']],
+    firstPersonSwim: [[['W', 'S'], 'Swim'], [['A', 'D'], 'Aside'], [['←', '→'], 'Turn'], [['Mouse'], 'Look'], [['Shift'], 'Faster'], [['Q'], 'Under'], [['Space'], 'Climb out']]
   };
   // Top speeds in km/h (controllers.js caps them at 6, 36, 19 & 52 m/s): full scale of the speed meter
   const topSpeedKmh = { person: 22, car: 130, cyclist: 68, helicopter: 187 };
@@ -455,7 +459,9 @@ async function initApp() {
     if (!elControlsHint) return;
     // In a building: X, out of it, in place of running and jumping, so the row still fits its 600 px
     const out = mode === 'person' && inBuilding;
-    if (mode === 'person' && cameraSystem.firstPerson) mode = cameraSystem.pointerLocked ? 'firstPersonLocked' : 'firstPerson';
+    const swimming = mode === 'person' && !!controllerManager.entities.person.swim;
+    if (swimming) mode = cameraSystem.firstPerson ? 'firstPersonSwim' : 'swim';
+    else if (mode === 'person' && cameraSystem.firstPerson) mode = cameraSystem.pointerLocked ? 'firstPersonLocked' : 'firstPerson';
     const shows = out ? `${mode} out` : mode;
     if (elControlsHint.dataset.shows === shows) return;
     elControlsHint.dataset.shows = shows;
@@ -485,6 +491,17 @@ async function initApp() {
     modeSwitch.style.setProperty('--ind-w', `${active.offsetWidth}px`);
   }
 
+  // A word for a moment, when something asked for can't be done here
+  const gameNote = document.getElementById('game-note');
+  let gameNoteTimer = 0;
+  function flashHint(text) {
+    if (!gameNote) return;
+    gameNote.textContent = text;
+    gameNote.hidden = false;
+    clearTimeout(gameNoteTimer);
+    gameNoteTimer = setTimeout(() => { gameNote.hidden = true; }, 2500);
+  }
+
   // The player changing how they travel: the new mode starts from where this one is, with a short fade over a long move. `gesture`: by a
   // key press or a click, which can lock the mouse, onto your feet in the first-person camera
   function switchTravelMode(mode, gesture = false) {
@@ -493,6 +510,11 @@ async function initApp() {
     const out = mode === 'cyclist' && controllerManager.activeMode === 'person' && inBuilding ? interiors.exitSpot() : null;
     const start = out && { ...out, heading: out.heading + Math.PI };
     const moved = controllerManager.switchMode(mode, start);
+    if (moved === null) {
+      // In a pool's water: no car or bike there (js/controllers.js canSwitchTo())
+      flashHint('Out of the water first');
+      return;
+    }
     selectMode(mode);
     if (gesture && cameraSystem.firstPerson && finePointer.matches) cameraSystem.lockPointer();
     if (moved > 50) {
@@ -1209,7 +1231,9 @@ async function initApp() {
     footpath: (x, z, y, heading) => footpathFrom(x, z, y, heading, (px, pz) => controllerManager.spotClear('person', px, pz, 0)),
     // A gallery's paintings painted less finely on low (js/art.js)
     artDetail: () => (quality.level === 'low' ? 0.6 : 1),
-    debug: new URLSearchParams(location.search).get('debug') === '1'
+    debug: new URLSearchParams(location.search).get('debug') === '1',
+    // A pool to swim in (js/swimming.js): the walker's controller swims in it from now on
+    onSwim: (module) => { controllerManager.swim = module; }
   });
   // The concert in the Opera House's Concert Hall (js/concert.js): nothing of it is fetched till you sit in one of the hall's seats; then
   // a performance each time you sit, played on while you stay in the hall. Its performers (js/concert-stage.js) are placed on the stage
@@ -1284,6 +1308,29 @@ async function initApp() {
       poolLoading = null;
     });
   }
+  // The walker swimming (js/swimming.js): what it stirred since the last frame, into the pool's water and the sound; its body under the
+  // surface, for the water's trace; and under the water, the eye's view tinted and fogged
+  function updateSwimmer() {
+    const p = controllerManager.entities.person;
+    const events = p.swimEvents;
+    for (const ev of events) {
+      if (poolWater && ev.strength) poolWater.water.drop(ev.x, ev.z, ev.radius, ev.strength);
+      if (ev.sound) audioSystem.splash(ev.sound, ev.x, ev.y, ev.z, ev.size ?? 1);
+    }
+    events.length = 0;
+    const swim = controllerManager.swim;
+    poolWater?.water.setPlayer?.(swim && controllerManager.activeMode === 'person' ? swim.traceBody(p) : null);
+  }
+  let underwater = false;
+  const underwaterTint = document.getElementById('underwater');
+  function setUnderwater(on) {
+    if (on === underwater) return;
+    underwater = on;
+    if (underwaterTint) underwaterTint.hidden = !on;
+    lightingSystem.setUnderwater(on);
+    poolWater?.water.setUnderwater?.(on);
+  }
+
   let indoors = false;
   let indoorShelter = 0.85; // how far the room you're in shuts out the sky (js/interiors.js): a glazed foyer less, a concert hall all of it
   // Inside a house the city stays drawn, for the view from its windows: only the walk slows, and the sky's light dims
@@ -1353,7 +1400,7 @@ async function initApp() {
   });
   const lookDirection = new THREE.Vector3();
   const useActions = { sit: (seat) => controllerManager.sitAt(seat), stand: () => controllerManager.standUp() };
-  const useInterior = () => interiors.use(useActions);
+  const useInterior = () => controllerManager.swimUse() || interiors.use(useActions);
   controllerManager.onUse = useInterior;
   controllerManager.onStand = () => interiors.stood();
   const usePrompt = document.getElementById('use-prompt');
@@ -2029,6 +2076,18 @@ async function initApp() {
       mapImage: (x0, z0, size, px, buildings) => mapSystem.renderImage(x0, z0, size, px, buildings),
       farBuildings: async (key) => (await fetchFarFile(key)).buildings,
       interior: () => interiors.state(),
+      // Swimming (js/swimming.js): what the walker's doing in a pool's water, in its frame, the use key's label there, and whether the
+      // eye's under the water; swimAt() puts the walker in a pool's water at (x, z), facing `heading`, floating
+      swim: () => {
+        const p = controllerManager.entities.person;
+        const fog = { node: !!scene.fogNode, density: scene.fog?.density ?? null, under: lightingSystem.uUnderwater?.value ?? null };
+        return controllerManager.swim ? { ...controllerManager.swim.state(p), prompt: controllerManager.swimPrompt(), underwater, fog, loaded: true }
+          : { swimming: false, loaded: false, underwater, fog };
+      },
+      swimAt(x, z, heading) {
+        if (controllerManager.activeMode !== 'person') selectMode('person');
+        return !!controllerManager.swim?.place(controllerManager.entities.person, x, z, heading);
+      },
       // The pool's moving water (js/pool-water.js): its state, or what's keeping it; `drop` stirs it at (x, z)
       poolProbe: () => poolWater?.water.probe() ?? null,
       pool: (drop = null) => {
@@ -2269,6 +2328,8 @@ async function initApp() {
       roadRoom: () => trafficSystem?.roadRoom(),
       recycled: () => trafficSystem?.recycled(),
       audioState: () => audioSystem.context?.state ?? 'none',
+      // The pool's water heard: how many splashes and strokes played, at what rate
+      waterSounds: () => ({ ...audioSystem.waterPlayed, rate: audioSystem.context?.sampleRate ?? null }),
       input: () => ({ ...controllerManager.keys }),
       // The car and the bike you left: [{ mode, x, z, heading, surface, left (s till it's gone), collider (in the way on the ground) }]
       parked: () => controllerManager.parkedList(),
@@ -2292,7 +2353,8 @@ async function initApp() {
           mode, x, y, z, heading: entity.heading, speed: entity.speed, onFootway: !!entity.onFootway, deck: !!entity.deck, footpath: walkable(x, z),
           ground: controllerManager.getGroundHeight(x, z, mode),
           roof: controllerManager.roofHeightAt(x, z, y),
-          frame: simulatedFrames, surface: entity.surface || 0, surfaceY: surfaceHeight(entity.surface || 0, x, z, entity.surfaceY ?? null), drawnY: entity.mesh?.position.y ?? null
+          frame: simulatedFrames, surface: entity.surface || 0, surfaceY: surfaceHeight(entity.surface || 0, x, z, entity.surfaceY ?? null), drawnY: entity.mesh?.position.y ?? null,
+          swimming: !!entity.swim, diving: !!entity.dive?.launched
         };
       },
       // Where the player is on screen (-1..1 across and up, depth in m), how far round the camera is, and which way it
@@ -2683,7 +2745,7 @@ async function initApp() {
     eye.y += eyeGround;
     // In first person on foot, the eye eases over a kerb or a threshold, and as you sit or stand
     const firstPerson = follows && cameraSystem.firstPerson;
-    if (firstPerson) eye.y = cameraSystem.easeEye(eye.y, !followed.verticalVel, followed.verticalVel ?? 0, dt);
+    if (firstPerson) eye.y = cameraSystem.easeEye(eye.y, !followed.verticalVel, followed.verticalVel ?? 0, dt, !!(followed.swim || followed.dive));
     const bodyY = eyeGround + Math.max(0, followed.position.y);
     {
       // Doors, seats and the rooms seen from the camera, now it's where it'll be drawn from. In a building or beside one, a following
@@ -2695,8 +2757,9 @@ async function initApp() {
       setInBuilding(here.building && controllerManager.activeMode === 'person');
       updateConcert(dt, here);
       updatePool(dt, eye);
+      updateSwimmer();
       indoorShelter = here.shelter ?? 0.85;
-      showPrompt(here.prompt);
+      showPrompt(controllerManager.swimPrompt() ?? here.prompt);
       const near = here.kept || firstPerson ? 0.1 : 0.35;
       if (cameraSystem.camera.near !== near) {
         cameraSystem.camera.near = near;
@@ -2724,6 +2787,9 @@ async function initApp() {
       lightingSystem.setShelter(0);
       if (seaSheet) seaSheet.visible = true;
     }
+    // Under a pool's water: tinted and fogged
+    const waterOver = controllerManager.swim?.surfaceOver(eye.x, eye.z) ?? null;
+    setUnderwater(waterOver !== null && eye.y < waterOver - 0.005);
     cameraSystem.camera.updateMatrixWorld();
     updateTunnelMouths(eye.x, eye.z);
     shadowFocus.copy(cameraSystem.currentPos);

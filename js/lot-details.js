@@ -88,7 +88,7 @@ function sitesNear(x, z, r) {
       const x0 = Math.min(...xs) - 3, x1 = Math.max(...xs) + 3, z0 = Math.min(...zs) - 3, z1 = Math.max(...zs) + 3;
       rings.push([[x0, z0], [x1, z0], [x1, z1], [x0, z1]].map(([px, pz]) => toWorldOf(s, px, pz)));
     }
-    if (s.cut) rings.push(s.cut.poly.map(([px, pz]) => toWorldOf(s, px, pz)));
+    if (s.cut) for (const ring of [s.cut.poly, ...(s.cut.more ?? [])]) rings.push(ring.map(([px, pz]) => toWorldOf(s, px, pz)));
     if (rings.length) out.push({ rings });
   }
   return out;

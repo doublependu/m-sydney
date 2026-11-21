@@ -285,6 +285,7 @@ class ThirdPersonControllerManager {
     this.firstPerson = false; // on foot in the first-person camera (js/main.js says): A and D step aside, and the mouse turns you
     this.lookTurn = 0; // rad to the right that the mouse, a drag or a stick has turned you since the last step, in first person
     this.keys = Object.fromEntries(Object.keys(BINDINGS).map((action) => [action, false]));
+    this.swim = null; // js/swimming.js, once a model with a pool to swim in is held (js/interiors.js)
 
     this.entities = {
       person: this.createPersonEntity(),
@@ -521,6 +522,7 @@ class ThirdPersonControllerManager {
   // the way out of a building you're in (js/main.js). `vehicleAt(x, z, y, reach)`, if set, says when traffic is there. Returns how far
   // the player moved.
   switchMode(mode, start = null) {
+    if (!this.canSwitchTo(mode)) return null;
     if (!this.entities[mode]) return 0;
     if (mode === this.activeMode) {
       this.setMode(mode);
@@ -580,6 +582,28 @@ class ThirdPersonControllerManager {
       this.teleportActiveTo(from.x, from.z, from.heading);
     }
     return Math.hypot(next.position.x - from.x, next.position.z - from.z);
+  }
+
+  /** Whether you can change to `mode` now: not to the car or the bike in a pool's water (js/swimming.js) */
+  canSwitchTo(mode) {
+    const p = this.entities.person;
+    return !(this.activeMode === 'person' && (p?.swim || p?.dive) && (mode === 'car' || mode === 'cyclist'));
+  }
+
+  /** The use key's label in a pool's water or at a ladder's top (js/swimming.js prompt()), or null */
+  swimPrompt() {
+    return this.activeMode === 'person' && this.swim ? this.swim.prompt(this, this.entities.person) : null;
+  }
+
+  /** The use key in a pool's water or at a ladder's top: true if it climbed */
+  swimUse() {
+    return this.activeMode === 'person' && !!this.swim?.use(this, this.entities.person);
+  }
+
+  /** Where to put you back on a reload, if you're in a pool's water: beside it ({ x, z, heading }), or null */
+  poolside() {
+    const p = this.entities.person;
+    return this.activeMode === 'person' && p?.swim && this.swim ? this.swim.poolside(p) : null;
   }
 
   // A car or bike left where it is, stopped, for PARKED_FOR. The car on the ground is in the way, as the cars at the kerbs are; on a deck or
@@ -685,7 +709,15 @@ class ThirdPersonControllerManager {
 
   // `surface`: the structure to arrive on (js/surfaces.js), or 0 for the ground under (x, z)
   teleportActiveTo(x, z, heading = Math.PI, savedAltitude = null, surface = 0, exact = false) {
-    if (this.entities.person) this.entities.person.seat = null;
+    const person = this.entities.person;
+    if (person) {
+      person.seat = null;
+      // Out of the water, wherever it is you're put
+      if (person.swim || person.dive) {
+        if (this.swim) this.swim.stop(person);
+        else person.swim = person.dive = null;
+      }
+    }
     const ent = this.getActiveEntity();
     this.resetInput();
     if (!Number.isFinite(heading)) heading = ent.heading;
@@ -851,6 +883,9 @@ class ThirdPersonControllerManager {
       jumping: false, // in the air, from a jump or a fall
       jumpPrep: 0, // s of the crouch before taking off still to go
       heldBack: null, // what a wall left of the last step's move, forward and aside (m/s), or null
+      swim: null, // in a pool's water (js/swimming.js): how it's swimming, or climbing in or out
+      dive: null, // diving in off a pool's edge: its flight
+      swimEvents: [], // the drops and splashes the swimmer made since the last frame, for the water and the sound (js/main.js)
       cameraTargetOffset: new THREE.Vector3(0, 1.55, 0),
       chaseDistance: 4.3,
       chaseHeight: 1.95
@@ -1243,6 +1278,11 @@ class ThirdPersonControllerManager {
   getGroundHeight(x, z, mode = 'person') {
     const active = this.getActiveEntity();
     if (mode === 'person' && active?.onFootway) return FOOTWAY_RISE;
+    // In a pool's water (js/swimming.js), its own bottom: the steps' treads, or its floor, under the deck's level
+    if (mode === 'person' && this.swim) {
+      const bottom = this.swim.bottomUnder(x, z);
+      if (bottom !== null) return bottom;
+    }
     if ((mode === 'person' || mode === 'cyclist') && !active?.surface) return this.standingOver(x, z);
     return 0.0;
   }
@@ -1488,7 +1528,9 @@ class ThirdPersonControllerManager {
       last.wet ??= stillWaterDepth(mode, last.x, last.z, heading) > 0;
       const allowed = last.wet ? Infinity : stillWaterDepth(mode, last.x, last.z, heading);
       const dry = (x, z) => clearOfWater(x, z) && (last.wet || stillWaterDepth(mode, x, z, heading) <= allowed);
-      if ((mode === 'person' && onFloor(pos.x, pos.z) && !modelWaterNear(pos.x, pos.z)) || dry(pos.x, pos.z)) {
+      // A pool to swim in (js/swimming.js letsIn()) lets a walker in: in the air over it, wading in it, or pushing straight at its edge
+      if ((mode === 'person' && onFloor(pos.x, pos.z) && !modelWaterNear(pos.x, pos.z)) || dry(pos.x, pos.z)
+        || (mode === 'person' && this.swim?.letsIn(active, last, pos))) {
         last.x = pos.x;
         last.z = pos.z;
       } else {
@@ -1609,8 +1651,16 @@ class ThirdPersonControllerManager {
           const size = Math.max(0.45, 1 - Math.max(0, rigAir) * 0.35);
           p.shadow.scale.set(size, 1, size);
         }
-        if (p.seat) p.rig.sit(p.seat.x, p.seat.z, p.seat.heading, p.seat.seatY);
-        else p.rig.update(dt, p.position.x, p.position.z, p.heading, personGround, this, rigAir);
+        // In the water or diving into it, the swimmer's poses (js/swimming.js); out of it, eased back into the walk
+        const sw = this.swim;
+        if (p.shadow) p.shadow.visible = !p.swim && !p.dive?.launched;
+        if (sw && p.swim) sw.pose(p, dt);
+        else if (sw && p.dive?.launched) sw.poseDive(p, dt);
+        else if (p.seat) p.rig.sit(p.seat.x, p.seat.z, p.seat.heading, p.seat.seatY);
+        else {
+          p.rig.update(dt, p.position.x, p.position.z, p.heading, personGround, this, rigAir);
+          sw?.applyBlend(p, dt);
+        }
         p.crowd.begin();
         // On whatever it stands on: the ground, or a deck (the simulation is flat, js/surfaces.js)
         p.crowd.add(p.rig, 0, surfaceHeight(p.surface || 0, p.position.x, p.position.z, p.surfaceY ?? null));
@@ -1733,6 +1783,16 @@ class ThirdPersonControllerManager {
       this.standUp();
       this.onStand?.();
     }
+    // In a pool's water, or diving into it (js/swimming.js): its own step. Beside one: down a ladder, or a jump at its edge to dive
+    const sw = this.swim;
+    if (p.swim || p.dive?.launched) {
+      if (!sw) p.swim = p.dive = null;
+      else if (p.swim) sw.swimStep(this, p, dt);
+      else sw.diveStep(this, p, dt);
+      return;
+    }
+    const pool = sw?.beforeWalk(this, p);
+    if (pool?.done) return;
 
     // A key held is a walk, or a run with Shift; a stick walks slower short of STICK_WALK, and runs pushed nearly all the way out.
     // Back, or aside, at ASIDE of that; forward and aside together no faster than the faster of the two.
@@ -1747,6 +1807,11 @@ class ThirdPersonControllerManager {
     if (both > cap) {
       targetSpeed *= cap / both;
       targetSide *= cap / both;
+    }
+    // Wading, slower
+    if (pool?.pace) {
+      targetSpeed *= pool.pace;
+      targetSide *= pool.pace;
     }
 
     if (k.left) p.heading += turnRate * dt * k.left;
@@ -1783,6 +1848,8 @@ class ThirdPersonControllerManager {
     p.position.z = toZ;
     // Through a house's doorways, between its furniture and up its stair: inside, or on a model's floors, the walker is narrower
     this.resolveHorizontalCollision(p.position, this.indoors || onFloor(p.position.x, p.position.z) ? WALKER : 0.48);
+    // Wading on a pool's steps, its walls hold you in but where it's a step up out of it
+    sw?.holdWader(p, fromX, fromZ);
     // Held back by a wall, a fence, the shore or a railing: what you moved, forward and aside, for the next step (above). Held square on,
     // where nothing moves, the speed comes down to it now. Further round you slide along at your pace: a cut every frame there (cos² of the
     // speed at a slant) would leave you crawling along a wall you used to slide along, or steer round
@@ -1836,6 +1903,8 @@ class ThirdPersonControllerManager {
       p.verticalVel = 0;
       p.jumping = false;
     }
+    // A dive taking off, and into a pool's water once in it deep enough to swim
+    sw?.afterWalk(this, p, dt);
   }
 
   updateCar(dt) {

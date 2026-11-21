@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import {
   Fn, Loop, abs, cameraPosition, cameraViewMatrix, clamp, color, cos, exp, float, floor, fract, instanceIndex, instancedArray, int, length,
-  max, min, mix, normalize, positionLocal, positionWorld, refract, select, sin, smoothstep, storage, time, uniformArray, vec2,
+  max, min, mix, normalize, positionLocal, positionWorld, refract, select, sin, smoothstep, storage, time, uniform, uniformArray, vec2,
   vec3, vec4
 } from 'three/tsl';
 
@@ -16,7 +16,9 @@ import {
 //   the caustics on them (the curvature of the surface where the sun came in over them focuses its light), tinted by the water on the way;
 //   the sky in it by Fresnel (the material's own reflection of the environment, a dielectric's); at night the pool's lights in its walls.
 // - What stirs it: the wind (a few small drops a step, and fine waves of its own), the swimmers doing laps (their heads, hands and kicks),
-//   and drop(), which anything may call: the player swimming, a splash.
+//   and drop(), which anything may call: the player swimming (js/swimming.js), a splash.
+// - The player swimming is in the trace too, an ellipsoid along its body under the surface (setPlayer()); what's over it is the walker's
+//   own body. With the eye under the water (setUnderwater()), the surface's underside is drawn instead, lit as the sky lights it.
 // - Without compute (the WebGL2 fallback) or on low: no height field. The surface's normals are the fine waves alone, scrolling, and the
 //   caustics are worked out from them.
 // Everything is in the pool's own frame: its site's, moved to the water's middle, y up from its surface.
@@ -136,6 +138,11 @@ async function createPoolWater({ site, pool, renderer, reveal, uniforms, simulat
   });
   const lanes = pool.lanes ?? 0, laneW = pool.lane ?? 2.5, laneZ0 = -hz + (2 * hz - lanes * laneW) / 2;
   const swimmerBoxes = uniformArray(Array.from({ length: 8 }, () => new THREE.Vector4(0, 0, 1, 0)), 'vec4');
+  // The player swimming: its body's middle (w: whether it's there), and its axes along it, through it and across it, each with its half
+  // length (w), in the pool's frame from the water's middle and its surface
+  const playerAt = uniform(new THREE.Vector4(0, 0, 0, 0));
+  const playerU = uniform(new THREE.Vector4(0, 1, 0, 0.88)), playerV = uniform(new THREE.Vector4(0, 0, 1, 0.14));
+  const playerW = uniform(new THREE.Vector4(1, 0, 0, 0.22));
 
   /** Where a ray from P along R first leaves the box [lo, hi] it's in, or enters [lo, hi] from outside: (near, far) */
   const slab = (P, R, lo, hi) => {
@@ -175,7 +182,7 @@ async function createPoolWater({ site, pool, renderer, reveal, uniforms, simulat
     // the floor down its profile: three steps towards where the ray meets it
     const t = depthAt(P.x).div(R.y.negate()).toVar();
     for (let i = 0; i < 3; i++) t.assign(depthAt(P.x.add(R.x.mul(t))).div(R.y.negate()));
-    const what = float(0).toVar(); // 0 the floor, 1 a wall, 2 a step, 3 a swimmer
+    const what = float(0).toVar(); // 0 the floor, 1 a wall, 2 a step, 3 a swimmer, 4 the player
     const tHit = t.toVar();
     const onWall = tWall.lessThan(tHit);
     tHit.assign(min(tHit, tWall));
@@ -199,6 +206,19 @@ async function createPoolWater({ site, pool, renderer, reveal, uniforms, simulat
       what.assign(select(nearer, float(3), what));
       tHit.assign(select(nearer, near, tHit));
       across.assign(select(nearer, O.x.add(D.x.mul(near)).mul(b.z), across));
+    }
+    {
+      // the player, along its own axes
+      const O = P.sub(playerAt.xyz), U = playerU.xyz, Vb = playerV.xyz, Wb = playerW.xyz;
+      const Ol = vec3(O.dot(U).div(playerU.w), O.dot(Vb).div(playerV.w), O.dot(Wb).div(playerW.w));
+      const Dl = vec3(R.dot(U).div(playerU.w), R.dot(Vb).div(playerV.w), R.dot(Wb).div(playerW.w));
+      const a = Dl.dot(Dl), hb = Ol.dot(Dl), cc = Ol.dot(Ol).sub(1);
+      const disc = hb.mul(hb).sub(a.mul(cc));
+      const near = hb.negate().sub(disc.max(0).sqrt()).div(a);
+      const nearer = disc.greaterThan(0).and(near.greaterThan(0)).and(near.lessThan(tHit)).and(playerAt.w.greaterThan(0.5));
+      what.assign(select(nearer, float(4), what));
+      tHit.assign(select(nearer, near, tHit));
+      across.assign(select(nearer, Ol.x.add(Dl.x.mul(near)), across));
     }
     const Hp = P.add(R.mul(tHit));
     // The tiles: white-blue, their joints a little darker near to; a lane line down each lane's middle, a T at each end, a target on the
@@ -224,6 +244,8 @@ async function createPoolWater({ site, pool, renderer, reveal, uniforms, simulat
     const base = select(lineFloor.or(lineWall).or(nosing), color(0x1c2f6e), tile).toVar();
     // a swimmer: skin, a dark suit round the middle
     base.assign(select(what.equal(3), select(abs(across.add(0.05)).lessThan(0.22), color(0x1d2433), color(0xa8775d)), base));
+    // the player: its head, and its clothes
+    base.assign(select(what.equal(4), select(across.greaterThan(0.6), color(0xa8775d), color(0x26324a)), base));
     // The caustics: where the sun's light that reaches this point came in through the surface, and how that focused it
     const S = vec3(sun.x.mul(c).sub(sun.z.mul(s)), sun.y, sun.x.mul(s).add(sun.z.mul(c)));
     const Rs = refract(S.negate(), vec3(0, 1, 0), 1 / IOR);
@@ -233,7 +255,7 @@ async function createPoolWater({ site, pool, renderer, reveal, uniforms, simulat
     const curve = simulate ? sample(motionRead, Q.x, Q.y).w.add(fineQ.lap) : fineQ.lap;
     const focus = clamp(float(1).div(max(float(0.25), float(1).add(Hp.y.negate().mul(CAUSTIC * 0.25).mul(curve)))), 0.55, 2.0);
     const day = smoothstep(0.02, 0.25, sun.y);
-    const lit = mix(float(1), focus, day.mul(select(what.equal(1), float(0.45), float(1))).mul(select(what.equal(3), float(0.3), float(1))));
+    const lit = mix(float(1), focus, day.mul(select(what.equal(1), float(0.45), float(1))).mul(select(what.greaterThanEqual(3), float(0.3), float(1))));
     const col = base.mul(lit).toVar();
     // ...and the water on the way, out to it
     const path = tHit;
@@ -255,6 +277,19 @@ async function createPoolWater({ site, pool, renderer, reveal, uniforms, simulat
   mesh.position.set(cx, surface, cz);
   mesh.receiveShadow = true;
   mesh.castShadow = false;
+
+  // --- The underside, from under the water: the sky's light through the surface, rippled, darker at night ------------------------
+  const below = new THREE.MeshBasicNodeMaterial({ side: THREE.BackSide });
+  {
+    const dayLight = smoothstep(-0.05, 0.3, sun.y);
+    const ripple = fineHere.sx.add(fineHere.sz).add(simulate ? simHere.y.add(simHere.z) : float(0)).mul(4);
+    below.colorNode = mix(color(0x041c24), color(0x7fd6dc), dayLight).mul(float(1).add(ripple).clamp(0.6, 1.5));
+  }
+  below.name = 'pool-water-below';
+  const underside = new THREE.Mesh(geometry, below);
+  underside.name = 'PoolWaterBelow';
+  underside.position.copy(mesh.position);
+  underside.visible = false;
 
   // --- The swimmers ---------------------------------------------------------------------------------------------------------------
   const count = Math.min(SWIMMERS[level] ?? 4, lanes || 0);
@@ -300,7 +335,7 @@ async function createPoolWater({ site, pool, renderer, reveal, uniforms, simulat
   group.name = `PoolWater_${pool.id}`;
   group.position.set(site.x, site.y, site.z);
   group.rotation.y = site.yaw;
-  group.add(mesh, bodies, heads, arms);
+  group.add(mesh, underside, bodies, heads, arms);
   group.traverse((o) => { o.userData.lifted = true; });
 
   // --- Each frame ---------------------------------------------------------------------------------------------------------------
@@ -403,9 +438,32 @@ async function createPoolWater({ site, pool, renderer, reveal, uniforms, simulat
     return Math.abs(p.x) <= hx && Math.abs(p.z) <= hz ? site.y + surface : null;
   }
 
+  /**
+   * The player swimming, or null out of the water: its body as js/swimming.js traceBody() gives it, { at: { x, y, z }, u, v, w ([x, y, z,
+   * half length]) } in the world's frame
+   */
+  function setPlayer(body) {
+    if (!body) {
+      playerAt.value.w = 0;
+      return;
+    }
+    const p = toPool(body.at.x, body.at.z);
+    playerAt.value.set(p.x, body.at.y - (site.y + surface), p.z, 1);
+    const turn = (u, to) => to.set(u[0] * c - u[2] * s, u[1], u[0] * s + u[2] * c, u[3]);
+    turn(body.u, playerU.value);
+    turn(body.v, playerV.value);
+    turn(body.w, playerW.value);
+  }
+
+  /** The eye under the water, or not: its underside drawn, for the view from below */
+  function setUnderwater(on) {
+    underside.visible = !!on;
+  }
+
   function state() {
     return {
       pool: pool.id, simulate, grid: simulate ? GRID : null, hz: HZ, steps: stepCount, drops: dropCount, visible: group.visible,
+      player: playerAt.value.w > 0.5, underside: underside.visible,
       swimmers: swimmers.map((sw) => ({ lane: sw.lane, x: +sw.x.toFixed(2), z: +sw.z.toFixed(2), dir: sw.dir, speed: +sw.speed.toFixed(2), turning: sw.turn > 0 }))
     };
   }
@@ -432,12 +490,12 @@ async function createPoolWater({ site, pool, renderer, reveal, uniforms, simulat
     for (const m of [bodies, heads, arms]) m.dispose();
     mesh.dispatchEvent({ type: 'dispose' });
     for (const g of [geometry, body, head, arm]) g.dispose();
-    for (const m of [material, skin, capMaterial]) m.dispose();
+    for (const m of [material, below, skin, capMaterial]) m.dispose();
     heights?.value.dispose?.();
     motion?.value.dispose?.();
   }
 
-  return { group, update, drop, surfaceAt, state, probe, dispose };
+  return { group, update, drop, surfaceAt, setPlayer, setUnderwater, state, probe, dispose };
 }
 
 /** Geometries with the same attributes as one */

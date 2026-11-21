@@ -519,29 +519,45 @@ function lunaParkScenario() {
   };
 }
 
-// Round North Sydney Pool (js/model-sites.js, north-sydney-pool) on its deck: along the harbour side, round the shallow end, along the
-// stand's side and up its tiers; at each side, a walk at the water held at its edge (the pool's still water, js/still-water.js). Its water
-// moves (js/pool-water.js): stepped on WebGPU, its swimmers doing laps.
-function poolScenario() {
+// Round North Sydney Pool (js/model-sites.js, north-sydney-pool) on its deck, and swimming in it (js/swimming.js): along the harbour side,
+// held at the water's edge walking at a slant along it; round the shallow end, down its steps into the water and a length to the deep
+// end; out by a ladder; a dive in from the side, and a climb out over the edge; round to the stand's side, held at its edge too, and up
+// the stand's tiers. Its water moves (js/pool-water.js): stepped on WebGPU, its swimmers doing laps. `phone`: a swim with the touch stick
+// instead, in off the edge and out at the use button.
+function poolScenario(profile = null) {
+  const phone = profile === 'phone';
   return {
-    async run({ human, page, metric, expect }) {
+    ...(phone ? { profile } : {}),
+    minutes: phone ? 6 : 8,
+    async run({ human, game, page, metric, expect }) {
       const debug = (fn, ...args) => page.evaluate(fn, ...args);
       const SITE = MODEL_SITES.find((s) => s.id === 'north-sydney-pool');
       const c = Math.cos(SITE.yaw), n = Math.sin(SITE.yaw);
       const at = (x, z) => ({ x: SITE.x + x * c + z * n, z: SITE.z - x * n + z * c });
       const local = async () => {
         const s = await human.state(), dx = s.x - SITE.x, dz = s.z - SITE.z;
-        return { x: dx * c - dz * n, z: dx * n + dz * c, y: s.surfaceY - SITE.y };
+        return { x: dx * c - dz * n, z: dx * n + dz * c, y: s.surfaceY - SITE.y + s.y, swimming: s.swimming, heading: s.heading - SITE.yaw };
       };
-      const where = async () => { const l = await local(); return `(${l.x.toFixed(2)}, ${l.z.toFixed(2)}) at ${l.y.toFixed(2)} m`; };
-      const walk = async (x, z, why) => expect(await walkTo(human, at(x, z)), `never got ${why}, stuck at ${await where()}`);
-      // Into the water from the deck at (x, z) towards (tx, tz): held at the edge, `edge` m from the middle across or along it
-      const toTheWater = async (x, z, tx, tz, why, held) => {
-        await walk(x, z, `to the edge ${why}`);
-        await walkTo(human, at(tx, tz), { timeout: 4000 });
-        const l = await local();
-        expect(held(l), `walked into the water ${why}: at ${await where()}`);
-        return l;
+      const where = async () => { const l = await local(); return `(${l.x.toFixed(2)}, ${l.z.toFixed(2)}) at ${l.y.toFixed(2)} m${l.swimming ? ', swimming' : ''}`; };
+      const walk = async (x, z, why, options = {}) => expect(await walkTo(human, at(x, z), options), `never got ${why}, stuck at ${await where()}`);
+      const swim = () => debug(() => window.__gameDebug.swim());
+      // Walking with W, steered at (tx, tz) but no Shift, for `ms`: the lowest it got across the pool's edge it's beside (`edge` its z), and
+      // whether it went in
+      const slide = async (x, z, tx, tz, ms, edge) => {
+        await walk(x, z, `to the edge at (${x}, ${z})`);
+        let nearest = Infinity, swam = false;
+        const until = human.now() + ms;
+        while (human.now() < until) {
+          const s = await human.state();
+          await human.steerTowards(s, at(tx, tz), 0.05);
+          await human.setKey('KeyW', true);
+          const l = await local();
+          nearest = Math.min(nearest, Math.abs(l.z) - Math.abs(edge));
+          swam ||= l.swimming;
+          await human.wait(60);
+        }
+        await human.releaseAll();
+        return { nearest, swam };
       };
       await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
       // Near it, for its model; then onto its deck on the harbour side, facing the water
@@ -551,12 +567,15 @@ function poolScenario() {
       await human.wait(1500);
       const onDeck = await local();
       expect(Math.abs(onDeck.y) < 0.15, `not on the deck: at ${await where()}`);
-      // The water: still water to walkers; its own, moving, with swimmers in it
+      // The water: still water to walkers; its own, moving, with swimmers in it; and swum in
       const middle = at(0, 0);
       const kind = (await debug(({ x, z }) => window.__gameDebug.water(x, z), middle))?.kind;
       expect(kind === 'pool', `the pool's middle is ${kind ?? 'dry'} to a walker`);
-      const ready = await human.until(async () => (await debug(() => window.__gameDebug.pool()))?.swimmers?.length > 0, { timeout: 20000 });
-      expect(ready, 'its water never came');
+      // (until() reads, then checks what it read: the check itself isn't awaited)
+      const ready = await human.until((w) => w.swimmers > 0 && w.loaded, { timeout: 20000,
+        read: () => debug(() => ({ swimmers: window.__gameDebug.pool()?.swimmers?.length ?? 0, loaded: window.__gameDebug.swim().loaded })) });
+      expect(ready, 'its water never came, or swimming in it');
+      if (phone) return swimByTouch();
       const before = await debug(() => window.__gameDebug.pool());
       await human.wait(2000);
       const after = await debug(() => window.__gameDebug.pool());
@@ -566,32 +585,187 @@ function poolScenario() {
       metric('simSteps', after.simulate ? after.steps - before.steps : null);
       expect(moved > 1, `its swimmers moved ${moved.toFixed(2)} m in 2 s`);
       if (after.simulate) expect(after.steps - before.steps >= 40, `its water stepped ${after.steps - before.steps} times in 2 s`);
-      // Along the harbour side, then at the water: held at its edge
+      // Along the harbour side, then at the water at a slant along it: held at its edge, and not in
       await walk(-14.0, 12.0, 'along the harbour side');
       await walk(14.0, 12.0, 'back along it');
-      const sw = await toTheWater(0.0, 12.0, 0.0, 8.0, 'on the harbour side', (l) => l.z > 10.6);
-      metric('edgeHarbourSide', +(sw.z - 10.5).toFixed(2));
-      // Round the shallow end, and at its water: back from the edge, between the backstroke flags' pole and the umbrellas
-      await walk(0.0, 12.0, 'back from the edge');
+      const harbour = await slide(-4.0, 11.6, 40.0, 9.8, 2500, 10.5);
+      metric('edgeHarbourSide', +harbour.nearest.toFixed(2));
+      expect(!harbour.swam && harbour.nearest > 0.2, `walked along the harbour side into the water: ${harbour.nearest.toFixed(2)} m from its edge`);
+
+      // Round the shallow end to its steps, and down them into the water: walked, a tread at a time, then swimming
+      await walk(15.0, 11.9, 'along the harbour side');
+      await walk(26.5, 11.9, 'to the shallow end');
+      await walk(26.4, 9.2, 'beside the steps');
+      await face(human, at(15.0, 9.2));
+      let waded = false, lowest = 0;
+      const down = human.now();
+      await human.setKey('KeyW', true);
+      const inWater = await human.until((l) => {
+        if (!l.swimming && l.x < 25.0) {
+          waded = true;
+          lowest = Math.min(lowest, l.y);
+        }
+        return l.swimming;
+      }, { timeout: 10000, every: 50, read: local });
+      await human.releaseAll();
+      expect(inWater, `never in the water down the steps, at ${await where()}`);
+      expect(waded && lowest < -0.6, `never walked down the treads (lowest ${lowest.toFixed(2)} m)`);
+      metric('stepsSeconds', +((human.now() - down) / 1000).toFixed(1));
+      metric('stepsLowestWalked', +lowest.toFixed(2));
+      // In the water: no car
+      await human.press('Digit2');
+      await human.wait(400);
+      const still = await human.state();
+      expect(still.mode === 'person' && still.swimming, `called the car in the water: ${still.mode}`);
+
+      // A length, to the deep end, along the outer lane; floating, its head out, all the way
+      const length = human.now();
+      let sunk = 0, samples = 0;
+      const stirred0 = (await swim()).stirred;
+      const lengthDone = walkTo(human, at(-20.6, 9.3), { timeout: 70000, arrive: 0.4 });
+      const sampler = (async () => {
+        while (human.now() - length < 70000) {
+          const s = await swim();
+          if (!s.swimming) break;
+          samples++;
+          if (s.eye < 0.02 || s.mode !== 'swim') sunk++;
+          await human.wait(500);
+          if (Math.abs(s.x + 20.6) < 0.6) break;
+        }
+      })();
+      const swum = await lengthDone;
+      await sampler;
+      expect(swum, `never swam to the deep end, at ${await where()}`);
+      const seconds = (human.now() - length) / 1000;
+      metric('lengthSeconds', +seconds.toFixed(1));
+      metric('lengthSpeed', +(43.0 / seconds).toFixed(2));
+      expect(sunk <= 1, `its head under ${sunk} times of ${samples} in a length`);
+      const stirred = (await swim()).stirred - stirred0;
+      metric('lengthStirred', stirred);
+      expect(stirred > 100, `the water stirred only ${stirred} times in a length`);
+
+      // Out by the ladder on the harbour side at the deep end: in front of it, out of its reach (a swim into it climbs it), facing the
+      // wall, and on into it
+      await walk(-21.5, 9.2, 'to the ladder');
+      await face(human, at(-21.5, 14.0));
+      await human.setKey('KeyW', true);
+      const climbing = await human.until((w) => w.climb === 'up', { timeout: 3000, every: 50, read: swim });
+      expect(climbing, `never climbed the ladder from ${await where()}`);
+      await human.releaseAll();
+      const out = await human.until((w) => !w.swimming, { timeout: 5000, every: 100, read: swim });
+      expect(out, 'never out up the ladder');
+      const top = await local();
+      expect(top.z > 10.8 && Math.abs(top.y) < 0.05, `up the ladder at ${await where()}`);
+
+      // A dive in from the side: at the edge, facing the water, the jump key
+      await walk(-10.0, 11.4, 'along to dive in');
+      await face(human, at(-10.0, 0.0));
+      const splashes0 = (await swim()).splashes;
+      await human.press('Space');
+      let dived = false, entered = null, under = 0;
+      await human.until((s) => {
+        dived ||= s.dive;
+        if (s.swimming && entered === null) entered = s.z;
+        under = Math.min(under, s.eye ?? 0);
+        return entered !== null && s.swimming && !s.glide && s.eye > 0;
+      }, { timeout: 6000, every: 40, read: swim });
+      expect(dived && entered !== null, `never dived in, at ${await where()}`);
+      metric('diveIn', +(10.5 - entered).toFixed(2));
+      metric('diveUnder', +under.toFixed(2));
+      expect(10.5 - entered > 1.0, `dived in only ${(10.5 - entered).toFixed(2)} m from the edge`);
+      expect(under < -0.3, `never under the water diving in (its eye ${under.toFixed(2)} m)`);
+      expect((await swim()).splashes > splashes0, 'no splash diving in');
+
+      // ...and out over the edge: back to the wall, facing it, the jump key
+      await walk(-10.0, 10.3, 'back to the wall');
+      await face(human, at(-10.0, 14.0));
+      const prompt = (await swim()).prompt;
+      expect(prompt === 'Climb out', `at the wall the prompt is ${prompt}`);
+      await human.press('Space');
+      const climbed = await human.until((w) => !w.swimming, { timeout: 4000, every: 100, read: swim });
+      expect(climbed, `never climbed out at the edge, at ${await where()}`);
+      const deck = await local();
+      expect(deck.z > 10.8 && Math.abs(deck.y) < 0.05, `out over the edge at ${await where()}`);
+
+      // Round the shallow end to the stand's side, held at its edge, and up the stand's tiers by its middle aisle
+      await walk(-10.0, 11.9, 'off the edge');
       await walk(15.0, 11.9, 'along the harbour side');
       await walk(26.5, 11.9, 'to the shallow end');
       await walk(27.0, -8.0, 'along the shallow end');
-      const se = await toTheWater(27.0, 0.0, 22.0, 0.0, 'at the shallow end', (l) => l.x > 25.1);
-      metric('edgeShallowEnd', +(se.x - 25).toFixed(2));
-      // Along the stand's side, and at its water
       await walk(27.0, -14.0, 'round to the stand\'s side');
-      await walk(0.0, -14.0, 'along the stand\'s side');
-      const ne = await toTheWater(0.0, -14.0, 0.0, -8.0, 'on the stand\'s side', (l) => l.z < -10.6);
-      metric('edgeStandSide', +(-10.5 - ne.z).toFixed(2));
+      const stand = await slide(10.0, -11.0, -40.0, -9.8, 2500, 10.5);
+      metric('edgeStandSide', +stand.nearest.toFixed(2));
+      expect(!stand.swam && stand.nearest > 0.2, `walked along the stand's side into the water: ${stand.nearest.toFixed(2)} m from its edge`);
       metric('fpsOnDeck', (await debug(() => window.__gameDebug.frameCost())).fps);
-      // Up the stand's tiers by its middle aisle
+      await walk(3.2, -14.0, 'along the stand\'s side');
       await walk(3.2, -16.5, 'to the foot of the stand');
       await walk(3.2, -23.6, 'up the stand');
-      const top = await local();
-      expect(top.y > 3.0, `up the stand at ${await where()}`);
-      metric('standTop', +top.y.toFixed(2));
+      const topOfStand = await local();
+      expect(topOfStand.y > 3.0, `up the stand at ${await where()}`);
+      metric('standTop', +topOfStand.y.toFixed(2));
       await walk(3.2, -16.5, 'down the stand');
       expect(Math.abs((await local()).y) < 0.15, `back on the deck at ${await where()}`);
+
+      // On a phone: in off the edge with the stick pushed at it, a swim out and back, and out at the use button
+      async function swimByTouch() {
+        const size = page.viewportSize();
+        const fingers = new Map();
+        const touch = (type, points = [...fingers.values()]) => game.cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points });
+        const stick = { x: size.width * 0.25, y: size.height * 0.7 };
+        const push = async (x, y) => {
+          const first = !fingers.has(1);
+          fingers.set(1, { id: 1, x: stick.x + x * 30, y: stick.y - y * 30 });
+          if (first) {
+            fingers.set(1, { id: 1, x: stick.x, y: stick.y });
+            await touch('touchStart');
+            fingers.set(1, { id: 1, x: stick.x + x * 30, y: stick.y - y * 30 });
+          }
+          await touch('touchMove');
+        };
+        const letGo = async () => {
+          const lifted = fingers.get(1);
+          if (!lifted) return;
+          fingers.delete(1);
+          await touch('touchEnd', [lifted]);
+        };
+        const turnTo = async (lx, lz) => {
+          for (let k = 0; k < 120; k++) {
+            const l = await local();
+            const error = Math.atan2(Math.sin(Math.atan2(lx, lz) - l.heading), Math.cos(Math.atan2(lx, lz) - l.heading));
+            if (Math.abs(error) < 0.12) break;
+            await push(error > 0 ? -0.9 : 0.9, 0);
+            await human.wait(50);
+          }
+          await letGo();
+        };
+        // Straight at the edge, and on: in
+        await turnTo(0, -1);
+        await push(0, 0.7);
+        const wet = await human.until((l) => l.swimming, { timeout: 6000, every: 100, read: local });
+        expect(wet, `never in the water with the stick, at ${await where()}`);
+        const from = await local();
+        await human.wait(4000);
+        await letGo();
+        const swumOut = from.z - (await local()).z;
+        metric('touchSwum', +swumOut.toFixed(2));
+        expect(swumOut > 1.5, `swam ${swumOut.toFixed(2)} m out with the stick in 4 s`);
+        // Round, back to the wall, and out at the button
+        await turnTo(0, 1);
+        await push(0, 0.7);
+        await human.until((l) => l.z > 9.9, { timeout: 15000, every: 100, read: local });
+        await letGo();
+        await turnTo(0, 1);
+        await human.wait(300);
+        const label = await page.locator('#touch-use-label').textContent();
+        expect(await page.locator('#touch-use').isVisible() && label === 'Climb out', `at the wall the use button says ${label}`);
+        const box = await page.locator('#touch-use').boundingBox();
+        const point = { x: box.x + box.width / 2, y: box.y + box.height / 2, id: 3 };
+        await touch('touchStart', [point]);
+        await human.wait(60);
+        await touch('touchEnd', [point]);
+        const outOf = await human.until((l) => !l.swimming, { timeout: 4000, every: 100, read: local });
+        expect(outOf, `the use button never climbed out, at ${await where()}`);
+      }
     }
   };
 }
@@ -2703,6 +2877,7 @@ export const SCENARIOS = {
   'pylon-lookout-phone': { ...lookoutScenario(), profile: 'phone' },
   'luna-park': lunaParkScenario(),
   'north-sydney-pool': poolScenario(),
+  'north-sydney-pool-phone': poolScenario('phone'),
   'sydney-tower': towerScenario(),
   'sydney-tower-phone': { ...towerScenario(), profile: 'phone' },
   'salesforce-tower': foyerScenario({

@@ -7,7 +7,8 @@
 //     kept apart in its tile, as its first shape (`standIns`, js/first-shapes.js): drawn from the first view, as the map always had them,
 //     till the model comes once the city round you is complete, and wherever neither the model nor its far version is drawn
 //   cut: where the ground under it is left undrawn, for what it has below the street, in its own frame, and how deep (js/city-grid.js).
-//     While its first shape stands, a cover in the ground's own look is drawn over it, and stood on
+//     While its first shape stands, a cover in the ground's own look is drawn over it, and stood on. A cut holds only inside one lawn or
+//     paving piece, and the pieces are 240 m squares: `more`, polygons past a square's edge, each in the piece on its side
 //   far: it has a far version, models/<file>-far.glb.gz: a shell of a draw or two, drawn past `near` and wherever its tile isn't, as
 //     far as the far level reaches (which draws no models, and leaves out what a model replaces), once the city round you is
 //     complete. A site that replaces none of the map's buildings has no first shape: its far version comes from the first view instead,
@@ -292,9 +293,12 @@ const MODEL_SITES = [
     id: 'north-sydney-pool', file: 'models/north-sydney-pool', x: 19.35, z: -2671.65, yaw: -0.7046, y: 6.4, far: true,
     replaces: [[-32.6, 0.0], [3.1, -21.2], [0.0, -40.0], [38.0, -27.0], [35.5, 12.9]],
     cut: {
-      poly: [[-24.7, 0.6], [-16.3, 10.6], [25.6, 10.6], [25.6, 0.6], [44.0, 0.6], [44.0, -21.6], [25.8, -21.6], [25.8, -24.6], [-19.3, -24.6],
+      poly: [[-24.88, 0.6], [-16.381, 10.6], [25.6, 10.6], [25.6, 0.6], [44.0, 0.6], [44.0, -21.6], [25.8, -21.6], [25.8, -24.6], [-19.3, -24.6],
         [-19.3, -17.8], [-29.2, -17.8], [-29.2, -4.6], [-26.2, -1.3]],
-      y: -2.4
+      y: -2.4,
+      // ...and the water's north-west corner on the harbour side, past the world's x = 0, where the map's paving stood under the surface,
+      // seen from under it
+      more: [[[-25.05, 0.416], [-25.05, 10.6], [-16.394, 10.6]]]
     }
   },
   // The Art Gallery of New South Wales, its old (south) building, Naala Nura, on Art Gallery Road in the Domain: the sandstone front
@@ -321,12 +325,12 @@ const toWorldOf = (site, x, z) => {
   return { x: site.x + x * c + z * s, z: site.z - x * s + z * c };
 };
 
-/** Each site's cut in the world's frame: { id, poly: [{ x, z }], y, minX, maxX, minZ, maxZ } */
-const SITE_CUTS = MODEL_SITES.filter((s) => s.cut && s.y !== null).map((s) => {
-  const poly = s.cut.poly.map(([x, z]) => toWorldOf(s, x, z));
+/** Each site's cuts in the world's frame, its `poly` and each of its `more`: { id, poly: [{ x, z }], y, minX, maxX, minZ, maxZ } */
+const SITE_CUTS = MODEL_SITES.filter((s) => s.cut && s.y !== null).flatMap((s) => [s.cut.poly, ...(s.cut.more ?? [])].map((ring) => {
+  const poly = ring.map(([x, z]) => toWorldOf(s, x, z));
   const xs = poly.map((p) => p.x), zs = poly.map((p) => p.z);
   return { id: s.id, poly, y: s.y + s.cut.y, minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs) };
-});
+}));
 
 /** Each site's outline in the world's frame, for the map: [{ h, pts: [{ x, z }] }] */
 const SITE_OUTLINES = MODEL_SITES.filter((s) => s.outline && !s.debug).flatMap((s) => s.outline.map(([h, ring]) => ({

@@ -54,6 +54,8 @@
 
   <!-- Loading Screen -->
   <div id="mode-fade" aria-hidden="true"></div>
+  <!-- Under a pool's water (js/main.js setUnderwater()) -->
+  <div id="underwater" aria-hidden="true" hidden></div>
   <div id="loading-overlay" role="status" aria-live="polite">
     <div class="loader">
       <span class="brand-bullet loader-bullet" aria-hidden="true">SY</span>
@@ -283,6 +285,8 @@
   </div>
   <!-- In first person on foot, until a click locks the mouse to the game (js/main.js) -->
   <div id="look-hint" class="use-prompt look-hint" hidden><kbd>Click</kbd><span>to look round</span></div>
+  <!-- A word for a moment, when something you asked for can't be done here (js/main.js flashHint()) -->
+  <div id="game-note" class="view-hint game-note" role="status" hidden></div>
   <!-- For a few seconds after going into a building puts you in first person (js/main.js setInBuilding()) -->
   <div id="view-hint" class="view-hint" role="status" hidden>
     <span class="view-hint-keys">First person: <kbd>A</kbd> <kbd>D</kbd> step aside, <kbd>5</kbd> for the chase camera</span>

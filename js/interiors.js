@@ -36,6 +36,7 @@ import {
 //   what it carries round (the wheel's gondolas) kept level (spinners()).
 // - A pool in an outside (its JSON's `pools`, North Sydney Pool's) is still water while the model's held: walkers stop at its edge
 //   (js/still-water.js). One with `sim` has water that moves near it (js/pool-water.js, which js/main.js fetches and places: pools()).
+//   One with `swim` is swum in (js/swimming.js, fetched with the first such outside held).
 // Every site's model is in its own frame (x across, z along, y up from its ground floor), placed at (x, y, z) and turned by yaw.
 
 const RELEASE = 60; // m from a building that its inside is let go of, unless its site says (`reach`)
@@ -334,7 +335,7 @@ function turn(spinner, angle) {
  * `artDetail()`: how finely a gallery's paintings are painted, 1 on medium and high, less on low (js/art.js).
  */
 function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () => false, farReach = () => 0, footpath = null, debug = false,
-  artDetail = () => 1 }) {
+  artDetail = () => 1, onSwim = null }) {
   const sites = MODEL_SITES.filter((s) => debug || !s.debug).map((s) => ({
     ...s, y: s.y ?? null, reach: s.reach ?? RELEASE, near: s.near ?? NEAR, out: null, loading: false, failed: false, ref: null,
     drawn: false, shape: 'first', far: s.far ? { group: null, loading: false, failed: false } : null, insides: new Map()
@@ -349,6 +350,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
   // intensity, distance, color }] over the stage }, or null
   let show = null;
   let spinTime = 0; // s of the game's clock that what turns in the models has turned for
+  let swimming = null; // js/swimming.js, fetched with the first outside that has a pool to swim in
 
   // --- The insides a site holds ---------------------------------------------------------------------------------------------
   /** Its inside's files that are in: { file, state, group, data, doors, rooms, ... } */
@@ -518,14 +520,26 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     dispose(out.group);
     clearFloor(site.id);
     removeStillWater(`site:${site.id}`);
+    swimming?.removeSwimPools(site.id);
     // what's drawn in its place is worked out again straight after (update())
     site.drawn = false;
   }
 
-  /** Its pools' water, as still water in the world's frame */
+  /**
+   * Its pools' water, as still water in the world's frame; and those it marks `swim` to swim in (js/swimming.js, fetched for the first,
+   * and given to `onSwim`)
+   */
   function holdPools(site) {
     const pools = site.out.data.pools ?? [];
     if (pools.length) addStillWater(`site:${site.id}`, pools.map((p) => p.ring.map(([x, z]) => toWorld(site, x, z))), 'pool');
+    if (!pools.some((p) => p.swim)) return;
+    const out = site.out;
+    import('./swimming.js').then((module) => {
+      if (site.out !== out) return; // let go of meanwhile
+      swimming = module;
+      module.addSwimPools(site.id, { x: site.x, y: site.y, z: site.z, yaw: site.yaw }, pools);
+      onSwim?.(module);
+    }).catch((error) => console.warn('[interiors] swimming', error));
   }
 
   /** The outside's door leaves apart, each to swing on its own, or (from further off) the one shut piece in their place */

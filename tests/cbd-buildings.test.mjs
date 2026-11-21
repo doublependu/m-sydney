@@ -313,15 +313,17 @@ test('North Sydney Pool within its budgets: its outside, and its far version', (
 
 test('North Sydney Pool: the map\'s paving under its deck and its water where it isn\'t cut out, so it never shows through', () => {
   const out = read('north-sydney-pool');
-  const cut = nsp.cut.poly;
+  const cuts = [nsp.cut.poly, ...(nsp.cut.more ?? [])];
   const inPoly = (poly, x, z) => inRing(poly.map(([px, pz]) => ({ x: px, z: pz })), x, z);
   const [olympic] = out.pools;
   const deck = out.floors.find((f) => f.holes?.length);
   let water = 0, onDeck = 0;
   for (let x = -40; x <= 50; x += 0.5) {
     for (let z = -20; z <= 18; z += 0.5) {
-      if (inPoly(cut, x, z)) continue;
+      if (cuts.some((cut) => inPoly(cut, x, z))) continue;
       const p = toWorldOf(nsp, x, z);
+      // (where two 240 m squares' pieces meet, each cut stops 5 mm short of the edge, in its own piece)
+      if (Math.abs(p.x - Math.round(p.x / 240) * 240) < 0.01 || Math.abs(p.z - Math.round(p.z / 240) * 240) < 0.01) continue;
       const paving = groundHeight(p.x, p.z) + DRAWN - nsp.y;
       if (inPoly(olympic.ring, x, z)) {
         water++;
@@ -333,10 +335,11 @@ test('North Sydney Pool: the map\'s paving under its deck and its water where it
       }
     }
   }
-  assert.ok(water > 100 && onDeck > 1000, `${water} points of water and ${onDeck} of deck outside the cut`);
+  // the water is cut out all over: from under it (swimming, js/swimming.js) nothing of the map's shows
+  assert.ok(water === 0 && onDeck > 1000, `${water} points of water and ${onDeck} of deck outside the cut`);
 });
 
-test('North Sydney Pool\'s pools: the 50 m pool in eight lanes, deep at its blocks and shallow at its steps, its ladders on its edges', () => {
+test('North Sydney Pool\'s pools: the 50 m pool in eight lanes, deep at its blocks and shallow at its steps, its ladders on its edges, swum in', () => {
   const { pools, floors } = read('north-sydney-pool');
   const olympic = pools.find((p) => p.id === 'olympic');
   assert.ok(olympic.sim, 'its water doesn\'t move');
@@ -357,6 +360,16 @@ test('North Sydney Pool\'s pools: the 50 m pool in eight lanes, deep at its bloc
     from = Math.min(...st.poly.map(([x]) => x));
     assert.ok(st.y < olympic.surface && st.y > olympic.surface - depth.at(-1)[1], `a tread at ${st.y}`);
   }
+  // swum in (js/swimming.js), its steps a stair a walker steps down and up (risers within 0.3 m, js/controllers.js FALLING), outside the
+  // last lane rope; the kids' pool only still water
+  assert.ok(olympic.swim && !pools.find((p) => p.id === 'kids').swim, 'which pool is swum in');
+  let tread = 0;
+  for (const st of steps) {
+    assert.ok(tread - st.y <= 0.3 + 1e-9, `a riser of ${(tread - st.y).toFixed(2)} m down the steps`);
+    tread = st.y;
+    assert.ok(Math.min(...st.poly.map(([, z]) => z)) > Math.max(...olympic.ropes) + 0.1, 'the steps under a lane rope');
+  }
+  assert.ok(tread - (olympic.surface - depth.at(-1)[1]) <= 0.3 + 1e-9, 'the last step down to the floor');
   for (const l of olympic.ladders) {
     assert.ok(Math.abs(Math.abs(l.at[1]) - (z1 - z0) / 2) < 0.01 && l.at[0] > x0 && l.at[0] < x1, `a ladder at ${l.at} isn't on a long edge`);
     assert.ok(l.rungs.every((y) => y < olympic.surface), 'a ladder\'s rung over the water');

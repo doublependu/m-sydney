@@ -1695,6 +1695,7 @@ body[data-mode='helicopter'] .gauge-alt {
   pointer-events: none;
 }
 .view-hint[hidden], .view-hint-touch, body.touch-enabled .view-hint-keys { display: none; }
+.game-note { bottom: calc(max(var(--edge), env(safe-area-inset-bottom)) + 216px); }
 body.touch-enabled .view-hint-touch { display: inline; }
 body.touch-enabled .view-hint { bottom: auto; top: calc(max(var(--edge), env(safe-area-inset-top)) + 64px); white-space: normal; max-width: calc(100vw - 32px); text-align: center; }
 .view-hint kbd { padding: 0 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.16); font: inherit; font-weight: 600; }
@@ -1858,6 +1859,15 @@ body.touch-enabled .pop-item { min-height: 44px; }
 }
 
 /* A short fade when changing travel mode moves the player a long way */
+/* Under a pool's water: the view tinted, darker to its edges (the fog's in the scene, js/lighting.js setUnderwater()) */
+#underwater {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 50% 42%, rgba(40, 150, 170, 0.22), rgba(6, 58, 78, 0.5));
+}
+#underwater[hidden] { display: none; }
 #mode-fade {
   position: fixed;
   inset: 0;

@@ -15,7 +15,8 @@ import {
   max,
   exp,
   abs,
-  select
+  select,
+  dot
 } from 'three/tsl';
 import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
 import { anchorToOrigin } from './world-origin.js';
@@ -221,7 +222,27 @@ class LightingSystem {
     // so helicopter / observatory views stay clearer than the horizon.
     this.uFogDensity = uniform(TIME_PRESETS.golden.fogDensity);
     this.uFogHeight = uniform(900.0);
+    this.uUnderwater = uniform(0); // 1 with the eye under a pool's water (setUnderwater())
+    this.underwater = false;
     if (this.envRenderTarget) this.scene.fogNode = this.createAerialFogNode();
+  }
+
+  /**
+   * The eye under a pool's water, or out of it: everything fades into the water's own turquoise within a few metres, as bright as the sky
+   * that lights it. Where the sky isn't baked into the fog, the plain fog does it.
+   */
+  setUnderwater(on) {
+    this.underwater = !!on;
+    this.uUnderwater.value = on ? 1 : 0;
+    const p = TIME_PRESETS[this.activePresetId] || TIME_PRESETS.golden;
+    if (on) {
+      const night = p.nightFactor ?? 0;
+      this.scene.fog.color.setRGB(0.05, 0.3, 0.34).multiplyScalar(1 - 0.85 * night);
+      this.scene.fog.density = 0.22;
+    } else {
+      this.scene.fog.color.setHex(p.fogColor);
+      this.scene.fog.density = p.fogDensity;
+    }
   }
 
   createAerialFogNode() {
@@ -239,7 +260,10 @@ class LightingSystem {
     const eb = exp(yb.div(H).negate());
     const meanDensity = select(abs(dy).greaterThan(1.0), ea.sub(eb).mul(H).div(dy), ea);
     const tau = this.uFogDensity.mul(dist).mul(meanDensity);
-    return fog(skyColor, float(1.0).sub(exp(tau.mul(tau).negate())));
+    // Under a pool's water: its turquoise, lit as the sky is, a quarter of it even near to and half within about 1.5 m
+    const water = vec3(0.1, 0.48, 0.52).mul(dot(skyColor, vec3(0.2126, 0.7152, 0.0722)));
+    const under = this.uUnderwater;
+    return fog(mix(skyColor, water, under), mix(float(1.0).sub(exp(tau.mul(tau).negate())), float(0.97).sub(exp(dist.mul(-0.33)).mul(0.72)), under));
   }
 
   bakeEnvironmentMap() {
@@ -273,6 +297,7 @@ class LightingSystem {
     this.scene.fog.color.setHex(p.fogColor);
     this.scene.fog.density = p.fogDensity;
     if (this.uFogDensity) this.uFogDensity.value = p.fogDensity;
+    if (this.underwater) this.setUnderwater(true);
 
     // Update physical Preetham SkyMesh uniforms
     this.sky.turbidity.value = p.turbidity;

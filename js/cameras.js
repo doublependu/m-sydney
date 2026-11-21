@@ -263,14 +263,15 @@ class CameraSystem {
 
   /**
    * The eye's height in the world, in first person on foot, eased over a step: given where it would be (m, the world's heights), whether
-   * the walker's on the ground and how fast it's going up (m/s), and dt. Returns where to draw it.
+   * the walker's on the ground and how fast it's going up (m/s), and dt. Returns where to draw it. `exact`: followed as it is, as in a
+   * pool's water, where the water eases the body's height itself.
    */
-  easeEye(y, grounded, vy, dt) {
+  easeEye(y, grounded, vy, dt, exact = false) {
     const last = this._eyeY, wasGrounded = this._eyeGrounded;
     this._eyeY = y;
     this._eyeGrounded = grounded;
     // (Gliding in from another camera, it's on its way down to the eye already)
-    if (last === null || !(dt > 0) || this.glide) {
+    if (last === null || !(dt > 0) || this.glide || exact) {
       this._eyeLag = 0;
       return y;
     }
@@ -417,9 +418,14 @@ class CameraSystem {
         const height = entity.chaseHeight * this.zoomMultiplier + Math.sin(this.orbitPitchOffset) * dist * 0.85;
         const horizDist = Math.cos(this.orbitPitchOffset) * dist + speedLag;
 
+        // Over a swimmer, higher, looking down at it: its height is its feet's, hanging in the water (js/swimming.js), down to 1.76 m under
+        // the deck's level, and the camera's lifted as far as it's down, so a climb in or out lifts it or lets it down as smoothly. Never
+        // under the water, which stays under its ground there, the deck's
+        const swimming = entity.type === 'person' && !!(entity.swim || entity.dive?.launched);
+        const lift = swimming ? Math.min(1, Math.max(0, -entity.position.y / 1.76)) : 0;
         desiredPos.set(
           entity.position.x - Math.sin(totalYaw) * horizDist,
-          Math.max(0.65, entity.position.y + height),
+          Math.max(0.65, entity.position.y + height + lift),
           entity.position.z - Math.cos(totalYaw) * horizDist
         );
 
@@ -428,7 +434,7 @@ class CameraSystem {
         // screen at 90 degrees, and behind the camera at 180 when it was nearer to you than that point (walking, cycling);
         // aiming over your head put you below the screen when dragged up to look down.
         // Inside, it looks ahead level, at about its own height, over your head into the room, rather than up at the ceiling
-        const lookUpBias = (entity.type === 'helicopter' ? 0.2 : (entity.type === 'car' ? 0.52 : 1.55)) * (1 - this.indoorPull) + 0.55 * this.indoorPull;
+        const lookUpBias = (entity.type === 'helicopter' ? 0.2 : (entity.type === 'car' ? 0.52 : 1.55 - 0.95 * lift)) * (1 - this.indoorPull) + 0.55 * this.indoorPull;
         const behind = Math.max(0, Math.cos(this.orbitYawOffset));
         const level = Math.max(0, 1 - Math.max(0, this.orbitPitchOffset - DEFAULT_PITCH) / CHASE_LOOK_DOWN);
         const ahead = behind * level;

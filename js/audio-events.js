@@ -65,6 +65,35 @@ function footstep(ctx, seed) {
   }, 0.55);
 }
 
+/**
+ * Water hit by a body (`slap`, `thump`: a jump or a dive into a pool) or a hand (a stroke): the slap of the surface, a low plunge sweeping
+ * down, the spray falling back as a hiss, and bubbles, each a short tone rising as it closes (`drops` of them)
+ */
+function waterSplash(ctx, seed, { duration, slap, thump, spray, drops, peak }) {
+  const random = randomSource(seed);
+  const coefficients = [320, 2300, 7200].map((frequency) => 1 - Math.exp(-TAU * frequency / ctx.sampleRate));
+  const bands = [0, 0, 0];
+  const bubbles = Array.from({ length: drops }, () => ({
+    at: 0.02 + Math.pow(random(), 1.7) * (duration - 0.12), f: 650 + random() * 2100, rise: 6 + random() * 26,
+    decay: 55 + random() * 95, level: 0.12 + random() * 0.45
+  }));
+  return makeBuffer(ctx, duration, (t) => {
+    const noise = random() * 2 - 1;
+    for (let i = 0; i < bands.length; i++) bands[i] += (noise - bands[i]) * coefficients[i];
+    const band = bands[1] - bands[0], hiss = bands[2] - bands[1];
+    const attack = 1 - Math.exp(-t * 900);
+    let v = band * slap * attack * Math.exp(-t * 17) + hiss * spray * Math.min(1, t / 0.06) * Math.exp(-t * 4.8) * 0.6;
+    // the plunge, from 180 Hz down to 60
+    v += Math.sin(TAU * (60 * t + 10 * (1 - Math.exp(-t * 12)))) * thump * attack * Math.exp(-t * 13);
+    for (const b of bubbles) {
+      const d = t - b.at;
+      if (d < 0 || d > 0.08) continue;
+      v += Math.sin(TAU * b.f * (d + b.rise * d * d * 0.5)) * b.level * Math.exp(-d * b.decay) * Math.min(1, d * 2000);
+    }
+    return v;
+  }, peak);
+}
+
 function speechFragment(ctx, speaker, seed) {
   const random = randomSource(seed);
   const vowels = [[600, 1170, 2380], [470, 1740, 2460], [340, 2010, 2650], [470, 890, 2300], [420, 1450, 2350]];
@@ -304,6 +333,9 @@ export function createEventResources(ctx, resources) {
       debris: Array.from({ length: 3 }, (_, i) => crashDebris(ctx, i + 501))
     },
     gusts: gustBuffer(ctx),
+    // A pool's water: into it (a jump, a dive), and a swimmer's hands going in
+    splashes: Array.from({ length: 2 }, (_, i) => waterSplash(ctx, 601 + i, { duration: 1.0, slap: 1, thump: 0.5, spray: 0.7, drops: 26, peak: 0.6 })),
+    strokes: Array.from({ length: 4 }, (_, i) => waterSplash(ctx, 701 + i, { duration: 0.3, slap: 0.8, thump: 0.12, spray: 0.25, drops: 4, peak: 0.5 })),
     signalTick: signal(ctx, false),
     signalWalk: signal(ctx, true)
   };
@@ -313,7 +345,7 @@ export function playEvent(ctx, resources, kind, output, options = {}) {
   const random = randomSource(options.seed);
   const start = Math.max(ctx.currentTime, finite(options.when, ctx.currentTime));
   const intensity = clamp(finite(options.intensity, 1));
-  const levels = { footstep: 0.22, talk: 0.065, horn: 0.23, signal: 0.13, crash: 0.35 };
+  const levels = { footstep: 0.22, talk: 0.065, horn: 0.23, signal: 0.13, crash: 0.35, splash: 0.3, stroke: 0.11 };
   if (!Object.hasOwn(levels, kind) || intensity === 0) return { endTime: start, dispose() {} };
   const gain = ctx.createGain();
   gain.gain.value = intensity * levels[kind];
@@ -390,6 +422,11 @@ export function playEvent(ctx, resources, kind, output, options = {}) {
     if (severity > 0.6) {
       play(resources.crashes.debris[variant], start + 0.012, rate, (severity - 0.6) / 0.4 * 0.24);
     }
+  } else if (kind === 'splash' || kind === 'stroke') {
+    // bigger is lower and louder
+    const size = clamp(finite(options.size, 1), 0.2, 1.5);
+    const list = kind === 'splash' ? resources.splashes : resources.strokes;
+    play(list[Math.floor(random() * list.length)], start, (1.14 - 0.2 * Math.min(1, size)) * (0.94 + random() * 0.12), 0.45 + 0.55 * Math.min(1, size));
   } else {
     play(options.walk ? resources.signalWalk : resources.signalTick, start);
   }

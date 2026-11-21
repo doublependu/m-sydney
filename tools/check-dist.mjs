@@ -5,7 +5,7 @@
 // of a folder, and its documentation recommends 3,000 at most. The map's files go in folders by 8 km square (js/tiles/paths.js).
 // It lists the first download's code too (what index.html loads, and what that imports), and fails if a season's is in it: the
 // seasons are fetched only in their season, once the city is complete (js/seasons.js); or a pool's moving water, fetched only near one
-// (js/pool-water.js).
+// (js/pool-water.js), and swimming with the first model that has a pool to swim in (js/swimming.js).
 import { execSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -84,6 +84,7 @@ for (const name of firstNames) if (/^seasons?[-.]/.test(name)) problems.push(`${
 for (const name of firstNames) if (/^pool-water[-.]/.test(name)) problems.push(`${name} is in the first download: a pool's water is fetched only near it`);
 // ...nor a gallery's art, fetched with its inside (js/art.js)
 for (const name of firstNames) if (/^art(works|-paint)?[-.]/.test(name)) problems.push(`${name} is in the first download: a gallery's art comes with its inside`);
+for (const name of firstNames) if (/^swimming[-.]/.test(name)) problems.push(`${name} is in the first download: swimming is fetched with a pool to swim in`);
 if (wrangler.main || wrangler.assets?.run_worker_first) problems.push('wrangler.jsonc runs a Worker: the site has to stay static files on the free plan');
 for (const problem of problems) console.error(problem);
 process.exit(problems.length ? 1 : 0);

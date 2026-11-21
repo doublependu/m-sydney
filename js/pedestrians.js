@@ -2337,4 +2337,8 @@ class PersonRig {
 }
 
 
+// The rig's bones, sizes and limbs, for poses written from outside it (js/swimming.js, which reads them from a rig it's given rather
+// than importing this module, so a chunk of its own doesn't take this one out of the first download's)
+PersonRig.SIZES = { BONE, THIGH, SHIN, ANKLE_H, HIP_X, UPPER_ARM, FOREARM, ARM_BIND_ABDUCTION, PELVIS_Y, LIMB, SIDES };
+
 export { BONE as PERSON_BONES, BIND as PERSON_BIND, buildPersonGeometry, createPersonMaterial, PersonCrowd, PersonRig, PEDESTRIAN_DIVE_DURATION };

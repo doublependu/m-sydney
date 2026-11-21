@@ -5,6 +5,7 @@
 //   --shift holds Shift with W, for the run
 import { writeFileSync } from 'node:fs';
 import { launchBrowser, openGame, serveDist, PROFILES } from './lib.mjs';
+import { MODEL_SITES, toWorldOf } from '../../js/model-sites.js';
 
 const args = process.argv.slice(2);
 const out = args.find((a) => !a.startsWith('--')) || 'recordings/walk-trace.json';
@@ -13,7 +14,12 @@ const profile = option('profile', 'laptop');
 const only = option('only', '')?.split(',').filter(Boolean);
 const shift = args.includes('--shift');
 
-// Each walk: where it starts, which way it faces, and what's held when (ms from the start, key, down or up)
+// At North Sydney Pool (js/swimming.js), in its frame: a heading along (x, z) there
+const POOL = MODEL_SITES.find((s) => s.id === 'north-sydney-pool');
+const atPool = (x, z, dx, dz) => ({ ...toWorldOf(POOL, x, z), heading: Math.atan2(dx, dz) + POOL.yaw, pool: true });
+
+// Each walk: where it starts, which way it faces, and what's held when (ms from the start, key, down or up). `pool`: at North Sydney Pool,
+// once its model and its water are in; `swim`: started in the water, swimming
 const WALKS = [
   { name: 'straight', x: 9, z: -42, heading: 0, seconds: 7, keys: [[0, 'KeyW', 1]] },
   { name: 'turn', x: 9, z: -42, heading: 0, seconds: 7, keys: [[0, 'KeyW', 1], [0, 'ArrowLeft', 1]] },
@@ -22,7 +28,13 @@ const WALKS = [
   { name: 'slope', x: 700, z: -1000, heading: Math.PI, seconds: 7, keys: [[0, 'KeyW', 1]] },
   // Off a garden's raised lawn, down its kerb onto an asphalt path and up onto the lawn the other side (js/garden.js)
   { name: 'garden-kerb', x: 1090, z: -1003.2, heading: Math.PI / 2, seconds: 7, keys: [[0, 'KeyW', 1]] },
-  { name: 'stand', x: 9, z: -42, heading: 0, seconds: 4, keys: [] }
+  { name: 'stand', x: 9, z: -42, heading: 0, seconds: 4, keys: [] },
+  // Down the pool's steps into the water, and on swimming; a swim; up the steps out of it onto the deck; and up its stand's tiers, a
+  // stair (0.36 m risers), to measure them against
+  { name: 'pool-steps', ...atPool(26.6, 9.2, -1, 0), seconds: 9, keys: [[0, 'KeyW', 1]] },
+  { name: 'pool-swim', ...atPool(12, 2, -1, 0), swim: true, seconds: 7, keys: [[0, 'KeyW', 1]] },
+  { name: 'pool-out', ...atPool(20.6, 9.2, 1, 0), swim: true, seconds: 9, keys: [[0, 'KeyW', 1]] },
+  { name: 'stand-stair', ...atPool(3.2, -16.2, 0, -1), seconds: 6, keys: [[0, 'KeyW', 1]] }
 ].filter((w) => !only.length || only.includes(w.name));
 
 /** The value at the middle of each 7 samples less a quadratic fitted through them by time: the frame-to-frame jitter */
@@ -63,6 +75,13 @@ const { width, height } = PROFILES[profile].viewport;
 const results = [];
 for (const walk of WALKS) {
   await page.evaluate(({ x, z, heading }) => window.__gameDebug.goto(x, z, heading, 'person'), walk);
+  if (walk.pool) {
+    await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'north-sydney-pool')?.drawn && window.__gameDebug.swim().loaded
+      && window.__gameDebug.pool()?.swimmers?.length > 0, null, { timeout: 120000, polling: 250 });
+    // (a teleport into the water lands beside it: in it, from there)
+    if (walk.swim) await page.evaluate(({ x, z, heading }) => window.__gameDebug.swimAt(x, z, heading), walk);
+    else await page.evaluate(({ x, z, heading }) => window.__gameDebug.goto(x, z, heading, 'person'), walk);
+  }
   await page.waitForTimeout(2000);
   if (shift) await page.keyboard.down('ShiftLeft');
   // Sampled each frame in the page, by the game's clock, once per simulated frame

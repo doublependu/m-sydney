@@ -106,6 +106,7 @@ class CityAudioSystem {
     this.lastHorn = -Infinity;
     this.collisionPairs = new WeakMap();
     this.collisionSequence = 0;
+    this.waterPlayed = {}; // the pool's splashes and strokes played (splash())
     this.collisionSystems = [simulation.controllerManager];
     this.onCollision = (impact) => this.crash(impact);
     for (const system of this.collisionSystems) system.setCollisionListener?.(this.onCollision);
@@ -380,8 +381,8 @@ class CityAudioSystem {
     const now = this.context.currentTime;
     const crash = kind === 'crash';
     const severity = clamp(options.severity ?? options.intensity ?? 1, 0, 1);
-    const ref = crash ? 4 + severity * 8 : kind === 'horn' ? 8 : kind === 'talk' ? 2 : 1.8;
-    const range = crash ? 50 + severity * 110 : kind === 'horn' ? 140 : kind === 'talk' ? 30 : kind === 'footstep' ? 22 : 35;
+    const ref = crash ? 4 + severity * 8 : kind === 'horn' ? 8 : kind === 'talk' ? 2 : kind === 'splash' ? 3 : 1.8;
+    const range = crash ? 50 + severity * 110 : kind === 'horn' ? 140 : kind === 'talk' ? 30 : kind === 'footstep' ? 22 : kind === 'splash' ? 70 : 35;
     if (Math.hypot(source.x - this.listener.x, source.y - this.listener.y, source.z - this.listener.z) > range) return false;
     if (crash || options.priority) {
       // Impacts are immediate, between the 10 Hz ambience updates. Reclaim finished events first, then let
@@ -458,6 +459,15 @@ class CityAudioSystem {
     contact.played = now;
     contact.speed = speed;
     return true;
+  }
+
+  /** A pool's water hit at (x, y, z) in the world: 'splash' (into it, `size` 1 a jump) or 'stroke' (a swimmer's hand) */
+  splash(kind, x, y, z, size = 1) {
+    if (!this.ready || !this.resources?.splashes || !this.enabled || !this.haveListener || this.context?.state !== 'running' || document.hidden) return false;
+    const played = this.emit(kind, { id: this, x, y, z, seed: ++this.collisionSequence }, { size, priority: kind === 'splash' });
+    // how many of each have played, for the scripts
+    if (played) this.waterPlayed[kind] = (this.waterPlayed[kind] ?? 0) + 1;
+    return played;
   }
 
   honk(entity) {

@@ -59,8 +59,10 @@ test('an outside is drawn in a draw or so a material, its door leaves as one shu
   for (const site of MODEL_SITES) {
     const name = site.file.replace('models/', '');
     const g = gltf(name), nodes = nodeNames(name), doors = read(name).doors;
-    // what never moves is one node, and every node not a door leaf or the shut piece is drawn in one draw a material
-    const apart = g.nodes.filter((n) => n.mesh === undefined && !/^door_|^doors_shut$/.test(n.name) && n.children?.length);
+    // what never moves is one node, and every node not a door leaf or the shut piece, or what turns (`spin`), is drawn in one draw a
+    // material
+    const moving = new Set((read(name).spin ?? []).flatMap((s) => [s.node, s.level?.node]).filter(Boolean));
+    const apart = g.nodes.filter((n) => n.mesh === undefined && !/^door_|^doors_shut$/.test(n.name) && !moving.has(n.name) && n.children?.length);
     assert.ok(apart.length <= 1, `${name}: ${apart.map((n) => n.name)}`);
     if (doors.length) assert.ok(nodes.has('doors_shut'), `${name}: no doors_shut`);
     if (site.far) {
@@ -90,6 +92,11 @@ test('every model\'s JSON names only nodes it has, and every door that leads in 
       if (d.leaves === 2) assert.ok(nodes.has(`${d.node}_b`), `${name}: ${d.node}_b`);
     }
     for (const i of out.instances ?? []) assert.ok(nodes.has(i.node), `${name}: no ${i.node} to draw ${i.at.length} of`);
+    // what turns, and what it carries round level: merged away with the rest, it would stand still, or not be drawn at all
+    for (const s of out.spin ?? []) {
+      assert.ok(nodes.has(s.node), `${name}: no ${s.node} to turn`);
+      if (s.level) assert.ok(nodes.has(s.level.node), `${name}: no ${s.level.node} to carry round`);
+    }
     for (const file of new Set(out.doors.map((d) => d.inside).filter(Boolean))) {
       const inner = read(file), innerNodes = nodeNames(file);
       for (const d of inner.doors) assert.ok(innerNodes.has(d.node) && (d.leaves !== 2 || innerNodes.has(`${d.node}_b`)), `${file}: ${d.node}`);

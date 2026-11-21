@@ -126,3 +126,63 @@ test('a tower\'s site says how high it stands and how far it reaches, as its mod
     assert.ok(reach <= site.radius && reach >= site.radius - 3, `${site.id}: reaches ${reach.toFixed(1)} m, its site says ${site.radius}`);
   }
 });
+
+// Luna Park (js/model-sites.js `luna-park`): no inside, and no door. Its way in is the face's mouth, walked through onto the midway.
+const luna = MODEL_SITES.find((s) => s.id === 'luna-park');
+
+test('Luna Park stands where the map had its gate, its halls and its rides, and the map leaves those out', () => {
+  assert.ok(luna.far, 'it has a far version');
+  const buildings = [...heldTiles().values()].flatMap((t) => t.buildings);
+  for (const [lx, lz] of luna.replaces) {
+    const { x, z } = toWorldOf(luna, lx, lz);
+    const left = buildings.filter((b) => x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ && b.polygons.some((p) => inRing(p.outer, x, z)));
+    assert.equal(left.length, 0, `the map still has a building ${Math.round(left[0]?.height)} m high at (${x.toFixed(1)}, ${z.toFixed(1)})`);
+  }
+});
+
+test('Luna Park\'s way in is the face\'s mouth: nothing across it, its teeth over a walker\'s head, the street at its height', () => {
+  const out = read('luna-park');
+  assert.deepEqual(out.doors, [], 'it has a door');
+  // No wall within a walker's height crosses the line through the mouth, from in front of the gate to the midway behind it
+  const crosses = (w, x) => {
+    const [ax, az] = w.a, [bx, bz] = w.b;
+    if (Math.abs(bx - ax) < 1e-9) return Math.abs(ax - x) <= w.t / 2 + 0.25 && Math.min(az, bz) < 3 && Math.max(az, bz) > -6;
+    const t = (x - ax) / (bx - ax);
+    if (t < 0 || t > 1) return false;
+    const z = az + (bz - az) * t;
+    return z > -6 && z < 3;
+  };
+  for (const x of [-2.5, -1, 0, 1, 2.5]) {
+    const across = out.walls.filter((w) => w.y0 < 2.2 && w.y1 > 0.3 && crosses(w, x));
+    assert.equal(across.length, 0, `a wall across the mouth at x = ${x}: ${JSON.stringify(across[0])}`);
+  }
+  // The street in front of it and the midway behind it, as the map has them, under the teeth (2.78 m over the site's height and up)
+  for (const [x, z] of [[0, 2.0], [-2.5, 0.5], [2.5, 0.5], [0, -3.0], [2.5, -3.0]]) {
+    const p = toWorldOf(luna, x, z);
+    const y = groundHeight(p.x, p.z) - luna.y;
+    assert.ok(y > -0.6 && y + 1.8 < 2.78, `at (${x}, ${z}) the ground is ${y.toFixed(2)} m from the site's height`);
+  }
+  const front = toWorldOf(luna, 0, 4.0);
+  assert.equal(clearOfSites(front.x, front.z), false, 'a street tree could stand in front of the mouth');
+});
+
+test('Luna Park within its budgets: its outside, and its far version', () => {
+  const size = fs.statSync(new URL('../public/models/luna-park.glb.gz', import.meta.url)).size;
+  const g = gltf('luna-park');
+  const draws = g.nodes.filter((n) => n.mesh !== undefined).reduce((s, n) => s + g.meshes[n.mesh].primitives.length, 0);
+  assert.ok(size < 300_000 && draws <= 20, `${size} bytes, ${draws} draws`);
+  const far = gltf('luna-park-far');
+  const tris = far.meshes.flatMap((m) => m.primitives).reduce((s, p) => s + far.accessors[p.indices].count / 3, 0);
+  assert.ok(far.meshes.flatMap((m) => m.primitives).length <= 2 && tris <= 2000, `its far version: ${tris} triangles`);
+});
+
+test('Luna Park\'s wheel stands on the ground where OSM has its fence, its lowest gondola clear of it', () => {
+  const [wheel] = read('luna-park').spin;
+  const [cx, cy, cz] = wheel.centre;
+  const at = toWorldOf(luna, cx, cz);
+  // OSM's fence round it (way 581526818) has its middle at (-85.4, -2726.6)
+  assert.ok(Math.hypot(at.x + 85.4, at.z + 2726.6) < 1.0, `its hub over (${at.x.toFixed(1)}, ${at.z.toFixed(1)})`);
+  const ground = groundHeight(at.x, at.z) - luna.y;
+  const lowest = cy - 15 - 2.0;
+  assert.ok(lowest - ground > 0.4 && lowest - ground < 2.0, `its lowest gondola's floor ${(lowest - ground).toFixed(2)} m over the ground`);
+});

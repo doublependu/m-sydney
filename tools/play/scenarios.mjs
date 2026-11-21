@@ -478,6 +478,47 @@ function lookoutScenario() {
   };
 }
 
+// Into Luna Park (js/model-sites.js, luna-park) through the face's mouth: from the plaza in front of the gate, in under its teeth, through
+// the gate onto the midway, along it a way, and back out. Its wheel turns while the model's drawn, its gondolas carried round with it.
+function lunaParkScenario() {
+  return {
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const SITE = MODEL_SITES.find((s) => s.id === 'luna-park');
+      const at = (x, z) => ({ x: SITE.x + x * Math.cos(SITE.yaw) + z * Math.sin(SITE.yaw), z: SITE.z - x * Math.sin(SITE.yaw) + z * Math.cos(SITE.yaw) });
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const local = async () => {
+        const s = await human.state(), dx = s.x - SITE.x, dz = s.z - SITE.z, c = Math.cos(SITE.yaw), n = Math.sin(SITE.yaw);
+        return `(${(dx * c - dz * n).toFixed(2)}, ${(dx * n + dz * c).toFixed(2)}) at ${(s.surfaceY - SITE.y).toFixed(2)} m`;
+      };
+      const walk = async (x, z, why) => expect(await walkTo(human, at(x, z)), `never got ${why}, stuck at ${await local()}`);
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      // On the plaza in front of the gate, facing it
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...at(0.0, 14.0), h: SITE.yaw + Math.PI });
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'luna-park')?.drawn, null, { timeout: 60000, polling: 250 });
+      // The wheel turns, its 24 gondolas with it
+      const wheel = async () => (await interior()).spins.find((s) => s.site === 'luna-park' && s.node === 'wheel');
+      const before = await wheel();
+      expect(before?.level === 24, `the wheel carries ${before?.level} gondolas round`);
+      await human.wait(2000);
+      const after = await wheel();
+      const turned = Math.abs(Math.atan2(Math.sin(after.angle - before.angle), Math.cos(after.angle - before.angle)));
+      metric('wheelTurned', +turned.toFixed(3));
+      expect(turned > 0.05, `the wheel turned ${turned.toFixed(3)} rad in 2 s`);
+      await walk(0.0, 3.0, 'up to the mouth');
+      await walk(0.0, -1.5, 'in under the teeth');
+      await walk(0.3, -6.0, 'through the gate');
+      await walk(0.5, -10.8, 'onto the midway');
+      metric('fpsOnMidway', (await debug(() => window.__gameDebug.frameCost())).fps);
+      await walk(-1.4, -18.4, 'along the midway');
+      expect((await interior()).inside === null, 'in a building, on the midway');
+      await walk(0.5, -10.8, 'back down the midway');
+      await walk(0.0, -1.5, 'back through the gate');
+      await walk(0.0, 8.0, 'out onto the plaza');
+    }
+  };
+}
+
 // Into Sydney Tower's foyer (js/model-sites.js, sydney-tower), behind its door on Market St: in, through the gates to the lifts, and out
 function towerScenario() {
   return {
@@ -2367,6 +2408,7 @@ export const SCENARIOS = {
   'denning-st-phone': { ...denningScenario(), profile: 'phone', minutes: 10 },
   'pylon-lookout': lookoutScenario(),
   'pylon-lookout-phone': { ...lookoutScenario(), profile: 'phone' },
+  'luna-park': lunaParkScenario(),
   'sydney-tower': towerScenario(),
   'sydney-tower-phone': { ...towerScenario(), profile: 'phone' },
   'salesforce-tower': foyerScenario({

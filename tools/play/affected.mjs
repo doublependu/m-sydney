@@ -23,6 +23,7 @@ export const COVERS = {
   'long-drive-south': { files: /^js\/(main|surfaces)\.js$/, area: null },
   'long-drive': { files: /^js\/(main|surfaces)\.js$/, area: null },
   'walk-in': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|buildings|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/.*)$/, area: null },
+  'luna-park': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|landmarks|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/luna-.*)$/, area: [-180, 0, -2950, -2640] },
   'sydney-tower': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|sydney-tower|landmarks|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/sydney-.*)$/, area: [40, 240, -440, -200] },
   'sydney-tower-phone': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|sydney-tower|landmarks|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/sydney-.*)$/, area: [40, 240, -440, -200] },
   'salesforce-tower': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|tower-signs|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/salesforce-.*)$/, area: [-100, 60, -1260, -1130] },

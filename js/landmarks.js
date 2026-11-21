@@ -1,9 +1,9 @@
 import * as THREE from 'three/webgpu';
-import { color, float, max, mix, smoothstep, texture, uv, vec4 } from 'three/tsl';
+import { color, float, max, mix, smoothstep, texture, uv, vec4, vertexColor } from 'three/tsl';
 import { cityUniforms } from './tsl-materials.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { LANDMARK_SITES } from './city-config.js';
 import { addFirstShape } from './first-shapes.js';
+import { MODEL_SITES } from './model-sites.js';
 import { groundHeight } from './surfaces.js';
 import { buildHarbourBridge, harbourBridgeColliders } from './harbour-bridge.js';
 import { buildOperaHouse } from './opera-house.js';
@@ -154,52 +154,81 @@ function buildHeritage(group) {
   group.add(library);
 }
 
-// Luna Park: the big face at the gate and the wheel behind it
+// Luna Park: the face at its gate between its two towers, and the wheel behind, in the site's frame (js/model-sites.js `luna-park`: the
+// face's front at its middle, +z out through it). Its site's first shape, with the map's boxes the model replaces (js/first-shapes.js):
+// one mesh in its own colours, glowing a little at night, hidden once the model or its far version is drawn. Its towers stand round the
+// map's boxes of them, so the two are never drawn in one plane.
+const LUNA_WHEEL = { x: -85.4, z: -2726.6, plane: [0.605, -0.796], hub: 17.8, rim: 15 }; // the world's frame: its fence's middle, along it
 function buildLunaPark(group) {
-  const { x, z } = LANDMARK_SITES.lunaPark;
-  const base = groundHeight(x, z);
-  const bright = (hex) => new THREE.MeshStandardNodeMaterial({ color: hex, roughness: 0.5, emissive: hex, emissiveIntensity: 0.25 });
-  const face = new THREE.Group();
-  face.position.set(x + 10, base, z + 20);
-  face.rotation.y = 2.8;
-  face.userData.lifted = true;
-  const disc = (r, hex, px, py, pz = 0.4) => {
-    const m = new THREE.Mesh(new THREE.CircleGeometry(r, 28), bright(hex));
-    m.position.set(px, py, pz);
-    m.userData.lifted = true;
-    face.add(m);
+  const site = MODEL_SITES.find((s) => s.id === 'luna-park');
+  const parts = [];
+  const add = (g, hex, x = 0, y = 0, z = 0) => {
+    g.translate(x, y, z);
+    const c = new THREE.Color(hex), n = g.attributes.position.count, a = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) a.set([c.r, c.g, c.b], i * 3);
+    g.setAttribute('color', new THREE.BufferAttribute(a, 3));
+    g.deleteAttribute('uv');
+    parts.push(g.index ? g.toNonIndexed() : g);
+    return g;
   };
-  disc(10.5, 0xf6c21c, 0, 12);
-  disc(2.2, 0xffffff, -3.8, 15);
-  disc(2.2, 0xffffff, 3.8, 15);
-  disc(1.1, 0x1b5fbb, -3.8, 15, 0.5);
-  disc(1.1, 0x1b5fbb, 3.8, 15, 0.5);
-  disc(4.4, 0xc4202a, 0, 7.6);
-  disc(3.2, 0x201414, 0, 6.4, 0.5);
-  for (const dx of [-13, 13]) {
-    const tower = settle(new THREE.Mesh(new THREE.CylinderGeometry(1.7, 2.1, 22, 12), bright(dx < 0 ? 0xd9304a : 0x27a0d8)));
-    tower.position.set(dx, 11, 0);
-    face.add(tower);
+  const box = (x0, y0, z0, x1, y1, z1, hex) => add(new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0), hex, (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+  for (const s of [-1, 1]) {
+    const [x0, x1] = s > 0 ? [4.2, 8.75] : [-8.75, -4.2];
+    box(x0 - 0.1, -1.5, -3.4, x1 + 0.1, 3.05, 1.9, 0x1f73c4);
+    box(x0, 3.05, -3.3, x1, 16.6, 1.8, 0xf2e6d0);
+    box(x0 - 0.15, 16.6, -3.45, x1 + 0.15, 18.1, 1.95, 0x1a7f9c);
+    const cx = (x0 + x1) / 2;
+    box(cx - 1.6, 18.1, -2.35, cx + 1.6, 20.4, 0.85, 0xf2e6d0);
+    add(new THREE.ConeGeometry(1.6, 8.2, 8), 0xf6f3ec, cx, 24.5, -0.75);
   }
-  group.add(face);
-
-  const steel = new THREE.MeshStandardNodeMaterial({ color: 0xd8dde2, roughness: 0.45, metalness: 0.5 });
-  const wheel = new THREE.Group();
-  wheel.position.set(x - 25, base + 21, z + 45);
-  wheel.userData.lifted = true;
-  const rim = settle(new THREE.Mesh(new THREE.TorusGeometry(17, 0.4, 8, 40), steel));
-  rim.userData.lifted = true;
-  wheel.add(rim);
-  for (let i = 0; i < 12; i++) {
-    const spoke = settle(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 34, 5), steel));
-    spoke.rotation.z = (i / 12) * Math.PI;
-    wheel.add(spoke);
-    const a = (i / 12) * Math.PI * 2;
-    const car = settle(new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.6, 2), bright([0xd9304a, 0xf6c21c, 0x27a0d8][i % 3])));
-    car.position.set(Math.cos(a) * 17, Math.sin(a) * 17 - 1, 0);
-    wheel.add(car);
+  // the face's block, its mouth open under it, and its jaw either side
+  box(-4.2, 3.3, -2.9, 4.2, 12, 0.1, 0xf2e6d0);
+  for (const s of [-1, 1]) box(s > 0 ? 3.55 : -4.2, -1.5, -2.9, s > 0 ? 4.2 : -3.55, 3.3, 0.1, 0x1f73c4);
+  // the headdress, its band, the face, its eyes and its lip
+  add(new THREE.CircleGeometry(4.6, 24, 0, Math.PI).scale(1, 1.5, 1), 0x2b5fb2, 0, 9.47, 0.2);
+  add(new THREE.RingGeometry(3.5, 4.1, 24, 1, 0, Math.PI).scale(1, 0.95, 1), 0xef8a24, 0, 9.47, 0.3);
+  add(new THREE.CircleGeometry(3.5, 24, 0, Math.PI).scale(1, 0.75, 1), 0xf3dbc6, 0, 9.47, 0.3);
+  add(new THREE.PlaneGeometry(8.4, 6.17), 0xf3dbc6, 0, 6.385, 0.3);
+  for (const s of [-1, 1]) {
+    add(new THREE.CircleGeometry(1, 16).scale(1.39, 0.87, 1), 0xf6f3ec, s * 1.97, 8.16, 0.4);
+    add(new THREE.CircleGeometry(0.6, 12), 0x2f86d9, s * 1.97, 8.19, 0.45);
   }
-  group.add(wheel);
+  add(new THREE.PlaneGeometry(7.1, 0.95), 0xd22a2c, 0, 3.8, 0.4);
+  // the wheel, still: its rims, spokes, gondolas and A-frames, on the ground where it stands
+  const c = Math.cos(site.yaw), sn = Math.sin(site.yaw);
+  const local = (x, z) => [(x - site.x) * c - (z - site.z) * sn, (x - site.x) * sn + (z - site.z) * c];
+  const [wx, wz] = local(LUNA_WHEEL.x, LUNA_WHEEL.z);
+  const hubY = groundHeight(LUNA_WHEEL.x, LUNA_WHEEL.z) - site.y + LUNA_WHEEL.hub;
+  const [px, pz] = [LUNA_WHEEL.plane[0] * c - LUNA_WHEEL.plane[1] * sn, LUNA_WHEEL.plane[0] * sn + LUNA_WHEEL.plane[1] * c];
+  const turnTo = (g) => g.rotateY(Math.atan2(-pz, px));
+  const wheel = [];
+  const piece = (g, hex) => { wheel.push([g, hex]); return g; };
+  for (const side of [-1, 1]) {
+    piece(new THREE.TorusGeometry(LUNA_WHEEL.rim, 0.25, 4, 40).translate(0, 0, side), 0xe9e9e4);
+    for (let i = 0; i < 12; i++) {
+      piece(new THREE.BoxGeometry(0.15, LUNA_WHEEL.rim * 2, 0.15).rotateZ((i / 12) * Math.PI).translate(0, 0, side), 0xe9e9e4);
+    }
+    for (const q of [-1, 1]) {
+      // from the ground 8 m out along the wheel's plane up to the axle's end
+      const length = Math.hypot(8, LUNA_WHEEL.hub);
+      const leg = new THREE.BoxGeometry(0.5, length, 0.5);
+      leg.translate(0, length / 2, 0).rotateZ(q * Math.atan2(8, LUNA_WHEEL.hub)).translate(q * 8, -LUNA_WHEEL.hub, side * 2.8);
+      piece(leg, 0xc42f2a);
+    }
+  }
+  for (let i = 0; i < 24; i++) {
+    const t = (i / 24) * Math.PI * 2;
+    piece(new THREE.BoxGeometry(1.3, 1.5, 1.6).translate(Math.cos(t) * LUNA_WHEEL.rim, Math.sin(t) * LUNA_WHEEL.rim - 1.2, 0), 0xf4f1ea);
+  }
+  for (const [g, hex] of wheel) add(turnTo(g).translate(wx, hubY, wz), hex);
+  const material = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.6 });
+  material.emissiveNode = vertexColor().mul(smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow).mul(0.4));
+  const mesh = settle(new THREE.Mesh(mergeGeometries(parts, false), material));
+  mesh.name = 'LunaPark';
+  mesh.position.set(site.x, site.y, site.z);
+  mesh.rotation.y = site.yaw;
+  group.add(mesh);
+  addFirstShape('luna-park', mesh);
 }
 
 function buildLandmarks(scene) {

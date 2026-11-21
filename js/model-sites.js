@@ -257,6 +257,19 @@ const MODEL_SITES = [
       [10.0, [[10.85, 1.2], [36.1, 1.2], [36.1, 10.25], [10.85, 10.25]]],
       [3.2, [[5.0, 0.0], [10.85, 0.0], [10.85, 10.25], [5.0, 10.25]]]
     ]
+  },
+  // Luna Park, Milsons Point (1935): the face at its gate between two towers, its mouth the way in onto the midway; behind it the Luna
+  // Lounge, the Ferris wheel (which turns: its JSON's `spin`), the Crystal Palace, Coney Island, the Big Top and the rides, and the
+  // boardwalk along Lavender Bay. In place of the map's boxes of the towers, the Luna Lounge, the Crystal Palace, Coney Island, the
+  // carousel, the Wild Mouse, the dodgems' hall, the Tango Train, the Big Top, the offices and what stood round Volare and along the
+  // midway. Its frame: the face's front at its middle, +z out
+  // through it (south, to the harbour), +x along it; the ground at its mouth. No inside. Drawn from across Lavender Bay, its wheel
+  // turning and its lights lit at night.
+  {
+    id: 'luna-park', file: 'models/luna-park', x: -31.64, z: -2687.44, yaw: 0.23, y: 2.78, far: true, near: 700,
+    replaces: [[-6.7, -0.6], [6.4, -0.6], [-27.9, -24.9], [-21.6, -55.2], [-70.0, -103.8], [-54.9, -240.7], [-81.8, -177.7],
+      [-43.9, -202.2], [-30.4, -99.9], [-30.9, -136.2], [-38.3, -172.6], [-3.8, -35.8], [-20.6, -78.1], [-5.4, -88.1], [-12.5, -64.4]],
+    clear: [[0, 4.0, 4.0]]
   }
 ];
 

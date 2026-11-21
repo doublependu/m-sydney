@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { Fn, cameraViewMatrix, color, mix, normalize, positionWorld, sin, smoothstep, step, time, uniform, vec3, vertexColor } from 'three/tsl';
+import { Fn, cameraViewMatrix, color, float, fract, mix, normalize, positionWorld, sin, smoothstep, step, time, uniform, vec3, vertexColor } from 'three/tsl';
 import { CITY_BOUNDS, blockAt } from './city-config.js';
 import { hasFirstShape, showFirstShape } from './first-shapes.js';
 import { MODEL_SITES } from './model-sites.js';
@@ -24,6 +24,8 @@ import {
 //   and for a landmark the game's own shape (the Opera House's plain podium and glass). One of the three at a time: the model within
 //   `near` once it's in, the far version past it once that's in, the first shape otherwise. A site that replaces none of the map's
 //   buildings has none, and shows its far version from the first view, as soon as its tile is built.
+// - What turns in an outside (Luna Park's wheel), as its JSON's `spin` says, is turned on the game's clock while the model's drawn, and
+//   what it carries round (the wheel's gondolas) kept level (spinners()).
 // Every site's model is in its own frame (x across, z along, y up from its ground floor), placed at (x, y, z) and turned by yaw.
 
 const RELEASE = 60; // m from a building that its inside is let go of, unless its site says (`reach`)
@@ -68,6 +70,25 @@ function materialFor(name, inside) {
       return cameraViewMatrix.transformDirection(normalize(vec3(w, 1.0, w.mul(-0.6))));
     })();
     m.emissiveNode = vertexColor().mul(0.12);
+  } else if (name === 'bulb' || name === 'chase') {
+    // A bulb, drawn from both sides: by day its colour; at night lit by the night's glow, bright enough for bloom to spread it (medium and
+    // high). A `bulb` is lit in its own colour. A `chase` bulb is warm white and runs with its neighbours: its red is its place in the run,
+    // 0-1, and the brightest part of each run moves along it (up a tower, out along a wheel's spoke), the rest still lit, dimmer
+    // (a `chase` bulb's colour isn't its vertices': they're a number)
+    m = new THREE.MeshStandardNodeMaterial({ vertexColors: name === 'bulb', roughness: 0.4, metalness: 0, side: THREE.DoubleSide, flatShading: true });
+    const night = smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow);
+    if (name === 'chase') {
+      const run = fract(vertexColor().r.sub(time.mul(0.55)));
+      const on = smoothstep(0.0, 0.08, run).mul(float(1).sub(smoothstep(0.45, 0.55, run))).mul(0.6).add(0.4);
+      m.colorNode = color(0xffe6b0);
+      m.emissiveNode = color(0xffc56e).mul(night.mul(on).mul(6.0));
+    } else {
+      m.emissiveNode = vertexColor().mul(night.mul(4.5));
+    }
+  } else if (name === 'lit') {
+    // Painted, and floodlit at night (Luna Park's face and towers, its rides): its own colours, as if lit from in front
+    m = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.6, metalness: 0, flatShading: true });
+    m.emissiveNode = vertexColor().mul(smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow).mul(0.42));
   } else if (name === 'glass' || name === 'curtain') {
     // From the street a window like the neighbours': dark by day, lit at night. It faces out only, so from inside you see through it.
     // A curtain wall's (`curtain`, The Ribbon's) is bluer and less of a mirror: its flat panes round a curve would each catch the sky
@@ -184,6 +205,70 @@ function instance(scene, list = []) {
 }
 
 /**
+ * What turns in an outside (its JSON's `spin`, a wheel or a clock's hands): each entry a node turning about an axis through a centre, both
+ * in the model's frame, `rpm` turns a minute; and what it carries round level (`level`, a wheel's gondolas): one node, drawn at each of
+ * its pivots `at` (where they are with the node unturned, the node's own origin on each), carried round with it and turned back the other
+ * way, so it hangs as it was. That's one InstancedMesh for each of its materials, however many there are; the node itself goes. The
+ * nodes are kept apart from `body` at export (tools/models/build.py). Returns the spinners, turned by turn().
+ */
+function spinners(scene, list = []) {
+  const made = [];
+  for (const s of list) {
+    const node = scene.getObjectByName(s.node);
+    if (!node) {
+      console.warn('[interiors]', `no node ${s.node} to turn`);
+      continue;
+    }
+    const spinner = { node, axis: new THREE.Vector3(...s.axis).normalize(), centre: new THREE.Vector3(...s.centre), rpm: s.rpm,
+      p0: node.position.clone(), q0: node.quaternion.clone(), at: [], level: [], angle: 0 };
+    const proto = s.level && scene.getObjectByName(s.level.node);
+    if (s.level && !proto) console.warn('[interiors]', `no node ${s.level.node} to carry round level`);
+    if (proto) {
+      spinner.at = s.level.at.map((p) => new THREE.Vector3(...p));
+      const parts = [];
+      proto.traverse((o) => { if (o.isMesh) parts.push(o); });
+      for (const part of parts) {
+        part.updateMatrix();
+        const mesh = new THREE.InstancedMesh(part.geometry, part.material, spinner.at.length);
+        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        mesh.name = `${s.level.node}_${part.material.name}`;
+        mesh.userData.lifted = true;
+        mesh.userData.part = part.matrix.clone();
+        mesh.castShadow = part.castShadow;
+        mesh.receiveShadow = part.receiveShadow;
+        (proto.parent ?? scene).add(mesh);
+        spinner.level.push(mesh);
+      }
+      proto.removeFromParent();
+    }
+    made.push(spinner);
+    turn(spinner, 0);
+    // Their bounds as they're carried round: a circle through every pivot, so they're never culled while in view
+    for (const mesh of spinner.level) mesh.computeBoundingSphere();
+  }
+  return made;
+}
+
+const turning = new THREE.Quaternion(), carried = new THREE.Vector3(), placed = new THREE.Matrix4();
+/** A spinner turned to `angle` (radians) from where the model has it */
+function turn(spinner, angle) {
+  spinner.angle = angle;
+  turning.setFromAxisAngle(spinner.axis, angle);
+  const { node, centre } = spinner;
+  node.position.copy(spinner.p0).sub(centre).applyQuaternion(turning).add(centre);
+  node.quaternion.copy(turning).multiply(spinner.q0);
+  node.updateMatrix();
+  node.updateMatrixWorld(true); // the scene's world matrices are only ever brought up to date by hand (js/main.js)
+  for (const mesh of spinner.level) {
+    spinner.at.forEach((p, i) => {
+      carried.copy(p).sub(centre).applyQuaternion(turning).add(centre);
+      mesh.setMatrixAt(i, placed.makeTranslation(carried.x, carried.y, carried.z).multiply(mesh.userData.part));
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+}
+
+/**
  * `reveal(group)` puts a group in the scene with its shaders ready. `colliders` is { add, remove }. `lights` are PointLights kept for
  * this. `tileBuilt(x, z)` says whether the tile at (x, z) is drawn, so a site can be. `tileReady(x, z)` says the same of the tile alone,
  * before the city round you is complete: the far version of a site that replaces none of the map's buildings stands in from then, till
@@ -208,6 +293,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
   // A show in a room (the concert on the Concert Hall's stage): { site, room, house (its lights' share, 0-1), lights: [{ at: [x, y, z],
   // intensity, distance, color }] over the stage }, or null
   let show = null;
+  let spinTime = 0; // s of the game's clock that what turns in the models has turned for
 
   // --- Floors and walls ------------------------------------------------------------------------------------------------------
   function allFloors(site) {
@@ -335,6 +421,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       }
       site.ref ??= site.y;
       prepare(scene, false);
+      const spins = spinners(scene, data.spin);
       const group = groupFor(site, scene, `Model_${site.id}`);
       await reveal(group);
       // Drawn once update() finds it near; till then its far version, or what it takes the place of, stays
@@ -347,7 +434,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       const xs = ends.map((p) => p[0]), zs = ends.map((p) => p[1]);
       const bounds = { minX: Math.min(...xs) - 1, maxX: Math.max(...xs) + 1, minZ: Math.min(...zs) - 1, maxZ: Math.max(...zs) + 1 };
       site.out = { group, data, walls, bounds, doors: addDoors(site, data.doors, scene, 'out', data.walls), shut: scene.getObjectByName('doors_shut') ?? null,
-        leaves: true };
+        leaves: true, spins };
       showLeaves(site, false);
       placeFloors(site);
       if (site.far?.group) site.far.group.position.y = site.y;
@@ -482,6 +569,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
    */
   function update(dt, player, mode, eye, look, head = null) {
     frameCount++;
+    spinTime += dt;
     const { x, z } = player.position;
     const reach = farReach();
     for (const site of sites) {
@@ -514,6 +602,8 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
         if (site.far.group) site.far.group.visible = shape === 'far';
       }
       if (!site.out) continue;
+      // What turns in it (a wheel), while it's drawn
+      if (drawn) for (const s of site.out.spins) turn(s, (spinTime * s.rpm * 2 * Math.PI / 60) % (2 * Math.PI));
       const doorsNear = within(site, x, z, DOORS_NEAR) || within(site, eye.x, eye.z, DOORS_NEAR)
         || [...site.out.doors.values()].some((door) => door.angle > 0 || door.target > 0);
       if (doorsNear !== site.out.leaves) showLeaves(site, doorsNear);
@@ -746,7 +836,10 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
         return { site: s.id, node: mesh.userData.node, name: mesh.name, count: mesh.count, want, shown: shown && o.isScene === true,
           drawn: mesh.userData.drawnAt === undefined ? null : frameCount - mesh.userData.drawnAt };
       }) : [])),
-      lights: lightsOn.length
+      lights: lightsOn.length,
+      // what turns in each model drawn (a wheel): its node, the angle it's turned to, and how many it carries round level
+      spins: sites.flatMap((s) => (s.out?.spins ?? []).map((sp) => ({ site: s.id, node: sp.node.name, angle: +sp.angle.toFixed(4), level: sp.at.length,
+        drawn: s.drawn })))
     };
   }
 

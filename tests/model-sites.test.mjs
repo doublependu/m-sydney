@@ -130,3 +130,42 @@ test('the way out of every inside: outside it, on a footpath, its own floor or t
   assert.ok(found['pylon-lookout'].footway, 'the Pylon Lookout\'s way out isn\'t onto the footway');
   assert.ok(found['opera-house'].onFloor, 'the Opera House\'s way out isn\'t onto its podium');
 });
+
+// What turns in a model (its JSON's `spin`, js/interiors.js spinners()): Luna Park's wheel, its gondolas carried round it and kept level
+test('luna-park: its wheel turns about its axle, and its 24 gondolas hang from pivots round its rim, evenly', async () => {
+  const site = MODEL_SITES.find((s) => s.id === 'luna-park');
+  assert.ok(site && !withInside.includes(site), 'Luna Park has no inside, so no way out to list');
+  const { spin } = model('luna-park');
+  assert.equal(spin?.length, 1);
+  const [wheel] = spin;
+  assert.equal(wheel.node, 'wheel');
+  assert.equal(wheel.level?.node, 'gondola');
+  assert.ok(wheel.rpm > 0.5 && wheel.rpm < 3, `${wheel.rpm} turns a minute`);
+  const [ax, ay, az] = wheel.axis, [cx, cy, cz] = wheel.centre;
+  assert.ok(Math.abs(ay) < 1e-6 && Math.abs(Math.hypot(ax, az) - 1) < 1e-3, 'its axle is level');
+  const angles = wheel.level.at.map(([x, y, z]) => {
+    const d = [x - cx, y - cy, z - cz];
+    assert.ok(Math.abs(d[0] * ax + d[2] * az) < 0.01, 'a pivot off the wheel\'s plane');
+    assert.ok(Math.abs(Math.hypot(...d) - 15) < 0.01, `a pivot ${Math.hypot(...d).toFixed(2)} m from the hub`);
+    return Math.atan2(d[1], d[0] * -az + d[2] * ax);
+  }).sort((a, b) => a - b);
+  assert.equal(angles.length, 24);
+  for (let i = 1; i < angles.length; i++) assert.ok(Math.abs(angles[i] - angles[i - 1] - Math.PI / 12) < 1e-3, 'the gondolas aren\'t evenly spaced');
+  // what turns is its own node, round the axle, and the gondola one node hanging under its pivot: both kept apart from `body`
+  const { primitives } = await readModel('luna-park');
+  const of = (name) => primitives.filter((p) => p.node.startsWith(`${name}-`));
+  assert.ok(of('wheel').length && of('gondola').length, 'no wheel or gondola node');
+  for (const p of of('wheel')) {
+    for (let i = 0; i < p.position.length; i += 3) {
+      const d = [p.position[i] - cx, p.position[i + 1] - cy, p.position[i + 2] - cz];
+      const along = d[0] * ax + d[2] * az;
+      const off = Math.hypot(d[0] - along * ax, d[1], d[2] - along * az);
+      assert.ok(Math.abs(along) < 1.6 && off < 15.6, `part of the wheel ${off.toFixed(2)} m from its axle`);
+    }
+  }
+  for (const p of of('gondola')) {
+    for (let i = 0; i < p.position.length; i += 3) {
+      assert.ok(p.position[i + 1] <= 0.05 && Math.hypot(p.position[i], p.position[i + 2]) < 1.3, 'a gondola that doesn\'t hang from its pivot');
+    }
+  }
+});

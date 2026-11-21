@@ -26,14 +26,19 @@ for (const cut of SITE_CUTS) {
     assert.ok(cover, `no cover over ${cut.id}'s cut in tile ${tile.key}`);
     assert.equal(cover.name, `Cover_${cut.id}`);
     // Its ground for the lookup (js/drawn-ground.js): triangles over the whole cut, at the ground's height, and nothing outside it
-    const tris = cover.userData.ground;
-    assert.ok(tris?.length, 'no ground to stand on');
+    const all = cover.userData.ground;
+    assert.ok(all?.length, 'no ground to stand on');
+    // A site of more than one cut (one a 240 m square) has a cover over each in the one group: this cut's, and every triangle in one
+    const cuts = SITE_CUTS.filter((c) => c.id === cut.id);
+    const middle = (t, k) => [(t[k] + t[k + 3] + t[k + 6]) / 3, (t[k + 2] + t[k + 5] + t[k + 8]) / 3];
+    const tris = all.filter((t) => pointInPolygonXZ(cut.poly, ...middle(t, 0)));
+    assert.ok(tris.length, `no cover over this one of ${cut.id}'s cuts`);
     let covered = 0;
-    for (const t of tris) {
+    for (const t of all) {
       for (let k = 0; k < t.length; k += 9) {
-        covered += triArea(t, k);
-        const mx = (t[k] + t[k + 3] + t[k + 6]) / 3, mz = (t[k + 2] + t[k + 5] + t[k + 8]) / 3;
-        assert.ok(pointInPolygonXZ(cut.poly, mx, mz), `a triangle of the cover at (${mx.toFixed(1)}, ${mz.toFixed(1)}) outside the cut`);
+        const [mx, mz] = middle(t, k);
+        assert.ok(cuts.some((c) => pointInPolygonXZ(c.poly, mx, mz)), `a triangle of the cover at (${mx.toFixed(1)}, ${mz.toFixed(1)}) outside the cut`);
+        if (tris.includes(t)) covered += triArea(t, k);
       }
     }
     const want = area(cut.poly) * tris.length; // each piece the cut was taken from has its own cover
@@ -45,7 +50,7 @@ for (const cut of SITE_CUTS) {
       assert.ok(ground.has(o.material), 'a cover not in the lawn\'s or the paving\'s look');
       drawn += o.geometry.index.count / 3;
     });
-    assert.equal(drawn, tris.reduce((n, t) => n + t.length / 9, 0));
+    assert.equal(drawn, all.reduce((n, t) => n + t.length / 9, 0));
     // ...and the tile's own lawn and paving still have the hole: none of their triangles in the cut
     const inside = [];
     group.traverse((o) => {

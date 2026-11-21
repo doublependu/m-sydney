@@ -3,7 +3,7 @@ import { blockAt } from './city-config.js';
 import { groundHeight, groundRoadAt, linkById, roadHeight } from './surfaces.js';
 import { streetFront, tileStreets } from './street-front.js';
 import { PATH_SURFACES, lawnSurface, pavingSurface } from './garden.js';
-import { MODEL_SITES, toWorldOf } from './model-sites.js';
+import { MODEL_SITES, cutsOf, toWorldOf } from './model-sites.js';
 import { GEO, TILE, heldList, heldTiles, isHeld, tileExists, tileKey } from './geodata.js';
 import { MARGIN, squareLots } from './house-lots.js';
 import { houseEntry } from './house-entry.js';
@@ -88,7 +88,7 @@ function sitesNear(x, z, r) {
       const x0 = Math.min(...xs) - 3, x1 = Math.max(...xs) + 3, z0 = Math.min(...zs) - 3, z1 = Math.max(...zs) + 3;
       rings.push([[x0, z0], [x1, z0], [x1, z1], [x0, z1]].map(([px, pz]) => toWorldOf(s, px, pz)));
     }
-    if (s.cut) for (const ring of [s.cut.poly, ...(s.cut.more ?? [])]) rings.push(ring.map(([px, pz]) => toWorldOf(s, px, pz)));
+    for (const cut of cutsOf(s)) rings.push(cut.poly.map(([px, pz]) => toWorldOf(s, px, pz)));
     if (rings.length) out.push({ rings });
   }
   return out;

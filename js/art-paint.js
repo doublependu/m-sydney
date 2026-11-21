@@ -3,7 +3,7 @@
 // as it is on the page where a worker can't paint.
 //
 // paintAtlas({ width, height, items }) returns the canvas. Each item is { kind, seed, x, y, w, h } in the atlas's pixels: a painting
-// ('landscape', 'portrait', 'still-life', 'abstract', 'ink'), or a label ({ kind: 'label', title, artist, year }).
+// ('landscape', 'portrait', 'still-life', 'abstract', 'ink', 'desert', 'bark'), or a label ({ kind: 'label', title, artist, year }).
 
 function paintAtlas({ width, height, items }) {
   const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(width, height) : Object.assign(document.createElement('canvas'), { width, height });
@@ -381,6 +381,99 @@ function paintAtlas({ width, height, items }) {
     brushwork(r, ix, iy, iw, ih, (iw * ih) / 40, Math.max(2, iw / 40), 10, 0.12);
   }
 
+  // A desert painting in the manner of the Western Desert's: on a dark ground, concentric circles and the lines between them in dots of
+  // ochre, white, red and yellow, fields of dots between
+  function desert(r, x, y, w, h) {
+    const pal = pick(r, [['#2a1a12', '#c8642c', '#e9e0cf', '#d9a637', '#8c2a1e'], ['#1c1714', '#e2d6bf', '#b5451b', '#e0b84a', '#6e7b4a'],
+      ['#3a2216', '#f0e6d0', '#d27a35', '#a8321e', '#e8c766']]).map(hex);
+    g.fillStyle = css(pal[0]);
+    g.fillRect(x, y, w, h);
+    const d = Math.max(1.2, Math.min(w, h) / 70);
+    const dot = (px, py, c, s = d) => blob(px, py, s, s, jitter(c, r, 30), 0.95);
+    // a field of dots in rows, each row its own colour
+    for (let row = 0, py = y + d * 1.5; py < y + h; row++, py += d * 2.6) {
+      const c = pal[1 + ((row + Math.floor(r() * 2)) % 4)];
+      for (let px = x + d * 1.5 + (row % 2) * d * 1.3; px < x + w; px += d * 2.6) if (r() < 0.55) dot(px, py, c, d * 0.8);
+    }
+    // the places: concentric circles of dots, and the tracks between them
+    const n = 2 + Math.floor(r() * 5);
+    const sites = Array.from({ length: n }, () => [x + w * (0.15 + r() * 0.7), y + h * (0.15 + r() * 0.7), Math.min(w, h) * (0.06 + r() * 0.1)]);
+    for (let i = 0; i + 1 < sites.length; i++) {
+      const [ax, ay] = sites[i], [bx, by] = sites[i + 1];
+      const L = Math.hypot(bx - ax, by - ay), c = pal[1 + Math.floor(r() * 4)];
+      for (let t = 0; t < L; t += d * 2.4) for (const off of [-d * 1.3, d * 1.3]) {
+        dot(ax + ((bx - ax) * t) / L - ((by - ay) / L) * off, ay + ((by - ay) * t) / L + ((bx - ax) / L) * off, c);
+      }
+    }
+    for (const [cx, cy, R] of sites) {
+      g.fillStyle = css(pal[0]);
+      g.beginPath();
+      g.arc(cx, cy, R * 1.1, 0, Math.PI * 2);
+      g.fill();
+      for (let k = 0, rr = R; rr > d; k++, rr -= d * 2.4) {
+        const c = pal[1 + ((k + Math.floor(r() * 4)) % 4)];
+        const m = Math.max(6, Math.floor((2 * Math.PI * rr) / (d * 2.5)));
+        for (let j = 0; j < m; j++) dot(cx + rr * Math.cos((j / m) * Math.PI * 2), cy + rr * Math.sin((j / m) * Math.PI * 2), c);
+      }
+    }
+  }
+
+  // A bark painting in the manner of Arnhem Land's: on bark's dark red-brown, a panel or two of fine cross-hatching in ochres and
+  // white, and a figure (a fish, a turtle, a kangaroo) filled with it
+  function bark(r, x, y, w, h) {
+    const ground = jitter(hex('#5a2e1c'), r, 30);
+    g.fillStyle = css(ground);
+    g.fillRect(x, y, w, h);
+    const pal = [hex('#e9e2d2'), hex('#c9942f'), hex('#a3381f'), hex('#1e1a17')];
+    const hatch = (px, py, pw, ph, ang, cols) => {
+      g.save();
+      g.beginPath();
+      g.rect(px, py, pw, ph);
+      g.clip();
+      const step = Math.max(1.5, Math.min(w, h) / 60);
+      g.lineWidth = Math.max(0.6, step * 0.35);
+      for (let k = -ph - pw; k < pw + ph; k += step) {
+        g.strokeStyle = css(cols[Math.floor(Math.abs(k / step)) % cols.length], 0.9);
+        g.beginPath();
+        g.moveTo(px + k, py);
+        g.lineTo(px + k + Math.tan(ang) * ph, py + ph);
+        g.stroke();
+      }
+      g.restore();
+    };
+    // a border of white, panels of hatching
+    g.strokeStyle = css(pal[0]);
+    g.lineWidth = Math.max(1, w * 0.02);
+    g.strokeRect(x + w * 0.04, y + h * 0.03, w * 0.92, h * 0.94);
+    const panels = 1 + Math.floor(r() * 3);
+    for (let i = 0; i < panels; i++) {
+      const py = y + h * (0.06 + (0.88 * i) / panels), ph = (h * 0.88) / panels - h * 0.02;
+      hatch(x + w * 0.08, py, w * 0.84, ph, r() < 0.5 ? 0.6 : -0.6, r() < 0.5 ? [pal[0], pal[2]] : [pal[1], pal[0], pal[3]]);
+      // a figure over it: a long body, its head and its tail, filled with its own hatching, outlined in white
+      const cx = x + w / 2, cy = py + ph / 2, bw = w * 0.32, bh = ph * 0.36;
+      g.fillStyle = css(ground);
+      g.beginPath();
+      g.ellipse(cx, cy, bw, bh, r() * 0.6 - 0.3, 0, Math.PI * 2);
+      g.fill();
+      g.save();
+      g.beginPath();
+      g.ellipse(cx, cy, bw * 0.92, bh * 0.85, 0, 0, Math.PI * 2);
+      g.clip();
+      hatch(cx - bw, cy - bh, bw * 2, bh * 2, 1.0, [pal[0], pal[1]]);
+      g.restore();
+      g.strokeStyle = css(pal[0]);
+      g.lineWidth = Math.max(1, w * 0.012);
+      g.beginPath();
+      g.ellipse(cx, cy, bw, bh, 0, 0, Math.PI * 2);
+      g.moveTo(cx + bw, cy);
+      g.lineTo(cx + bw * 1.35, cy - bh * 0.5);
+      g.lineTo(cx + bw * 1.35, cy + bh * 0.5);
+      g.closePath();
+      g.stroke();
+    }
+    brushwork(r, x, y, w, h, (w * h) / 60, Math.max(2, w / 50), 14, 0.1);
+  }
+
   function label(item) {
     const { x, y, w, h } = item;
     g.fillStyle = '#f4f2ec';
@@ -400,7 +493,7 @@ function paintAtlas({ width, height, items }) {
     fit(String(item.year ?? ''), '', Math.round(h * 0.18), h * 0.7);
   }
 
-  const painters = { landscape, portrait, 'still-life': stillLife, abstract, ink };
+  const painters = { landscape, portrait, 'still-life': stillLife, abstract, ink, desert, bark };
   for (const item of items) {
     g.save();
     g.beginPath();

@@ -311,7 +311,8 @@ function createArt({ site, data, scene, materialFor, glow, detail = 1 }) {
     const c = linear(fc);
     const into = room.frames[fmat];
     if (w.frame === 'none') {
-      wallBox(into, f, s0, s1, t0, t1, 0, d, c, 0.9);
+      // the canvas's edge: its front a little behind the picture, or the two would be one plane and flicker
+      wallBox(into, f, s0, s1, t0, t1, 0, d - 0.004, c, 0.9);
     } else if (w.frame === 'scroll') {
       // the roller under it and the stick over it, a little wider
       wallBox(into, f, s0 - 0.05, s1 + 0.05, t0 - 0.03, t0, 0.0, 0.03, c);

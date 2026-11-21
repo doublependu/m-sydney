@@ -7,8 +7,9 @@
 //     kept apart in its tile, as its first shape (`standIns`, js/first-shapes.js): drawn from the first view, as the map always had them,
 //     till the model comes once the city round you is complete, and wherever neither the model nor its far version is drawn
 //   cut: where the ground under it is left undrawn, for what it has below the street, in its own frame, and how deep (js/city-grid.js).
-//     While its first shape stands, a cover in the ground's own look is drawn over it, and stood on. A cut holds only inside one lawn or
-//     paving piece, and the pieces are 240 m squares: `more`, polygons past a square's edge, each in the piece on its side
+//     While its first shape stands, a cover in the ground's own look is drawn over it, and stood on. A cut takes the ground out only
+//     from a lawn or paving piece that holds it whole, and the map's pieces end on 240 m squares (the world's x or z a multiple of 240):
+//     a building over such a line has a list of cuts, { poly, y } each, one a square
 //   far: it has a far version, models/<file>-far.glb.gz: a shell of a draw or two, drawn past `near` and wherever its tile isn't, as
 //     far as the far level reaches (which draws no models, and leaves out what a model replaces), once the city round you is
 //     complete. A site that replaces none of the map's buildings has no first shape: its far version comes from the first view instead,
@@ -292,14 +293,16 @@ const MODEL_SITES = [
   {
     id: 'north-sydney-pool', file: 'models/north-sydney-pool', x: 19.35, z: -2671.65, yaw: -0.7046, y: 6.4, far: true,
     replaces: [[-32.6, 0.0], [3.1, -21.2], [0.0, -40.0], [38.0, -27.0], [35.5, 12.9]],
-    cut: {
-      poly: [[-24.88, 0.6], [-16.381, 10.6], [25.6, 10.6], [25.6, 0.6], [44.0, 0.6], [44.0, -21.6], [25.8, -21.6], [25.8, -24.6], [-19.3, -24.6],
-        [-19.3, -17.8], [-29.2, -17.8], [-29.2, -4.6], [-26.2, -1.3]],
-      y: -2.4,
+    cut: [
+      {
+        poly: [[-24.88, 0.6], [-16.381, 10.6], [25.6, 10.6], [25.6, 0.6], [44.0, 0.6], [44.0, -21.6], [25.8, -21.6], [25.8, -24.6],
+          [-19.3, -24.6], [-19.3, -17.8], [-29.2, -17.8], [-29.2, -4.6], [-26.2, -1.3]],
+        y: -2.4
+      },
       // ...and the water's north-west corner on the harbour side, past the world's x = 0, where the map's paving stood under the surface,
       // seen from under it
-      more: [[[-25.05, 0.416], [-25.05, 10.6], [-16.394, 10.6]]]
-    }
+      { poly: [[-25.05, 0.416], [-25.05, 10.6], [-16.394, 10.6]], y: -2.4 }
+    ]
   },
   // The Art Gallery of New South Wales, its old (south) building, Naala Nura, on Art Gallery Road in the Domain: the sandstone front
   // and its Ionic portico to the west over the forecourt and its pools, the Grand Courts behind it, the wings behind those down the
@@ -317,6 +320,22 @@ const MODEL_SITES = [
         [-24.0, -50.7], [-24.0, -7.7], [-38.0, -7.7], [-38.0, 5.3], [-51.7, 5.3], [-51.7, 55.4], [-40.6, 55.4]],
       y: -18.4
     }
+  },
+  // The Art Gallery of New South Wales, its new (north) building, Naala Badu (2022), north of the old one across the motorway's cutting:
+  // white pavilions stepping down the slope towards Woolloomooloo Bay, their glass, roof terraces on each one's roof, and the oil tank
+  // of the war under the lowest. In place of the map's box of its outline. Its frame: the world's, its middle where the map's lawn and
+  // paving are cut into 240 m squares (x 960, z -720), so each of its two cuts is in one square; its ground level, the entrance
+  // pavilion's, a step up from its garden to the south, by Art Gallery Road. Inside, a file a level (each fetched at the door to it: the
+  // entrance's, and the door at the head of each way down): the ground with the entrance pavilion and the Yiribana Gallery; lower levels
+  // 1 and 2, the galleries; lower level 4, the Tank, down a spiral stair. Out onto the roof terraces, and down a stair from lower level 2
+  // to Lincoln Crescent, the walk to the bay. Its art is made in the browser (js/artworks.js).
+  {
+    id: 'art-gallery-new', file: 'models/art-gallery-new', x: 960, z: -720, yaw: 0, y: 21.8, far: true, replaces: [[0, -40]], reach: 110,
+    clear: [[-46, -25.5, 3.0]], exit: 'door',
+    cut: [
+      { poly: [[-36.3, -60.3], [-0.02, -60.3], [-0.02, -27.1], [-36.3, -27.1]], y: -6.4 },
+      { poly: [[1.7, -68.3], [8.3, -68.3], [8.3, -62.3], [42.3, -62.3], [42.3, -3.7], [1.7, -3.7]], y: -19.6 }
+    ]
   }
 ];
 
@@ -325,11 +344,13 @@ const toWorldOf = (site, x, z) => {
   return { x: site.x + x * c + z * s, z: site.z - x * s + z * c };
 };
 
-/** Each site's cuts in the world's frame, its `poly` and each of its `more`: { id, poly: [{ x, z }], y, minX, maxX, minZ, maxZ } */
-const SITE_CUTS = MODEL_SITES.filter((s) => s.cut && s.y !== null).flatMap((s) => [s.cut.poly, ...(s.cut.more ?? [])].map((ring) => {
-  const poly = ring.map(([x, z]) => toWorldOf(s, x, z));
+/** Each site's cut in the world's frame: { id, poly: [{ x, z }], y, minX, maxX, minZ, maxZ } */
+/** A site's cuts, in its own frame: [{ poly, y }] (its `cut`, one or a list) */
+const cutsOf = (s) => (s.cut ? [s.cut].flat() : []);
+const SITE_CUTS = MODEL_SITES.filter((s) => s.cut && s.y !== null).flatMap((s) => cutsOf(s).map((cut) => {
+  const poly = cut.poly.map(([x, z]) => toWorldOf(s, x, z));
   const xs = poly.map((p) => p.x), zs = poly.map((p) => p.z);
-  return { id: s.id, poly, y: s.y + s.cut.y, minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs) };
+  return { id: s.id, poly, y: s.y + cut.y, minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs) };
 }));
 
 /** Each site's outline in the world's frame, for the map: [{ h, pts: [{ x, z }] }] */
@@ -350,4 +371,4 @@ function clearOfSites(x, z) {
 const addClearings = (list) => list.forEach((c) => ADDED_CLEARINGS.add(c));
 const removeClearings = (list) => list.forEach((c) => ADDED_CLEARINGS.delete(c));
 
-export { MODEL_SITES, SITE_CUTS, SITE_OUTLINES, addClearings, clearOfSites, removeClearings, toWorldOf };
+export { MODEL_SITES, SITE_CUTS, SITE_OUTLINES, addClearings, clearOfSites, cutsOf, removeClearings, toWorldOf };

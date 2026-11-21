@@ -93,7 +93,7 @@ const EXITS = {
   // St Mary's Cathedral: out of its main doors onto the terrace at the head of its steps, over the forecourt
   'st-marys': 'door',
   // The Art Gallery: out of its main doors onto the portico, at the head of its steps over the forecourt
-  'art-gallery': 'door'
+  'art-gallery': 'door', 'art-gallery-new': 'door'
 };
 const model = (name) => JSON.parse(fs.readFileSync(new URL(`../public/models/${name}.json`, import.meta.url), 'utf8'));
 const withInside = MODEL_SITES.filter((s) => model(s.file.replace('models/', '')).doors?.some((d) => d.inside));

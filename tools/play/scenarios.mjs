@@ -1414,6 +1414,180 @@ function artGalleryScenario() {
   };
 }
 
+// The Art Gallery of NSW's new building, Naala Badu (js/model-sites.js, art-gallery-new): from the old building's forecourt round its
+// north-west corner and through the Art Garden, across to the garden before the entrance pavilion and up its steps, in at the front
+// doors (the ground level's file fetched only then); into the Yiribana Gallery; down the escalator (its door fetching lower level 1),
+// through the galleries to the next (fetching lower level 2), on to the spiral stair's door (fetching the Tank) and down it, two turns,
+// into the Tank among its columns; back up the spiral, through lower level 2 to its east door and down the stair to Lincoln Crescent,
+// the walk to the bay. The art is made on each level as it comes.
+function artGalleryNewScenario() {
+  const S = MODEL_SITES.find((s) => s.id === 'art-gallery-new');
+  const OLD = MODEL_SITES.find((s) => s.id === 'art-gallery');
+  const at = (x, z) => ({ x: S.x + x * Math.cos(S.yaw) + z * Math.sin(S.yaw), z: S.z - x * Math.sin(S.yaw) + z * Math.cos(S.yaw) });
+  const atOld = (x, z) => ({ x: OLD.x + x * Math.cos(OLD.yaw) + z * Math.sin(OLD.yaw), z: OLD.z - x * Math.sin(OLD.yaw) + z * Math.cos(OLD.yaw) });
+  const start = atOld(2.0, 70.0);
+  const LEVEL = { g: 0, l1: -5.5, l2: -11, l4: -19 };
+  // the spiral's walking line: two turns round its well, from the top (down) or the bottom (up), a point every 22.5 degrees
+  const spiral = (down) => {
+    const pts = Array.from({ length: 33 }, (_, k) => {
+      const a = Math.PI / 2 + 4 * Math.PI - (Math.PI * k) / 8;
+      return [+(5.0 + 1.55 * Math.cos(a)).toFixed(3), +(-64.4 + 1.55 * Math.sin(a)).toFixed(3)];
+    });
+    return down ? pts : pts.reverse();
+  };
+  return {
+    minutes: 10,
+    storage: JSON.stringify({ version: 1, activeMode: 'person', entities: { person: { x: start.x, y: 0, z: start.z, heading: 0, surface: 0 } } }),
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const level = async () => (await human.state()).surfaceY - S.y;
+      const local = async () => {
+        const s = await human.state();
+        return `(${(s.x - S.x).toFixed(2)}, ${(s.z - S.z).toFixed(2)}) at ${(s.surfaceY - S.y).toFixed(2)} m`;
+      };
+      const walk = async (x, z, why, opts) => expect(await walkTo(human, at(x, z), opts), `never got ${why}, stuck at ${await local()}`);
+      const walkWorld = async (x, z, why, opts) => expect(await walkTo(human, { x, z }, opts), `never got ${why}, stuck at ${await local()}`);
+      const fetched = (file) => debug((f) => performance.getEntriesByType('resource').map((r) => r.name).filter((n) => n.includes(`/models/${f}.`)), file);
+      const inRoom = async (want, y, why) => {
+        const i = await interior();
+        expect(i.inside === 'art-gallery-new' && (want === null || i.room === want) && Math.abs((await level()) - y) < 0.12,
+          `${why}: in ${i.inside} ${i.room} at ${await local()}`);
+      };
+      const open = async (doorId, toward, why) => {
+        await face(human, toward);
+        await human.wait(300);
+        expect((await interior()).prompt === 'Open', `${why}: the prompt is ${(await interior()).prompt}, at ${await local()}`);
+        await human.press('KeyF');
+        expect(await human.until(async () => (await interior()).doors.find((d) => d.site === 'art-gallery-new' && d.id === doorId)?.angle >= 1.59,
+          { timeout: 20000, read: interior }), `${why}: the door never opened`);
+      };
+      const art = async (file, paintings = 10) => {
+        const ok = await human.until(async () => ((await interior()).art ?? []).find((a) => a.file === file)?.painted === true, { timeout: 20000, read: interior });
+        const a = ((await interior()).art ?? []).find((r) => r.file === file);
+        expect(ok && a.paintings >= paintings, `${file}: its art isn't made: ${JSON.stringify(a)}`);
+        return a;
+      };
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      const toward = atOld(2.0, 76.0);
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...start, h: Math.atan2(toward.x - start.x, toward.z - start.z) });
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'art-gallery-new')?.out, null, { timeout: 60000, polling: 250 });
+      const drawn = await page.waitForFunction(() => window.__gameDebug.firstShapes()['art-gallery-new']?.shape === 'model', null, { timeout: 30000, polling: 250 })
+        .then(() => true, () => false);
+      expect(drawn, 'its model isn\'t drawn in place of its first shape');
+      expect((await fetched('art-gallery-new-g')).length === 0, 'its ground level was fetched before a door was opened');
+      // From the old building round its north-west corner, through the Art Garden, and across to the new building's garden
+      // out between its pools to the forecourt's edge, along it past the north pool and its horseman, round the north-west corner
+      await walkWorld(atOld(2.0, 76.0).x, atOld(2.0, 76.0).z, 'between the pools to the forecourt\'s edge');
+      await walkWorld(atOld(-50.0, 76.0).x, atOld(-50.0, 76.0).z, 'along its edge past the north pool', { timeout: 40000 });
+      await walkWorld(868, -676, 'round the old building\'s north-west corner', { timeout: 40000 });
+      await walkWorld(921, -672, 'into the Art Garden', { timeout: 40000 });
+      await walkWorld(927, -686, 'through the Art Garden');
+      await walkWorld(900, -728, 'across to the new building\'s garden', { timeout: 40000 });
+      await walk(-60.0, -14.0, 'onto its garden\'s path');
+      await walk(-48.0, -14.0, 'along the path');
+      await walk(-48.0, -23.0, 'up the path to the steps');
+      await walk(-46.0, -26.2, 'up the steps to the doors');
+      await walk(-46.0, -27.0, 'to the doors');
+      expect(Math.abs(await level()) < 0.05, `before the doors at ${(await level()).toFixed(2)} m`);
+      await open('front', at(-46.0, -29.0), 'at the front doors');
+      expect((await fetched('art-gallery-new-g')).length > 0, 'its ground level wasn\'t fetched at the doors');
+      expect((await fetched('art-gallery-new-l1')).length === 0, 'lower level 1 was fetched with the ground');
+      await walk(-46.0, -30.5, 'in through the doors');
+      await inRoom('entrance', 0, 'in the entrance pavilion');
+      metric('fpsEntrance', (await debug(() => window.__gameDebug.frameCost())).fps);
+      await walk(-38.0, -34.0, 'across the pavilion');
+      await walk(-33.0, -34.0, 'into the hall');
+      await inRoom('g-hall', 0, 'in the hall');
+      await walk(-27.5, -36.0, 'to the Yiribana Gallery');
+      await walk(-27.5, -42.0, 'into the Yiribana Gallery');
+      await inRoom('yiribana', 0, 'in the Yiribana Gallery');
+      metric('paintingsGround', (await art('art-gallery-new-g')).paintings);
+      metric('fpsYiribana', (await debug(() => window.__gameDebug.frameCost())).fps);
+      await walk(-27.5, -35.0, 'back into the hall');
+      // Down the escalator to lower level 1: its door fetches the level
+      await walk(-13.0, -31.0, 'to the escalator\'s door');
+      await open('down-l1', at(-13.0, -29.0), 'at the escalator down to lower level 1');
+      expect((await fetched('art-gallery-new-l1')).length > 0, 'lower level 1 wasn\'t fetched at its door');
+      await walk(-13.0, -28.7, 'onto the escalator\'s head');
+      await walk(-24.5, -28.7, 'down the escalator', { timeout: 30000 });
+      expect(Math.abs((await level()) - LEVEL.l1) < 0.12, `at the escalator's foot at ${await local()}`);
+      await walk(-28.0, -28.7, 'off it into the gallery');
+      await inRoom('l1-west', LEVEL.l1, 'on lower level 1');
+      metric('paintings_l1', (await art('art-gallery-new-l1')).paintings);
+      await walk(-28.0, -47.0, 'along the gallery');
+      await walk(-22.0, -47.0, 'into the next');
+      await inRoom('l1-gal-a', LEVEL.l1, 'in a gallery on lower level 1');
+      await walk(-6.0, -37.0, 'across it');
+      await walk(0.0, -37.0, 'into the next');
+      await inRoom('l1-gal-b', LEVEL.l1, 'in the east gallery on lower level 1');
+      // ...and the next escalator, down to lower level 2
+      await walk(5.0, -31.0, 'to the next escalator\'s door');
+      await open('down-l2', at(5.0, -29.0), 'at the escalator down to lower level 2');
+      expect((await fetched('art-gallery-new-l2')).length > 0, 'lower level 2 wasn\'t fetched at its door');
+      await walk(5.0, -28.7, 'onto its head');
+      await walk(16.6, -28.7, 'down it', { timeout: 30000 });
+      await walk(20.0, -28.7, 'off it into the hall');
+      await inRoom('l2-hall', LEVEL.l2, 'on lower level 2');
+      metric('paintings_l2', (await art('art-gallery-new-l2')).paintings);
+      await walk(25.0, -33.0, 'to a gallery');
+      await walk(25.0, -40.0, 'into it');
+      await inRoom('l2-gal-b', LEVEL.l2, 'in a gallery on lower level 2');
+      await walk(20.0, -50.0, 'to the next');
+      await walk(12.0, -50.0, 'into it');
+      await walk(4.5, -50.0, 'across it');
+      // Down the spiral to the Tank: its door fetches the Tank
+      await walk(3.8, -58.9, 'to the spiral stair\'s door');
+      await open('down-l4', at(3.8, -61.0), 'at the spiral stair down to the Tank');
+      expect((await fetched('art-gallery-new-l4')).length > 0, 'the Tank wasn\'t fetched at its door');
+      await walk(3.8, -61.0, 'onto the stair\'s head');
+      await walk(6.4, -61.0, 'along it');
+      for (const [x, z] of spiral(true)) await walk(x, z, 'down the spiral stair', { timeout: 15000 });
+      await walk(3.8, -61.0, 'off the stair at its foot');
+      expect(Math.abs((await level()) - LEVEL.l4) < 0.12, `at the spiral's foot at ${await local()}`);
+      await walk(5.0, -58.5, 'into the Tank');
+      await walk(7.4, -58.5, 'between its columns');
+      await walk(7.4, -40.2, 'down an aisle', { timeout: 30000 });
+      await walk(21.8, -40.2, 'across the Tank', { timeout: 30000 });
+      await inRoom('tank', LEVEL.l4, 'in the Tank');
+      expect(await human.until(async () => (((await interior()).art ?? []).find((a) => a.file === 'art-gallery-new-l4')?.sculptures ?? 0) >= 4,
+        { timeout: 20000, read: interior }), 'the Tank\'s sculptures aren\'t made');
+      metric('sculpturesTank', ((await interior()).art ?? []).find((a) => a.file === 'art-gallery-new-l4').sculptures);
+      metric('fpsTank', (await debug(() => window.__gameDebug.frameCost())).fps);
+      const files = (await interior()).files.filter((f) => f.site === 'art-gallery-new' && f.state === 'ready').map((f) => f.file);
+      expect(files.length === 4, `holding ${files.join(', ')}`);
+      // ...back up the spiral, through lower level 2 to its east door, and down the stair to Lincoln Crescent
+      await walk(7.4, -40.2, 'back across the Tank', { timeout: 30000 });
+      await walk(7.4, -58.5, 'up the aisle', { timeout: 30000 });
+      await walk(5.0, -58.8, 'to the stair');
+      await walk(3.8, -61.0, 'onto its foot');
+      for (const [x, z] of spiral(false)) await walk(x, z, 'up the spiral stair', { timeout: 15000 });
+      await walk(6.4, -61.0, 'off it at its head');
+      expect(Math.abs((await level()) - LEVEL.l2) < 0.12, `at the spiral's head at ${await local()}`);
+      await walk(3.8, -61.0, 'to its door');
+      await walk(3.8, -58.0, 'out through it');
+      await walk(4.5, -50.0, 'into the gallery');
+      await walk(12.0, -50.0, 'across it');
+      await walk(20.0, -50.0, 'into the next');
+      await walk(25.0, -40.0, 'across it');
+      await walk(25.0, -33.0, 'to the hall');
+      await walk(26.0, -19.0, 'into the hall');
+      await walk(34.0, -19.0, 'into the east gallery');
+      await walk(38.5, -24.8, 'across it');
+      await walk(40.9, -24.8, 'to its door out');
+      await open('bay', at(43.0, -24.8), 'at the door out to the bay');
+      await walk(44.0, -24.8, 'out onto the landing');
+      expect((await interior()).inside === null && Math.abs((await level()) - LEVEL.l2) < 0.12, `out on the landing? at ${await local()}`);
+      await walk(44.0, -26.8, 'to the stair\'s head');
+      await walk(44.0, -34.6, 'down the stair', { timeout: 30000 });
+      await walk(44.0, -36.4, 'off it');
+      await walk(48.5, -37.0, 'onto Lincoln Crescent\'s footpath');
+      const s = await human.state(), g = await debug(({ x, z }) => window.__gameDebug.ground?.(x, z) ?? null, s);
+      expect((await interior()).inside === null && (await level()) < -14.0, `down by the street? at ${await local()} (ground ${g})`);
+    }
+  };
+}
+
 // A house on three levels over Bronte beach (js/model-sites.js, bronte-pacific): from Pacific St in at the front door, through to the
 // living room and out onto its terrace to sit; down the stair to the family room and out onto the deck; down again to the rumpus room
 // and out onto the pool's terrace. Its inside isn't fetched until the front door opens.
@@ -2906,6 +3080,7 @@ export const SCENARIOS = {
   'opera-house-phone': { ...operaHouseScenario(), profile: 'phone' },
   'st-marys': stMarysScenario(),
   'art-gallery': artGalleryScenario(),
+  'art-gallery-new': artGalleryNewScenario(),
   'origin-move': originScenario(''),
   'origin-far': originScenario('originTest=85000'),
   'signal-wait': {

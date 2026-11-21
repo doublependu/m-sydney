@@ -20,7 +20,7 @@ function files(site) {
   }
   return out;
 }
-const KINDS = new Set(['landscape', 'portrait', 'still-life', 'abstract', 'ink']);
+const KINDS = new Set(['landscape', 'portrait', 'still-life', 'abstract', 'ink', 'desert', 'bark']);
 const SCULPTURES = new Set(['bronze', 'marble', 'steel', 'vessel']);
 const FRAMES = new Set(['gilt', 'timber', 'black', 'white', 'none', 'scroll']);
 const FRAME_W = { gilt: 0.1, timber: 0.055, black: 0.032, white: 0.045, none: 0, scroll: 0.05 };

@@ -7,19 +7,20 @@ import zlib from 'node:zlib';
 // each with a foyer behind a door off the street. Built by scripts outside this repo, in its public/models/; these hold them to the
 // map they stand on.
 globalThis.fetch = async (url) => new Response(fs.readFileSync(new URL(url)));
-const { MODEL_SITES, clearOfSites, toWorldOf } = await import('../js/model-sites.js');
+const { MODEL_SITES, clearOfSites, cutsOf, toWorldOf } = await import('../js/model-sites.js');
 const { heldTiles } = await import('../js/geodata.js');
 const { groundHeight } = await import('../js/surfaces.js');
 const { floorAt } = await import('../js/interior-data.js');
 const { TOWER_SIGNS, placeTowerSign } = await import('../js/tower-signs.js');
 
-const IDS = ['salesforce-tower', 'ey-centre', 'customs-house', 'crown-sydney', 'st-marys', 'art-gallery'];
+const IDS = ['salesforce-tower', 'ey-centre', 'customs-house', 'crown-sydney', 'st-marys', 'art-gallery', 'art-gallery-new'];
 // Those whose doors stand up steps from the street, and those with budgets of their own: a big inside is up to 2 MB and 40,000
 // triangles a file, its outside 20 draws
-const UP_STEPS = new Set(['customs-house', 'st-marys', 'art-gallery']);
-const BUDGETS = { 'st-marys': { draws: 20, inBytes: 2_000_000, inTris: 40_000 }, 'art-gallery': { draws: 20, inBytes: 2_000_000, inTris: 40_000 } };
+const UP_STEPS = new Set(['customs-house', 'st-marys', 'art-gallery', 'art-gallery-new']);
+const BIG = { draws: 20, inBytes: 2_000_000, inTris: 40_000 };
+const BUDGETS = { 'st-marys': BIG, 'art-gallery': BIG, 'art-gallery-new': BIG };
 // An inside of more than one file (a gallery a level), and how many rooms its first has: the rest a foyer of one room
-const FIRST_ROOMS = { 'art-gallery': 16 };
+const FIRST_ROOMS = { 'art-gallery': 16, 'art-gallery-new': 5 };
 const sites = IDS.map((id) => MODEL_SITES.find((s) => s.id === id));
 const read = (name) => JSON.parse(fs.readFileSync(new URL(`../public/models/${name}.json`, import.meta.url), 'utf8'));
 function gltf(name) {
@@ -313,7 +314,7 @@ test('North Sydney Pool within its budgets: its outside, and its far version', (
 
 test('North Sydney Pool: the map\'s paving under its deck and its water where it isn\'t cut out, so it never shows through', () => {
   const out = read('north-sydney-pool');
-  const cuts = [nsp.cut.poly, ...(nsp.cut.more ?? [])];
+  const cuts = cutsOf(nsp).map((c) => c.poly);
   const inPoly = (poly, x, z) => inRing(poly.map(([px, pz]) => ({ x: px, z: pz })), x, z);
   const [olympic] = out.pools;
   const deck = out.floors.find((f) => f.holes?.length);
@@ -451,4 +452,98 @@ test('the Art Gallery\'s cut takes in every room under the ground', () => {
     }
     assert.ok(site.cut.y <= Math.min(...read(file).rooms.map((r) => r.y0)), `${file}: a room under the cut's depth`);
   }
+});
+
+// The Art Gallery's new building, Naala Badu (js/model-sites.js `art-gallery-new`): a file a level, each fetched at the door at the head of
+// the way down to it (two escalators, walked as stairs, and a spiral stair down to the Tank); two cuts, one a 240 m square.
+const badu = MODEL_SITES.find((s) => s.id === 'art-gallery-new');
+const inPoly = (poly, x, z) => {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [ax, az] = poly[i], [bx, bz] = poly[j];
+    if ((az > z) !== (bz > z) && x < ((bx - ax) * (z - az)) / (bz - az) + ax) c = !c;
+  }
+  return c;
+};
+
+test('Naala Badu\'s levels: each fetched by the door at the head of the way down to it, which comes down into a room of its own', () => {
+  const files = insideFiles('art-gallery-new');
+  assert.deepEqual(files, ['art-gallery-new-g', 'art-gallery-new-l1', 'art-gallery-new-l2', 'art-gallery-new-l4']);
+  const levels = files.map((f) => read(f));
+  for (let k = 0; k + 1 < levels.length; k++) {
+    const upper = levels[k], lower = levels[k + 1];
+    const door = upper.doors.find((d) => d.inside === files[k + 1]);
+    assert.ok(door, `${files[k]}: no door to ${files[k + 1]}`);
+    // the way down is the upper file's room, from the lower level's floor; its foot opens into a room of the lower file, at its floor
+    const way = upper.rooms.filter((r) => door.rooms.includes(r.id)).sort((a, b) => a.y0 - b.y0)[0];
+    // (the lower file's level: its rooms' floor, but its own way down's, which reaches lower still)
+    const y = Math.max(...lower.rooms.map((r) => r.y0));
+    assert.ok(way && Math.abs(way.y0 - y) < 0.01, `${files[k]}: its way down doesn't come down to ${y}`);
+    const link = upper.links.find((l) => l.a === way.id && !l.door && lower.rooms.some((r) => r.id === l.b));
+    assert.ok(link, `${files[k]}: its way down's foot opens into no room below`);
+    const below = lower.rooms.find((r) => r.id === link.b);
+    const reach = upper.floors.filter((f) => f.y !== undefined && Math.abs(f.y - below.y0) < 0.01 && f.poly.some(([x, z]) => inPoly(way.poly, x, z)));
+    assert.ok(reach.length, `${files[k]}: no landing at ${below.y0} at its way down's foot`);
+    // ...and the door at its head is on the upper level's floor
+    assert.equal(floorAt(upper.floors, (door.hinge[0] + door.latch[0]) / 2, (door.hinge[1] + door.latch[1]) / 2, door.y0), door.y0);
+  }
+  // the Tank: a forest of columns, as tall as it is, in the dark
+  const tank = levels[3].rooms.find((r) => r.id === 'tank');
+  const columns = levels[3].walls.filter((w) => Math.abs(w.y0 - tank.y0) < 0.01 && Math.abs(w.y1 - tank.y1) < 0.01 && w.t < 0.6);
+  assert.ok(columns.length >= 100, `the Tank has ${columns.length} columns`);
+  assert.ok(tank.y1 - tank.y0 > 7 && tank.glow < 0.1, `the Tank is ${tank.y1 - tank.y0} m high, its glow ${tank.glow}`);
+});
+
+test('Naala Badu\'s cuts take in every room under the ground, each in one of the map\'s 240 m squares', () => {
+  const cuts = [badu.cut].flat();
+  assert.ok(cuts.length >= 2, 'one cut');
+  for (const cut of cuts) {
+    const w = cut.poly.map(([x, z]) => toWorldOf(badu, x, z));
+    for (const k of ['x', 'z']) {
+      const lo = Math.min(...w.map((p) => p[k])), hi = Math.max(...w.map((p) => p[k]));
+      assert.equal(Math.floor(lo / 240), Math.floor(hi / 240), `a cut over the line ${k} ${Math.floor(hi / 240) * 240}`);
+    }
+  }
+  for (const file of insideFiles('art-gallery-new')) {
+    for (const r of read(file).rooms) {
+      const cx = r.poly.reduce((s, p) => s + p[0], 0) / r.poly.length, cz = r.poly.reduce((s, p) => s + p[1], 0) / r.poly.length;
+      for (const [x, z] of r.poly) {
+        const px = x + Math.sign(cx - x) * 0.4, pz = z + Math.sign(cz - z) * 0.4;
+        const at = toWorldOf(badu, px, pz);
+        const ground = groundHeight(at.x, at.z) - badu.y + 0.22;
+        if (ground <= r.y0) continue;
+        const cut = cuts.find((c) => inPoly(c.poly, px, pz));
+        assert.ok(cut, `${file}: ${r.id}'s corner (${x}, ${z}) is under the ground and outside the cuts`);
+        assert.ok(cut.y <= r.y0, `${file}: ${r.id} is under its cut's depth`);
+      }
+    }
+  }
+});
+
+test('Naala Badu: up the steps to its doors from the Art Garden\'s paths, and the stair to the bay down to Lincoln Crescent', () => {
+  const out = read('art-gallery-new');
+  const sloped = out.floors.filter((f) => f.plane);
+  // the paths: on the ground, by a little, everywhere (the map's lawn never through them)
+  const paths = sloped.filter((f) => f.poly.every(([x]) => x < -40) && Math.abs(f.plane[1]) < 0.2 && Math.abs(f.plane[2]) < 0.2);
+  assert.ok(paths.length > 20, `${paths.length} path cells`);
+  for (const f of paths) {
+    const [x, z] = [f.poly.reduce((s, p) => s + p[0], 0) / f.poly.length, f.poly.reduce((s, p) => s + p[1], 0) / f.poly.length];
+    const y = f.plane[0] + f.plane[1] * x + f.plane[2] * z;
+    const w = toWorldOf(badu, x, z);
+    const over = y - (groundHeight(w.x, w.z) - badu.y);
+    assert.ok(over > 0.22 && over < 0.9, `the path at (${x.toFixed(1)}, ${z.toFixed(1)}) is ${over.toFixed(2)} m over the ground`);
+  }
+  // the stair to the bay: from lower level 2's floor at the door down to the paving at its foot, on the ground by the street
+  const bay = out.doors.find((d) => d.id === 'bay');
+  assert.ok(bay, 'no door to the stair to the bay');
+  const stair = sloped.find((f) => f.poly.every(([x]) => x > 42) && Math.abs(f.plane[2]) > 0.4);
+  assert.ok(stair, 'no stair to the bay');
+  const zs = stair.poly.map((p) => p[1]), top = Math.max(...zs), foot = Math.min(...zs), x = stair.poly[0][0] + 0.5;
+  const at = (z) => stair.plane[0] + stair.plane[1] * x + stair.plane[2] * z;
+  assert.ok(Math.abs(at(top) - bay.y0) < 0.15, `the stair's head is at ${at(top).toFixed(2)}, the door's floor ${bay.y0}`);
+  const paving = floorAt(out.floors.filter((f) => f !== stair), x, foot - 1.0, at(foot));
+  assert.ok(paving !== null && Math.abs(paving - at(foot)) < 0.15, `the stair comes down to ${at(foot).toFixed(2)}, the paving's at ${paving}`);
+  const w = toWorldOf(badu, x, foot - 1.0);
+  const over = paving - (groundHeight(w.x, w.z) - badu.y);
+  assert.ok(over > 0.1 && over < 0.6, `the paving at the stair's foot is ${over.toFixed(2)} m over the ground`);
 });

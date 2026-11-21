@@ -79,6 +79,7 @@ export const COVERS = {
   'saved-position': { files: /^js\/(main|controllers|arrivals)\.js$/, area: [-600, -480, -3620, -3520] },
   'jacaranda-petals': { files: /^js\/(seasons|season-november|jacaranda-carpets|car-petals|trees|drawn-ground|main)\.js$/, area: null },
   'seasons-off': { files: /^js\/(seasons|main)\.js$/, area: null },
+  'december-houses': { files: /^js\/(seasons|season-december|christmas|christmas-houses|trees|lot-details|house-lots|lot-things|main)\.js$/, area: null },
   soak: { files: /^$/, area: null }
 };
 

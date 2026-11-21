@@ -1055,6 +1055,7 @@ function* createTreeFieldSteps(_scene, sites, colliders = [], { reserve = null, 
   const tier = new Uint8Array(capacity);
   const lod = new Uint8Array(capacity).fill(255);
   const crown = new Float32Array(capacity); // m: how far its crown reaches out from its trunk, as grown and scaled
+  const tall = new Float32Array(capacity); // m: how high its crown's top is over its foot, as grown and scaled
   // The crown's reach from the trunk: the mean of its half-widths across, at the tree's own scale
   const crownOf = (bounds, sx, sz) => ((bounds.max.x - bounds.min.x) * sx + (bounds.max.z - bounds.min.z) * sz) / 4;
 
@@ -1109,6 +1110,7 @@ function* createTreeFieldSteps(_scene, sites, colliders = [], { reserve = null, 
     py[i] = (t.y || 0) + 6 * s;
     pz[i] = t.z;
     crown[i] = crownOf(tree.bounds, dummy.scale.x, dummy.scale.z);
+    tall[i] = tree.bounds.max.y * dummy.scale.y;
     tier[i] = SPECIES[sp].small ? SMALL_TIER : Math.min(2, t.tier || 0);
     // Small plants in cells of their own, with their own levels
     const small = tier[i] === SMALL_TIER ? 1 : 0;
@@ -1453,6 +1455,7 @@ function* createTreeFieldSteps(_scene, sites, colliders = [], { reserve = null, 
       py[i] = (t.y || 0) + 6 * sc;
       pz[i] = t.z;
       crown[i] = crownOf(tree.bounds, dummy.scale.x, dummy.scale.z);
+      tall[i] = tree.bounds.max.y * dummy.scale.y;
       tier[i] = Math.min(2, t.tier || 0);
       lod[i] = 255;
       for (let l = 0; l < 3; l++) meshOf[i * 3 + l] = room.meshes[l];
@@ -1474,19 +1477,22 @@ function* createTreeFieldSteps(_scene, sites, colliders = [], { reserve = null, 
   }
 
   /**
-   * The trees of one kind (`kind`: its name, or its index in SPECIES) the field draws within r of (x, z), the verges' added ones too:
-   * { x, y, z, crown } each, `y` the ground they were planted on and `crown` how far the crown reaches from the trunk (m)
+   * The trees of one kind (`kind`: its name, or its index in SPECIES; every kind where it's left out) the field draws within r of (x, z),
+   * the verges' added ones too: { x, y, z, crown, tall, small } each, `y` the ground they were planted on, `crown` how far the crown
+   * reaches from the trunk and `tall` how high its top is over its foot (m), `small` a garden's plant rather than a tree
    */
-  function treesNear(x, z, r, kind) {
-    const species = typeof kind === 'string' ? SPECIES.findIndex((sp) => sp.name === kind) : kind;
+  function treesNear(x, z, r, kind = null) {
+    const species = kind === null ? -1 : typeof kind === 'string' ? SPECIES.findIndex((sp) => sp.name === kind) : kind;
     const out = [];
+    if (kind !== null && species < 0) return out;
     for (const cell of cellList) {
       if (Math.hypot(cell.cx - x, cell.cz - z) > r + cell.radius) continue;
       const trees = cell.trees;
       for (let k = 0; k < trees.length; k++) {
         const i = trees[k];
-        if (Math.floor(data[i * 4 + 3]) !== species || (px[i] - x) ** 2 + (pz[i] - z) ** 2 > r * r) continue;
-        out.push({ x: px[i], y: mats[i * 16 + 13], z: pz[i], crown: crown[i] });
+        const sp = Math.floor(data[i * 4 + 3]);
+        if ((species >= 0 && sp !== species) || (px[i] - x) ** 2 + (pz[i] - z) ** 2 > r * r) continue;
+        out.push({ x: px[i], y: mats[i * 16 + 13], z: pz[i], crown: crown[i], tall: tall[i], small: !!SPECIES[sp]?.small });
       }
     }
     return out;

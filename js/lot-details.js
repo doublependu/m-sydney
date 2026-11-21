@@ -6,6 +6,7 @@ import { PATH_SURFACES, lawnSurface, pavingSurface } from './garden.js';
 import { MODEL_SITES, toWorldOf } from './model-sites.js';
 import { GEO, TILE, heldList, heldTiles, isHeld, tileExists, tileKey } from './geodata.js';
 import { MARGIN, squareLots } from './house-lots.js';
+import { houseEntry } from './house-entry.js';
 import { lotThings } from './lot-things.js';
 import { squareVerge, walkLine } from './verge.js';
 import { createConcreteMaterial, createFenceMaterial, createLotThingMaterial, createParkLawnMaterial } from './tsl-materials.js';
@@ -694,4 +695,5 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
   return { group, anchor, work, state, setShown, clear, debugLines, squares, trees, treesState, walkAt };
 }
 
-export { HOLD, REFILL, SQUARE, createLotDetails, groundOf, squareWork, squareWorkNow, tilesFor };
+// houseEntry() too, for the seasons (js/seasons.js ctx.houses), which import nothing of the game's
+export { HOLD, REFILL, SQUARE, createLotDetails, groundOf, houseEntry, squareWork, squareWorkNow, tilesFor };

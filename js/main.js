@@ -38,6 +38,8 @@ import { updateTunnelMouths } from './tunnel-mouths.js';
 import { wheelContacts, wheelGround } from './ground-geometry.js';
 import { buildNear, drawnTop, drawnWhat, dropLayer } from './drawn-ground.js';
 import { cityUniforms } from './tsl-materials.js';
+import { buildingLook } from './building-look.js';
+import { roofFrame } from './building-footprints.js';
 import { BRIDGE_LENGTH, DECK_REACH, bridgeAt, bridgePoint, deckOver, deckSpanAt } from './bridge.js';
 import { fullscreenElement, fullscreenSupported, onFullscreenChange, toggleFullscreen } from './fullscreen.js';
 
@@ -45,7 +47,8 @@ import { fullscreenElement, fullscreenSupported, onFullscreenChange, toggleFulls
 
 // Each season's own module (js/seasons.js), fetched only in its season, once the city round you is complete
 const SEASON_MODULES = {
-  november: () => import('./season-november.js')
+  november: () => import('./season-november.js'),
+  december: () => import('./season-december.js')
 };
 
 function readPlayerState() {
@@ -1665,7 +1668,8 @@ async function initApp() {
           prepare: (x, z, r) => buildNear(x, z, r)
         },
         origin,
-        anchor: anchorToOrigin
+        anchor: anchorToOrigin,
+        houses: { look: buildingLook, roofFrame, entry: city.houseEntry }
       }, { load });
     }).catch((error) => console.error('[seasons]', error));
 

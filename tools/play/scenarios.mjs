@@ -3477,6 +3477,46 @@ export const SCENARIOS = {
     }
   },
 
+  // December's houses (?date=2026-12-10): Prince Albert Street, Mosman, nearly every house lit, most of them heavily; the streets round it
+  // one to a few; and the ordinary streets of Woollahra and Bellevue Hill, no more than a few to a street
+  'december-houses': {
+    minutes: 5,
+    query: 'date=2026-12-10',
+    async run({ page, metric, expect }) {
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      await page.waitForFunction(() => window.__gameDebug.season()?.running, null, { timeout: 60000, polling: 250 });
+      const first = await page.evaluate(() => window.__gameDebug.season());
+      expect(first.season === 'december' && first.date === '2026-12-10', `the season on 10 December: ${first.season} on ${first.date}`);
+      const laid = (x, z) => page.waitForFunction(([px, pz]) => {
+        const h = window.__gameDebug.season()?.houses;
+        return h && h.pending === 0 && !h.lotsPending && h.at && Math.hypot(h.at.x - px, h.at.z - pz) < 20 && h;
+      }, [x, z], { timeout: 90000, polling: 500 }).then((h) => h.jsonValue()).catch(() => null);
+      await page.evaluate(() => window.__gameDebug.goto(2758, -4480, Math.PI, 'person'));
+      const mosman = await laid(2758, -4480);
+      expect(!!mosman, `Prince Albert Street's houses weren't all decorated: ${JSON.stringify((await page.evaluate(() => window.__gameDebug.season()))?.houses)}`);
+      const census = await page.evaluate(() => window.__gameDebug.season({ census: 150 }));
+      const pa = census.streets.find((s) => s.street === 'Prince Albert Street');
+      metric('princeAlbertDecorated', pa?.decorated ?? 0);
+      metric('princeAlbertHouses', pa?.lots ?? 0);
+      metric('bulbs', mosman?.drawn.bulbs ?? 0);
+      metric('shapes', mosman?.drawn.shapes ?? 0);
+      expect(pa && pa.lots >= 20 && pa.decorated >= pa.lots * 0.8, `Prince Albert Street: ${pa?.decorated} of ${pa?.lots} houses decorated`);
+      expect(mosman?.drawn.bulbs > 3000 && mosman.drawn.shapes > 20, `drawn: ${JSON.stringify(mosman?.drawn)}`);
+      const busy = census.streets.filter((s) => s.street !== 'Prince Albert Street' && s.decorated > Math.max(5, s.lots * 0.2));
+      expect(!busy.length, `streets with more than a few: ${JSON.stringify(busy)}`);
+      // Woollahra: ordinary streets
+      await page.evaluate(() => window.__gameDebug.goto(3750, 250, 0, 'person'));
+      const woollahra = await laid(3750, 250);
+      const plain = await page.evaluate(() => window.__gameDebug.season({ census: 200 }));
+      const lots = plain.streets.reduce((s, x) => s + x.lots, 0), decorated = plain.streets.reduce((s, x) => s + x.decorated, 0);
+      metric('woollahraDecorated', decorated);
+      metric('woollahraHouses', lots);
+      expect(!!woollahra && lots > 100 && decorated >= 1 && decorated < lots * 0.12, `Woollahra: ${decorated} of ${lots} houses decorated`);
+      const many = plain.streets.filter((s) => s.decorated > 4);
+      expect(!many.length, `ordinary streets with more than four: ${JSON.stringify(many)}`);
+    }
+  },
+
   // ?season=off: nothing of any season is fetched or drawn, only the calendar that says so
   'seasons-off': {
     minutes: 3,

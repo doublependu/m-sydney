@@ -89,7 +89,9 @@ const EXITS = {
   'bronte-pacific': 'Pacific Street', 'cove-st-41': 'Cove Street', 'cove-st-43': 'Cove Street', 'school-st': 'Gallimore Avenue',
   'denning-st': 'Denning Street',
   // Down long drives, the street's out of reach
-  'quarry-rd': 'door', 'parklea-close': 'door', 'parklea-cottage': 'door', 'wolseley-rd': 'door'
+  'quarry-rd': 'door', 'parklea-close': 'door', 'parklea-cottage': 'door', 'wolseley-rd': 'door',
+  // St Mary's Cathedral: out of its main doors onto the terrace at the head of its steps, over the forecourt
+  'st-marys': 'door'
 };
 const model = (name) => JSON.parse(fs.readFileSync(new URL(`../public/models/${name}.json`, import.meta.url), 'utf8'));
 const withInside = MODEL_SITES.filter((s) => model(s.file.replace('models/', '')).doors?.some((d) => d.inside));

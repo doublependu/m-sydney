@@ -947,6 +947,86 @@ const denningScenario = () => houseScenario('denning-st', {
   ]
 });
 
+// St Mary's Cathedral (js/model-sites.js, st-marys): from the forecourt up the stair to its main doors (the cathedral faces south, so
+// they're its liturgical west doors), in, up the nave between the pews, to sit in one, and back out. Its pews are drawn (one node, many
+// times), and the sun at the opening's golden hour comes through its west and north windows onto the floor and pews in their colours.
+function stMarysScenario() {
+  const S = MODEL_SITES.find((s) => s.id === 'st-marys');
+  const at = (x, z) => ({ x: S.x + x * Math.cos(S.yaw) + z * Math.sin(S.yaw), z: S.z - x * Math.sin(S.yaw) + z * Math.cos(S.yaw) });
+  const start = at(2.0, 70.9);
+  return {
+    minutes: 6,
+    storage: JSON.stringify({ version: 1, activeMode: 'person', entities: { person: { x: start.x, y: 0, z: start.z, heading: 0, surface: 0 } } }),
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const level = async () => (await human.state()).surfaceY - S.y;
+      const local = async () => {
+        const s = await human.state(), dx = s.x - S.x, dz = s.z - S.z, c = Math.cos(S.yaw), n = Math.sin(S.yaw);
+        return `(${(dx * c - dz * n).toFixed(2)}, ${(dx * n + dz * c).toFixed(2)}) at ${(s.surfaceY - S.y).toFixed(2)} m`;
+      };
+      const walk = async (x, z, why, opts) => expect(await walkTo(human, at(x, z), opts), `never got ${why}, stuck at ${await local()}`);
+      const fetched = () => debug(() => performance.getEntriesByType('resource').map((r) => r.name).filter((n) => /\/models\/st-marys-in\./.test(n)));
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      const toward = at(0, 60);
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...start, h: Math.atan2(toward.x - start.x, toward.z - start.z) });
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'st-marys')?.out, null, { timeout: 60000, polling: 250 });
+      expect((await fetched()).length === 0, 'its inside was fetched before a door was opened');
+      const drawn = await page.waitForFunction(() => window.__gameDebug.firstShapes()['st-marys']?.shape === 'model', null, { timeout: 30000, polling: 250 })
+        .then(() => true, () => false);
+      expect(drawn, 'its model isn\'t drawn in place of its first shape');
+      // Up the stair from the podium to the terrace, to the doors
+      expect((await level()) < -2, `on the podium at ${(await level()).toFixed(2)} m`);
+      await walk(0.4, 70.4, 'to the foot of the stair');
+      await walk(0.4, 60.2, 'up the stair', { timeout: 30000 });
+      expect(Math.abs(await level()) < 0.05, `at the head of the stair at ${(await level()).toFixed(2)} m`);
+      await walk(0.3, 54.95, 'to the doors');
+      await face(human, at(0, 52.5));
+      await human.wait(300);
+      expect((await interior()).prompt === 'Open', `at the doors the prompt is ${(await interior()).prompt}, at ${await local()}`);
+      await human.press('KeyF');
+      expect(await human.until(async () => (await interior()).doors.find((d) => d.site === 'st-marys' && d.id === 'front')?.angle >= 1.59, { timeout: 20000, read: interior }),
+        'the doors never opened');
+      expect((await fetched()).length > 0, 'its inside wasn\'t fetched at the doors');
+      await walk(0.0, 51.5, 'in through the doors');
+      let i = await interior();
+      expect(i.room === 'nave' && Math.abs(await level()) < 0.05, `in the nave? in ${i.room} at ${(await level()).toFixed(2)} m`);
+      metric('fpsInNave', (await debug(() => window.__gameDebug.frameCost())).fps);
+      // Its pews, drawn: one node, as many times as its JSON places them
+      const pews = (i.instances ?? []).filter((p) => p.site === 'st-marys' && p.node === 'pew');
+      expect(pews.length > 0 && pews.every((p) => p.count === p.want && p.count >= 80 && p.shown && p.drawn !== null && p.drawn <= 3),
+        `its pews aren't drawn: ${JSON.stringify(pews)}`);
+      metric('pewsDrawn', pews[0]?.count ?? 0);
+      // The sun through its glass, at the golden hour the game opens in
+      const sun = (i.sunlight ?? []).find((s) => s.site === 'st-marys');
+      expect(sun && sun.windows >= 10 && sun.triangles > 0 && sun.strength > 0.2, `no sun through its windows: ${JSON.stringify(sun)}`);
+      metric('windowsLit', sun?.windows ?? 0);
+      // Up the nave's middle, between the pews, to a pew halfway up: sit at its end
+      await walk(0.0, 36.0, 'up the nave');
+      await walk(0.35, 21.3, 'to a pew halfway up');
+      await face(human, at(1.1, 21.6));
+      await human.wait(300);
+      expect((await interior()).prompt === 'Sit', `at the pew the prompt is ${(await interior()).prompt}, at ${await local()}`);
+      await human.press('KeyF');
+      await human.wait(1200);
+      expect((await interior()).seated, 'not sitting in the pew');
+      const seat = await human.state();
+      const p = at(1.11, 21.57);
+      expect(Math.hypot(seat.x - p.x, seat.z - p.z) < 0.15, `not on the pew's seat, but at ${await local()}`);
+      metric('fpsSeated', (await debug(() => window.__gameDebug.frameCost())).fps);
+      await human.hold('KeyW', 120);
+      await human.wait(500);
+      expect(!(await interior()).seated, 'still sitting after moving');
+      // Back down the nave and out of the doors, onto the terrace
+      await walk(0.0, 36.0, 'back down the nave');
+      await walk(0.0, 52.0, 'to the doors');
+      await walk(0.0, 56.0, 'out through the doors');
+      i = await interior();
+      expect(i.inside === null && Math.abs(await level()) < 0.05, `out on the terrace? in ${i.inside} at ${(await level()).toFixed(2)} m`);
+    }
+  };
+}
+
 // A house on three levels over Bronte beach (js/model-sites.js, bronte-pacific): from Pacific St in at the front door, through to the
 // living room and out onto its terrace to sit; down the stair to the family room and out onto the deck; down again to the rumpus room
 // and out onto the pool's terrace. Its inside isn't fetched until the front door opens.
@@ -2435,6 +2515,7 @@ export const SCENARIOS = {
   }),
   'opera-house': operaHouseScenario(),
   'opera-house-phone': { ...operaHouseScenario(), profile: 'phone' },
+  'st-marys': stMarysScenario(),
   'origin-move': originScenario(''),
   'origin-far': originScenario('originTest=85000'),
   'signal-wait': {

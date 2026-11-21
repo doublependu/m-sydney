@@ -13,7 +13,11 @@ const { groundHeight } = await import('../js/surfaces.js');
 const { floorAt } = await import('../js/interior-data.js');
 const { TOWER_SIGNS, placeTowerSign } = await import('../js/tower-signs.js');
 
-const IDS = ['salesforce-tower', 'ey-centre', 'customs-house', 'crown-sydney'];
+const IDS = ['salesforce-tower', 'ey-centre', 'customs-house', 'crown-sydney', 'st-marys'];
+// Those whose doors stand up steps from the street, and those with budgets of their own: a big inside is up to 2 MB and 40,000
+// triangles, its outside 20 draws
+const UP_STEPS = new Set(['customs-house', 'st-marys']);
+const BUDGETS = { 'st-marys': { draws: 20, inBytes: 2_000_000, inTris: 40_000 } };
 const sites = IDS.map((id) => MODEL_SITES.find((s) => s.id === id));
 const read = (name) => JSON.parse(fs.readFileSync(new URL(`../public/models/${name}.json`, import.meta.url), 'utf8'));
 function gltf(name) {
@@ -52,8 +56,8 @@ test('each door opens off the street at the street\'s height, no street tree bef
     const front = toWorldOf(site, mid[0], mid[1] + 1.5);
     assert.equal(floorAt(out.floors, mid[0], mid[1] + 1.0, 0), 0, `${site.id}: no floor at its door`);
     const ground = groundHeight(front.x, front.z) - site.y;
-    // Customs House stands up steps from the square
-    const step = site.id === 'customs-house' ? 0 : ground;
+    // Customs House stands up steps from the square, St Mary's from its forecourt
+    const step = UP_STEPS.has(site.id) ? 0 : ground;
     assert.ok(Math.abs(step) < 0.35, `${site.id}: the street at its door is ${ground.toFixed(2)} m from its floor`);
     assert.equal(clearOfSites(front.x, front.z), false, `${site.id}: a street tree could stand at its door`);
     assert.equal(inside.rooms.length, 1, `${site.id}: one room inside`);
@@ -100,8 +104,9 @@ test('within their budgets: outside, inside and far', () => {
     const g = gltf(name);
     const shown = g.nodes.filter((n) => n.mesh !== undefined && !/^door_/.test(n.name) && !/^door_/.test(g.nodes.find((p) => p.children?.includes(g.nodes.indexOf(n)))?.name ?? ''));
     const draws = shown.reduce((s, n) => s + g.meshes[n.mesh].primitives.length, 0);
-    assert.ok(size(name) < 300_000 && draws <= 15, `${name}: ${size(name)} bytes, ${draws} draws`);
-    assert.ok(size(`${name}-in`) < 1_000_000 && tris(`${name}-in`) <= 30_000, `${name}-in: ${size(`${name}-in`)} bytes, ${tris(`${name}-in`)} triangles`);
+    const b = { draws: 15, inBytes: 1_000_000, inTris: 30_000, ...BUDGETS[site.id] };
+    assert.ok(size(name) < 300_000 && draws <= b.draws, `${name}: ${size(name)} bytes, ${draws} draws`);
+    assert.ok(size(`${name}-in`) < b.inBytes && tris(`${name}-in`) <= b.inTris, `${name}-in: ${size(`${name}-in`)} bytes, ${tris(`${name}-in`)} triangles`);
   }
 });
 
@@ -185,4 +190,74 @@ test('Luna Park\'s wheel stands on the ground where OSM has its fence, its lowes
   const ground = groundHeight(at.x, at.z) - luna.y;
   const lowest = cy - 15 - 2.0;
   assert.ok(lowest - ground > 0.4 && lowest - ground < 2.0, `its lowest gondola's floor ${(lowest - ground).toFixed(2)} m over the ground`);
+});
+
+// St Mary's Cathedral: its forecourt's steps meet the ground, its pews are drawn from one and sat in, and its windows' glass is there for
+// the sun to throw through (js/stained-light.js)
+test('St Mary\'s stands up its steps from the forecourt, and its west porch\'s from the ground', () => {
+  const site = MODEL_SITES.find((s) => s.id === 'st-marys');
+  const out = read('st-marys');
+  const at = (x, z) => floorAt(out.floors, x, z, 0.5);
+  const groundAt = (x, z) => {
+    const w = toWorldOf(site, x, z);
+    return groundHeight(w.x, w.z) - site.y + 0.22; // the lawn, a kerb's height up
+  };
+  // from the terrace at the doors down the stair to the podium; off its far end to the lawn
+  assert.equal(floorAt(out.floors, 0, 56, 0), 0, 'no terrace at the doors');
+  const flights = out.floors.filter((f) => f.plane);
+  assert.equal(flights.length, 3, 'the stair, the podium\'s steps and the porch\'s');
+  // the stair down from the terrace, then the steps off the podium's far end
+  const [stair, end] = flights.filter((f) => f.plane[1] === 0).sort((a, b) => Math.min(...a.poly.map((p) => p[1])) - Math.min(...b.poly.map((p) => p[1])));
+  const foot = Math.max(...stair.poly.map((p) => p[1]));
+  const podium = out.floors.find((f) => f.holes.length);
+  assert.ok(Math.abs(stair.plane[0] + stair.plane[2] * foot - podium.y) < 0.02, 'the stair doesn\'t come down to the podium');
+  for (const [x, z] of [[-12, 80], [0, 95], [12, 100]]) assert.ok(podium.y > groundAt(x, z), `the lawn stands through the podium at (${x}, ${z})`);
+  const last = Math.max(...end.poly.map((p) => p[1]));
+  const bottom = end.plane[0] + end.plane[2] * last;
+  assert.ok(Math.abs(bottom - groundAt(0, last + 0.5)) < 0.35, `the podium's steps come down to ${bottom.toFixed(2)} m, the lawn is at ${groundAt(0, last + 0.5).toFixed(2)}`);
+  // the porch: its floor through the west door, its steps out to the lawn
+  const porch = flights.find((f) => f.plane[1] !== 0);
+  const outer = Math.min(...porch.poly.map((p) => p[0])), z = (porch.poly[0][1] + porch.poly[2][1]) / 2;
+  const low = porch.plane[0] + porch.plane[1] * outer;
+  assert.ok(Math.abs(low - groundAt(outer - 0.5, z)) < 0.35, `the porch's steps come down to ${low.toFixed(2)} m, the lawn is at ${groundAt(outer - 0.5, z).toFixed(2)}`);
+  const west = out.doors.find((d) => d.id === 'west');
+  assert.ok(west?.inside === 'st-marys-in', 'the west porch\'s door leads nowhere');
+  assert.equal(at(west.hinge[0] - 1.0, (west.hinge[1] + west.latch[1]) / 2), 0, 'no floor in the porch at its door');
+});
+
+test('St Mary\'s pews: one node drawn many times, every seat on a pew over the floor, and room between the rows', () => {
+  const inside = read('st-marys-in');
+  const [pews] = inside.instances;
+  assert.equal(pews.node, 'pew');
+  assert.ok(pews.at.length >= 80, `${pews.at.length} pews`);
+  const seats = inside.seats.filter((s) => s.kind === 'pew');
+  assert.equal(seats.length, pews.at.length * 6);
+  for (const s of seats) {
+    assert.equal(floorAt(inside.floors, s.at[0], s.at[2], 0), 0, `a pew's seat at (${s.at[0]}, ${s.at[2]}) over no floor`);
+    assert.ok(Math.abs(s.at[1] - 0.47) < 0.01);
+  }
+  // the nave's rows: a walker (0.22 m round) fits between one's low wall and the next's
+  const rows = [...new Set(pews.at.filter((p) => Math.abs(p[3] - Math.PI) < 0.01).map((p) => p[2]))].sort((a, b) => a - b);
+  const pitch = rows[1] - rows[0];
+  assert.ok(pitch - 0.55 >= 0.48, `the nave's rows are ${pitch.toFixed(2)} m apart`);
+});
+
+test('St Mary\'s windows: their glass as pictures in the palette\'s colours, on the walls, and the surfaces their light can fall on', () => {
+  const inside = read('st-marys-in');
+  const keys = '0123456789abcdefghijklmnopqrstuvwxyz'.slice(0, inside.palette.length);
+  assert.ok(inside.windows.length >= 50, `${inside.windows.length} windows`);
+  for (const w of inside.windows) {
+    assert.ok(w.img.length >= 5 && w.img.every((r) => r.length === w.img[0].length), 'a picture\'s rows aren\'t all as long');
+    assert.ok(w.img.join('').split('').every((c) => c === '.' || keys.includes(c)), 'a pixel not in the palette');
+    assert.ok(w.img.join('').replace(/\./g, '').length > 0.3 * w.img.length * w.img[0].length, 'a window with little glass');
+    assert.ok(Math.abs(Math.hypot(...w.u) - 1) < 1e-3 && Math.abs(w.u[0] * w.n[0] + w.u[1] * w.n[1]) < 1e-3, 'its axes aren\'t square');
+  }
+  // the lit surfaces: convex, anticlockwise, on a floor
+  for (const l of inside.lit) {
+    const p = l.poly;
+    for (let i = 0; i < p.length; i++) {
+      const [a, b, c] = [p[i], p[(i + 1) % p.length], p[(i + 2) % p.length]];
+      assert.ok((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]) >= -1e-6, 'a lit surface isn\'t convex and anticlockwise');
+    }
+  }
 });

@@ -3,7 +3,7 @@ import { color, float, max, mix, smoothstep, texture, uv, vec4, vertexColor } fr
 import { cityUniforms } from './tsl-materials.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { addFirstShape } from './first-shapes.js';
-import { MODEL_SITES } from './model-sites.js';
+import { MODEL_SITES, toWorldOf } from './model-sites.js';
 import { groundHeight } from './surfaces.js';
 import { buildHarbourBridge, harbourBridgeColliders } from './harbour-bridge.js';
 import { buildOperaHouse } from './opera-house.js';
@@ -141,9 +141,7 @@ function buildHeritage(group) {
   // The Queen Victoria Building's copper domes down its roof
   dome(group, -40, -143, 36, 11, copper);
   for (const dz of [-70, -46, 46, 70]) dome(group, -40, -143 + dz, 34, 4.2, copper);
-  // St Mary's twin spires, in pale yellow stone, facing Hyde Park
-  const paleStone = stone(0xcdb582);
-  for (const dx of [-11, 11]) clockTower(group, 567 + dx, -228, 8.5, 54, paleStone, 22, slate, false);
+  buildStMarysSpires(group);
   // The General Post Office on Martin Place: its clock tower, and the colonnade along the street
   clockTower(group, -12, -590, 10, 73, sandstone, 4, slate);
   colonnade(group, -55, -571.5, 35, -571.5, 22, 7.5, 1.1, sandstone);
@@ -152,6 +150,22 @@ function buildHeritage(group) {
   const library = settle(new THREE.Mesh(new THREE.BoxGeometry(32, 3.2, 5), sandstone));
   library.position.set(449, groundHeight(449, -781) + 13.6, -781);
   group.add(library);
+}
+
+// St Mary's twin towers and spires, in pale yellow stone, on the front of the map's box of the cathedral facing the forecourt: where
+// its model's towers stand (js/model-sites.js `st-marys`), to the same height. Part of its first shape: shown with the map's box till
+// the model or its far version is drawn.
+function buildStMarysSpires(group) {
+  const site = MODEL_SITES.find((s) => s.id === 'st-marys');
+  const spires = new THREE.Group();
+  spires.name = 'StMarysSpires';
+  const paleStone = stone(0xcdb582);
+  for (const dx of [-8.25, 8.25]) {
+    const { x, z } = toWorldOf(site, dx, 50.75);
+    clockTower(spires, x, z, 8.5, site.y + 43 - groundHeight(x, z), paleStone, 31.5, paleStone, false);
+  }
+  group.add(spires);
+  addFirstShape('st-marys', spires);
 }
 
 // Luna Park: the face at its gate between its two towers, and the wheel behind, in the site's frame (js/model-sites.js `luna-park`: the

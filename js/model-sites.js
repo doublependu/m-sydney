@@ -270,6 +270,16 @@ const MODEL_SITES = [
     replaces: [[-6.7, -0.6], [6.4, -0.6], [-27.9, -24.9], [-21.6, -55.2], [-70.0, -103.8], [-54.9, -240.7], [-81.8, -177.7],
       [-43.9, -202.2], [-30.4, -99.9], [-30.9, -136.2], [-38.3, -172.6], [-3.8, -35.8], [-20.6, -78.1], [-5.4, -88.1], [-12.5, -64.4]],
     clear: [[0, 4.0, 4.0]]
+  },
+  // St Mary's Cathedral, on College St across from Hyde Park: Gothic Revival in sandstone, its twin spires on its south front over the
+  // forecourt and its pools, in place of the map's box of its outline; inside, the nave, the transepts, the choir and its chapels.
+  // Its frame: the middle of the nave and choir, +z south along them and out through the main door, +x east; its floor, just over the
+  // ground at its north end (where it's highest under it, or the map's lawn would show through the floor): the front stands up a stair
+  // from the forecourt, the ground falling 5 m to it. A second door is in the west porch, off College St. Out of it at its main door,
+  // on the terrace at the head of the stair.
+  {
+    id: 'st-marys', file: 'models/st-marys', x: 560.5, z: -287.5, yaw: 0.025, y: 29.5, far: true, replaces: [[0, 0]], reach: 130,
+    top: 74.5, radius: 54.5, clear: [[0, 57.0, 3.0], [-20.6, 26.5, 2.5]], exit: 'door'
   }
 ];
 

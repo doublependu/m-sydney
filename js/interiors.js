@@ -1,5 +1,8 @@
 import * as THREE from 'three/webgpu';
-import { Fn, cameraViewMatrix, color, float, fract, mix, normalize, positionWorld, sin, smoothstep, step, time, uniform, vec3, vertexColor } from 'three/tsl';
+import {
+  Fn, cameraPosition, cameraViewMatrix, color, dot, float, floor, fract, mix, mod, normalize, positionLocal, positionWorld, sin, smoothstep, step,
+  time, uniform, vec2, vec3, vertexColor
+} from 'three/tsl';
 import { CITY_BOUNDS, blockAt } from './city-config.js';
 import { hasFirstShape, showFirstShape } from './first-shapes.js';
 import { MODEL_SITES } from './model-sites.js';
@@ -108,6 +111,47 @@ function materialFor(name, inside) {
     const lit = step(roll.r, curtain ? 0.3 : 0.5);
     const tint = mix(color(0xffc98a), color(0xfff1d6), roll.g);
     m.emissiveNode = tint.mul(smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow)).mul(lit.mul(curtain ? 0.22 : 0.6).add(0.03));
+  } else if (name === 'stained') {
+    // Stained glass, its colour in its vertices. Inside, the day comes through it: bright by day, nearly dark at night. Outside, dark
+    // and a little glossy by day, and at night glowing with the lights inside.
+    const daylight = float(1).sub(smoothstep(0.6, 1.3, cityUniforms.uInteriorGlow));
+    if (inside) {
+      m = new THREE.MeshBasicNodeMaterial({ vertexColors: true });
+      m.colorNode = vertexColor().mul(mix(float(0.07), float(1.5), daylight));
+    } else {
+      m = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.25, metalness: 0.1, flatShading: true });
+      m.colorNode = vertexColor().mul(0.16);
+      m.emissiveNode = vertexColor().mul(smoothstep(0.55, 1.2, cityUniforms.uInteriorGlow).mul(1.1));
+    }
+  } else if (name === 'floodlit') {
+    // Stone floodlit at night from the ground round it: a pale gold, brightest low down and on the front (+z, the site's own frame:
+    // its main doors' side), less up its spires and round the back
+    m = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.85, metalness: 0, flatShading: true });
+    const fall = float(1).sub(smoothstep(10.0, 80.0, positionLocal.y).mul(0.5));
+    const front = smoothstep(-60.0, 60.0, positionLocal.z).mul(0.45).add(0.4);
+    m.emissiveNode = vertexColor().mul(color(0xffe2a8)).mul(smoothstep(0.55, 1.4, cityUniforms.uInteriorGlow)).mul(fall.mul(front));
+  } else if (name === 'encaustic' || name === 'mosaic') {
+    // Floors laid in a pattern the model's vertices only colour: encaustic tiles in a diagonal chequer of their colour and a grey,
+    // grouted; or a mosaic's small tesserae, each a little lighter or darker. Both even out further off, where they'd shimmer.
+    m = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: name === 'encaustic' ? 0.62 : 0.7, metalness: 0, flatShading: true });
+    const p = positionLocal.xz;
+    const away = smoothstep(9.0, 40.0, positionWorld.distance(cameraPosition));
+    let tile;
+    if (name === 'encaustic') {
+      const q = vec2(p.x.add(p.y), p.x.sub(p.y)).mul(0.7071 / 0.45);
+      const f = fract(q);
+      const odd = mix(mod(floor(q.x).add(floor(q.y)), 2.0), float(0.45), away);
+      const grout = step(0.035, f.x).mul(step(0.035, f.y)).mul(step(f.x, 0.965)).mul(step(f.y, 0.965));
+      tile = mix(vertexColor(), vertexColor().mul(vec3(0.5, 0.5, 0.53)), odd).mul(mix(mix(float(0.72), float(1.0), grout), float(0.93), away));
+    } else {
+      const q = p.mul(1 / 0.11);
+      const h = fract(sin(dot(floor(q), vec2(12.9898, 78.233))).mul(43758.5453));
+      const f = fract(q);
+      const joint = step(0.08, f.x).mul(step(0.08, f.y));
+      tile = vertexColor().mul(mix(h.mul(0.3).add(0.85), float(1.0), away)).mul(mix(mix(float(0.78), float(1.0), joint), float(0.95), away));
+    }
+    m.colorNode = tile;
+    m.emissiveNode = tile.mul(indoorLight);
   } else {
     const [roughness, metalness] = ROUGH[name] ?? [0.8, 0];
     // flat: the models carry no normals, every face is flat
@@ -507,6 +551,14 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       if (site.inside !== record) return;
       prepare(scene, true);
       const instanced = instance(scene, data.instances);
+      // The sun's coloured light through its stained glass, for an inside whose JSON has its windows' pictures (js/stained-light.js)
+      let sunlight = null;
+      if (data.windows) {
+        const { createSunlight } = await import('./stained-light.js');
+        sunlight = createSunlight(data, site.yaw, cityUniforms);
+        sunlight.update();
+        scene.add(sunlight.mesh);
+      }
       const group = groupFor(site, scene, `Inside_${site.id}`);
       for (const r of data.rooms) {
         const node = scene.getObjectByName(r.node);
@@ -515,11 +567,13 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       await reveal(group);
       if (site.inside !== record) {
         dispose(group);
+        sunlight?.dispose();
         return;
       }
       record.group = group;
       record.data = data;
       record.instanced = instanced;
+      record.sunlight = sunlight;
       record.walls = data.walls.map((w) => wallCollider(site, w));
       colliders.add(record.walls);
       record.doors = addDoors(site, data.doors, scene, 'in', [...data.walls, ...site.out.data.walls]);
@@ -545,6 +599,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       colliders.remove(inside.walls);
       removeDoors(inside.doors);
       dispose(inside.group);
+      inside.sunlight?.dispose();
     }
     // The ways in shut behind you
     for (const door of site.out?.doors.values() ?? []) {
@@ -646,6 +701,8 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
         if (door.node) door.node.visible = shown;
         if (door.pair) door.pair.visible = shown;
       }
+      // the sun through its glass, thrown again if the time of day has moved it
+      inside.sunlight?.update();
     }
 
     const showing = show && here?.site.id === show.site && here.room.id === show.room ? show : null;
@@ -836,6 +893,8 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
         return { site: s.id, node: mesh.userData.node, name: mesh.name, count: mesh.count, want, shown: shown && o.isScene === true,
           drawn: mesh.userData.drawnAt === undefined ? null : frameCount - mesh.userData.drawnAt };
       }) : [])),
+      // the sun through a held inside's stained glass: how many windows throw it, in how many triangles, how strong
+      sunlight: sites.flatMap((s) => (s.inside?.sunlight ? [{ site: s.id, ...s.inside.sunlight.state() }] : [])),
       lights: lightsOn.length,
       // what turns in each model drawn (a wheel): its node, the angle it's turned to, and how many it carries round level
       spins: sites.flatMap((s) => (s.out?.spins ?? []).map((sp) => ({ site: s.id, node: sp.node.name, angle: +sp.angle.toFixed(4), level: sp.at.length,

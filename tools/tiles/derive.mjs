@@ -40,10 +40,11 @@ REAL_BUILDINGS.forEach((b, i) => {
 // js/first-shapes.js)
 const { MODEL_SITES, toWorldOf } = await import('../../js/model-sites.js');
 const replacedBy = new Map(); // site id -> the buildings it replaces
+const ownShape = new Set(); // ...of those, the ones the game's own shape stands in for (js/landmarks.js): no stand-in
 {
   const inOutline = (b, x, z) => x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ && b.polygons.some((p) => inRingXZ(p.outer, x, z));
   for (const site of MODEL_SITES) {
-    for (const [lx, lz] of site.replaces || []) {
+    for (const [lx, lz, own] of site.replaces || []) {
       const { x, z } = toWorldOf(site, lx, lz);
       const list = replacedBy.get(site.id) || replacedBy.set(site.id, []).get(site.id);
       // the first that holds it and the site hasn't taken already: where the map has a building inside another (a point in one of the
@@ -54,6 +55,7 @@ const replacedBy = new Map(); // site id -> the buildings it replaces
       if (i < 0) throw new Error(`[derive] model site ${site.id}: no building at (${lx}, ${lz}) in its frame to draw in place of`);
       if (!underLandmarks.includes(i)) underLandmarks.push(i);
       if (!list.includes(i)) list.push(i);
+      if (own === 'landmark') ownShape.add(i);
     }
   }
 }
@@ -214,6 +216,7 @@ const standInNotes = [];
 for (const [id, list] of replacedBy) {
   standIns[id] = [];
   for (const i of list) {
+    if (ownShape.has(i)) continue;
     const b = REAL_BUILDINGS[i], floor = [...standInFloor.get(i)], what = underDecks(b, floor[0] / 10);
     if (what?.drop) { standInNotes.push(`${id}: ${b.height} m left out`); continue; }
     if (what?.raise !== undefined) { floor[0] = Math.ceil(what.raise * 10); standInNotes.push(`${id}: ${b.height} m raised`); }

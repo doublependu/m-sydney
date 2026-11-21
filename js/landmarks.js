@@ -128,9 +128,9 @@ function buildHeritage(group) {
   const sandstone = SANDSTONE();
   const copper = stone(0x5f8f7c, 0.6);
   const slate = stone(0x4d545c, 0.7);
-  // Sydney Town Hall's clock tower over George St, and Central's
+  // Sydney Town Hall's clock tower over George St
   clockTower(group, -36, 6, 11, 56, sandstone, 7, slate);
-  clockTower(group, 96, 1160, 13, 76, sandstone);
+  buildCentralTower(group);
   buildQvbDomes(group, copper);
   buildStMarysSpires(group);
   // The General Post Office on Martin Place: its clock tower, and the colonnade along the street
@@ -141,6 +141,52 @@ function buildHeritage(group) {
   const library = settle(new THREE.Mesh(new THREE.BoxGeometry(32, 3.2, 5), sandstone));
   library.position.set(449, groundHeight(449, -781) + 13.6, -781);
   group.add(library);
+}
+
+// Central Station's clock tower, at the north end of its west wing (js/model-sites.js `central-station`, in its frame): the shaft, the
+// clock's stage and its four dials, the cornice, the belfry, the lantern's drum and its copper dome, the flagpole, to its model's
+// heights. One mesh in its own colours, lit a little at night. Part of its first shape, with the map's box of the building; the map's
+// box of the tower is left out of that (its site's `replaces`), as this stands there.
+const CENTRAL_TOWER = { x: 63.4, z: -3.6, half: 5.0, foot: -4.0 };
+function buildCentralTower(group) {
+  const site = MODEL_SITES.find((s) => s.id === 'central-station');
+  const { x, z, half, foot } = CENTRAL_TOWER;
+  const parts = [];
+  const add = (g, hex, dx = 0, y = 0, dz = 0) => {
+    g.translate(x + dx, y, z + dz);
+    const c = new THREE.Color(hex), n = g.attributes.position.count, a = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) a.set([c.r, c.g, c.b], i * 3);
+    g.setAttribute('color', new THREE.BufferAttribute(a, 3));
+    g.deleteAttribute('uv');
+    parts.push(g.index ? g.toNonIndexed() : g);
+  };
+  const block = (w, y0, y1, hex) => add(new THREE.BoxGeometry(w, y1 - y0, w), hex, 0, (y0 + y1) / 2);
+  block(2 * half, foot, 47.0, 0xc3a072);
+  block(2 * half + 0.8, 47.0, 48.2, 0xa2804f);
+  block(2 * half, 48.2, 58.0, 0xd4b88b);
+  block(2 * half + 1.5, 58.0, 59.4, 0xa2804f);
+  block(2 * (half - 0.8), 59.4, 67.0, 0xc9a97a);
+  block(2 * (half - 0.35), 67.0, 68.0, 0xa2804f);
+  add(new THREE.CylinderGeometry(3.95, 3.95, 4.85, 8, 1).rotateY(Math.PI / 8), 0xd4b88b, 0, 70.42);
+  add(new THREE.SphereGeometry(3.75, 16, 6, 0, Math.PI * 2, 0, Math.PI / 2).scale(1, 7.6 / 3.75, 1), 0x6d5a44, 0, 72.85);
+  add(new THREE.ConeGeometry(0.5, 2.2, 8), 0x5a4630, 0, 81.5);
+  add(new THREE.CylinderGeometry(0.04, 0.07, 8.0, 6), 0xe8e6df, 0, 86.4);
+  // each face: its dial, and the belfry's openings, dark
+  for (const [nx, nz] of [[0, 1], [1, 0], [0, -1], [-1, 0]]) {
+    const turn = (g) => g.rotateY(Math.atan2(nx, nz));
+    add(turn(new THREE.CircleGeometry(2.45, 24)), 0xf4f0e4, nx * (half + 0.2), 53.1, nz * (half + 0.2));
+    for (const s of [-2.6, 0, 2.6]) {
+      add(turn(new THREE.PlaneGeometry(1.6, 4.4)), 0x2a2420, nx * (half - 0.78) + nz * s, 62.9, nz * (half - 0.78) - nx * s);
+    }
+  }
+  const material = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.85 });
+  material.emissiveNode = vertexColor().mul(smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow).mul(0.35));
+  const mesh = settle(new THREE.Mesh(mergeGeometries(parts, false), material));
+  mesh.name = 'CentralTower';
+  mesh.position.set(site.x, site.y, site.z);
+  mesh.rotation.y = site.yaw;
+  group.add(mesh);
+  addFirstShape('central-station', mesh);
 }
 
 // The Queen Victoria Building's copper domes, on the map's boxes of it (js/model-sites.js `qvb`, in its frame): the great dome on its drum

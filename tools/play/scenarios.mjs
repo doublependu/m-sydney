@@ -1818,6 +1818,111 @@ function circularQuayScenario() {
   };
 }
 
+// Central Station (js/model-sites.js, central-station): from Eddy Ave's footpath into the arcade under the forecourt, in at its door, along
+// the passage and up the stair through the north wing into the Grand Concourse; its clocks (the tower's and the concourse's) at Sydney's
+// time, its lamps and benches drawn; along the concourse to its east end and back, through the hall and out of the forecourt's door, along
+// the forecourt and down its stair to the street. Its inside isn't fetched until the Eddy Ave door opens.
+function centralStationScenario() {
+  const S = MODEL_SITES.find((s) => s.id === 'central-station');
+  const at = (x, z) => ({ x: S.x + x * Math.cos(S.yaw) + z * Math.sin(S.yaw), z: S.z - x * Math.sin(S.yaw) + z * Math.cos(S.yaw) });
+  const EX = -21.44; // the Eddy Ave door, the passage and the stair, x
+  const start = at(EX, 36.0);
+  return {
+    minutes: 8,
+    storage: JSON.stringify({ version: 1, activeMode: 'person', entities: { person: { x: start.x, y: 0, z: start.z, heading: 0, surface: 0 } } }),
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const level = async () => (await human.state()).surfaceY - S.y;
+      const local = async () => {
+        const s = await human.state(), dx = s.x - S.x, dz = s.z - S.z, c = Math.cos(S.yaw), n = Math.sin(S.yaw);
+        return `(${(dx * c - dz * n).toFixed(2)}, ${(dx * n + dz * c).toFixed(2)}) at ${(s.surfaceY - S.y).toFixed(2)} m`;
+      };
+      const walk = async (x, z, why, opts) => expect(await walkTo(human, at(x, z), opts), `never got ${why}, stuck at ${await local()}`);
+      const fetched = () => debug(() => performance.getEntriesByType('resource').map((r) => r.name).filter((n) => n.includes('/models/central-station-in.')));
+      const inRoom = async (want, y, why) => {
+        const i = await interior();
+        expect(i.inside === 'central-station' && i.room === want && (y === null || Math.abs((await level()) - y) < 0.12), `${why}: in ${i.inside} ${i.room} at ${await local()}`);
+      };
+      const open = async (doorId, toward, why) => {
+        await face(human, toward);
+        await human.wait(300);
+        expect((await interior()).prompt === 'Open', `${why}: the prompt is ${(await interior()).prompt}, at ${await local()}`);
+        await human.press('KeyF');
+        expect(await human.until(async () => (await interior()).doors.find((d) => d.site === 'central-station' && d.id === doorId)?.angle >= 1.59,
+          { timeout: 20000, read: interior }), `${why}: the door never opened`);
+      };
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      const toward = at(EX, 26);
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...start, h: Math.atan2(toward.x - start.x, toward.z - start.z) });
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'central-station')?.out, null, { timeout: 60000, polling: 250 });
+      const drawn = await page.waitForFunction(() => window.__gameDebug.firstShapes()['central-station']?.shape === 'model', null, { timeout: 30000, polling: 250 })
+        .then(() => true, () => false);
+      expect(drawn, 'its model isn\'t drawn in place of its first shape');
+      expect((await fetched()).length === 0, 'its inside was fetched before a door was opened');
+      // The tower's clock, outside, at Sydney's time
+      const sydney = () => debug(() => {
+        const parts = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Sydney', hourCycle: 'h23', hour: 'numeric', minute: 'numeric', second: 'numeric' })
+          .formatToParts(new Date());
+        const part = (t) => +parts.find((p) => p.type === t).value;
+        return part('hour') * 3600 + part('minute') * 60 + part('second');
+      });
+      const off = (a, b) => Math.abs(((a - b) % (2 * Math.PI) + 3 * Math.PI) % (2 * Math.PI) - Math.PI);
+      const want = (t, clock) => -2 * Math.PI * ((t % (clock === 'hour' ? 43200 : 3600)) / (clock === 'hour' ? 43200 : 3600));
+      const clocks = async (n, why) => {
+        const t = await sydney();
+        const hands = (await interior()).spins.filter((sp) => sp.site === 'central-station' && sp.clock);
+        expect(hands.length === n && hands.every((h) => off(h.angle, want(t, h.clock)) < 0.06), `${why}: the hands aren't at Sydney's time (${t} s): ${JSON.stringify(hands)}`);
+      };
+      await clocks(8, 'the tower\'s clock');
+      // Under the forecourt, into the arcade from Eddy Ave's footpath, to its door at the arcade's back
+      await walk(EX, 30.5, 'into the arcade');
+      await walk(EX, 28.7, 'up to the Eddy Ave door');
+      expect((await level()) < -4.0, `in the arcade at ${await local()}`);
+      await open('eddy', at(EX, 26), 'at the Eddy Ave door');
+      expect((await fetched()).length > 0, 'its inside wasn\'t fetched at the door');
+      await walk(EX, 25.5, 'in through the door');
+      await inRoom('eddy-way', null, 'in the passage under the forecourt');
+      expect((await level()) < -4.0, `in the passage at ${await local()}`);
+      // Along the passage, and up the stair through the north wing
+      await walk(EX, 19.0, 'along the passage', { timeout: 40000 });
+      await walk(EX, 17.0, 'onto the stair\'s foot');
+      await walk(EX, 11.0, 'up its first flight', { timeout: 30000 });
+      await walk(EX, 4.0, 'up its second flight', { timeout: 30000 });
+      await inRoom('eddy-stair', 0, 'at the stair\'s head');
+      // Into the Grand Concourse
+      await walk(EX, -3.0, 'through the arch into the concourse');
+      await inRoom('concourse', 0, 'in the Grand Concourse');
+      metric('fpsConcourse', (await debug(() => window.__gameDebug.frameCost())).fps);
+      const inst = (await interior()).instances.filter((p) => p.site === 'central-station');
+      const globes = inst.filter((p) => p.node === 'globe');
+      expect(globes.length > 0 && globes.every((p) => p.count === p.want && p.count >= 20 && p.shown), `its lamps aren't drawn: ${JSON.stringify(inst)}`);
+      metric('lampsDrawn', globes[0]?.count ?? 0);
+      await clocks(12, 'the tower\'s and the concourse\'s clocks');
+      // Along it to its east end, under the departure boards, and back to the hall's arch
+      await walk(-30.0, -7.0, 'into the concourse');
+      await walk(-48.0, -7.0, 'along it to its east end', { timeout: 40000 });
+      metric('fpsEastEnd', (await debug(() => window.__gameDebug.frameCost())).fps);
+      await walk(0.0, -7.0, 'back along it to the hall\'s arch', { timeout: 60000 });
+      await walk(0.0, -1.0, 'up to the arch');
+      await walk(0.0, 6.0, 'into the hall');
+      await inRoom('hall', 0, 'in the hall');
+      // Out of the forecourt's door, onto the forecourt
+      await walk(0.0, 16.7, 'to the forecourt\'s door', { timeout: 30000 });
+      await open('forecourt', at(0, 20), 'at the forecourt\'s door');
+      await walk(0.0, 20.5, 'out onto the forecourt');
+      let i = await interior();
+      expect(i.inside === null && Math.abs(await level()) < 0.08, `out on the forecourt? in ${i.inside} at ${await local()}`);
+      // ...along it, under the colonnade's end, and down its stair to the street
+      await walk(-55.0, 21.5, 'along the forecourt, under the colonnade', { timeout: 60000 });
+      await walk(-66.0, 21.5, 'to the head of its stair');
+      await walk(-74.0, 21.5, 'down its stair', { timeout: 30000 });
+      i = await interior();
+      expect(i.inside === null && (await level()) < -2.0, `down on the street? in ${i.inside} at ${await local()}`);
+    }
+  };
+}
+
 // A house on three levels over Bronte beach (js/model-sites.js, bronte-pacific): from Pacific St in at the front door, through to the
 // living room and out onto its terrace to sit; down the stair to the family room and out onto the deck; down again to the rumpus room
 // and out onto the pool's terrace. Its inside isn't fetched until the front door opens.
@@ -3313,6 +3418,7 @@ export const SCENARIOS = {
   'art-gallery-new': artGalleryNewScenario(),
   'qvb': qvbScenario(),
   'circular-quay': circularQuayScenario(),
+  'central-station': centralStationScenario(),
   'origin-move': originScenario(''),
   'origin-far': originScenario('originTest=85000'),
   'signal-wait': {

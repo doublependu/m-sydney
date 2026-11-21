@@ -97,7 +97,9 @@ const EXITS = {
   // The QVB: out of its George St door onto the footpath in front of it (George St there is the light rail's, not a road)
   qvb: 'door',
   // Circular Quay Station: out of its gates into its hall, facing them
-  'circular-quay': 'door'
+  'circular-quay': 'door',
+  // Central Station: out of its forecourt's door onto the forecourt, a level over Eddy Ave
+  'central-station': 'door'
 };
 const model = (name) => JSON.parse(fs.readFileSync(new URL(`../public/models/${name}.json`, import.meta.url), 'utf8'));
 const withInside = MODEL_SITES.filter((s) => model(s.file.replace('models/', '')).doors?.some((d) => d.inside));

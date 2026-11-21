@@ -14,15 +14,16 @@ const { groundHeight } = await import('../js/surfaces.js');
 const { floorAt } = await import('../js/interior-data.js');
 const { TOWER_SIGNS, placeTowerSign } = await import('../js/tower-signs.js');
 
-const IDS = ['salesforce-tower', 'ey-centre', 'customs-house', 'crown-sydney', 'st-marys', 'art-gallery', 'art-gallery-new', 'qvb', 'circular-quay'];
+const IDS = ['salesforce-tower', 'ey-centre', 'customs-house', 'crown-sydney', 'st-marys', 'art-gallery', 'art-gallery-new', 'qvb', 'circular-quay',
+  'central-station'];
 // Those whose doors stand up steps from the street, and those with budgets of their own: a big inside is up to 2 MB and 40,000
 // triangles a file, its outside 20 draws
 // (Circular Quay Station's doors are its gates, in its hall, a step up from the quay)
-const UP_STEPS = new Set(['customs-house', 'st-marys', 'art-gallery', 'art-gallery-new', 'circular-quay']);
+const UP_STEPS = new Set(['customs-house', 'st-marys', 'art-gallery', 'art-gallery-new', 'circular-quay', 'central-station']);
 const BIG = { draws: 20, inBytes: 2_000_000, inTris: 40_000 };
-const BUDGETS = { 'st-marys': BIG, 'art-gallery': BIG, 'art-gallery-new': BIG, qvb: BIG, 'circular-quay': BIG };
+const BUDGETS = { 'st-marys': BIG, 'art-gallery': BIG, 'art-gallery-new': BIG, qvb: BIG, 'circular-quay': BIG, 'central-station': BIG };
 // An inside of more than one file (a gallery a level), and how many rooms its first has: the rest a foyer of one room
-const FIRST_ROOMS = { 'art-gallery': 16, 'art-gallery-new': 5, 'circular-quay': 3 };
+const FIRST_ROOMS = { 'art-gallery': 16, 'art-gallery-new': 5, 'circular-quay': 3, 'central-station': 4 };
 const sites = IDS.map((id) => MODEL_SITES.find((s) => s.id === id));
 const read = (name) => JSON.parse(fs.readFileSync(new URL(`../public/models/${name}.json`, import.meta.url), 'utf8'));
 function gltf(name) {
@@ -732,3 +733,54 @@ test('the QVB\'s clocks hang over the void, their hands turned to Sydney\'s time
     }
   }
 });
+
+const central = () => MODEL_SITES.find((s) => s.id === 'central-station');
+test('Central Station: in from Eddy Ave through its arcade, along the passage and up the stair to the concourse; and up from the street onto the forecourt, in at its door and through the hall', () => {
+  const site = central();
+  const out = read('central-station'), inside = read('central-station-in');
+  const floors = [...out.floors, ...inside.floors];
+  const street = (x, z) => {
+    const w = toWorldOf(site, x, z);
+    return groundHeight(w.x, w.z) + 0.22 - site.y;
+  };
+  const doors = Object.fromEntries(out.doors.map((d) => [d.id, d]));
+  assert.deepEqual(Object.keys(doors).sort(), ['eddy', 'forecourt']);
+  for (const d of out.doors) assert.equal(d.inside, 'central-station-in', `${d.id} leads nowhere`);
+  const mid = (d) => [(d.hinge[0] + d.latch[0]) / 2, (d.hinge[1] + d.latch[1]) / 2];
+  // Eddy Ave's door, at the back of the arcade on the footpath's height: in, along under the forecourt, up through the north wing
+  const [ex, ez] = mid(doors.eddy);
+  assert.ok(Math.abs(street(ex, ez + 2.0) - doors.eddy.y0) < 0.12, `the footpath at the Eddy Ave door is ${street(ex, ez + 2.0).toFixed(2)}, its threshold ${doors.eddy.y0}`);
+  let ys = walkHeights(floors, [[ex, 34.0], [ex, ez], [ex, 22.0], [ex, 17.0], [ex, 10.8], [ex, 3.0], [ex, -3.0]], street(ex, 34.0), street);
+  for (let i = 1; i < ys.length; i++) assert.ok(Math.abs(ys[i] - ys[i - 1]) < 0.3, `from Eddy Ave: a step of ${(ys[i] - ys[i - 1]).toFixed(2)} m`);
+  assert.ok(Math.min(...ys) < -4.0 && ys.at(-1) === 0, `from Eddy Ave: from ${Math.min(...ys).toFixed(2)} m to ${ys.at(-1)} m, not up to the concourse`);
+  // the forecourt: up its stair at the east end from the street, along it to the door, through the hall into the concourse
+  const [fx, fz] = mid(doors.forecourt);
+  // (the stair's the sloped floor reaching furthest east; the arcade's bays are sloped floors too, with the footpath)
+  const foot = Math.min(...out.floors.filter((f) => f.plane).flatMap((f) => f.poly.map((p) => p[0])));
+  ys = walkHeights(floors, [[foot - 2.0, 24.0], [foot + 8.0, 24.0], [fx, 24.0], [fx, fz], [fx, 8.0], [fx, -3.0]], street(foot - 2.0, 24.0), street);
+  for (let i = 1; i < ys.length; i++) assert.ok(Math.abs(ys[i] - ys[i - 1]) < 0.3, `onto the forecourt: a step of ${(ys[i] - ys[i - 1]).toFixed(2)} m`);
+  assert.ok(ys[0] < -2.0 && ys.at(-1) === 0, `onto the forecourt: from ${ys[0].toFixed(2)} m to ${ys.at(-1)} m`);
+  // the rooms walked through, in the one file the doors fetch
+  assert.deepEqual(inside.rooms.map((r) => r.id).sort(), ['concourse', 'eddy-stair', 'eddy-way', 'hall']);
+});
+
+test('Central Station\'s clocks: the tower\'s four dials and the concourse\'s two, their hands turned to Sydney\'s time', () => {
+  const out = read('central-station'), inside = read('central-station-in');
+  const tower = out.spin.filter((s) => s.clock);
+  assert.equal(tower.length, 8);
+  for (const h of tower) {
+    // about a level axis out of the dial, high on the tower at the west wing's north end
+    assert.ok(Math.abs(Math.hypot(h.axis[0], h.axis[2]) - 1) < 1e-6 && h.axis[1] === 0, `${h.node}'s axis`);
+    assert.ok(h.centre[1] > 45 && h.centre[1] < 60 && h.centre[0] > 55 && h.centre[0] < 72, `${h.node} at ${h.centre}`);
+    assert.ok(['hour', 'minute'].includes(h.clock) && !h.room);
+  }
+  assert.equal(new Set(tower.map((h) => h.axis.join())).size, 4, 'not a dial on each face');
+  const hall = inside.spin.filter((s) => s.clock);
+  assert.equal(hall.length, 4);
+  for (const h of hall) assert.ok(h.room === 'concourse' && Math.abs(Math.abs(h.centre[0]) - 53.3) < 0.5, `${h.node} at ${h.centre}, in ${h.room}`);
+  // the lamps and benches drawn from one node each, the lamps over the floor under the roof, a seat on each bench
+  const inst = Object.fromEntries(inside.instances.map((i) => [i.node, i.at]));
+  assert.ok(inst.globe.length >= 20 && inst.globe.every(([x, y, z]) => y > 6 && z < 0 && z > -28.5), 'its lamps');
+  assert.ok(inst.bench.length >= 8 && inside.seats.length === inst.bench.length * 3, 'its benches');
+});
+

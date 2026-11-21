@@ -38,7 +38,9 @@ test('every site that replaces the map\'s buildings has them in its tile as its 
     const key = keyAt(site.x, site.z), here = tile(key);
     const list = here.standIns?.[site.id];
     assert.ok(list?.length, `${site.id}: no stand-ins in its tile ${key}`);
-    for (const [lx, lz] of site.replaces) {
+    // (but a building the game's own shape stands in for: Central's clock tower, js/landmarks.js)
+    for (const [lx, lz, own] of site.replaces) {
+      if (own === 'landmark') continue;
       const { x, z } = toWorldOf(site, lx, lz);
       assert.ok(list.some((b) => holds(b, x, z)), `${site.id}: none of its stand-ins holds its point (${lx}, ${lz})`);
     }
@@ -58,6 +60,17 @@ test('every site that replaces the map\'s buildings has them in its tile as its 
       assert.ok(b.height > 0 && b.polygons.length && Number.isFinite(b.floor), `${site.id}: a stand-in ${b.height} m high on a floor at ${b.floor}`);
     }
   }
+});
+
+test('a building the game\'s own shape stands in for is in neither list: Central\'s clock tower', () => {
+  const site = MODEL_SITES.find((s) => s.id === 'central-station');
+  const here = tile(keyAt(site.x, site.z));
+  const [lx, lz] = site.replaces.find((r) => r[2] === 'landmark');
+  const { x, z } = toWorldOf(site, lx, lz);
+  // the map's box of the tower stood 85 m over the building's floor: none that high is left there, in the tile or its stand-ins
+  const tall = [...here.buildings, ...here.standIns['central-station']].filter((b) => holds(b, x, z) && b.height > 40);
+  assert.equal(tall.length, 0, `the map's tower is still there, ${tall.map((b) => b.height)} m`);
+  assert.equal(here.standIns['central-station'].length, site.replaces.length - 1);
 });
 
 test('only the tiles that have a site hold stand-ins, and only their own sites\'', () => {

@@ -5,7 +5,8 @@
 //   y: its ground floor's height, or null to stand it on the ground under its walls
 //   replaces: points in the buildings the tile build leaves out of the map's for it, in its own frame (tools/tiles/derive.mjs). They're
 //     kept apart in its tile, as its first shape (`standIns`, js/first-shapes.js): drawn from the first view, as the map always had them,
-//     till the model comes once the city round you is complete, and wherever neither the model nor its far version is drawn
+//     till the model comes once the city round you is complete, and wherever neither the model nor its far version is drawn. A point
+//     with a third item, 'landmark', is a building the game's own shape stands in for (js/landmarks.js): left out of the stand-ins too
 //   cut: where the ground under it is left undrawn, for what it has below the street, in its own frame, and how deep (js/city-grid.js).
 //     While its first shape stands, a cover in the ground's own look is drawn over it, and stood on. A cut takes the ground out only
 //     from a lawn or paving piece that holds it whole, and the map's pieces end on 240 m squares (the world's x or z a multiple of 240):
@@ -364,6 +365,22 @@ const MODEL_SITES = [
     id: 'circular-quay', file: 'models/circular-quay', x: 162.015, z: -1339.05, yaw: -3.10755, y: 2.65, far: true, reach: 140,
     replaces: [[0, 0], [1, 0.5], [-47, 0.5], [46.5, 0.5], [80.5, -9.5]],
     clear: [[-10, 15.5, 3.0], [-2, 15.5, 3.0], [6, 15.5, 3.0], [-2, -14.5, 3.0], [8.5, -0.75, 2.0]], exit: 'door'
+  },
+  // Central Station (Sydney Terminal, 1906-21), on Eddy Ave at the CBD's south end: the sandstone terminal building in three wings round
+  // the platforms' end, its clock tower at the west wing's north end, and before it the forecourt on an arcade open to Eddy Ave, the
+  // colonnade over it; the Grand Concourse between the wings under its arched roof. In place of the map's box of the building, and of its
+  // box of the Eastern Terrace along the east wing (12 m high, over the forecourt's east end), left to the paving; the map's box of the
+  // tower is left out of its first shape, where the game's own tower stands (js/landmarks.js). Its frame: +z out of the north
+  // wing's front to Eddy Ave, +x along it to the west, towards the tower; its middle on the north wing's back, the concourse's north
+  // wall; y the concourse's floor, the forecourt's a level up from the street. Inside, one file: the concourse; the hall to it from the
+  // forecourt's door; and from the Eddy Ave door at the back of the arcade, the passage under the forecourt and the stair up through the
+  // north wing. Its cut takes in the north wing and the forecourt's podium, for the passage and the stair under the street's level. The
+  // platforms are the map's. Out at the forecourt's door, on the forecourt.
+  {
+    id: 'central-station', file: 'models/central-station', x: 116.0, z: 1049.25, yaw: 2.7005, y: 19.7, far: true, reach: 110,
+    replaces: [[0, 9.0], [63.4, -3.6, 'landmark'], [-71.5, -20.0]], top: 82.6, radius: 69, exit: 'door',
+    clear: [[0, 19.5, 3.0], [-21.44, 30.2, 2.5]],
+    cut: { poly: [[-66.9, 0.3], [62.0, 0.3], [62.0, 27.7], [-66.9, 27.7]], y: -7.0 }
   }
 ];
 

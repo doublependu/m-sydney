@@ -1725,6 +1725,99 @@ function qvbScenario() {
   };
 }
 
+// Circular Quay Station (js/model-sites.js, circular-quay), under the Cahill Expressway: from the quay in through the hall to the gates,
+// through one into the paid concourse, onto the escalator up to the harbour's platform and ride it standing (its floor's `flow` carries
+// you), along the platform to its railing over the harbour, and back down the stair beside the escalator, out through the gates and the
+// hall onto the quay
+function circularQuayScenario() {
+  const S = MODEL_SITES.find((s) => s.id === 'circular-quay');
+  const at = (x, z) => ({ x: S.x + x * Math.cos(S.yaw) + z * Math.sin(S.yaw), z: S.z - x * Math.sin(S.yaw) + z * Math.cos(S.yaw) });
+  const toLocal = (x, z) => {
+    const c = Math.cos(S.yaw), sn = Math.sin(S.yaw), dx = x - S.x, dz = z - S.z;
+    return { x: dx * c - dz * sn, z: dx * sn + dz * c };
+  };
+  const start = at(-2.0, 24.0);
+  const PLATFORM = 7.5, ESC_Z = 11.1, STAIR_Z = 12.6;
+  return {
+    minutes: 7,
+    storage: JSON.stringify({ version: 1, activeMode: 'person', entities: { person: { x: start.x, y: 0, z: start.z, heading: 0, surface: 0 } } }),
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const level = async () => (await human.state()).surfaceY - S.y;
+      const local = async () => {
+        const s = await human.state(), l = toLocal(s.x, s.z);
+        return `(${l.x.toFixed(2)}, ${l.z.toFixed(2)}) at ${(s.surfaceY - S.y).toFixed(2)} m`;
+      };
+      const walk = async (x, z, why, opts) => expect(await walkTo(human, at(x, z), opts), `never got ${why}, stuck at ${await local()}`);
+      const fetched = (file) => debug((f) => performance.getEntriesByType('resource').map((r) => r.name).filter((n) => n.includes(`/models/${f}.`)), file);
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      const toward = at(-2.0, 14.0);
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...start, h: Math.atan2(toward.x - start.x, toward.z - start.z) });
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'circular-quay')?.out, null, { timeout: 60000, polling: 250 });
+      const drawn = await page.waitForFunction(() => window.__gameDebug.firstShapes()['circular-quay']?.shape === 'model', null, { timeout: 30000, polling: 250 })
+        .then(() => true, () => false);
+      expect(drawn, 'its model isn\'t drawn in place of its first shape');
+      expect((await fetched('circular-quay-in')).length === 0, 'its inside was fetched before a gate was opened');
+      // From the quay in through the middle of the hall's three openings, to the gates
+      await walk(-2.0, 16.0, 'across the quay to the station');
+      await walk(-2.0, 10.0, 'into the hall');
+      expect((await interior()).inside === null && Math.abs((await level()) - -0.53) < 0.1, `in the hall, on its floor? at ${await local()}`);
+      await walk(6.0, 0.0, 'across the hall');
+      await walk(9.0, -0.75, 'to the gate', { arrive: 0.15 });
+      await face(human, at(10.0, -0.75));
+      await human.wait(300);
+      expect((await interior()).prompt === 'Open', `at the gate the prompt is ${(await interior()).prompt}, at ${await local()}`);
+      await human.press('KeyF');
+      expect(await human.until(async () => (await interior()).doors.find((d) => d.site === 'circular-quay' && d.id === 'front')?.angle >= 1.59,
+        { timeout: 20000, read: interior }), 'the gate never opened');
+      expect((await fetched('circular-quay-in')).length > 0, 'its inside wasn\'t fetched at the gate');
+      await walk(11.6, -0.75, 'through the gate');
+      expect((await interior()).room === 'paid', `in the paid concourse? in ${(await interior()).room} at ${await local()}`);
+      // To the escalator up to the north platform, onto it, and stand: it carries you up
+      await walk(12.0, 9.0, 'across the concourse', { timeout: 30000 });
+      await walk(12.0, ESC_Z, 'to the escalator');
+      await walk(14.2, ESC_Z, 'onto its foot');
+      await walk(15.6, ESC_Z, 'onto its steps');
+      const on = await human.state();
+      await human.wait(4000);
+      const after = await human.state(), carried = Math.hypot(after.x - on.x, after.z - on.z);
+      const p = await debug(() => window.__gameDebug.player());
+      metric('carried4s', +carried.toFixed(2));
+      expect(carried > 2.0 && carried < 3.2 && Math.abs(p.speed) < 0.05 && p.carried, `standing on it 4 s, carried ${carried.toFixed(2)} m (speed ${p.speed}, ${JSON.stringify(p.carried)})`);
+      expect((await level()) > 1.2, `up it at ${await local()}`);
+      const rode = await human.until((st) => toLocal(st.x, st.z).x > 27.95, { timeout: 30000 });
+      expect(rode, `never carried to its head, at ${await local()}`);
+      await human.wait(800);
+      expect(Math.abs((await level()) - PLATFORM) < 0.05, `at its head on the platform? at ${await local()}`);
+      expect((await interior()).room === 'platform-n', `on the north platform? in ${(await interior()).room}`);
+      // Off it, along the platform past the station's middle and out to the railing on the viaduct, the harbour in front
+      await walk(30.6, ESC_Z, 'off its head');
+      await walk(31.0, 8.6, 'onto the platform\'s walkway');
+      await walk(51.0, 8.6, 'along the platform', { timeout: 30000 });
+      await walk(51.0, 11.85, 'to the railing', { arrive: 0.15 });
+      const s = await human.state(), l = toLocal(s.x, s.z);
+      expect(l.z > 11.6 && Math.abs((await level()) - PLATFORM) < 0.05, `at the railing? at ${await local()}`);
+      await face(human, at(51.0, 40.0));
+      metric('railingZ', +l.z.toFixed(2));
+      metric('fpsPlatform', (await debug(() => window.__gameDebug.frameCost())).fps);
+      // ...and out: back along the platform, down the stair beside the escalator, out through the gates and the hall to the quay
+      await walk(51.0, 8.6, 'back from the railing');
+      await walk(31.0, 8.6, 'back along the platform', { timeout: 30000 });
+      await walk(31.0, STAIR_Z, 'to the stair\'s head');
+      await walk(29.5, STAIR_Z, 'onto the stair');
+      await walk(14.0, STAIR_Z, 'down the stair', { timeout: 30000 });
+      expect(Math.abs((await level()) - -0.55) < 0.1 && (await interior()).room === 'paid', `at the stair's foot in the concourse? at ${await local()}`);
+      await walk(12.0, 9.0, 'off it into the concourse');
+      await walk(11.6, -0.75, 'back to the gate', { timeout: 30000 });
+      await walk(8.6, -0.75, 'out through it');
+      await walk(-2.0, 10.0, 'across the hall', { timeout: 30000 });
+      await walk(-2.0, 17.0, 'out onto the quay');
+      expect((await interior()).inside === null && (await level()) < -0.6, `out on the quay? at ${await local()}`);
+    }
+  };
+}
+
 // A house on three levels over Bronte beach (js/model-sites.js, bronte-pacific): from Pacific St in at the front door, through to the
 // living room and out onto its terrace to sit; down the stair to the family room and out onto the deck; down again to the rumpus room
 // and out onto the pool's terrace. Its inside isn't fetched until the front door opens.
@@ -3219,6 +3312,7 @@ export const SCENARIOS = {
   'art-gallery': artGalleryScenario(),
   'art-gallery-new': artGalleryNewScenario(),
   'qvb': qvbScenario(),
+  'circular-quay': circularQuayScenario(),
   'origin-move': originScenario(''),
   'origin-far': originScenario('originTest=85000'),
   'signal-wait': {

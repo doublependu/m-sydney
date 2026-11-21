@@ -351,6 +351,19 @@ const MODEL_SITES = [
       [-78.7, -10.6], [-9.1, -11.1], [9.6, -11.2], [80.3, -10.8], [89.7, -10.8]],
     clear: [[0, 17.0, 3.0], [0, -17.0, 3.0], [-45.0, 17.0, 2.5], [45.0, 17.0, 2.5], [-95.0, 0, 3.0], [95.5, 0, 3.0]],
     cut: { poly: [[-93.0, -14.7], [93.0, -14.7], [93.0, 14.7], [-93.0, 14.7]], y: -1.5 }
+  },
+  // Circular Quay Station (1956), on its viaduct along the head of the Quay, under the Cahill Expressway: the expressway is the game's own
+  // deck (js/structures.js), which the station is fitted under, its piers standing through it as the station's columns. Its middle block
+  // in pale panels standing forward on the quay, its name over the platforms' windows; either side the viaduct, a colonnade along the
+  // quay and over it the platforms open to the harbour behind a railing; the Cahill Walk along the deck's edges; the wharves' awnings in
+  // front. Inside, from the quay through the hall to the gates (its doors, which fetch the inside), the paid concourse, and an escalator
+  // that carries you (its floor's `flow`) with a stair beside it up to each platform, the tracks between them. In place of the map's box
+  // of the viaduct and the three boxes of its halls inside it. Its frame: the station's middle, +z north out through its front to the
+  // harbour, +x west along it; the hall's floor at its door on Alfred St, falling to the quay. Out of it at the gates, in the hall.
+  {
+    id: 'circular-quay', file: 'models/circular-quay', x: 162.015, z: -1339.05, yaw: -3.10755, y: 2.65, far: true, reach: 140,
+    replaces: [[0, 0], [1, 0.5], [-47, 0.5], [46.5, 0.5], [80.5, -9.5]],
+    clear: [[-10, 15.5, 3.0], [-2, 15.5, 3.0], [6, 15.5, 3.0], [-2, -14.5, 3.0], [8.5, -0.75, 2.0]], exit: 'door'
   }
 ];
 

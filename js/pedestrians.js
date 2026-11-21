@@ -1322,6 +1322,26 @@ class PersonRig {
     return out.set(x + Math.cos(yaw) * d, 0, z - Math.sin(yaw) * d);
   }
 
+  /**
+   * Moved by what it stands on (an escalator's steps carrying it): the body and its feet, planted or in the air, and its heights, by
+   * (dx, dy, dz), before its next update(): its gait then sees only its own step, and its planted feet stay on the step they're on
+   */
+  carry(dx, dy, dz) {
+    if (!this.placed) return;
+    this.x += dx;
+    this.z += dz;
+    for (const f of this.feet) {
+      f.px += dx; f.py += dy; f.pz += dz;
+      f.ax += dx; f.ay += dy; f.az += dz;
+      f.lx += dx; f.ly += dy; f.lz += dz;
+      f.tx += dx; f.ty += dy; f.tz += dz;
+      f.ex += dx; f.ey += dy; f.ez += dz;
+    }
+    this.standY += dy;
+    this.basePelvisY += dy;
+    this.pelvisY += dy;
+  }
+
   // Ankle of the planted foot, pitched by `pitch` about `pivot`
   plant(foot, pitch, pivot) {
     ankleAt(foot.px, foot.py, foot.pz, foot.yaw, pitch, pivot, this.s, _v);

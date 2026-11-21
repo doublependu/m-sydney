@@ -95,7 +95,9 @@ const EXITS = {
   // The Art Gallery: out of its main doors onto the portico, at the head of its steps over the forecourt
   'art-gallery': 'door', 'art-gallery-new': 'door',
   // The QVB: out of its George St door onto the footpath in front of it (George St there is the light rail's, not a road)
-  qvb: 'door'
+  qvb: 'door',
+  // Circular Quay Station: out of its gates into its hall, facing them
+  'circular-quay': 'door'
 };
 const model = (name) => JSON.parse(fs.readFileSync(new URL(`../public/models/${name}.json`, import.meta.url), 'utf8'));
 const withInside = MODEL_SITES.filter((s) => model(s.file.replace('models/', '')).doors?.some((d) => d.inside));

@@ -18,8 +18,13 @@ const shift = args.includes('--shift');
 const POOL = MODEL_SITES.find((s) => s.id === 'north-sydney-pool');
 const atPool = (x, z, dx, dz) => ({ ...toWorldOf(POOL, x, z), heading: Math.atan2(dx, dz) + POOL.yaw, pool: true });
 
+// At Circular Quay Station (an escalator's floor that moves, `flow`), in its frame: the paid concourse's escalator up to the north
+// platform, and the stair beside it, both up along +x from their foot's landing
+const QUAY = MODEL_SITES.find((s) => s.id === 'circular-quay');
+const atQuay = (x, z) => ({ ...toWorldOf(QUAY, x, z), heading: Math.PI / 2 + QUAY.yaw, quay: true });
+
 // Each walk: where it starts, which way it faces, and what's held when (ms from the start, key, down or up). `pool`: at North Sydney Pool,
-// once its model and its water are in; `swim`: started in the water, swimming
+// once its model and its water are in; `swim`: started in the water, swimming; `quay`: at Circular Quay Station, through its gate first
 const WALKS = [
   { name: 'straight', x: 9, z: -42, heading: 0, seconds: 7, keys: [[0, 'KeyW', 1]] },
   { name: 'turn', x: 9, z: -42, heading: 0, seconds: 7, keys: [[0, 'KeyW', 1], [0, 'ArrowLeft', 1]] },
@@ -34,7 +39,11 @@ const WALKS = [
   { name: 'pool-steps', ...atPool(26.6, 9.2, -1, 0), seconds: 9, keys: [[0, 'KeyW', 1]] },
   { name: 'pool-swim', ...atPool(12, 2, -1, 0), swim: true, seconds: 7, keys: [[0, 'KeyW', 1]] },
   { name: 'pool-out', ...atPool(20.6, 9.2, 1, 0), swim: true, seconds: 9, keys: [[0, 'KeyW', 1]] },
-  { name: 'stand-stair', ...atPool(3.2, -16.2, 0, -1), seconds: 6, keys: [[0, 'KeyW', 1]] }
+  { name: 'stand-stair', ...atPool(3.2, -16.2, 0, -1), seconds: 6, keys: [[0, 'KeyW', 1]] },
+  // Up Circular Quay's escalator walking, onto it and riding it standing, and up the stair beside it, to measure them against
+  { name: 'escalator-walk', ...atQuay(13.8, 11.1), seconds: 8, keys: [[0, 'KeyW', 1]] },
+  { name: 'escalator-ride', ...atQuay(13.8, 11.1), seconds: 12, keys: [[0, 'KeyW', 1], [1300, 'KeyW', 0]] },
+  { name: 'escalator-stair', ...atQuay(13.8, 12.6), seconds: 10, keys: [[0, 'KeyW', 1]] }
 ].filter((w) => !only.length || only.includes(w.name));
 
 /** The value at the middle of each 7 samples less a quadratic fitted through them by time: the frame-to-frame jitter */
@@ -81,6 +90,18 @@ for (const walk of WALKS) {
     // (a teleport into the water lands beside it: in it, from there)
     if (walk.swim) await page.evaluate(({ x, z, heading }) => window.__gameDebug.swimAt(x, z, heading), walk);
     else await page.evaluate(({ x, z, heading }) => window.__gameDebug.goto(x, z, heading, 'person'), walk);
+  }
+  if (walk.quay) {
+    // through its gate first, which fetches the inside the escalator's floors are in; then to the walk's start
+    const gate = toWorldOf(QUAY, 8.6, -0.75);
+    await page.evaluate(({ x, z, heading }) => window.__gameDebug.goto(x, z, heading, 'person'), { ...gate, heading: Math.PI / 2 + QUAY.yaw });
+    await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'circular-quay')?.drawn, null, { timeout: 120000, polling: 250 });
+    await page.evaluate(({ x, z, heading }) => window.__gameDebug.goto(x, z, heading, 'person'), { ...gate, heading: Math.PI / 2 + QUAY.yaw });
+    await page.waitForTimeout(1000);
+    if (!(await page.evaluate(() => window.__gameDebug.interior().held.includes('circular-quay')))) await page.evaluate(() => window.__gameDebug.use());
+    await page.waitForFunction(() => window.__gameDebug.interior().held.includes('circular-quay'), null, { timeout: 30000, polling: 250 });
+    await page.waitForTimeout(1500);
+    await page.evaluate(({ x, z, heading }) => window.__gameDebug.goto(x, z, heading, 'person'), walk);
   }
   await page.waitForTimeout(2000);
   if (shift) await page.keyboard.down('ShiftLeft');

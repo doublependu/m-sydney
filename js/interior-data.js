@@ -41,18 +41,20 @@ function floorHeight(f, x, z) {
 
 /**
  * The floor under (x, z) for someone standing at height `ref`: the highest no more than a step above it, so a stair climbs and the
- * floor above doesn't take you; with none that low, the lowest. Null where there's no floor at all.
+ * floor above doesn't take you; with none that low, the lowest. { floor, y }, or null where there's no floor at all.
  */
-function floorAt(floors, x, z, ref) {
+function floorUnder(floors, x, z, ref) {
   let best = null, lowest = null;
   for (const f of floors) {
     const y = floorHeight(f, x, z);
     if (y === null) continue;
-    if (y <= ref + STEP_UP && (best === null || y > best)) best = y;
-    if (lowest === null || y < lowest) lowest = y;
+    if (y <= ref + STEP_UP && (best === null || y > best.y)) best = { floor: f, y };
+    if (lowest === null || y < lowest.y) lowest = { floor: f, y };
   }
   return best ?? lowest;
 }
+/** The height of the floor under (x, z) for someone standing at `ref` (floorUnder()), or null */
+const floorAt = (floors, x, z, ref) => floorUnder(floors, x, z, ref)?.y ?? null;
 
 /** A box in the world along a -> b (model frame), t thick, from y0 to y1 over the model's floor: the game's collider, at its heights */
 function segmentCollider(site, a, b, t, y0, y1) {
@@ -312,6 +314,6 @@ function exitSpot(site, doors, rooms, footpath = null) {
 
 export {
   DOOR_STEP, DOOR_TIME, REACH, SEAT_REACH, STEP_UP, WALKER, clearOf, doorCollider, doorInReach, doorStep, doorway, exitSpot, eyeReach, floorAt,
-  floorHeight, headroom, inPoly, leafAt, lineToWalls, roomAt, seatInReach, segmentCollider, standSpot, toLocal, toWorld, visibleRooms,
+  floorHeight, floorUnder, headroom, inPoly, leafAt, lineToWalls, roomAt, seatInReach, segmentCollider, standSpot, toLocal, toWorld, visibleRooms,
   wallCollider
 };

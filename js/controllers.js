@@ -22,7 +22,7 @@ import { anchorToOrigin } from './world-origin.js';
 import { polygonContact, polygonContains } from './building-collision.js';
 import { DECK_SID } from './bridge.js';
 import { BIKE_SIDES, CAR_DOORS, FLY, arrivalFor, besideVehicle, holdOnFootway } from './arrivals.js';
-import { ROOM, STRUCTURES, clearOfWater, floorBelow, freeFromDeck, groundHeight, moveOver, onFloor, structureAt, structuresAt, surfaceHeight } from './surfaces.js';
+import { ROOM, STRUCTURES, clearOfWater, floorBelow, floorFlow, freeFromDeck, groundHeight, moveOver, onFloor, structureAt, structuresAt, surfaceHeight } from './surfaces.js';
 import { inStillWater, modelWaterNear, shoreAlong, stillWaterDepth } from './still-water.js';
 import { WALKER } from './interior-data.js';
 import { MODEL_SITES } from './model-sites.js';
@@ -1658,6 +1658,10 @@ class ThirdPersonControllerManager {
         else if (sw && p.dive?.launched) sw.poseDive(p, dt);
         else if (p.seat) p.rig.sit(p.seat.x, p.seat.z, p.seat.heading, p.seat.seatY);
         else {
+          // Carried by a floor that moves (an escalator), the rig goes with it, feet and all: it walks only as you do. (Its heights are
+          // over the ground, the floor here, which carries them up or down with it)
+          const c = p.carriedStep;
+          if (c && p.rig.carry) p.rig.carry(c.x, 0, c.z);
           p.rig.update(dt, p.position.x, p.position.z, p.heading, personGround, this, rigAir);
           sw?.applyBlend(p, dt);
         }
@@ -1765,6 +1769,7 @@ class ThirdPersonControllerManager {
 
   updatePerson(dt) {
     const p = this.entities.person;
+    p.carried = p.carriedStep = null; // a floor that moves under you: worked out with your step below
     const pace = this.indoors ? ON_FOOT.inside : ON_FOOT.outside;
     const turnRate = pace.turn;
     const k = this.keys;
@@ -1839,11 +1844,15 @@ class ThirdPersonControllerManager {
     p.speed = towards(p.speed, targetSpeed);
     p.sideSpeed = towards(p.sideSpeed || 0, targetSide);
 
-    // Forward along the heading, and aside to its left (+) or right
+    // Forward along the heading, and aside to its left (+) or right; and carried by a floor that moves under your feet (an escalator's
+    // steps: a model's floor with a `flow`), standing or walking on it
     const sin = Math.sin(p.heading), cos = Math.cos(p.heading);
     const fromX = p.position.x, fromZ = p.position.z;
-    const toX = fromX + (sin * p.speed + cos * p.sideSpeed) * dt;
-    const toZ = fromZ + (cos * p.speed - sin * p.sideSpeed) * dt;
+    const flow = p.jumping || p.surface ? null : floorFlow(fromX, fromZ);
+    p.carried = flow;
+    p.carriedStep = flow ? { x: flow.x * dt, z: flow.z * dt } : null;
+    const toX = fromX + (sin * p.speed + cos * p.sideSpeed) * dt + (flow ? flow.x * dt : 0);
+    const toZ = fromZ + (cos * p.speed - sin * p.sideSpeed) * dt + (flow ? flow.z * dt : 0);
     p.position.x = toX;
     p.position.z = toZ;
     // Through a house's doorways, between its furniture and up its stair: inside, or on a model's floors, the walker is narrower

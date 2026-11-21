@@ -46,8 +46,9 @@ const replacedBy = new Map(); // site id -> the buildings it replaces
     for (const [lx, lz] of site.replaces || []) {
       const { x, z } = toWorldOf(site, lx, lz);
       const list = replacedBy.get(site.id) || replacedBy.set(site.id, []).get(site.id);
-      // the first that holds it and the site hasn't taken already: a point in one of the QVB's domes is in the box under it too, which
-      // the site's first point took
+      // the first that holds it and the site hasn't taken already: where the map has a building inside another (a point in one of the
+      // QVB's domes is in the box under it too; Circular Quay's station halls are inside its viaduct's box), a point for each, the
+      // outer's first
       let i = REAL_BUILDINGS.findIndex((b, k) => !list.includes(k) && inOutline(b, x, z));
       if (i < 0) i = REAL_BUILDINGS.findIndex((b) => inOutline(b, x, z));
       if (i < 0) throw new Error(`[derive] model site ${site.id}: no building at (${lx}, ${lz}) in its frame to draw in place of`);

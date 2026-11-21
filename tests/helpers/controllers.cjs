@@ -21,8 +21,9 @@ function eventTarget() {
 }
 
 // `arrivals`: stand-ins for js/arrivals.js' functions (arrivalFor(), besideVehicle()), which find nothing unless given. `water`:
-// js/still-water.js itself (tests/helpers/still-water.cjs), with no still water unless given made-up tiles
-function keyboardHarness(nyc = {}, drawn = {}, arrivals = {}, water = stillWater()) {
+// js/still-water.js itself (tests/helpers/still-water.cjs), with no still water unless given made-up tiles. `surfaces`: what of
+// js/surfaces.js' stand-ins a test gives itself (a model's floors: onFloor(), groundHeight(), floorFlow())
+function keyboardHarness(nyc = {}, drawn = {}, arrivals = {}, water = stillWater(), surfaces = {}) {
   const window = eventTarget();
   const document = { ...eventTarget(), hidden: false };
   const config = {
@@ -45,7 +46,7 @@ function keyboardHarness(nyc = {}, drawn = {}, arrivals = {}, water = stillWater
       './vehicle-lights.js': {},
       './bridge.js': { DECK_SID: 0 },
       './arrivals.js': { FLY: { AREA: 200 }, CAR_DOORS: [[1.5, 0.3], [-1.5, 0.3], [0, -3], [0, 3]], BIKE_SIDES: [[-0.85, -0.28], [0.85, -0.28], [0, -1.5]], arrivalFor: () => null, besideVehicle: () => null, holdOnFootway: () => null, ...arrivals },
-      './surfaces.js': { clearOfWater: (x, z) => [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].every(([u, v]) => config.landAt(x + u * 2.5, z + v * 2.5)), edgeHeight: () => 0, groundHeight: () => 0, onFloor: () => false, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), moveOver: (sid, y, fx, fz, x, z) => ({ x, z, sid: 0, y: 0, held: false }), freeFromDeck: () => null, ROOM: { car: 2.0, foot: 2.3 }, structureAt: () => null, structuresAt: () => [], LINKS: [], STRUCTURES: {} },
+      './surfaces.js': { clearOfWater: (x, z) => [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].every(([u, v]) => config.landAt(x + u * 2.5, z + v * 2.5)), edgeHeight: () => 0, groundHeight: () => 0, onFloor: () => false, surfaceHeight: () => 0, surfaceSlope: () => 0, sameLevel: (a, b) => Math.abs(a - b) < 3, chooseSurface: () => ({ sid: 0, y: 0 }), moveOver: (sid, y, fx, fz, x, z) => ({ x, z, sid: 0, y: 0, held: false }), freeFromDeck: () => null, ROOM: { car: 2.0, foot: 2.3 }, structureAt: () => null, structuresAt: () => [], LINKS: [], STRUCTURES: {}, floorFlow: () => null, ...surfaces },
       './building-collision.js': polygonCollision,
       './interior-data.js': { WALKER: 0.22 },
       './model-sites.js': { MODEL_SITES: [] },

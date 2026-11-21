@@ -1607,10 +1607,15 @@ async function initApp() {
     // Buildings turned along non-grid streets have oriented colliders whose world bounds reach past their lots: they stay
     // inside the property line anyway, so the road network (lanes & sidewalks) doesn't need them. Elevated building
     // sections that clear even a bus don't obstruct ground traffic.
+    // The map's buildings a model stands in place of (its first shape, `standIns`: js/first-shapes.js) are still in the way, as they were
+    // when they were the map's: the footpaths and lanes keep out of the model's footprint whether it's in yet or not
+    const standIns = heldTiles().flatMap((t) => Object.values(t.standIns ?? {}).flat()).filter(nearWindow)
+      .flatMap((b) => b.polygons.map((polygon) => ({ minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ, polygon })));
     const obstacles = [
       ...BLOCKS.filter((b) => b.median && nearWindow(b)).map((b) => ({ minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ })),
       ...streetDetails.footprints.filter(nearWindow),
-      ...controllerManager.colliders.filter((c) => !c.obb && (c.minY ?? 0) < 3.5 && nearWindow(c))
+      ...controllerManager.colliders.filter((c) => !c.obb && (c.minY ?? 0) < 3.5 && nearWindow(c)),
+      ...standIns
     ];
     const network = yield* buildRoadNetworkSteps(obstacles, streetDetails.signalIntersections, { x, z, radius: TRAFFIC_RADIUS });
     // The crowd along the houses' verges walks on their footpaths (js/verge.js)
@@ -2356,7 +2361,9 @@ async function initApp() {
           ground: controllerManager.getGroundHeight(x, z, mode),
           roof: controllerManager.roofHeightAt(x, z, y),
           frame: simulatedFrames, surface: entity.surface || 0, surfaceY: surfaceHeight(entity.surface || 0, x, z, entity.surfaceY ?? null), drawnY: entity.mesh?.position.y ?? null,
-          swimming: !!entity.swim, diving: !!entity.dive?.launched
+          swimming: !!entity.swim, diving: !!entity.dive?.launched,
+          // carried by a floor that moves (an escalator), m/s over the ground
+          carried: entity.carried ? { x: entity.carried.x, z: entity.carried.z } : null
         };
       },
       // Where the player is on screen (-1..1 across and up, depth in m), how far round the camera is, and which way it

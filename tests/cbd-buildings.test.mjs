@@ -13,14 +13,15 @@ const { groundHeight } = await import('../js/surfaces.js');
 const { floorAt } = await import('../js/interior-data.js');
 const { TOWER_SIGNS, placeTowerSign } = await import('../js/tower-signs.js');
 
-const IDS = ['salesforce-tower', 'ey-centre', 'customs-house', 'crown-sydney', 'st-marys', 'art-gallery', 'art-gallery-new', 'qvb'];
+const IDS = ['salesforce-tower', 'ey-centre', 'customs-house', 'crown-sydney', 'st-marys', 'art-gallery', 'art-gallery-new', 'qvb', 'circular-quay'];
 // Those whose doors stand up steps from the street, and those with budgets of their own: a big inside is up to 2 MB and 40,000
 // triangles a file, its outside 20 draws
-const UP_STEPS = new Set(['customs-house', 'st-marys', 'art-gallery', 'art-gallery-new']);
+// (Circular Quay Station's doors are its gates, in its hall, a step up from the quay)
+const UP_STEPS = new Set(['customs-house', 'st-marys', 'art-gallery', 'art-gallery-new', 'circular-quay']);
 const BIG = { draws: 20, inBytes: 2_000_000, inTris: 40_000 };
-const BUDGETS = { 'st-marys': BIG, 'art-gallery': BIG, 'art-gallery-new': BIG, qvb: BIG };
+const BUDGETS = { 'st-marys': BIG, 'art-gallery': BIG, 'art-gallery-new': BIG, qvb: BIG, 'circular-quay': BIG };
 // An inside of more than one file (a gallery a level), and how many rooms its first has: the rest a foyer of one room
-const FIRST_ROOMS = { 'art-gallery': 16, 'art-gallery-new': 5 };
+const FIRST_ROOMS = { 'art-gallery': 16, 'art-gallery-new': 5, 'circular-quay': 3 };
 const sites = IDS.map((id) => MODEL_SITES.find((s) => s.id === id));
 const read = (name) => JSON.parse(fs.readFileSync(new URL(`../public/models/${name}.json`, import.meta.url), 'utf8'));
 function gltf(name) {
@@ -67,17 +68,22 @@ test('each door opens off the street at the street\'s height, no street tree bef
     const [door] = out.doors;
     const inside = door?.inside && read(door.inside);
     assert.ok(inside && door.inside.startsWith(`${name}-`), `${site.id}: its door leads nowhere`);
-    // the step in front of it, the model's floor outside the door
+    // the step in front of it, the model's floor outside the door: out is the side its inside's rooms aren't (most face +z)
     const mid = [(door.hinge[0] + door.latch[0]) / 2, (door.hinge[1] + door.latch[1]) / 2];
-    const front = toWorldOf(site, mid[0], mid[1] + 1.5);
-    assert.equal(floorAt(out.floors, mid[0], mid[1] + 1.0, 0), 0, `${site.id}: no floor at its door`);
+    const L = Math.hypot(door.latch[0] - door.hinge[0], door.latch[1] - door.hinge[1]);
+    const n = [-(door.latch[1] - door.hinge[1]) / L, (door.latch[0] - door.hinge[0]) / L];
+    const inRoom = (x, z) => inside.rooms.some((r) => inRing(r.poly.map(([px, pz]) => ({ x: px, z: pz })), x, z));
+    const out1 = inRoom(mid[0] + n[0], mid[1] + n[1]) ? [-n[0], -n[1]] : n;
+    const at = (d) => [mid[0] + out1[0] * d, mid[1] + out1[1] * d];
+    const front = toWorldOf(site, ...at(1.5));
+    assert.ok(Math.abs(floorAt(out.floors, ...at(1.0), door.y0) - door.y0) < 0.05, `${site.id}: no floor at its door`);
     const ground = groundHeight(front.x, front.z) - site.y;
     // Customs House stands up steps from the square, St Mary's from its forecourt
     const step = UP_STEPS.has(site.id) ? 0 : ground;
     assert.ok(Math.abs(step) < 0.35, `${site.id}: the street at its door is ${ground.toFixed(2)} m from its floor`);
     assert.equal(clearOfSites(front.x, front.z), false, `${site.id}: a street tree could stand at its door`);
     assert.equal(inside.rooms.length, FIRST_ROOMS[site.id] ?? 1, `${site.id}: ${FIRST_ROOMS[site.id] ?? 1} room(s) inside`);
-    assert.equal(floorAt(inside.floors, mid[0], mid[1] - 2.0, 0), 0, `${site.id}: no floor just inside its door`);
+    assert.ok(Math.abs(floorAt(inside.floors, ...at(-2.0), door.y0) - door.y0) < 0.05, `${site.id}: no floor just inside its door`);
   }
 });
 

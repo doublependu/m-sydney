@@ -56,6 +56,7 @@ export const COVERS = {
   'art-gallery': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|art|art-paint|artworks|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/art-gallery(-g|-l\d|-far)?\..*)$/, area: [820, 980, -670, -520] },
   'art-gallery-new': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|art|art-paint|artworks|surfaces|controllers|cameras|pedestrians|city-grid|lot-details)\.js|public\/models\/art-gallery-new.*)$/, area: [820, 1020, -800, -600] },
   'qvb': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|landmarks|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/qvb.*)$/, area: [-80, 0, -250, -40] },
+  'circular-quay': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|surfaces|controllers|cameras|pedestrians|structures)\.js|public\/models\/circular-quay.*)$/, area: [60, 300, -1420, -1300] },
   'walk-in-phone': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|buildings|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/.*)$/, area: null },
   'origin-move': { files: /^js\/(world-origin|main|scene-culling|traffic|pedestrians|buildings|trees)\.js$/, area: null },
   'origin-far': { files: /^js\/(world-origin|main|scene-culling|traffic|pedestrians|buildings|trees)\.js$/, area: null },

@@ -108,6 +108,14 @@ function modelFloor(x, z) {
 }
 /** Whether (x, z) is on a model's floor: no kerb to stand on there */
 const onFloor = (x, z) => floors.size > 0 && modelFloor(x, z) !== null;
+/** How fast the model's floor at (x, z) carries what stands on it (an escalator's), { x, z } in m/s; null where it stays still or there's none */
+function floorFlow(x, z) {
+  for (const f of floors.values()) {
+    if (x < f.minX || x > f.maxX || z < f.minZ || z > f.maxZ || f.at(x, z) === null) continue;
+    return f.flow?.(x, z) ?? null;
+  }
+  return null;
+}
 const addToCells = (cells, seg, pad, added) => {
   for (let ix = Math.floor((Math.min(seg.ax, seg.bx) - pad) / CELL); ix <= Math.floor((Math.max(seg.ax, seg.bx) + pad) / CELL); ix++) {
     for (let iz = Math.floor((Math.min(seg.az, seg.bz) - pad) / CELL); iz <= Math.floor((Math.max(seg.az, seg.bz) + pad) / CELL); iz++) {
@@ -1466,7 +1474,7 @@ function roadRoute(waypoints, step = 8) {
 }
 
 export {
-  setFloor, clearFloor, onFloor, decksAt, DECK_DEPTH, ROOM, freeFromDeck, setBridgeDeck, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, ROAD_CLASS, ROAD_CLASSES, deriveTunnels, linkById, roadClass, SAME_LEVEL, SEGMENTS, STATION_STEP, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
+  setFloor, clearFloor, onFloor, floorFlow, decksAt, DECK_DEPTH, ROOM, freeFromDeck, setBridgeDeck, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, ROAD_CLASS, ROAD_CLASSES, deriveTunnels, linkById, roadClass, SAME_LEVEL, SEGMENTS, STATION_STEP, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
   clearOfWater, EDGE_GAP, edgeHeight, edgeNeighbour, floorBelow, laneAt, linkEdges, linkStations, moveOver, offsetLine, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, ownLaneOffsets, roadHeight, roadRoute, roomUnderDeck, sameLevel,
   linksAt, structureAt, structuresAt, surfaceHeight, surfaceSlope, tunnelAtPortal, tunnelCovered
 };

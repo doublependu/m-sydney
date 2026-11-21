@@ -10,7 +10,7 @@ import { addStillWater, removeStillWater } from './still-water.js';
 import { clearFloor, groundHeight, setFloor } from './surfaces.js';
 import { cityUniforms } from './tsl-materials.js';
 import {
-  DOOR_TIME, doorCollider, doorInReach, exitSpot as findExit, eyeReach, floorAt, leafAt, roomAt, seatInReach, standSpot, toLocal, toWorld,
+  DOOR_TIME, doorCollider, doorInReach, exitSpot as findExit, eyeReach, floorAt, floorUnder, leafAt, roomAt, seatInReach, standSpot, toLocal, toWorld,
   visibleRooms, wallCollider
 } from './interior-data.js';
 
@@ -421,6 +421,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       return;
     }
     const pts = floors.flatMap((f) => f.poly).map(([x, z]) => toWorld(site, x, z));
+    const c = Math.cos(site.yaw), s = Math.sin(site.yaw);
     setFloor(site.id, {
       minX: Math.min(...pts.map((p) => p.x)), maxX: Math.max(...pts.map((p) => p.x)),
       minZ: Math.min(...pts.map((p) => p.z)), maxZ: Math.max(...pts.map((p) => p.z)),
@@ -428,6 +429,13 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
         const p = toLocal(site, x, z);
         const y = floorAt(floors, p.x, p.z, (site.ref ?? site.y) - site.y);
         return y === null ? null : y + site.y;
+      },
+      // A floor that moves (an escalator's steps, its `flow`): how fast it carries what stands on it, m/s over the ground in the
+      // world's frame, { x, z }; null on one that stays still
+      flow(x, z) {
+        const p = toLocal(site, x, z);
+        const f = floorUnder(floors, p.x, p.z, (site.ref ?? site.y) - site.y)?.floor.flow;
+        return f ? { x: f[0] * c + f[1] * s, z: -f[0] * s + f[1] * c } : null;
       }
     });
   }

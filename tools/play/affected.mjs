@@ -81,6 +81,7 @@ export const COVERS = {
   'seasons-off': { files: /^js\/(seasons|main)\.js$/, area: null },
   'december-houses': { files: /^js\/(seasons|season-december|christmas|christmas-houses|christmas-materials|trees|lot-details|house-lots|lot-things|main)\.js$/, area: null },
   'december-trees': { files: /^js\/(seasons|season-december|christmas-trees|christmas-materials|model-sites|street-details|controllers|main)\.js$/, area: null },
+  'new-year': { files: /^js\/(seasons|season-new-year|fireworks|firework-show|firework-sound|firework-sound-bake|new-year-harbour|harbour-bridge|opera-house|landmarks|city-grid|cameras|main)\.js$/, area: null },
   soak: { files: /^$/, area: null }
 };
 

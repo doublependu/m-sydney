@@ -1,7 +1,8 @@
 // The seasons: what Sydney's calendar brings to the city. The date is Sydney's (Australia/Sydney), whatever the player's own time zone:
 // - November, 1-30 November: the jacarandas' carpets of fallen flowers, and petals on your car (js/season-november.js);
 // - December, 1-26 December: Christmas, the city's big trees and the houses' lights and decorations (js/season-december.js);
-// - New Year, 27 December - 15 January: the fireworks.
+// - New Year, 27 December - 15 January: fireworks over the harbour at midnight, the bridge's arch outlined and its message, the Opera
+//   House's sails washed in colour (js/season-new-year.js).
 // ?date=2026-12-10 sets the date (for tests and pictures) and ?season=off turns them off.
 //
 // Nothing here is in the first download: js/main.js imports this file once the city round you is complete, and the season's own module
@@ -43,6 +44,12 @@
 //                       street furniture put out again if one stands in one); gives back a function that takes the room away again
 //   colliders           { add(list), remove(list) }: what the player can't walk or drive through (js/controllers.js colliders); the
 //                       walkers near you keep off them once their paths are made again
+//   compile(objects)    objects not yet drawn, with materials meant for what's drawn already, compiled between frames as a stage's are
+//                       (a promise): a material copied and changed for a season, ready before it's swapped in
+//   harbour             sea() the sea's one sheet (js/city-grid.js buildWater()), sails() the Opera House's shells (js/opera-house.js),
+//                       bridge() the Harbour Bridge's lines (js/harbour-bridge.js bridgeOutline())
+//   sound               the game's sound (js/audio-system.js): context() and output() (its mix, through its compressor) once there's a
+//                       context, live() whether it's playing now (on, unmuted, unpaused, the page shown), voices: the device's events
 
 const ZONE = 'Australia/Sydney';
 

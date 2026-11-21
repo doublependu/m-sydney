@@ -42,6 +42,7 @@ import { cityUniforms } from './tsl-materials.js';
 import { buildingLook } from './building-look.js';
 import { roofFrame } from './building-footprints.js';
 import { BRIDGE_LENGTH, DECK_REACH, bridgeAt, bridgePoint, deckOver, deckSpanAt } from './bridge.js';
+import { bridgeOutline } from './harbour-bridge.js';
 import { fullscreenElement, fullscreenSupported, onFullscreenChange, toggleFullscreen } from './fullscreen.js';
 
 // Application setup, background city build and frame loop.
@@ -49,7 +50,8 @@ import { fullscreenElement, fullscreenSupported, onFullscreenChange, toggleFulls
 // Each season's own module (js/seasons.js), fetched only in its season, once the city round you is complete
 const SEASON_MODULES = {
   november: () => import('./season-november.js'),
-  december: () => import('./season-december.js')
+  december: () => import('./season-december.js'),
+  'new-year': () => import('./season-new-year.js')
 };
 
 function readPlayerState() {
@@ -1159,6 +1161,7 @@ async function initApp() {
   // --- Tiles around the player -----------------------------------------------------------------------------------------
   const shadowOf = () => [lightingSystem.sunLight.shadow, renderer.backend.isWebGPUBackend === true];
   let operaPlain = []; // js/opera-house.js: what the Opera House's model takes the place of near it
+  let operaShells = null; // ...and its shells, which the game always draws
   let towerPlain = null; // js/landmarks.js: Sydney Tower as the game draws it, which its model takes the place of
   const interiors = createInteriors({
     reveal: (group) => revealStage(group),
@@ -1571,8 +1574,9 @@ async function initApp() {
     const heldForLandmarks = landmarkTiles.filter((key) => !isHeld(key));
     yield holdTiles(landmarkTiles);
     const landmarkStage = new THREE.Group();
-    const { colliders: landmarkColliders, group: landmarks, operaPlain: plain, towerPlain: tower } = buildLandmarks(landmarkStage);
+    const { colliders: landmarkColliders, group: landmarks, operaPlain: plain, operaShells: shells, towerPlain: tower } = buildLandmarks(landmarkStage);
     operaPlain = plain;
+    operaShells = shells;
     towerPlain = tower;
     controllerManager.addColliders(landmarkColliders);
     yield;
@@ -1689,6 +1693,17 @@ async function initApp() {
             }
           },
           remove: (list) => controllerManager.removeColliders(list)
+        },
+        // Objects already drawn whose material a season has changed, compiled between frames as a stage is (a promise)
+        compile: (objects) => compileJobs([objects]),
+        // The harbour: the sea's sheet, the Opera House's shells and the Harbour Bridge's lines, for what's drawn on them
+        harbour: { sea: () => seaSheet, sails: () => operaShells, bridge: bridgeOutline },
+        // The sound: the context and where a season's sounds go in (through the game's mix), and whether it's playing now
+        sound: {
+          context: () => audioSystem.context,
+          output: () => audioSystem.mix,
+          live: () => audioSystem.ready && audioSystem.enabled && !audioSystem.paused && audioSystem.context?.state === 'running' && !document.hidden,
+          voices: audioSystem.limits.events
         }
       }, { load });
     }).catch((error) => console.error('[seasons]', error));
@@ -2040,15 +2055,17 @@ async function initApp() {
         return result;
       },
       // The camera put at (x, y, z), looking at (tx, ty, tz), with the player on foot below where it looks so the city there is
-      // built; null to give the camera back. `keep`: the player left as they are, on the bike or in the car, to picture them from beside
-      async view(from, to, keep = false) {
+      // built; null to give the camera back. `keep`: the player left as they are, on the bike or in the car, to picture them from beside.
+      // `fov`: its vertical field of view, degrees, as a photo's (the camera's own when it's given back)
+      async view(from, to, keep = false, fov = null) {
         if (!from) {
           cameraSystem.fixedView = null;
+          cameraSystem.onResize(viewport.width, viewport.height);
           return;
         }
         if (keep) await window.__gameDebug.mapReady(to[0], to[2]);
         else await window.__gameDebug.goto(to[0], to[2], 0, 'person');
-        cameraSystem.fixedView = { from: new THREE.Vector3(...from), to: new THREE.Vector3(...to) };
+        cameraSystem.fixedView = { from: new THREE.Vector3(...from), to: new THREE.Vector3(...to), fov };
       },
       // Where the player touches what's under them, as drawn: the walker's soles (each foot planted), the bike's tyres or the car's, each
       // { x, z, y }, with the top of what's drawn there (js/drawn-ground.js) and the ground's height

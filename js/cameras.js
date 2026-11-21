@@ -367,6 +367,12 @@ class CameraSystem {
     const entity = this.controllerManager.getActiveEntity();
     // A view put somewhere by hand, for pictures (js/main.js, __gameDebug.view())
     if (this.fixedView) {
+      // Its own field of view, if it has one (a photo's, to match it), else the camera's
+      const fov = this.fixedView.fov ?? fittedFov(this.getActivePreset().fov, this.camera.aspect);
+      if (this.camera.fov !== fov) {
+        this.camera.fov = fov;
+        this.camera.updateProjectionMatrix();
+      }
       this.currentPos.copy(this.fixedView.from);
       this.currentLookAt.copy(this.fixedView.to);
       this.camera.position.copy(this.currentPos);

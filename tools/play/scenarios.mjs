@@ -3565,6 +3565,52 @@ export const SCENARIOS = {
     }
   },
 
+  // New Year (?date=2026-12-31): at golden hour nothing of the fireworks is made, drawn or played, and nothing fetched but the season's
+  // module; at midnight the show over the harbour from Mrs Macquarie's Chair, in its finale: shells in the air, the brightest in the water,
+  // the sea and the Opera House's sails given the show's materials, the message wishing 2027; and back at golden hour all of it hidden
+  'new-year': {
+    minutes: 4,
+    query: 'date=2026-12-31',
+    async run({ human, page, metric, expect }) {
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      await page.waitForFunction(() => window.__gameDebug.season()?.running, null, { timeout: 60000, polling: 250 });
+      const season = () => page.evaluate(() => window.__gameDebug.season());
+      await human.wait(3000);
+      const golden = await season();
+      expect(golden.season === 'new-year' && golden.date === '2026-12-31', `the season on 31 December: ${golden.season} on ${golden.date}`);
+      expect(!golden.ready && !golden.drawn && !golden.shells && !golden.sound, `at golden hour: ${JSON.stringify(golden)}`);
+      const fetched = await page.evaluate(() => performance.getEntriesByType('resource').map((e) => e.name.split('/').pop())
+        .filter((n) => /season|firework/.test(n)));
+      expect(fetched.every((n) => /^seasons-|^season-new-year-/.test(n)), `fetched for New Year: ${fetched.join(', ')}`);
+      // Midnight: the show, in its finale, from Mrs Macquarie's Chair
+      await page.locator('[data-time="midnight"]').click();
+      const ready = await page.waitForFunction(() => window.__gameDebug.season()?.active, null, { timeout: 60000, polling: 250 }).catch(() => null);
+      expect(!!ready, `the show didn't start at midnight: ${JSON.stringify(await season())}`);
+      await page.evaluate(() => window.__gameDebug.view([1100, 6, -1700], [-30, 140, -2267]));
+      await page.evaluate(() => window.__gameDebug.season({ at: 280 }));
+      await human.wait(4000);
+      const show = await season();
+      metric('liveShells', show.shells?.live ?? 0);
+      metric('sparks', show.shells?.sparks ?? 0);
+      metric('brightBursts', show.shells?.bright ?? 0);
+      metric('setupMs', show.setup?.ms ?? 0);
+      expect(show.active && show.drawn && show.materials.sea && show.materials.sails, `at midnight: ${JSON.stringify(show)}`);
+      expect(show.year === 2027, `the message wishes ${show.year}`);
+      expect(show.shells.live >= 15 && show.shells.sparks > 1000 && show.shells.bright >= 6, `the finale: ${JSON.stringify(show.shells)}`);
+      // The show goes on: more launched
+      await human.wait(3000);
+      const later = await season();
+      expect(later.shells.launched > show.shells.launched && later.heard.bursts > show.heard.bursts, `the show stopped: ${JSON.stringify(later.shells)}`);
+      // Back to golden hour: all of it hidden, the sea and the sails as they were, nothing playing
+      await page.evaluate(() => window.__gameDebug.view(null));
+      await page.locator('[data-time="golden"]').click();
+      await human.wait(1500);
+      const after = await season();
+      expect(!after.active && !after.drawn && !after.materials.sea && !after.materials.sails && after.sound.playing === 0,
+        `back at golden hour: ${JSON.stringify(after)}`);
+    }
+  },
+
   // ?season=off: nothing of any season is fetched or drawn, only the calendar that says so
   'seasons-off': {
     minutes: 3,

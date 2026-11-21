@@ -202,7 +202,7 @@ function buildLandmarks(scene) {
   buildLunaPark(group);
   harbourBridgeColliders(colliders);
   scene.add(group);
-  return { group, colliders, operaPlain: opera.plain, towerPlain: tower };
+  return { group, colliders, operaPlain: opera.plain, operaShells: opera.shells, towerPlain: tower };
 }
 
 /** Just where the landmarks stand, for making the tiles: the buildings they replace (tools/tiles/derive.mjs) */

@@ -459,7 +459,8 @@ function buildOperaHouse(group, colliders, reserves = null) {
 
   const halves = allHalves();
   const shells = mergeGeometries(halves.map((h) => meshGeometry(h.mesh)), false);
-  group.add(settle(new THREE.Mesh(shells, tile)));
+  const outside = settle(new THREE.Mesh(shells, tile));
+  group.add(outside);
   group.add(settle(new THREE.Mesh(shells, underside), false));
 
   // The plain version of the rest: frustumCulled off, so js/scene-culling.js leaves them be for the model to stand in for
@@ -495,7 +496,7 @@ function buildOperaHouse(group, colliders, reserves = null) {
     const sx = [...steps.front, ...steps.back].map((p) => p[0]), sz = [...steps.front, ...steps.back].map((p) => p[1]);
     reserves.push({ minX: Math.min(...sx), maxX: Math.max(...sx), minZ: Math.min(...sz), maxZ: Math.max(...sz), maxY: steps.y1 });
   }
-  return { plain };
+  return { plain, shells: outside };
 }
 
 export { OPERA_HOUSE, archLine, buildOperaHouse, glassWalls, hallFrame, operaGeometry, shellHalves, surfaceLookup };

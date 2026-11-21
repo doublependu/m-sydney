@@ -160,6 +160,11 @@ const at = (s, side, y) => {
   return new THREE.Vector3(p.x + n.x, y, p.z + n.y);
 };
 
+// The arch's chords, t from -1 at its south hinges to 1 at its north: the lower one rises from the hinges, and the truss deepens towards the
+// bearings
+const archLower = (t) => HINGE + LOWER_RISE * (1 - t * t);
+const archUpper = (t) => archLower(t) + DEPTH_CROWN + (DEPTH_BEARINGS - DEPTH_CROWN) * t * t;
+
 // Where the pylons stand, either side of the deck at each end of the arch: each pair 282 m from the middle of the span, about 30 m
 // beyond the arch's bearings (503 m apart, centred on the water), where OSM has the Cahill's lane through them (its covered ways)
 // and the south pair's outline is; moved away from the water until clear of the streets beneath (Hickson Rd at the south end,
@@ -468,8 +473,7 @@ function buildHarbourBridge(group) {
   // The arch from hinge to hinge, short of the pylons: the approaches' trusses carry the deck between
   const archFrom = BRIDGE_SPAN.middle - BEARINGS / 2, archTo = BRIDGE_SPAN.middle + BEARINGS / 2;
   const middle = (archFrom + archTo) / 2, halfSpan = (archTo - archFrom) / 2;
-  const lower = (t) => HINGE + LOWER_RISE * (1 - t * t); // t: -1 .. 1 along the span
-  const upper = (t) => lower(t) + DEPTH_CROWN + (DEPTH_BEARINGS - DEPTH_CROWN) * t * t; // the truss deepens towards the bearings
+  const lower = archLower, upper = archUpper;
 
   // Two trusses and the bracing between them
   for (const side of TRUSSES) {
@@ -1102,4 +1106,31 @@ function buildHarbourBridge(group) {
   return surface;
 }
 
-export { GANTRIES, LOOKOUT, bridgeFeet, buildHarbourBridge, gantryLights, harbourBridgeColliders, lookoutPlace, rampOpenings };
+/**
+ * The bridge's lines, for what's drawn on it at New Year (js/season-new-year.js), as [x, y, z] in the game's frame: each truss's top chord
+ * (`chords`, south to north), the deck's east and west edges under the arch (`deck`, every 10 m), and the east pylons' outer faces (`faces`:
+ * the face's middle at the sea's level, its normal, which way the deck runs, its width, and the deck's height there).
+ */
+function bridgeOutline() {
+  readStreets();
+  const middle = BRIDGE_SPAN.middle, halfSpan = BEARINGS / 2, steps = PANELS * 2;
+  const chords = TRUSSES.map((side) => Array.from({ length: steps + 1 }, (_, i) => {
+    const t = (i / steps) * 2 - 1, p = at(middle + t * halfSpan, side, archUpper(t));
+    return [p.x, p.y, p.z];
+  }));
+  const deck = { east: [], west: [] };
+  for (let s = middle - halfSpan; s <= middle + halfSpan; s += 10) {
+    const e = deckEdges(s), y = deckHeight(s) - DECK_DEPTH;
+    for (const [list, off] of [[deck.east, e.east], [deck.west, e.west]]) {
+      const p = at(s, off, y);
+      list.push([p.x, p.y, p.z]);
+    }
+  }
+  const faces = pylonStations().map((s) => {
+    const a = pylonAcross(s, 1), q = axis(s), p = at(s, a.to, WATER);
+    return { x: p.x, y: p.y, z: p.z, normal: [-q.uz, q.ux], along: [q.ux, q.uz], width: PYLON_BASE[1], deck: deckHeight(s), top: PYLON_HEIGHT };
+  });
+  return { chords, deck, faces, crown: ARCH_TOP };
+}
+
+export { GANTRIES, LOOKOUT, bridgeFeet, bridgeOutline, buildHarbourBridge, gantryLights, harbourBridgeColliders, lookoutPlace, rampOpenings };

@@ -31,16 +31,22 @@ import { estimateMemory } from './memory-estimate.js';
 import { lastSessionNote, noteText, startSessionNote } from './session-note.js';
 import { distanceToTile, planTiles } from './tiles/tile-manager.js';
 import { BLOCKS } from './city-config.js';
-import { auditPrecision, moveOriginNear, origin, rebaseMeshes, setOrigin } from './world-origin.js';
+import { anchorToOrigin, auditPrecision, moveOriginNear, origin, rebaseMeshes, setOrigin } from './world-origin.js';
 import { createInteriors } from './interiors.js';
-import { ceilingOver, decksAt, groundHeight, inTunnel, roadRoute, structuresAt, surfaceHeight, surfaceSlope } from './surfaces.js';
+import { ceilingOver, decksAt, groundHeight, groundRoadAt, inTunnel, roadRoute, structuresAt, surfaceHeight, surfaceSlope } from './surfaces.js';
 import { updateTunnelMouths } from './tunnel-mouths.js';
-import { wheelContacts } from './ground-geometry.js';
+import { wheelContacts, wheelGround } from './ground-geometry.js';
 import { buildNear, drawnTop, drawnWhat, dropLayer } from './drawn-ground.js';
+import { cityUniforms } from './tsl-materials.js';
 import { BRIDGE_LENGTH, DECK_REACH, bridgeAt, bridgePoint, deckOver, deckSpanAt } from './bridge.js';
 import { fullscreenElement, fullscreenSupported, onFullscreenChange, toggleFullscreen } from './fullscreen.js';
 
 // Application setup, background city build and frame loop.
+
+// Each season's own module (js/seasons.js), fetched only in its season, once the city round you is complete
+const SEASON_MODULES = {
+  november: () => import('./season-november.js')
+};
 
 function readPlayerState() {
   try {
@@ -206,6 +212,7 @@ async function initApp() {
   let streetDetails = null;
   let trafficSystem = null;
   let lotDetails = null; // js/lot-details.js: houses' fences and driveways near you, once the city is complete
+  let seasons = null; // js/seasons.js: what Sydney's date brings, once the city is complete
   // ?debug=1&cars=0: the streets to yourself, for the scenarios that need to know nobody else is there
   const debugCars = new URLSearchParams(location.search).get('debug') === '1' && new URLSearchParams(location.search).has('cars') ? Number(new URLSearchParams(location.search).get('cars')) : null;
 
@@ -1637,7 +1644,34 @@ async function initApp() {
       lotDetails = made;
     }
 
+    // The season of the day in Sydney, if it's in one (js/seasons.js): nothing of it is fetched before now, and out of season nothing but
+    // the calendar
+    import('./seasons.js').then(({ createSeasons }) => {
+      const load = (id) => SEASON_MODULES[id]?.() ?? null;
+      seasons = createSeasons({
+        scene,
+        reveal: (group) => revealStage(group),
+        remove: (group) => disposeStage(group),
+        quality,
+        treeField: () => streetDetails?.treeField ?? null,
+        lots: () => lotDetails,
+        player: controllerManager,
+        glow: cityUniforms.uInteriorGlow,
+        look: () => lightingSystem.activePresetId,
+        camera: () => cameraSystem.camera,
+        flying,
+        ground: {
+          top: (x, z) => wheelGround(0, x, z, groundRoadAt(x, z), null, drawnTop),
+          prepare: (x, z, r) => buildNear(x, z, r)
+        },
+        origin,
+        anchor: anchorToOrigin
+      }, { load });
+    }).catch((error) => console.error('[seasons]', error));
+
     // From here on, keep up with the player. One thing at a time, the ground under them first, so a frame never pays for much.
+    // The season waits for the first time there's nothing else to do: its shaders compile then, not while the city is still filling in
+    let caughtUp = false;
     let detailsAt = { x: startX, z: startZ };
     let detailsDoneAt = detailsAt; // where street furniture was last put out round, once it's done: null while it's being done
     let plannedAt = -Infinity, plannedX = Infinity, plannedZ = Infinity;
@@ -1676,6 +1710,8 @@ async function initApp() {
         // a square's lots worked out, or what's drawn of them chosen again
       } else if (!flying() && replantDue(x, z)) {
         yield* groundFirst(replant(x, z));
+      } else if (seasons && caughtUp && (activity.label = 'the season', yield* seasons.work(x, z))) {
+        // the season's work near you: November's carpets laid, say
       } else if (next.load.length) {
         yield* buildTile(next.load[0]);
       } else if (gardenRebuilds.size) {
@@ -1683,6 +1719,11 @@ async function initApp() {
         gardenRebuilds.delete(key);
         yield* rebuildGarden(key);
       } else if (!(yield* nextFarSquare(x, z))) {
+        if (seasons && !caughtUp) {
+          caughtUp = true;
+          plannedAt = -Infinity;
+          continue;
+        }
         yield IDLE;
         continue;
       }
@@ -1876,6 +1917,8 @@ async function initApp() {
       auditPrecision: () => auditPrecision(scene),
       paused: () => pauseMenu.isOpen,
       worldCompleteAt: () => worldCompleteAt,
+      // The season of the day and what it draws, or what a command to it gives back (js/seasons.js); null until the city is complete
+      season: (command = null) => (seasons ? (command ? seasons.debug(command) : seasons.state()) : null),
       progress: () => ({ ...progress.state(), shown: progress.shown, timings: progress.timings() }),
       depthMode: () => ({ reversed: !!renderer.reversedDepthBuffer, logarithmic: !!renderer.logarithmicDepthBuffer, near: cameraSystem.camera.near, far: cameraSystem.camera.far }),
       holdStill(on) {
@@ -2534,6 +2577,8 @@ async function initApp() {
     updateSceneCulling(eye);
     // Traffic collisions can move the player after controller updates; finalize moving hierarchies here.
     for (const root of dynamicRoots) root.updateMatrixWorld();
+    // The season's things that ride on them, now they're where they'll be drawn
+    seasons?.update(dt, elapsed);
   }
 
   // Render frame via TSL RenderPipeline (SSR + Bloom)

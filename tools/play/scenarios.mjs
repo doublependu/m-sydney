@@ -3435,6 +3435,63 @@ export const SCENARIOS = {
     }
   },
 
+  // November, by ?date= (js/seasons.js): the season's module fetched once the city is complete, carpets under Darlinghurst's jacarandas laid
+  // and drawn, and the car starting covered in flowers that blow off as it drives: 15 s up Southern Cross Drive at 60 km/h takes some,
+  // and leaves most (they're all gone in about a minute)
+  'jacaranda-petals': {
+    minutes: 5,
+    query: 'date=2026-11-20',
+    async run({ human, page, metric, expect }) {
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      await page.waitForFunction(() => window.__gameDebug.season()?.ready, null, { timeout: 60000, polling: 250 });
+      const season = () => page.evaluate(() => window.__gameDebug.season());
+      const first = await season();
+      expect(first.season === 'november' && first.date === '2026-11-20', `the season on 20 November: ${first.season} on ${first.date}`);
+      expect(first.petals?.load === 1 && first.petals.cards === first.petals.of, `the car starts with ${first.petals?.cards} of ${first.petals?.of} flowers`);
+      // Darlinghurst's jacaranda street
+      await page.evaluate(() => window.__gameDebug.goto(777, 245, 0, 'car'));
+      await page.evaluate(() => window.__gameDebug.mapReady?.(777, 245));
+      const laid = await page.waitForFunction(() => {
+        const c = window.__gameDebug.season()?.carpets;
+        return c && c.wanted >= 10 && c.pending === 0 && c.drawn >= c.wanted - 1 && c.at && Math.hypot(c.at.x - 777, c.at.z - 245) < 20 && c;
+      }, null, { timeout: 60000, polling: 500 }).then((h) => h.jsonValue()).catch(() => null);
+      expect(!!laid, `Darlinghurst's carpets weren't all laid: ${JSON.stringify((await season()).carpets)}`);
+      metric('carpets', laid?.drawn ?? 0);
+      metric('carpetTriangles', laid?.triangles ?? 0);
+      // Off up Southern Cross Drive, covered again
+      await page.evaluate(() => window.__gameDebug.goto(1594, 5861, -0.13, 'car'));
+      await page.evaluate(() => window.__gameDebug.mapReady?.(1594, 5861));
+      await human.wait(1500);
+      await page.evaluate(() => window.__gameDebug.season({ load: 1 }));
+      const began = human.now();
+      for (const target of [{ x: 1557, z: 6002 }, { x: 1520, z: 6092 }, { x: 1486, z: 6174 }, { x: 1455, z: 6250 }]) {
+        if (human.now() - began > 15000) break;
+        await human.driveTo(target, { arrive: 10, limit: 60 / 3.6, timeout: 15000 - (human.now() - began) });
+      }
+      await human.releaseAll();
+      const after = (await season()).petals;
+      metric('loadAfter', after.load);
+      metric('released', after.released);
+      expect(after.released > 100 && after.load < 0.9, `${after.released} flowers left the car in 15 s, ${after.load} still on it`);
+      expect(after.load > 0.5, `only ${after.load} left on the car after 15 s`);
+    }
+  },
+
+  // ?season=off: nothing of any season is fetched or drawn, only the calendar that says so
+  'seasons-off': {
+    minutes: 3,
+    query: 'season=off',
+    async run({ human, page, expect }) {
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      await page.waitForFunction(() => window.__gameDebug.season() !== null, null, { timeout: 30000, polling: 250 });
+      await human.wait(3000);
+      const state = await page.evaluate(() => window.__gameDebug.season());
+      expect(state.off && state.season === null && !state.running, `?season=off: ${JSON.stringify(state)}`);
+      const fetched = await page.evaluate(() => performance.getEntriesByType('resource').map((e) => e.name).filter((n) => /\/season-/.test(n)));
+      expect(fetched.length === 0, `a season's code was fetched: ${fetched.join(', ')}`);
+    }
+  },
+
   soak: {
     memory: true,
     async run({ human, page, options, metric, expect, watchdog }) {

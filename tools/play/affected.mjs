@@ -77,6 +77,8 @@ export const COVERS = {
   'webgl2-fallback': { files: /^js\/(tsl-materials|main|lighting|pedestrians|tower-signs|landmarks)\.js$/, area: null },
   'device-lost': { files: /^js\/main\.js$/, area: null },
   'saved-position': { files: /^js\/(main|controllers|arrivals)\.js$/, area: [-600, -480, -3620, -3520] },
+  'jacaranda-petals': { files: /^js\/(seasons|season-november|jacaranda-carpets|car-petals|trees|drawn-ground|main)\.js$/, area: null },
+  'seasons-off': { files: /^js\/(seasons|main)\.js$/, area: null },
   soak: { files: /^$/, area: null }
 };
 

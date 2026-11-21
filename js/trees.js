@@ -1054,6 +1054,9 @@ function* createTreeFieldSteps(_scene, sites, colliders = [], { reserve = null, 
   const meshOf = new Int32Array(capacity * 3); // mesh index per level
   const tier = new Uint8Array(capacity);
   const lod = new Uint8Array(capacity).fill(255);
+  const crown = new Float32Array(capacity); // m: how far its crown reaches out from its trunk, as grown and scaled
+  // The crown's reach from the trunk: the mean of its half-widths across, at the tree's own scale
+  const crownOf = (bounds, sx, sz) => ((bounds.max.x - bounds.min.x) * sx + (bounds.max.z - bounds.min.z) * sz) / 4;
 
   // Shared geometry types per species, variant and level.
   const types = [];
@@ -1105,6 +1108,7 @@ function* createTreeFieldSteps(_scene, sites, colliders = [], { reserve = null, 
     px[i] = t.x;
     py[i] = (t.y || 0) + 6 * s;
     pz[i] = t.z;
+    crown[i] = crownOf(tree.bounds, dummy.scale.x, dummy.scale.z);
     tier[i] = SPECIES[sp].small ? SMALL_TIER : Math.min(2, t.tier || 0);
     // Small plants in cells of their own, with their own levels
     const small = tier[i] === SMALL_TIER ? 1 : 0;
@@ -1448,6 +1452,7 @@ function* createTreeFieldSteps(_scene, sites, colliders = [], { reserve = null, 
       px[i] = t.x;
       py[i] = (t.y || 0) + 6 * sc;
       pz[i] = t.z;
+      crown[i] = crownOf(tree.bounds, dummy.scale.x, dummy.scale.z);
       tier[i] = Math.min(2, t.tier || 0);
       lod[i] = 255;
       for (let l = 0; l < 3; l++) meshOf[i * 3 + l] = room.meshes[l];
@@ -1466,6 +1471,25 @@ function* createTreeFieldSteps(_scene, sites, colliders = [], { reserve = null, 
     rebuild();
     last.set(Infinity, Infinity, Infinity);
     return planted;
+  }
+
+  /**
+   * The trees of one kind (`kind`: its name, or its index in SPECIES) the field draws within r of (x, z), the verges' added ones too:
+   * { x, y, z, crown } each, `y` the ground they were planted on and `crown` how far the crown reaches from the trunk (m)
+   */
+  function treesNear(x, z, r, kind) {
+    const species = typeof kind === 'string' ? SPECIES.findIndex((sp) => sp.name === kind) : kind;
+    const out = [];
+    for (const cell of cellList) {
+      if (Math.hypot(cell.cx - x, cell.cz - z) > r + cell.radius) continue;
+      const trees = cell.trees;
+      for (let k = 0; k < trees.length; k++) {
+        const i = trees[k];
+        if (Math.floor(data[i * 4 + 3]) !== species || (px[i] - x) ** 2 + (pz[i] - z) ** 2 > r * r) continue;
+        out.push({ x: px[i], y: mats[i * 16 + 13], z: pz[i], crown: crown[i] });
+      }
+    }
+    return out;
   }
 
   // Levels for the start-up view (Macquarie St), so the precompile pass sees the tree meshes
@@ -1492,7 +1516,7 @@ function* createTreeFieldSteps(_scene, sites, colliders = [], { reserve = null, 
     triangles: geos.map((v) => v.map((l) => l.map((g) => g && g.userData.triangles))),
     cards: geos.map((v) => v.map((l) => l.map((g) => g && g.userData.cards)))
   };
-  return { group, material, atlas, update, setAdded, meshes: instanced, stats, sites: plantedSites };
+  return { group, material, atlas, update, setAdded, treesNear, meshes: instanced, stats, sites: plantedSites };
 }
 
 function createTreeField(_scene, sites, colliders = [], options = {}) {

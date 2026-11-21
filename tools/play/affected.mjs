@@ -55,6 +55,7 @@ export const COVERS = {
   'st-marys': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|stained-light|landmarks|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/st-marys.*)$/, area: [500, 620, -350, -150] },
   'art-gallery': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|art|art-paint|artworks|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/art-gallery(-g|-l\d|-far)?\..*)$/, area: [820, 980, -670, -520] },
   'art-gallery-new': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|art|art-paint|artworks|surfaces|controllers|cameras|pedestrians|city-grid|lot-details)\.js|public\/models\/art-gallery-new.*)$/, area: [820, 1020, -800, -600] },
+  'qvb': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|landmarks|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/qvb.*)$/, area: [-80, 0, -250, -40] },
   'walk-in-phone': { files: /^(js\/(interiors|first-shapes|interior-data|model-sites|buildings|surfaces|controllers|cameras|pedestrians)\.js|public\/models\/.*)$/, area: null },
   'origin-move': { files: /^js\/(world-origin|main|scene-culling|traffic|pedestrians|buildings|trees)\.js$/, area: null },
   'origin-far': { files: /^js\/(world-origin|main|scene-culling|traffic|pedestrians|buildings|trees)\.js$/, area: null },

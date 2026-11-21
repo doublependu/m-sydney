@@ -45,10 +45,13 @@ const replacedBy = new Map(); // site id -> the buildings it replaces
   for (const site of MODEL_SITES) {
     for (const [lx, lz] of site.replaces || []) {
       const { x, z } = toWorldOf(site, lx, lz);
-      const i = REAL_BUILDINGS.findIndex((b) => inOutline(b, x, z));
+      const list = replacedBy.get(site.id) || replacedBy.set(site.id, []).get(site.id);
+      // the first that holds it and the site hasn't taken already: a point in one of the QVB's domes is in the box under it too, which
+      // the site's first point took
+      let i = REAL_BUILDINGS.findIndex((b, k) => !list.includes(k) && inOutline(b, x, z));
+      if (i < 0) i = REAL_BUILDINGS.findIndex((b) => inOutline(b, x, z));
       if (i < 0) throw new Error(`[derive] model site ${site.id}: no building at (${lx}, ${lz}) in its frame to draw in place of`);
       if (!underLandmarks.includes(i)) underLandmarks.push(i);
-      const list = replacedBy.get(site.id) || replacedBy.set(site.id, []).get(site.id);
       if (!list.includes(i)) list.push(i);
     }
   }

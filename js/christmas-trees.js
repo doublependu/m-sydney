@@ -3,7 +3,7 @@ import { EFFECT, christmasMaterials, lin, lookW } from './christmas-materials.js
 
 // The city's big Christmas trees in December (js/season-december.js), where 2025's stood: Martin Place, before the GPO; one afloat on
 // Cockle Bay, Darling Harbour; Barangaroo, by Watermans Cove; The Rocks, at the top of Jack Mundey Place; and one each in Parramatta's
-// Centenary Square, Chatswood's mall and Manly's Corso. (The QVB's stands inside it, with its model.)
+// Centenary Square, Chatswood's mall and Manly's Corso. And one inside the QVB, under its dome, while its model's ground floor is held.
 // - Each is made in code from its height (treeKit()): tiers of boughs in a cone, bulbs wound round it in spirals, hung down it in drops
 //   and scattered over it, baubles hanging from its boughs' tips, a star on top that glows at night, presents under it, all on a round
 //   plinth with a low fence on its rim. The floating one's plinth is on a pontoon.
@@ -13,6 +13,9 @@ import { EFFECT, christmasMaterials, lin, lookW } from './christmas-materials.js
 //   as its crown (EFFECT.beacon), so it reads across the harbour. Near, that glow fades out and its own bulbs are what you see.
 // - Where one stands, no street tree is planted (its `clear` circle, as a model site's) and you can't walk or drive through its fence
 //   (a collider): `clear(circles)` and `colliders.add(list)` from the season's ctx.
+// - A tree indoors stands where a model's inside keeps a spot for it (`spots` in its JSON: the QVB's, under its dome), made when the
+//   inside's held and let go of with it: `indoor()` says where they are now (ctx.spots('christmas-tree')). Its plinth is on the inside's
+//   floor; it's slimmer than a street's (the spot's `r`), has no glow far off, and its fence holds you at the floor's height.
 
 // x, z: its middle, found by name on the map and checked against the paving from above. y: the ground there as the map had it (only
 // for the glow far off: the plinth is laid on the ground near you). h: m from the plinth to the star's top. `face`: the way its star
@@ -53,8 +56,8 @@ const DENSITY = { low: 0.45, medium: 0.75, high: 1 };
 const ROOM = { low: { bulbs: 6000, vertices: 70000 }, medium: { bulbs: 9000, vertices: 100000 }, high: { bulbs: 12000, vertices: 120000 } };
 const REFILL = 100; // m moved before what's drawn is chosen again
 
-/** The base of the cone's lowest boughs, m from the trunk */
-const reachOf = (tree) => 0.36 * tree.h;
+/** The base of the cone's lowest boughs, m from the trunk: an indoor one's as its spot says */
+const reachOf = (tree) => tree.r ?? 0.36 * tree.h;
 /** The plinth's radius: the lowest boughs' tips, and room for the fence under them */
 const plinthOf = (tree) => reachOf(tree) + 0.85;
 
@@ -411,7 +414,10 @@ function treeKit(tree, options) {
   }
 }
 
-/** The collider round a tree's plinth: no walking or driving through its fence, nor standing on it. The floating one has none. */
+/**
+ * The collider round a tree's plinth: no walking or driving through its fence, nor standing on it. The floating one has none. An indoor
+ * one's heights are the floor's it stands on (as a model's walls are: js/controllers.js), so it holds you there and not under the floor.
+ */
 function colliderOf(tree) {
   if (tree.float) return null;
   const r = plinthOf(tree) + 0.05, outer = [];
@@ -419,8 +425,13 @@ function colliderOf(tree) {
     const a = (i / 16) * Math.PI * 2;
     outer.push({ x: tree.x + Math.cos(a) * r, z: tree.z + Math.sin(a) * r });
   }
-  return { minX: tree.x - r, maxX: tree.x + r, minZ: tree.z - r, maxZ: tree.z + r, minY: 0, maxY: 2.4, polygon: { outer, holes: [] }, christmas: true };
+  const heights = tree.indoor ? { minY: tree.y, maxY: 2.4, level: true, baseY: tree.y } : { minY: 0, maxY: 2.4 };
+  return { minX: tree.x - r, maxX: tree.x + r, minZ: tree.z - r, maxZ: tree.z + r, ...heights, polygon: { outer, holes: [] }, christmas: true };
 }
+
+/** A tree for a model inside's spot (js/interiors.js spots()): the QVB's, warm white with silver baubles, as its crystal ones */
+const indoorTree = (spot) => ({ id: `${spot.site}:${spot.id}`, name: spot.id, x: spot.x, y: spot.y, z: spot.z, h: spot.h, r: spot.r, lights: 'warm',
+  baubles: 'silver', face: Math.PI / 2, indoor: true });
 /** Where no street tree is planted round a tree: its crown kept off the boughs */
 const clearingOf = (tree) => (tree.float ? null : { x: tree.x, z: tree.z, r: plinthOf(tree) + 3.5 });
 
@@ -434,7 +445,7 @@ const clearingOf = (tree) => (tree.float ? null : { x: tree.x, z: tree.z, r: pli
  * trees and the player out. `group` is revealed once there's a tree or a glow to draw.
  */
 function createCityTrees({ level = 'high', reach = () => 2000, far = () => 8000, env, origin, reveal, anchor, clear = () => {},
-  colliders = { add() {}, remove() {} }, trees = CITY_TREES }) {
+  colliders = { add() {}, remove() {} }, trees = CITY_TREES, indoor = () => [] }) {
   const density = DENSITY[level] ?? 1, room = ROOM[level] ?? ROOM.high;
   const group = new THREE.Group();
   group.name = 'ChristmasTrees';
@@ -444,9 +455,29 @@ function createCityTrees({ level = 'high', reach = () => 2000, far = () => 8000,
   let filledAt = null, changed = false, lastOrigin = { x: origin.x, z: origin.z };
   let drawn = { trees: 0, beacons: 0, bulbs: 0, vertices: 0 };
   const away = (t, x, z) => Math.hypot(t.x - x, t.z - z);
+  const inside = new Map(); // id -> { tree, collider }: the indoor trees whose spots are held now
 
-  /** A tree's plinth laid on the ground round it: its top over the highest of it, its foot under the lowest */
+  /** The indoor trees as the insides held have them now: a new spot's tree to be made, a spot let go of takes its tree with it */
+  function holdIndoor() {
+    const now = new Map(indoor().map((spot) => [`${spot.site}:${spot.id}`, spot]));
+    for (const [id, held] of inside) {
+      if (now.has(id)) continue;
+      inside.delete(id);
+      colliders.remove([held.collider]);
+      if (made.delete(id)) changed = true;
+    }
+    for (const [id, spot] of now) {
+      if (inside.has(id)) continue;
+      const tree = indoorTree(spot), collider = colliderOf(tree);
+      inside.set(id, { tree, collider });
+      colliders.add([collider]);
+    }
+  }
+  const everyTree = () => [...trees, ...[...inside.values()].map((h) => h.tree)];
+
+  /** A tree's plinth laid on the ground round it: its top over the highest of it, its foot under the lowest; indoors on the floor */
   function levels(tree) {
+    if (tree.indoor) return { base: tree.y + 0.25, foot: tree.y };
     if (tree.float) {
       const deck = env.water + PONTOON.freeboard;
       return { base: deck + 0.3, foot: deck };
@@ -469,14 +500,17 @@ function createCityTrees({ level = 'high', reach = () => 2000, far = () => 8000,
       colliders.add(held);
       return true;
     }
+    holdIndoor();
     const r = reach();
     // The nearest tree within reach not made yet: the ground's triangles under it first, one surface a step
     let next = null;
-    for (const t of trees) if (!made.has(t.id) && away(t, x, z) <= r && (!next || away(t, x, z) < away(next, x, z))) next = t;
+    for (const t of everyTree()) if (!made.has(t.id) && away(t, x, z) <= r && (!next || away(t, x, z) < away(next, x, z))) next = t;
     if (next) {
-      if (!next.float && env.prepare(next.x, next.z, plinthOf(next) + 1)) return true;
+      if (!next.float && !next.indoor && env.prepare(next.x, next.z, plinthOf(next) + 1)) return true;
       const { base, foot } = levels(next);
       const kit = yield* treeKitSteps(next, { base, foot, water: env.water, density });
+      // let go of while it was being made
+      if (next.indoor && !inside.has(next.id)) return true;
       made.set(next.id, { tree: next, base, kit });
       changed = true;
       return true;
@@ -488,7 +522,7 @@ function createCityTrees({ level = 'high', reach = () => 2000, far = () => 8000,
       }
     }
     if (!bulbMesh) {
-      if (!made.size && !trees.some((t) => away(t, x, z) <= far())) return false;
+      if (!made.size && !everyTree().some((t) => away(t, x, z) <= far())) return false;
       yield* show();
       changed = true;
       return true;
@@ -607,17 +641,20 @@ function createCityTrees({ level = 'high', reach = () => 2000, far = () => 8000,
     shown: () => !!bulbMesh,
     /** For the scripts: what's made and drawn; `pending`, the trees within reach not made or not drawn yet */
     state(x, z) {
-      const within = trees.filter((t) => away(t, x, z) <= reach());
+      const within = everyTree().filter((t) => away(t, x, z) <= reach());
       return {
         made: [...made.keys()], drawn, at: filledAt && { x: Math.round(filledAt.x), z: Math.round(filledAt.z) },
-        pending: within.filter((t) => !made.has(t.id)).length + (within.length && (!bulbMesh || changed) ? 1 : 0)
+        pending: within.filter((t) => !made.has(t.id)).length + (within.length && (!bulbMesh || changed) ? 1 : 0),
+        indoor: [...inside.keys()]
       };
     },
     /** For the scripts: each tree, how far it is, and where its plinth was laid */
-    list: (x, z) => trees.map((t) => ({ id: t.id, x: t.x, z: t.z, h: t.h, away: Math.round(away(t, x, z)), base: made.get(t.id)?.base ?? null,
-      vertices: made.get(t.id)?.kit.v ?? 0, bulbs: made.get(t.id)?.kit.n ?? 0 })),
+    list: (x, z) => everyTree().map((t) => ({ id: t.id, x: t.x, z: t.z, h: t.h, away: Math.round(away(t, x, z)), base: made.get(t.id)?.base ?? null,
+      vertices: made.get(t.id)?.kit.v ?? 0, bulbs: made.get(t.id)?.kit.n ?? 0, ...(t.indoor ? { indoor: true } : {}) })),
     stop() {
       colliders.remove(held);
+      colliders.remove([...inside.values()].map((h) => h.collider));
+      inside.clear();
       unclear?.();
       bulbMesh?.geometry.dispose();
       shapeMesh?.geometry.dispose();

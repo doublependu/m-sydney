@@ -101,7 +101,7 @@ test('where they stand: their clearings and colliders, and the floating one has 
 });
 
 /** The trees near (x, z) as the season makes them: its work run to the end, the meshes made without a renderer */
-function runTrees({ level = 'high', x, z, reach = 2000, far = 8000 }) {
+function runTrees({ level = 'high', x, z, reach = 2000, far = 8000, indoor = () => [] }) {
   const origin = { x: 0, z: 0 };
   const cleared = [], held = [];
   const trees = createCityTrees({
@@ -109,7 +109,8 @@ function runTrees({ level = 'high', x, z, reach = 2000, far = 8000 }) {
     env: { ground: () => 10, prepare: () => false, glow: { value: 0 }, water: -2.2 },
     origin, reveal: async () => {}, anchor: () => {},
     clear: (circles) => { cleared.push(...circles); return () => cleared.splice(0); },
-    colliders: { add: (list) => held.push(...list), remove: (list) => list.forEach((c) => held.splice(held.indexOf(c), 1)) }
+    colliders: { add: (list) => held.push(...list), remove: (list) => list.forEach((c) => held.splice(held.indexOf(c), 1)) },
+    indoor
   });
   for (let i = 0; i < 400; i++) {
     const job = trees.work(x, z);
@@ -159,4 +160,40 @@ test('the origin moving writes the trees from it again', () => {
   while (!step.done) step = job.next();
   assert.equal(step.value, true);
   assert.ok(Math.abs(bulbs.array[0] - (before - 4096)) < 1e-3);
+});
+
+// The QVB's tree, under its dome: where its model's inside keeps a spot for it (js/interiors.js spots()), made while that's held
+test('a tree indoors: made where an inside held keeps its spot, on its floor, slim, no glow far off, and gone when the inside is', () => {
+  // the QVB's spot as js/interiors.js gives it: its ground floor 21.5 m up, the map's ground round it 10 m in this test
+  const spot = { kind: 'christmas-tree', id: 'qvb', site: 'qvb', x: -39.9, y: 21.5, z: -143.4, h: 19, r: 3.4 };
+  let spots = [spot];
+  const run = runTrees({ x: -40, z: -150, reach: 300, indoor: () => spots });
+  const { trees, held } = run;
+  let state = trees.state(-40, -150);
+  assert.ok(state.made.includes('qvb:qvb'), `made: ${state.made}`);
+  assert.deepEqual(state.indoor, ['qvb:qvb']);
+  const it = trees.list(-40, -150).find((t) => t.id === 'qvb:qvb');
+  assert.equal(it.base, 21.75, 'its plinth on the floor');
+  assert.ok(it.indoor);
+  // slimmer than a street's of its height: its plinth from the spot's reach, and its fence a collider at the floor's height
+  const collider = held.find((c) => c.level && Math.abs(c.minX + c.maxX - 2 * spot.x) < 1e-6);
+  assert.ok(collider, 'no collider round its plinth');
+  assert.equal(collider.minY, 21.5);
+  assert.equal(collider.baseY, 21.5);
+  assert.ok(Math.abs((collider.maxX - collider.minX) / 2 - (plinthOf({ h: 19, r: 3.4 }) + 0.05)) < 1e-6);
+  assert.ok(plinthOf({ h: 19, r: 3.4 }) < plinthOf({ h: 19 }) - 2);
+  // its kit up to the star, from its floor
+  const kit = treeKit({ id: 'qvb:qvb', h: 19, r: 3.4, lights: 'warm', baubles: 'silver' }, { base: 21.75, foot: 21.5 });
+  assert.ok(Math.abs(kit.top - (21.75 + 19)) < 1.0, `its star's top at ${kit.top}`);
+  // no beacon of its own far off: from 2 km it's nothing (the CBD's trees are glows)
+  const away = runTrees({ x: 1800, z: -1000, reach: 300, indoor: () => spots });
+  assert.ok(!away.trees.state(1800, -1000).made.includes('qvb:qvb'));
+  // the inside let go of: its tree and its fence go with it
+  spots = [];
+  const job = trees.work(-40, -150);
+  let step = job.next();
+  while (!step.done) step = job.next();
+  state = trees.state(-40, -150);
+  assert.ok(!state.made.includes('qvb:qvb') && !state.indoor.length);
+  assert.ok(!held.includes(collider));
 });

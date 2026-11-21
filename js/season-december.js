@@ -4,7 +4,8 @@ import { CITY_TREES, clearingOf, createCityTrees } from './christmas-trees.js';
 
 // December, 1-26 December (js/seasons.js): Christmas.
 // - The city's big trees: Martin Place's, the one afloat on Darling Harbour, and five more, drawn whole near you and as a glow far off
-//   (js/christmas-trees.js).
+//   (js/christmas-trees.js); and the QVB's under its dome, made when its inside is held (ctx.spots()), so nothing of December is in
+//   the QVB's model.
 // - The houses near you have their lights and decorations, a few on most streets and almost every house on the streets known for them
 //   (js/christmas.js, js/christmas-houses.js).
 //
@@ -23,7 +24,9 @@ function treesFeature(ctx) {
     reveal: ctx.reveal,
     anchor: ctx.anchor,
     clear: ctx.clear,
-    colliders: ctx.colliders
+    colliders: ctx.colliders,
+    // the trees indoors: where the model insides held keep a spot for one (the QVB's, under its dome)
+    indoor: () => ctx.spots?.('christmas-tree') ?? []
   });
   const here = () => player.getActiveEntity().position;
   return {

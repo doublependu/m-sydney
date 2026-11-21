@@ -1588,6 +1588,143 @@ function artGalleryNewScenario() {
   };
 }
 
+// The Queen Victoria Building (js/model-sites.js, qvb): in from George St at its middle door, under the dome (the ground's file fetched
+// at the door, and levels 1 and 2 straight after it: they're seen across the atrium), along the arcade to the stair at the Druitt St
+// end, up its switchback to level 1 and along the gallery, on up to level 2, round the dome's void past the clocks (their hands at
+// Sydney's time), to the Market St end and down its stair to the ground, and out of the York St door. The shops are drawn on each
+// level, one node at each bay.
+function qvbScenario() {
+  const S = MODEL_SITES.find((s) => s.id === 'qvb');
+  const at = (x, z) => ({ x: S.x + x * Math.cos(S.yaw) + z * Math.sin(S.yaw), z: S.z - x * Math.sin(S.yaw) + z * Math.cos(S.yaw) });
+  const start = at(1.5, 19.5);
+  const LEVEL = { g: 0, l1: 5.6, l2: 10.6 };
+  // each end's stair (sx -1 Druitt St's, 1 Market St's): its two halves' middles (z), its foot's and its half landing's middles (|x|)
+  const LOW = -12.9, HIGH = -9.98, FOOT = 74.8, HALF = 81.6;
+  return {
+    minutes: 8,
+    storage: JSON.stringify({ version: 1, activeMode: 'person', entities: { person: { x: start.x, y: 0, z: start.z, heading: 0, surface: 0 } } }),
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const interior = () => debug(() => window.__gameDebug.interior());
+      const level = async () => (await human.state()).surfaceY - S.y;
+      const local = async () => {
+        const s = await human.state(), dx = s.x - S.x, dz = s.z - S.z, c = Math.cos(S.yaw), n = Math.sin(S.yaw);
+        return `(${(dx * c - dz * n).toFixed(2)}, ${(dx * n + dz * c).toFixed(2)}) at ${(s.surfaceY - S.y).toFixed(2)} m`;
+      };
+      const walk = async (x, z, why, opts) => expect(await walkTo(human, at(x, z), opts), `never got ${why}, stuck at ${await local()}`);
+      const fetched = (file) => debug((f) => performance.getEntriesByType('resource').map((r) => r.name).filter((n) => n.includes(`/models/${f}.`)), file);
+      const inRoom = async (want, why) => {
+        const i = await interior();
+        expect(i.inside === 'qvb' && i.room === want && Math.abs((await level()) - LEVEL[want]) < 0.1, `${why}: in ${i.inside} ${i.room} at ${await local()}`);
+      };
+      const open = async (doorId, toward, why) => {
+        await face(human, toward);
+        await human.wait(300);
+        expect((await interior()).prompt === 'Open', `${why}: the prompt is ${(await interior()).prompt}, at ${await local()}`);
+        await human.press('KeyF');
+        expect(await human.until(async () => (await interior()).doors.find((d) => d.site === 'qvb' && d.id === doorId)?.angle >= 1.59,
+          { timeout: 20000, read: interior }), `${why}: the door never opened`);
+      };
+      // up (or down) an end's switchback: from its foot's landing round to its head's, at the level `to`
+      const flight = async (sx, up, to, why) => {
+        if (up) {
+          await walk(sx * FOOT, LOW, `onto the stair's foot (${why})`);
+          await walk(sx * HALF, LOW, `up its first flight (${why})`, { timeout: 30000 });
+          await walk(sx * HALF, HIGH, `across its half landing (${why})`);
+          await walk(sx * FOOT, HIGH, `up its second flight (${why})`, { timeout: 30000 });
+        } else {
+          await walk(sx * FOOT, HIGH, `onto the stair's head (${why})`);
+          await walk(sx * HALF, HIGH, `down its first flight (${why})`, { timeout: 30000 });
+          await walk(sx * HALF, LOW, `across its half landing (${why})`);
+          await walk(sx * FOOT, LOW, `down its second flight (${why})`, { timeout: 30000 });
+        }
+        expect(Math.abs((await level()) - to) < 0.1, `${why}: at ${await local()}`);
+      };
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      const toward = at(0, 15);
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...start, h: Math.atan2(toward.x - start.x, toward.z - start.z) });
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'qvb')?.out, null, { timeout: 60000, polling: 250 });
+      const drawn = await page.waitForFunction(() => window.__gameDebug.firstShapes().qvb?.shape === 'model', null, { timeout: 30000, polling: 250 })
+        .then(() => true, () => false);
+      expect(drawn, 'its model isn\'t drawn in place of its first shape');
+      expect((await fetched('qvb-g')).length === 0, 'its ground floor was fetched before a door was opened');
+      // In at George St's middle door
+      await walk(0.0, 15.7, 'to the George St door');
+      expect(Math.abs(await level()) < 0.08, `at the door at ${(await level()).toFixed(2)} m`);
+      await open('george', at(0, 13), 'at the George St door');
+      expect((await fetched('qvb-g')).length > 0, 'its ground floor wasn\'t fetched at the door');
+      await walk(0.0, 11.0, 'in through the door');
+      await inRoom('g', 'inside, under the dome');
+      // ...and the levels over it straight after, without a door
+      const all = await human.until(async () => (await interior()).files.filter((f) => f.site === 'qvb' && f.state === 'ready').length === 3,
+        { timeout: 20000, read: interior });
+      expect(all, `its levels aren't all in: ${JSON.stringify((await interior()).files)}`);
+      metric('fpsGround', (await debug(() => window.__gameDebug.frameCost())).fps);
+      // Its shops on every level: one node drawn at each bay
+      const inst = (await interior()).instances.filter((p) => p.site === 'qvb' && p.node === 'shop');
+      expect(inst.length >= 3 && inst.every((p) => p.count === p.want && p.count >= 60 && p.shown), `its shops aren't drawn: ${JSON.stringify(inst)}`);
+      metric('shopsDrawn', inst.filter((p) => p.name === 'shop_in:paint').reduce((n, p) => n + p.count, 0));
+      // The clocks' hands at Sydney's time, the hunter going round
+      const sydney = await debug(() => {
+        const parts = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Sydney', hourCycle: 'h23', hour: 'numeric', minute: 'numeric', second: 'numeric' })
+          .formatToParts(new Date());
+        const part = (t) => +parts.find((p) => p.type === t).value;
+        return part('hour') * 3600 + part('minute') * 60 + part('second');
+      });
+      const hands = (await interior()).spins.filter((s) => s.site === 'qvb' && s.clock);
+      const off = (a, b) => Math.abs(((a - b) % (2 * Math.PI) + 3 * Math.PI) % (2 * Math.PI) - Math.PI);
+      const want = (clock) => -2 * Math.PI * ((sydney % (clock === 'hour' ? 43200 : 3600)) / (clock === 'hour' ? 43200 : 3600));
+      expect(hands.length === 8 && hands.every((h) => off(h.angle, want(h.clock)) < 0.06),
+        `the clocks' hands aren't at Sydney's time (${sydney} s): ${JSON.stringify(hands)}`);
+      const hunter = async () => (await interior()).spins.find((s) => s.site === 'qvb' && s.node === 'hunter')?.angle;
+      const h0 = await hunter();
+      await human.wait(2000);
+      expect(Math.abs((await hunter()) - h0) > 0.02, 'the hunter isn\'t going round the Great Australian Clock');
+      // Along the arcade to the Druitt St end, and up to level 1
+      await walk(-3.0, 5.5, 'past the dome');
+      await walk(-60.0, 5.0, 'along the arcade', { timeout: 60000 });
+      await walk(-72.4, -6.0, 'into the Druitt St pavilion');
+      await walk(-72.4, LOW, 'to the stair');
+      await flight(-1, true, LEVEL.l1, 'from the ground to level 1');
+      await walk(-72.4, HIGH, 'off the stair onto level 1');
+      await inRoom('l1', 'on level 1');
+      await walk(-69.0, -5.9, 'onto the gallery');
+      await walk(-36.0, -5.9, 'along level 1\'s gallery, over the arcade', { timeout: 40000 });
+      metric('fpsLevel1', (await debug(() => window.__gameDebug.frameCost())).fps);
+      await walk(-69.0, -5.9, 'back along the gallery', { timeout: 40000 });
+      await walk(-72.4, LOW, 'back to the stair');
+      await flight(-1, true, LEVEL.l2, 'from level 1 to level 2');
+      await walk(-72.4, HIGH, 'off the stair onto level 2');
+      await inRoom('l2', 'on level 2');
+      // Round level 2: past the Royal Clock, round the dome's void, past the Great Australian Clock, to the Market St end
+      await walk(-69.0, -6.3, 'onto level 2\'s gallery');
+      await walk(-36.0, -6.3, 'beside the Royal Clock', { timeout: 40000 });
+      metric('fpsLevel2', (await debug(() => window.__gameDebug.frameCost())).fps);
+      await walk(-9.0, -6.6, 'to the dome', { timeout: 40000 });
+      await walk(0.0, -10.2, 'round the dome\'s void');
+      await walk(9.0, -6.6, 'past the dome');
+      await walk(36.0, -6.3, 'beside the Great Australian Clock', { timeout: 40000 });
+      await walk(69.0, -6.3, 'to the Market St end', { timeout: 40000 });
+      await walk(72.4, HIGH, 'to the stair at the Market St end');
+      // ...and down to the ground
+      await flight(1, false, LEVEL.l1, 'from level 2 to level 1');
+      await flight(1, false, LEVEL.g, 'from level 1 to the ground');
+      await walk(72.4, LOW, 'off the stair');
+      await inRoom('g', 'back on the ground');
+      // Back along the arcade and out of the York St door
+      await walk(70.0, -5.0, 'into the arcade');
+      await walk(3.0, -5.5, 'along the arcade to the dome', { timeout: 60000 });
+      await walk(0.0, -10.5, 'to the York St door');
+      await walk(0.0, -13.7, 'up to the door');
+      await open('york', at(0, -16), 'at the York St door');
+      await walk(0.0, -17.0, 'out onto York St');
+      // (its footpath is narrow there: 2 m out, the road, a kerb down)
+      const i = await interior();
+      expect(i.inside === null && Math.abs(await level()) < 0.35, `out on York St? in ${i.inside} at ${(await level()).toFixed(2)} m`);
+    }
+  };
+}
+
 // A house on three levels over Bronte beach (js/model-sites.js, bronte-pacific): from Pacific St in at the front door, through to the
 // living room and out onto its terrace to sit; down the stair to the family room and out onto the deck; down again to the rumpus room
 // and out onto the pool's terrace. Its inside isn't fetched until the front door opens.
@@ -3081,6 +3218,7 @@ export const SCENARIOS = {
   'st-marys': stMarysScenario(),
   'art-gallery': artGalleryScenario(),
   'art-gallery-new': artGalleryNewScenario(),
+  'qvb': qvbScenario(),
   'origin-move': originScenario(''),
   'origin-far': originScenario('originTest=85000'),
   'signal-wait': {

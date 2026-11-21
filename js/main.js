@@ -1846,7 +1846,9 @@ async function initApp() {
         // The harbour: the sea's sheet, the Opera House's shells and the Harbour Bridge's lines, for what's drawn on them
         harbour: { sea: () => seaSheet, sails: () => operaShells, bridge: bridgeOutline },
         // The sound: the context and where a season's sounds go in (through the game's mix), and whether it's playing now
-        sound: gameSound
+        sound: gameSound,
+        // The spots the insides held keep for a season's things (the QVB's tree, under its dome): where they are now
+        spots: (kind) => interiors.spots(kind)
       }, { load });
     }).catch((error) => console.error('[seasons]', error));
 

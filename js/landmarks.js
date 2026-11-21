@@ -109,13 +109,6 @@ function clockTower(group, x, z, w, height, material, roofHeight = 0, roof = nul
   }
 }
 
-function dome(group, x, z, y, radius, material) {
-  const mesh = settle(new THREE.Mesh(new THREE.SphereGeometry(radius, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2), material));
-  mesh.scale.y = 1.25;
-  mesh.position.set(x, groundHeight(x, z) + y, z);
-  group.add(mesh);
-}
-
 // A row of square stone piers from a to b, with the beam along their tops
 function colonnade(group, ax, az, bx, bz, count, height, width, material) {
   const y = groundHeight((ax + bx) / 2, (az + bz) / 2);
@@ -138,9 +131,7 @@ function buildHeritage(group) {
   // Sydney Town Hall's clock tower over George St, and Central's
   clockTower(group, -36, 6, 11, 56, sandstone, 7, slate);
   clockTower(group, 96, 1160, 13, 76, sandstone);
-  // The Queen Victoria Building's copper domes down its roof
-  dome(group, -40, -143, 36, 11, copper);
-  for (const dz of [-70, -46, 46, 70]) dome(group, -40, -143 + dz, 34, 4.2, copper);
+  buildQvbDomes(group, copper);
   buildStMarysSpires(group);
   // The General Post Office on Martin Place: its clock tower, and the colonnade along the street
   clockTower(group, -12, -590, 10, 73, sandstone, 4, slate);
@@ -150,6 +141,28 @@ function buildHeritage(group) {
   const library = settle(new THREE.Mesh(new THREE.BoxGeometry(32, 3.2, 5), sandstone));
   library.position.set(449, groundHeight(449, -781) + 13.6, -781);
   group.add(library);
+}
+
+// The Queen Victoria Building's copper domes, on the map's boxes of it (js/model-sites.js `qvb`, in its frame): the great dome on its drum
+// over the middle, the twenty small ones along its roof where OpenStreetMap has them, twelve on the map's boxes of them and eight on the
+// long box's roof. One mesh, part of its first shape: shown with the map's boxes till the model or its far version is drawn.
+const QVB_MAP = { floor: 22.3, roof: 16, domes: 17, drum: 26 }; // the map's boxes of it: the floor they stand on, and their heights
+function buildQvbDomes(group, material) {
+  const site = MODEL_SITES.find((s) => s.id === 'qvb');
+  const parts = [];
+  const add = (lx, lz, base, r, k) => {
+    const { x, z } = toWorldOf(site, lx, lz);
+    const g = new THREE.SphereGeometry(r, k, Math.max(4, k / 2), 0, Math.PI * 2, 0, Math.PI / 2).scale(1, r > 6 ? 0.95 : 1.25, 1);
+    g.deleteAttribute('uv');
+    parts.push(g.translate(x, base, z));
+  };
+  add(0, 0, QVB_MAP.floor + QVB_MAP.drum, 10.6, 20);
+  for (const x of [9.8, 79.0, 89.6]) for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(sx * x, sz * (x > 50 ? 10.7 : 10.9), QVB_MAP.floor + QVB_MAP.domes, 3.2, 10);
+  for (const x of [39.3, 49.2]) for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(sx * x, sz * 10.9, QVB_MAP.floor + QVB_MAP.roof, 3.2, 10);
+  const mesh = settle(new THREE.Mesh(mergeGeometries(parts, false), material));
+  mesh.name = 'QvbDomes';
+  group.add(mesh);
+  addFirstShape('qvb', mesh);
 }
 
 // St Mary's twin towers and spires, in pale yellow stone, on the front of the map's box of the cathedral facing the forecourt: where

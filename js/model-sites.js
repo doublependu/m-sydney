@@ -336,6 +336,21 @@ const MODEL_SITES = [
       { poly: [[-36.3, -60.3], [-0.02, -60.3], [-0.02, -27.1], [-36.3, -27.1]], y: -6.4 },
       { poly: [[1.7, -68.3], [8.3, -68.3], [8.3, -62.3], [42.3, -62.3], [42.3, -3.7], [1.7, -3.7]], y: -19.6 }
     ]
+  },
+  // The Queen Victoria Building (1898), on George St between Market St and Druitt St: Romanesque in sandstone, 190 m along the street
+  // under its great copper dome and twenty small ones, awnings over its footpaths and doors on all four streets. Inside, three levels of
+  // shops round the long atrium, a file a level: the street doors fetch the ground, and its JSON the levels over it, which are seen across
+  // the atrium from the first step in. In place of the map's box of it and its boxes of the domes. Its frame: +x north along it to Market
+  // St, +z east out of its George St front; its ground floor, the footpath's height at the middle of George St and York St. The street
+  // rises to Druitt St (steps down inside its door there) and falls to Market St (steps up outside its door there). Its cut takes in the
+  // building: at the south end the map's paving under it stood over its floor.
+  {
+    id: 'qvb', file: 'models/qvb', x: -39.9, z: -143.4, yaw: 1.7552, y: 21.5, far: true, reach: 120,
+    // the long box first, then the great dome's drum and lantern and the small domes, each inside the box's outline
+    replaces: [[-40, 0], [0, 0], [0.3, 0], [-89.6, 10.7], [-78.8, 10.6], [-9.7, 10.8], [9.9, 11.1], [80.1, 10.9], [89.4, 10.7], [-89.5, -10.6],
+      [-78.7, -10.6], [-9.1, -11.1], [9.6, -11.2], [80.3, -10.8], [89.7, -10.8]],
+    clear: [[0, 17.0, 3.0], [0, -17.0, 3.0], [-45.0, 17.0, 2.5], [45.0, 17.0, 2.5], [-95.0, 0, 3.0], [95.5, 0, 3.0]],
+    cut: { poly: [[-93.0, -14.7], [93.0, -14.7], [93.0, 14.7], [-93.0, 14.7]], y: -1.5 }
   }
 ];
 

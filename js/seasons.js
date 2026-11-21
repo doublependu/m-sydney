@@ -50,6 +50,8 @@
 //                       bridge() the Harbour Bridge's lines (js/harbour-bridge.js bridgeOutline())
 //   sound               the game's sound (js/audio-system.js): context() and output() (its mix, through its compressor) once there's a
 //                       context, live() whether it's playing now (on, unmuted, unpaused, the page shown), voices: the device's events
+//   spots(kind)         the spots the model insides held now keep for a season's things (js/interiors.js spots()): [{ kind, id, site,
+//                       x, y, z, h, r }] in the world's frame, the QVB's tree under its dome while its ground floor is held
 
 const ZONE = 'Australia/Sydney';
 

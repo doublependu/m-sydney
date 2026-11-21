@@ -98,21 +98,37 @@ test('every model\'s JSON names only nodes it has, and every door that leads in 
       assert.ok(nodes.has(s.node), `${name}: no ${s.node} to turn`);
       if (s.level) assert.ok(nodes.has(s.level.node), `${name}: no ${s.level.node} to carry round`);
     }
-    // the files its doors name, and those their doors name in turn (a gallery's levels, each at the head of a stair down)
+    // the files its doors name, and those their doors name in turn (a gallery's levels, each at the head of a stair down), and those a
+    // file says come with it (the QVB's levels over its ground)
     const files = [...new Set(out.doors.map((d) => d.inside).filter(Boolean))];
-    for (let k = 0; k < files.length; k++) for (const d of read(files[k]).doors) if (d.inside && !files.includes(d.inside)) files.push(d.inside);
+    for (let k = 0; k < files.length; k++) {
+      const data = read(files[k]);
+      for (const f of [...data.doors.map((d) => d.inside), ...(data.then ?? [])]) if (f && !files.includes(f)) files.push(f);
+    }
     for (const file of files) {
       const inner = read(file), innerNodes = nodeNames(file);
       for (const d of inner.doors) assert.ok(innerNodes.has(d.node) && (d.leaves !== 2 || innerNodes.has(`${d.node}_b`)), `${file}: ${d.node}`);
       for (const r of inner.rooms) assert.ok(innerNodes.has(r.node) || out.walls.length, `${file}: ${r.node}`);
       // what it draws many of from one node (a hall's seats): merged away with the rest, none of them would be drawn
       for (const i of inner.instances ?? []) assert.ok(innerNodes.has(i.node), `${file}: no ${i.node} to draw ${i.at.length} of`);
+      // what turns in it (a clock's hands), each drawn with a room it has
+      for (const sp of inner.spin ?? []) {
+        assert.ok(innerNodes.has(sp.node), `${file}: no ${sp.node} to turn`);
+        assert.ok(!sp.room || inner.rooms.some((r) => r.id === sp.room), `${file}: ${sp.node} in no room of its own`);
+      }
       // and a floor under the middle of every room, within its heights (a raked hall's rises through them): its middle, or for a room
-      // round a corner, a point in it near that
+      // round a corner, a point in it near that; for a gallery round a void (the QVB's levels), the nearest point of it that has one
       const floors = [...out.floors, ...inner.floors];
+      const within = (r, x, z) => floors.map((f) => floorHeight(f, x, z)).filter((y) => y !== null && y >= r.y0 - 0.01 && y < r.y1);
       for (const r of inner.rooms) {
         const [x, z] = pointIn(r.poly);
-        const ys = floors.map((f) => floorHeight(f, x, z)).filter((y) => y !== null && y >= r.y0 - 0.01 && y < r.y1);
+        let ys = within(r, x, z);
+        for (let d = 0.5; !ys.length && d < 12; d += 0.5) {
+          for (let a = 0; a < 2 * Math.PI && !ys.length; a += Math.PI / 8) {
+            const px = x + Math.cos(a) * d, pz = z + Math.sin(a) * d;
+            if (inPoly(r.poly, px, pz)) ys = within(r, px, pz);
+          }
+        }
         assert.ok(ys.length, `${file}: no floor under ${r.id}`);
       }
     }
@@ -294,4 +310,19 @@ test('somewhere to stand up next to every seat', () => {
     assert.ok(spot, `nowhere to stand by the ${s.kind} in ${s.room}`);
     assert.equal(roomAt(inside.rooms, spot.x, s.at[1] - 0.4, spot.z)?.id, s.room, `standing up from the ${s.kind} in ${s.room} takes you out of it`);
   }
+});
+
+// A clock's hand in a model (its JSON's `spin` with `clock`) shows Sydney's time, whatever the player's zone: turned clockwise from twelve
+// as seen from in front, about the axis out of its dial
+test('a clock\'s hands turn by Sydney\'s time', async () => {
+  const { clockTurn, sydneySeconds } = await import('../js/interiors.js');
+  const at = (h, m) => h * 3600 + m * 60;
+  assert.ok(Math.abs(clockTurn('hour', at(3, 0)) + Math.PI / 2) < 1e-9);
+  assert.ok(Math.abs(clockTurn('minute', at(3, 15)) + Math.PI / 2) < 1e-9);
+  assert.ok(Math.abs(clockTurn('hour', at(15, 30)) + (3.5 / 12) * 2 * Math.PI) < 1e-9);
+  assert.ok(Math.abs(clockTurn('minute', at(23, 45)) + 1.5 * Math.PI) < 1e-9);
+  // Sydney's time of day from the device's clock: midnight UTC is 10 or 11 in the morning there
+  const midnight = Date.UTC(2026, 6, 1), summer = Date.UTC(2026, 11, 1);
+  assert.equal(sydneySeconds(midnight), at(10, 0));
+  assert.equal(sydneySeconds(summer + 61 * 1000 * 1000), (at(11, 0) + 61000) % 86400);
 });

@@ -13,12 +13,12 @@ const { groundHeight } = await import('../js/surfaces.js');
 const { floorAt } = await import('../js/interior-data.js');
 const { TOWER_SIGNS, placeTowerSign } = await import('../js/tower-signs.js');
 
-const IDS = ['salesforce-tower', 'ey-centre', 'customs-house', 'crown-sydney', 'st-marys', 'art-gallery', 'art-gallery-new'];
+const IDS = ['salesforce-tower', 'ey-centre', 'customs-house', 'crown-sydney', 'st-marys', 'art-gallery', 'art-gallery-new', 'qvb'];
 // Those whose doors stand up steps from the street, and those with budgets of their own: a big inside is up to 2 MB and 40,000
 // triangles a file, its outside 20 draws
 const UP_STEPS = new Set(['customs-house', 'st-marys', 'art-gallery', 'art-gallery-new']);
 const BIG = { draws: 20, inBytes: 2_000_000, inTris: 40_000 };
-const BUDGETS = { 'st-marys': BIG, 'art-gallery': BIG, 'art-gallery-new': BIG };
+const BUDGETS = { 'st-marys': BIG, 'art-gallery': BIG, 'art-gallery-new': BIG, qvb: BIG };
 // An inside of more than one file (a gallery a level), and how many rooms its first has: the rest a foyer of one room
 const FIRST_ROOMS = { 'art-gallery': 16, 'art-gallery-new': 5 };
 const sites = IDS.map((id) => MODEL_SITES.find((s) => s.id === id));
@@ -27,14 +27,15 @@ function gltf(name) {
   const bytes = zlib.gunzipSync(fs.readFileSync(new URL(`../public/models/${name}.glb.gz`, import.meta.url)));
   return JSON.parse(bytes.subarray(20, 20 + bytes.readUInt32LE(12)).toString('utf8'));
 }
-/** A model's inside's files: what its doors name, and what their doors name, in turn */
+/** A model's inside's files: what its doors name, and what their doors name (and the files each says come with it), in turn */
 function insideFiles(name) {
   const files = [], todo = read(name).doors.map((d) => d.inside).filter(Boolean);
   while (todo.length) {
     const file = todo.shift();
     if (files.includes(file)) continue;
     files.push(file);
-    todo.push(...read(file).doors.map((d) => d.inside).filter(Boolean));
+    const data = read(file);
+    todo.push(...data.doors.map((d) => d.inside).filter(Boolean), ...(data.then ?? []));
   }
   return files;
 }
@@ -546,4 +547,124 @@ test('Naala Badu: up the steps to its doors from the Art Garden\'s paths, and th
   const w = toWorldOf(badu, x, foot - 1.0);
   const over = paving - (groundHeight(w.x, w.z) - badu.y);
   assert.ok(over > 0.1 && over < 0.6, `the paving at the stair's foot is ${over.toFixed(2)} m over the ground`);
+});
+
+// The Queen Victoria Building: 190 m along George St, a door on each of its four streets, three levels of shops round its atrium
+const qvb = () => MODEL_SITES.find((s) => s.id === 'qvb');
+/** Heights walked along a path in a model's frame, a step at a time, as the walker's floor finds them: [from the street where its floors end] */
+function walkHeights(floors, path, start, street = null) {
+  const ys = [];
+  let y = start;
+  for (let k = 0; k + 1 < path.length; k++) {
+    const [a, b] = [path[k], path[k + 1]];
+    const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 0.1));
+    for (let i = 0; i <= n; i++) {
+      const x = a[0] + ((b[0] - a[0]) * i) / n, z = a[1] + ((b[1] - a[1]) * i) / n;
+      const f = floorAt(floors, x, z, y);
+      y = f ?? street?.(x, z) ?? y;
+      ys.push(y);
+    }
+  }
+  return ys;
+}
+
+test('the QVB\'s doors: one or more on each of its four streets, each a walk from the street with no step over a stair\'s', () => {
+  const site = qvb();
+  const out = read('qvb'), ground = read('qvb-g');
+  const floors = [...out.floors, ...ground.floors];
+  const faces = { g: 0, y: 0, s: 0, n: 0 };
+  for (const d of out.doors) {
+    assert.equal(d.inside, 'qvb-g', `${d.id} leads nowhere`);
+    const mid = [(d.hinge[0] + d.latch[0]) / 2, (d.hinge[1] + d.latch[1]) / 2];
+    const alongX = Math.abs(d.hinge[1] - d.latch[1]) < 1e-6; // a long front's door: its leaves along x, out is +-z
+    const out_ = alongX ? [0, Math.sign(mid[1])] : [Math.sign(mid[0]), 0];
+    faces[alongX ? (mid[1] > 0 ? 'g' : 'y') : (mid[0] > 0 ? 'n' : 's')]++;
+    // from 3 m out in the street to 4 m in, a step at a time: off the model's floors, the footpath (a kerb over the ground)
+    const street = (x, z) => {
+      const w = toWorldOf(site, x, z);
+      return groundHeight(w.x, w.z) + 0.22 - site.y;
+    };
+    const from = [mid[0] + out_[0] * 3.0, mid[1] + out_[1] * 3.0], to = [mid[0] - out_[0] * 4.0, mid[1] - out_[1] * 4.0];
+    const ys = walkHeights(floors, [from, mid, to], street(...from), street);
+    for (let i = 1; i < ys.length; i++) assert.ok(Math.abs(ys[i] - ys[i - 1]) < 0.3, `${d.id}: a step of ${(ys[i] - ys[i - 1]).toFixed(2)} m on the way in`);
+    assert.equal(ys.at(-1), 0, `${d.id}: 4 m in, not on the ground floor`);
+    assert.ok(Math.abs(floorAt(floors, mid[0], mid[1], d.y0) - d.y0) < 0.01, `${d.id}: its threshold isn't its floor`);
+  }
+  assert.ok(faces.g >= 1 && faces.y >= 1 && faces.s >= 1 && faces.n >= 1, `its doors on each street: ${JSON.stringify(faces)}`);
+});
+
+test('the QVB\'s levels: the ground and the two over it, fetched together, and up each end\'s stair from the ground to level 2', () => {
+  assert.deepEqual(insideFiles('qvb'), ['qvb-g', 'qvb-1', 'qvb-2']);
+  assert.deepEqual(read('qvb-g').then, ['qvb-1', 'qvb-2']);
+  const levels = ['qvb-g', 'qvb-1', 'qvb-2'].map(read);
+  assert.deepEqual(levels.map((l) => l.rooms.map((r) => [r.id, r.y0])), [[['g', 0]], [['l1', 5.6]], [['l2', 10.6]]]);
+  const floors = levels.flatMap((l) => l.floors);
+  for (const sx of [-1, 1]) {
+    // the switchback: onto its foot, up the flight by the wall, round the half landing, up the other back to its head; twice
+    const low = -12.9, high = -9.98, foot = 74.8, half = 81.6;
+    const lap = [[sx * foot, low], [sx * half, low], [sx * half, high], [sx * foot, high]];
+    const ys = walkHeights(floors, [[sx * 70, -10.0], [sx * 72.4, low], ...lap, [sx * foot, low], ...lap.slice(1), [sx * 72.4, high]], 0);
+    for (let i = 1; i < ys.length; i++) assert.ok(Math.abs(ys[i] - ys[i - 1]) < 0.3, `the stair at ${sx * foot}: a step of ${(ys[i] - ys[i - 1]).toFixed(2)} m`);
+    assert.equal(ys.find((y) => Math.abs(y - 5.6) < 1e-6), 5.6, `the stair at ${sx * foot} never gets to level 1`);
+    assert.equal(ys.at(-1), 10.6, `the stair at ${sx * foot} ends at ${ys.at(-1)}, not level 2`);
+  }
+});
+
+test('the QVB\'s shops: one node drawn at each bay of each level, its goods inside it, and its galleries\' void walled by the balustrade', () => {
+  for (const file of ['qvb-g', 'qvb-1', 'qvb-2']) {
+    const data = read(file);
+    const shops = data.instances.find((i) => i.node === 'shop').at;
+    assert.ok(shops.length >= 60, `${file}: ${shops.length} shops`);
+    // each its own bay, fronting the atrium from either side
+    for (const [x, , z, yaw] of shops) assert.ok(Math.abs(Math.abs(z) - 7.7) < 1e-6 && Math.abs(Math.cos(yaw)) > 0.999, `${file}: a shop at (${x}, ${z})`);
+    for (const inst of data.instances.filter((i) => !['shop', 'rail', 'globe', 'bench', 'cafe'].includes(i.node))) {
+      for (const [x, , z] of inst.at) {
+        assert.ok(shops.some(([sx, , sz]) => Math.abs(x - sx) < 2.0 && Math.sign(z) === Math.sign(sz) && Math.abs(z) > 7.7 && Math.abs(z) < 14.2),
+          `${file}: a ${inst.node} at (${x}, ${z}) in no shop`);
+      }
+    }
+    if (file === 'qvb-g') continue;
+    // the void: a hole in the level's floor between the shopfronts, a wall a metre high along each of its edges
+    const floor = data.floors.find((f) => f.holes?.length);
+    const void_ = floor.holes.find((h) => h.length > 20);
+    assert.ok(void_.every(([, z]) => Math.abs(z) < 7.7), `${file}: its void reaches the shops`);
+    for (let i = 0; i < void_.length; i++) {
+      const a = void_[i], b = void_[(i + 1) % void_.length];
+      const wall = data.walls.find((w) => Math.hypot(w.a[0] - a[0], w.a[1] - a[1]) < 0.01 && Math.hypot(w.b[0] - b[0], w.b[1] - b[1]) < 0.01);
+      assert.ok(wall && wall.y1 - wall.y0 >= 1.0, `${file}: no balustrade from (${a}) to (${b})`);
+    }
+    const rail = data.instances.find((i) => i.node === 'rail');
+    assert.ok(rail.at.length >= void_.length && rail.at.every((r) => r[4] > 0.6 && r[4] < 1.4), `${file}: its balustrade's panels`);
+  }
+});
+
+test('the QVB\'s clocks hang over the void, their hands turned to Sydney\'s time, and the dome\'s void open over the tree\'s spot', () => {
+  const top = read('qvb-2'), ground = read('qvb-g');
+  const hands = top.spin.filter((s) => s.clock);
+  assert.equal(hands.length, 8);
+  for (const h of hands) {
+    // each about the axis out of its dial's face, along the atrium, at a clock over the void
+    assert.equal(Math.abs(h.axis[0]), 1, `${h.node}'s axis`);
+    assert.ok(Math.abs(h.centre[2]) < 0.01 && Math.abs(Math.abs(h.centre[0]) - 36) < 1.5 && h.centre[1] > 12 && h.centre[1] < 20, `${h.node} at ${h.centre}`);
+    assert.ok(['hour', 'minute'].includes(h.clock) && h.room === 'l2');
+  }
+  assert.ok(top.spin.find((s) => s.node === 'hunter' && s.rpm > 0 && s.axis[1] === 1), 'no hunter going round');
+  // the tree's spot: under the dome on the ground floor, with nothing on the floor within its plinth and the levels over it open
+  const [spot] = ground.spots;
+  assert.equal(spot.kind, 'christmas-tree');
+  assert.equal(floorAt(ground.floors, spot.at[0], spot.at[2], 0), 0);
+  const plinth = spot.r + 0.85;
+  for (const file of ['qvb-g', 'qvb-1', 'qvb-2']) {
+    for (const w of read(file).walls.filter((w) => w.y0 < 2.0)) {
+      const d = Math.hypot((w.a[0] + w.b[0]) / 2 - spot.at[0], (w.a[1] + w.b[1]) / 2 - spot.at[2]);
+      assert.ok(d > plinth + 1.0, `${file}: a wall ${d.toFixed(1)} m from the tree's middle, in its way`);
+    }
+  }
+  for (const file of ['qvb-1', 'qvb-2']) {
+    for (let a = 0; a < 2 * Math.PI; a += Math.PI / 8) {
+      const x = spot.at[0] + Math.cos(a) * spot.r, z = spot.at[2] + Math.sin(a) * spot.r;
+      assert.equal(read(file).floors.filter((f) => !f.plane).map((f) => floorAt([f], x, z, 20)).filter((y) => y !== null).length, 0,
+        `${file}'s floor over the tree at (${x.toFixed(1)}, ${z.toFixed(1)})`);
+    }
+  }
 });

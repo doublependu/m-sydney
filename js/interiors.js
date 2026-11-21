@@ -22,7 +22,8 @@ import {
 // - A big inside is several files (a gallery's levels): a door inside can name another (`inside`), the door at the head of a stair down
 //   to the level below, and that file's fetched when it's opened, as the outside's doors fetch theirs. Its rooms, walls, floors and doors
 //   join the others' (rooms are named across files: a stair's room in one, the lobby at its foot in the next). What's held stays till
-//   you leave the building.
+//   you leave the building. A file can name others to come straight after it (`then`): levels seen from the first one's floor, round an
+//   atrium (the QVB's).
 // - Inside, its own doors are open when it comes in, unless they're locked or lead to a file not fetched yet; F shuts one.
 // - Inside, only the rooms you can see are drawn: the one you're in, and those through open doorways from it (interior-data.js).
 // - In it or beside it, the camera behind you is kept clear of its walls, floors and ceilings, so it never looks through one.
@@ -32,8 +33,10 @@ import {
 //   and for a landmark the game's own shape (the Opera House's plain podium and glass). One of the three at a time: the model within
 //   `near` once it's in, the far version past it once that's in, the first shape otherwise. A site that replaces none of the map's
 //   buildings has none, and shows its far version from the first view, as soon as its tile is built.
-// - What turns in an outside (Luna Park's wheel), as its JSON's `spin` says, is turned on the game's clock while the model's drawn, and
-//   what it carries round (the wheel's gondolas) kept level (spinners()).
+// - What turns in a model (Luna Park's wheel), as its JSON's `spin` says, is turned on the game's clock while the model's drawn, and
+//   what it carries round (the wheel's gondolas) kept level (spinners()); a clock's hands (the QVB's clocks, inside) show Sydney's time.
+// - An inside can keep a spot for something a season stands there (`spots`: the QVB's tree under its dome, December's): spots() says
+//   where they are while it's held (js/main.js hands it to the seasons).
 // - A pool in an outside (its JSON's `pools`, North Sydney Pool's) is still water while the model's held: walkers stop at its edge
 //   (js/still-water.js). One with `sim` has water that moves near it (js/pool-water.js, which js/main.js fetches and places: pools()).
 //   One with `swim` is swum in (js/swimming.js, fetched with the first such outside held).
@@ -222,11 +225,12 @@ function markDrawn() {
 
 /**
  * The things an inside draws many of from one (a hall's seats): each `instances` entry names a node of the model, the room it's in and
- * where each copy stands, [x, y, z, yaw]. The node is drawn as one InstancedMesh for each of its materials, in its room's node, so it's
- * drawn when the room is; the node itself goes. Returns the meshes, and says so if the model has no such node.
+ * where each copy stands, [x, y, z, yaw], and a fifth number if it's stretched along its own x (a balustrade's panel, to the run it
+ * stands on). The node is drawn as one InstancedMesh for each of its materials, in its room's node, so it's drawn when the room is; the
+ * node itself goes. Returns the meshes, and says so if the model has no such node.
  */
 function instance(scene, list = []) {
-  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), at = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), at = new THREE.Vector3(), stretch = new THREE.Vector3();
   const made = [];
   for (const entry of list) {
     const proto = scene.getObjectByName(entry.node);
@@ -238,8 +242,8 @@ function instance(scene, list = []) {
     for (const part of parts) {
       part.updateMatrix();
       const mesh = new THREE.InstancedMesh(part.geometry, part.material, entry.at.length);
-      entry.at.forEach(([x, y, z, yaw], i) => {
-        m.compose(at.set(x, y, z), q.setFromAxisAngle(up, yaw), one).multiply(part.matrix);
+      entry.at.forEach(([x, y, z, yaw, sx = 1], i) => {
+        m.compose(at.set(x, y, z), q.setFromAxisAngle(up, yaw), stretch.set(sx, 1, 1)).multiply(part.matrix);
         mesh.setMatrixAt(i, m);
       });
       mesh.instanceMatrix.needsUpdate = true;
@@ -257,11 +261,13 @@ function instance(scene, list = []) {
 }
 
 /**
- * What turns in an outside (its JSON's `spin`, a wheel or a clock's hands): each entry a node turning about an axis through a centre, both
- * in the model's frame, `rpm` turns a minute; and what it carries round level (`level`, a wheel's gondolas): one node, drawn at each of
- * its pivots `at` (where they are with the node unturned, the node's own origin on each), carried round with it and turned back the other
- * way, so it hangs as it was. That's one InstancedMesh for each of its materials, however many there are; the node itself goes. The
- * nodes are kept apart from `body` at export (tools/models/build.py). Returns the spinners, turned by turn().
+ * What turns in a model (its JSON's `spin`, a wheel or a clock's hands), outside or in: each entry a node turning about an axis through a
+ * centre, both in the model's frame, `rpm` turns a minute; or with `clock` ('hour' or 'minute') a clock's hand showing Sydney's time, its
+ * axis out of its dial's face (clockTurn()); in an inside, `room` the room it's drawn with. And what it carries round level (`level`, a
+ * wheel's gondolas): one node, drawn at each of its pivots `at` (where they are with the node unturned, the node's own origin on each),
+ * carried round with it and turned back the other way, so it hangs as it was. That's one InstancedMesh for each of its materials, however
+ * many there are; the node itself goes. The nodes are kept apart from `body` at export (tools/models/build.py). Returns the spinners,
+ * turned by turn().
  */
 function spinners(scene, list = []) {
   const made = [];
@@ -271,7 +277,9 @@ function spinners(scene, list = []) {
       console.warn('[interiors]', `no node ${s.node} to turn`);
       continue;
     }
-    const spinner = { node, axis: new THREE.Vector3(...s.axis).normalize(), centre: new THREE.Vector3(...s.centre), rpm: s.rpm,
+    const room = s.room && scene.getObjectByName(`room_${s.room}`);
+    if (room) room.add(node); // drawn when its room is: the room's node stands where the model's middle does, as the scene does
+    const spinner = { node, axis: new THREE.Vector3(...s.axis).normalize(), centre: new THREE.Vector3(...s.centre), rpm: s.rpm ?? 0, clock: s.clock ?? null,
       p0: node.position.clone(), q0: node.quaternion.clone(), at: [], level: [], angle: 0 };
     const proto = s.level && scene.getObjectByName(s.level.node);
     if (s.level && !proto) console.warn('[interiors]', `no node ${s.level.node} to carry round level`);
@@ -300,6 +308,31 @@ function spinners(scene, list = []) {
   }
   return made;
 }
+
+// Sydney's time of day (Australia/Sydney, whatever the player's own zone), for the clocks in the models: seconds since its midnight. How
+// far it is from the device's clock is worked out again once a minute (a change of daylight saving), not every frame.
+let zoneOffset = 36000, zoneAt = -Infinity;
+function sydneySeconds(now = Date.now()) {
+  if (Math.abs(now - zoneAt) > 60000) {
+    zoneAt = now;
+    try {
+      const parts = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Sydney', hourCycle: 'h23', hour: 'numeric', minute: 'numeric', second: 'numeric' })
+        .formatToParts(new Date(now));
+      const part = (type) => +parts.find((p) => p.type === type).value;
+      zoneOffset = part('hour') * 3600 + part('minute') * 60 + part('second') - Math.floor((now / 1000) % 86400);
+    } catch {
+      zoneOffset = 36000; // AEST, where there's no time zone data
+    }
+  }
+  return (((now / 1000 + zoneOffset) % 86400) + 86400) % 86400;
+}
+/** How far a clock's hand is turned from twelve, clockwise seen from in front: about its axis out of the dial, so negative */
+function clockTurn(hand, seconds = sydneySeconds()) {
+  const period = hand === 'hour' ? 43200 : 3600;
+  return -2 * Math.PI * ((seconds % period) / period);
+}
+/** A spinner's angle now: a clock's hand by Sydney's time, anything else by the game's clock since it began */
+const spinAngle = (s, time) => (s.clock ? clockTurn(s.clock) : (time * s.rpm * 2 * Math.PI / 60) % (2 * Math.PI));
 
 const turning = new THREE.Quaternion(), carried = new THREE.Vector3(), placed = new THREE.Matrix4();
 /** A spinner turned to `angle` (radians) from where the model has it */
@@ -592,6 +625,8 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       if (site.insides.get(file) !== record) return;
       prepare(scene, true);
       const instanced = instance(scene, data.instances);
+      // what turns in it (a clock's hands), drawn with its room
+      const spins = spinners(scene, data.spin);
       // The sun's coloured light through its stained glass, for an inside whose JSON has its windows' pictures (js/stained-light.js)
       let sunlight = null;
       if (data.windows) {
@@ -625,6 +660,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       record.group = group;
       record.data = data;
       record.instanced = instanced;
+      record.spins = spins;
       record.sunlight = sunlight;
       record.art = art;
       record.walls = data.walls.map((w) => wallCollider(site, w));
@@ -638,6 +674,8 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       placeFloors(site);
       // Doors held ajar while it came open the rest of the way
       for (const door of doorsOf(site)) if (door.d.inside === file && door.target > 0) door.target = Math.abs(door.d.turn);
+      // ...and the files it says come with it (the QVB's upper levels, seen across its atrium from the ground's first step in)
+      for (const next of data.then ?? []) if (!site.insides.has(next)) fetchInside(site, next);
     } catch (e) {
       console.warn('[interiors]', file, e);
       if (site.insides.get(file) === record) site.insides.delete(file);
@@ -712,8 +750,11 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
         if (site.far.group) site.far.group.visible = shape === 'far';
       }
       if (!site.out) continue;
-      // What turns in it (a wheel), while it's drawn
-      if (drawn) for (const s of site.out.spins) turn(s, (spinTime * s.rpm * 2 * Math.PI / 60) % (2 * Math.PI));
+      // What turns in it (a wheel, a clock's hands), while it's drawn
+      if (drawn) {
+        for (const s of site.out.spins) turn(s, spinAngle(s, spinTime));
+        for (const r of ready(site)) for (const s of r.spins ?? []) turn(s, spinAngle(s, spinTime));
+      }
       const doorsNear = within(site, x, z, DOORS_NEAR) || within(site, eye.x, eye.z, DOORS_NEAR)
         || [...site.out.doors.values()].some((door) => door.angle > 0 || door.target > 0);
       if (doorsNear !== site.out.leaves) showLeaves(site, doorsNear);
@@ -967,10 +1008,31 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       // a gallery's art in each file held: its paintings and sculptures, whether their pictures are painted yet, how many are drawn
       art: sites.flatMap((s) => ready(s).filter((r) => r.art).map((r) => ({ site: s.id, file: r.file, ...r.art.state() }))),
       lights: lightsOn.length,
-      // what turns in each model drawn (a wheel): its node, the angle it's turned to, and how many it carries round level
-      spins: sites.flatMap((s) => (s.out?.spins ?? []).map((sp) => ({ site: s.id, node: sp.node.name, angle: +sp.angle.toFixed(4), level: sp.at.length,
-        drawn: s.drawn })))
+      // what turns in each model drawn, outside or in (a wheel, a clock's hands): its node, the angle it's turned to, how many it carries
+      // round level, and for a clock's hand which it is
+      spins: sites.flatMap((s) => [...(s.out?.spins ?? []), ...ready(s).flatMap((r) => r.spins ?? [])].map((sp) => ({ site: s.id, node: sp.node.name,
+        angle: +sp.angle.toFixed(4), level: sp.at.length, drawn: s.drawn, ...(sp.clock ? { clock: sp.clock } : {}) }))),
+      // the spots the insides held keep for a season's things (the QVB's tree)
+      spots: spots()
     };
+  }
+
+  /**
+   * The spots the insides held keep for something a season stands there (`spots` in an inside's JSON: the QVB's tree under its dome), of
+   * a kind or all of them: each as its JSON has it, with `site` and where it is in the world's frame (x, y, z)
+   */
+  function spots(kind = null) {
+    const out = [];
+    for (const site of sites) {
+      for (const r of ready(site)) {
+        for (const s of r.data.spots ?? []) {
+          if (kind && s.kind !== kind) continue;
+          const { x, z } = toWorld(site, s.at[0], s.at[2]);
+          out.push({ ...s, site: site.id, x, y: site.y + s.at[1], z });
+        }
+      }
+    }
+    return out;
   }
 
   /**
@@ -992,7 +1054,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     show = spec;
   }
 
-  return { update, use, stood, exitSpot, returnSpot, state, indoorLight, setShow, pools };
+  return { update, use, stood, exitSpot, returnSpot, state, indoorLight, setShow, pools, spots };
 }
 
-export { createInteriors, loadModel, materialFor };
+export { clockTurn, createInteriors, loadModel, materialFor, sydneySeconds };

@@ -89,10 +89,13 @@ test('every model\'s JSON names only nodes it has, and every door that leads in 
       assert.ok(nodes.has(d.node), `${name}: ${d.node}`);
       if (d.leaves === 2) assert.ok(nodes.has(`${d.node}_b`), `${name}: ${d.node}_b`);
     }
+    for (const i of out.instances ?? []) assert.ok(nodes.has(i.node), `${name}: no ${i.node} to draw ${i.at.length} of`);
     for (const file of new Set(out.doors.map((d) => d.inside).filter(Boolean))) {
       const inner = read(file), innerNodes = nodeNames(file);
       for (const d of inner.doors) assert.ok(innerNodes.has(d.node) && (d.leaves !== 2 || innerNodes.has(`${d.node}_b`)), `${file}: ${d.node}`);
       for (const r of inner.rooms) assert.ok(innerNodes.has(r.node) || out.walls.length, `${file}: ${r.node}`);
+      // what it draws many of from one node (a hall's seats): merged away with the rest, none of them would be drawn
+      for (const i of inner.instances ?? []) assert.ok(innerNodes.has(i.node), `${file}: no ${i.node} to draw ${i.at.length} of`);
       // and a floor under the middle of every room, within its heights (a raked hall's rises through them): its middle, or for a room
       // round a corner, a point in it near that
       const floors = [...out.floors, ...inner.floors];

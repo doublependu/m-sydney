@@ -6,12 +6,19 @@ import { MODEL_SITES } from './model-sites.js';
 // One line per sign, so moving a sign is a small change. Wall centres are in world metres (north = -z); `out` is the way
 // the wall faces. A tower drawn from a model of its own (js/model-sites.js) names its site, and its roof is the model's height over
 // the site's: Salesforce Tower's sign is on its glass crown's north face, which is 36.75 m across (tools/models/salesforce.py).
+// A sign is either `text` in `ink` on a dark panel, or a `file`: a wordmark drawn from an SVG of paths (no font to fetch), its letters
+// standing on the tower's face with nothing behind them, w by h in its own proportions.
 const TOWER_SIGNS = [
   {
-    text: 'MAN & BOT', tower: 'Salesforce Tower', height: 263, site: 'salesforce-tower', x: 7.33, z: -1216.0, out: { x: -0.059, z: -0.998 }, w: 30,
-    h: 6, ink: '#ffffff'
+    name: 'MAN & BOT', text: 'MAN & BOT', tower: 'Salesforce Tower', height: 263, site: 'salesforce-tower', x: 7.33, z: -1216.0,
+    out: { x: -0.059, z: -0.998 }, w: 30, h: 6, ink: '#ffffff'
   },
-  { text: 'MAIZE.LIVE', tower: 'Governor Phillip Tower', height: 227, x: 269, z: -1078.5, out: { x: -0.058, z: -0.998 }, w: 50, h: 9, ink: '#ffc933' }
+  // maize.live's: the favicon's "m" and "aize.live" in Bebas Neue, in its own green and blue (this repo's public/signs/maize-live.svg,
+  // 4183 x 860)
+  {
+    name: 'maize.live', file: 'signs/maize-live.svg', tower: 'Governor Phillip Tower', height: 227, x: 269, z: -1078.5,
+    out: { x: -0.058, z: -0.998 }, w: 46, h: 9.46
+  }
 ];
 const BELOW_ROOF = 3; // m from the roof to the top of a sign
 const PROUD = 0.6; // m out from the wall

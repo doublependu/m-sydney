@@ -18,7 +18,7 @@ export const PROFILES = {
 };
 
 const CONTENT_TYPES = {
-  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.gz': 'application/gzip', '.woff2': 'font/woff2'
+  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.gz': 'application/gzip', '.woff2': 'font/woff2', '.svg': 'image/svg+xml'
 };
 
 // Stands in for Cloudflare: brotli on text, already-compressed files as they are.

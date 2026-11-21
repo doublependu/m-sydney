@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { color, float, mix, smoothstep, texture, uv } from 'three/tsl';
+import { color, float, max, mix, smoothstep, texture, uv, vec4 } from 'three/tsl';
 import { cityUniforms } from './tsl-materials.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { LANDMARK_SITES } from './city-config.js';
@@ -213,7 +213,10 @@ function landmarkColliders() {
   return colliders;
 }
 
-// The company names on the two towers (js/tower-signs.js), from one texture and one unlit material
+// The company names on the two towers (js/tower-signs.js), from one texture and one unlit material. A panel sign is drawn at once; a
+// wordmark when its SVG has come, on a clear ground: the material cuts out round its letters, so they stand on the tower's face with
+// nothing behind them, and cast their shadows on it. The texture is filtered premultiplied and divided out after, so a letter's edge
+// keeps its own colour rather than fading to the clear ground's black.
 function addTowerSigns(group) {
   const ROW = 256;
   const canvas = document.createElement('canvas');
@@ -222,13 +225,37 @@ function addTowerSigns(group) {
   const ctx = canvas.getContext('2d');
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+  const map = new THREE.CanvasTexture(canvas);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.anisotropy = 8;
+  map.premultiplyAlpha = true;
   const parts = TOWER_SIGNS.map((sign, i) => {
     const height = Math.round(canvas.width * (sign.h / sign.w));
-    ctx.fillStyle = '#10151c';
-    ctx.fillRect(0, i * ROW, canvas.width, height);
-    ctx.fillStyle = sign.ink;
-    ctx.font = `700 ${Math.round(height * 0.84)}px Overpass, Inter, Arial, sans-serif`;
-    ctx.fillText(sign.text, canvas.width / 2, i * ROW + height * 0.54, canvas.width * 0.95);
+    if (sign.file) {
+      // read as text and drawn from a blob of its own type, whatever type the host sends it as
+      fetch(new URL(sign.file, document.baseURI)).then((r) => {
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.text();
+      }).then((svg) => new Promise((done, fail) => {
+        const art = new Image();
+        const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+        art.onload = () => {
+          ctx.drawImage(art, 0, i * ROW, canvas.width, height);
+          map.needsUpdate = true;
+          URL.revokeObjectURL(url);
+          done();
+        };
+        art.onerror = () => fail(new Error('not drawn'));
+        art.src = url;
+      })).catch((e) => console.warn('[signs]', sign.file, e.message));
+    } else {
+      // the panel a little past its strip, so its edge stays put as it's filtered from afar
+      ctx.fillStyle = '#10151c';
+      ctx.fillRect(0, i * ROW, canvas.width, Math.min(height + 16, ROW - 24));
+      ctx.fillStyle = sign.ink;
+      ctx.font = `700 ${Math.round(height * 0.84)}px Overpass, Inter, Arial, sans-serif`;
+      ctx.fillText(sign.text, canvas.width / 2, i * ROW + height * 0.54, canvas.width * 0.95);
+    }
     const place = placeTowerSign(sign);
     const plane = new THREE.PlaneGeometry(sign.w, sign.h);
     // This sign's strip of the texture; canvas rows run top down, texture rows bottom up
@@ -238,13 +265,16 @@ function addTowerSigns(group) {
     plane.rotateY(place.yaw).translate(place.x, place.y, place.z);
     return plane;
   });
-  const map = new THREE.CanvasTexture(canvas);
-  map.colorSpace = THREE.SRGBColorSpace;
-  map.anisotropy = 8;
-  const material = new THREE.MeshBasicNodeMaterial();
-  material.colorNode = texture(map, uv()).mul(mix(float(0.9), float(1.7), smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow)));
+  const material = new THREE.MeshBasicNodeMaterial({ alphaToCoverage: true });
+  const ink = texture(map, uv());
+  const glow = mix(float(0.9), float(1.7), smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow));
+  material.colorNode = vec4(ink.rgb.div(max(ink.a, float(1 / 255))).mul(glow), ink.a);
+  material.alphaTest = 0.5;
+  // a plane: its shadow from either side
+  material.shadowSide = THREE.DoubleSide;
   const mesh = new THREE.Mesh(mergeGeometries(parts), material);
   mesh.name = 'TowerSigns';
+  mesh.castShadow = true;
   mesh.userData.lifted = true; // placed at the towers' own height
   group.add(mesh);
 }

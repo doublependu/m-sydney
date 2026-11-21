@@ -1065,11 +1065,26 @@ function operaHouseScenario() {
       await walk(at(62.4, -13.3), 'into the hall');
       expect((await interior()).room === 'hall', `not in the hall but ${(await interior()).room}`);
       metric('fpsInHall', (await debug(() => window.__gameDebug.frameCost())).fps);
+      // Its seats are drawn, every one its JSON places, from the one seat in the model
+      const placed = await debug(() => fetch(new URL('models/opera-house-ch.json', document.baseURI)).then((r) => r.json())
+        .then((d) => d.instances.find((i) => i.node === 'seat').at.length));
+      const seatsDrawn = async (where) => {
+        await human.wait(400);
+        const seats = ((await interior()).instances ?? []).filter((i) => i.site === 'opera-house' && i.node === 'seat');
+        expect(seats.length > 0, `${where}: no seat drawn in the hall, of the ${placed} its JSON places`);
+        for (const s of seats) {
+          expect(s.count === placed && s.shown && s.drawn !== null && s.drawn <= 3,
+            `${where}: the hall's seats (${s.name}) ${s.count} of ${placed}, ${s.shown ? 'shown' : 'hidden'}, drawn ${s.drawn ?? 'never'} frames ago`);
+        }
+        return seats.length ? Math.min(...seats.map((s) => s.count)) : 0;
+      };
+      metric('seatsDrawn', await seatsDrawn('into the hall'));
       // Along the fourth row of the stalls to a seat
       await walk(at(64.65, -13.3), 'up the side aisle to the fourth row');
       await walk(at(64.65, -10.0), 'along the fourth row');
       await sit(at(65.2, -10.0), 'in the stalls');
       metric('fpsSeated', (await debug(() => window.__gameDebug.frameCost())).fps);
+      await seatsDrawn('seated in the stalls');
       await human.hold('KeyS', 150);
       await human.wait(500);
       expect(!(await interior()).seated, 'still sitting after moving');

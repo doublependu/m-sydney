@@ -135,16 +135,24 @@ function dispose(group) {
   });
 }
 
+// Frames drawn, and the last one each inside's instanced mesh was drawn in: for the scripts, which check that a hall's seats are drawn
+let frameCount = 0;
+function markDrawn() {
+  this.userData.drawnAt = frameCount;
+}
+
 /**
  * The things an inside draws many of from one (a hall's seats): each `instances` entry names a node of the model, the room it's in and
  * where each copy stands, [x, y, z, yaw]. The node is drawn as one InstancedMesh for each of its materials, in its room's node, so it's
- * drawn when the room is; the node itself goes.
+ * drawn when the room is; the node itself goes. Returns the meshes, and says so if the model has no such node.
  */
 function instance(scene, list = []) {
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), at = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
+  const made = [];
   for (const entry of list) {
     const proto = scene.getObjectByName(entry.node);
     const room = scene.getObjectByName(`room_${entry.room}`) ?? scene;
+    if (!proto) console.warn('[interiors]', `no node ${entry.node} to draw ${entry.at.length} of`);
     if (!proto || !entry.at.length) continue;
     const parts = [];
     proto.traverse((o) => { if (o.isMesh) parts.push(o); });
@@ -159,10 +167,14 @@ function instance(scene, list = []) {
       mesh.computeBoundingSphere();
       mesh.name = `${entry.node}_${part.material.name}`;
       mesh.userData.lifted = true;
+      mesh.userData.node = entry.node;
+      mesh.onBeforeRender = markDrawn;
       room.add(mesh);
+      made.push(mesh);
     }
     proto.removeFromParent();
   }
+  return made;
 }
 
 /**
@@ -398,7 +410,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       const { scene, data } = await loadModel(file);
       if (site.inside !== record) return;
       prepare(scene, true);
-      instance(scene, data.instances);
+      const instanced = instance(scene, data.instances);
       const group = groupFor(site, scene, `Inside_${site.id}`);
       for (const r of data.rooms) {
         const node = scene.getObjectByName(r.node);
@@ -411,6 +423,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       }
       record.group = group;
       record.data = data;
+      record.instanced = instanced;
       record.walls = data.walls.map((w) => wallCollider(site, w));
       colliders.add(record.walls);
       record.doors = addDoors(site, data.doors, scene, 'in', [...data.walls, ...site.out.data.walls]);
@@ -458,6 +471,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
    * building (`kept`), and whether that brought it so near that the player shouldn't be drawn (`close`).
    */
   function update(dt, player, mode, eye, look, head = null) {
+    frameCount++;
     const { x, z } = player.position;
     const reach = farReach();
     for (const site of sites) {
@@ -694,6 +708,15 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       eye: Number.isFinite(held) ? +held.toFixed(2) : null, // m from over your head the camera's kept to, beside a building
       doors: sites.flatMap((s) => doorsOf(s).map((dd) => ({ site: s.id, id: dd.d.id, angle: +dd.angle.toFixed(3), target: +dd.target.toFixed(3) }))),
       drawn: sites.flatMap((s) => (s.inside?.state === 'ready' ? [...s.inside.rooms].filter(([, n]) => n?.visible).map(([id]) => id) : [])),
+      // what a held inside draws many of from one (a hall's seats): how many of the JSON's it draws, whether it and all it's in are shown
+      // and in the scene, and how many frames ago it was last drawn (null: never)
+      instances: sites.flatMap((s) => (s.inside?.state === 'ready' ? s.inside.instanced.map((mesh) => {
+        let shown = true, o = mesh;
+        for (; o.parent; o = o.parent) shown &&= o.visible;
+        const want = s.inside.data.instances.find((i) => i.node === mesh.userData.node).at.length;
+        return { site: s.id, node: mesh.userData.node, name: mesh.name, count: mesh.count, want, shown: shown && o.isScene === true,
+          drawn: mesh.userData.drawnAt === undefined ? null : frameCount - mesh.userData.drawnAt };
+      }) : [])),
       lights: lightsOn.length
     };
   }

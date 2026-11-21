@@ -115,3 +115,44 @@ test('the way in: the south doors lead to the Concert Hall, which is fetched onl
   assert.ok(inside.rooms.find((r) => r.id === 'hall').shelter >= 0.95);
   assert.ok(inside.rooms.find((r) => r.id === 'north-foyer').shelter < 0.5);
 });
+
+test('the corridors round the hall from the landing to its doors are 2.4 m wide or more, and each has its lamps', () => {
+  // The hall's own frame (js/opera-house.js, and the opera-house scenario's): s north along it, v across it, east
+  const HALL = { x: 495.9, z: -1822.5, yaw: -0.083 };
+  const ux = Math.sin(HALL.yaw), uz = -Math.cos(HALL.yaw);
+  const sv = ([x, z]) => {
+    const dx = x + site.x - HALL.x, dz = z + site.z - HALL.z;
+    return [ux * dx + uz * dz, -uz * dx + ux * dz];
+  };
+  const landing = inside.rooms.find((r) => r.id === 'landing');
+  const y = landing.y0;
+  const segDist = (p, a, b) => {
+    const dx = b[0] - a[0], dz = b[1] - a[1];
+    const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / (dx * dx + dz * dz)));
+    return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dz);
+  };
+  // (no two of these cross, so the nearest two points have one at a segment's end)
+  const apart = (a, b) => Math.min(segDist(a.a, b.a, b.b), segDist(a.b, b.a, b.b), segDist(b.a, a.a, a.b), segDist(b.b, a.a, a.b));
+  for (const side of [-1, 1]) {
+    const on = (w) => [sv(w.a), sv(w.b)].every(([, v]) => v * side > 8.2);
+    // the hall's walls, up from under the stalls; the screens along the landing's edge, the landing's height, along the corridor
+    const hall = inside.walls.filter((w) => w.y1 > 30 && w.y0 < y && on(w)).map((w) => ({ a: sv(w.a), b: sv(w.b) }))
+      .filter((w) => Math.min(w.a[0], w.b[0]) < 63);
+    const screens = inside.walls.filter((w) => w.y0 >= y - 0.25 && w.y0 < y && Math.abs(w.y1 - y - 2.6) < 0.01 && on(w))
+      .map((w) => ({ a: sv(w.a), b: sv(w.b) })).filter((w) => Math.abs(w.a[0] - w.b[0]) > 0.5 && Math.min(w.a[0], w.b[0]) > 38.5);
+    assert.ok(hall.length >= 3 && screens.length >= 4, `${hall.length} of the hall's walls, ${screens.length} screens`);
+    // the hall's wall is drawn 0.3 m out of its line
+    const clear = Math.min(...hall.flatMap((h) => screens.map((s) => apart(h, s)))) - 0.3;
+    assert.ok(clear >= 2.4, `the ${side < 0 ? 'west' : 'east'} corridor is ${clear.toFixed(2)} m wide where it's narrowest`);
+    // lamps along it, none more than 5 m from the next, from the landing to the hall's door
+    const lamps = inside.lights.map(([lx, ly, lz]) => [...sv([lx, lz]), ly]).filter(([s, v, ly]) => v * side > 9 && s > 40 && s < 64 && ly > y && ly < y + 4);
+    assert.ok(lamps.length >= 4, `${lamps.length} lamps along it`);
+    const along = lamps.map(([s]) => s).sort((a, b) => a - b);
+    for (let i = 1; i < along.length; i++) assert.ok(along[i] - along[i - 1] < 5, `lamps ${(along[i] - along[i - 1]).toFixed(1)} m apart`);
+    const door = inside.doors.find((d) => d.id === (side < 0 ? 'hall-w' : 'hall-e'));
+    const doorS = Math.max(sv(door.hinge)[0], sv(door.latch)[0]);
+    assert.ok(along[0] < 44 && along[along.length - 1] > doorS - 4, `lamps from s ${along[0].toFixed(1)} to ${along[along.length - 1].toFixed(1)}`);
+    // and the doorway into the hall 1.8 m wide
+    assert.ok(Math.hypot(door.hinge[0] - door.latch[0], door.hinge[1] - door.latch[1]) >= 1.79);
+  }
+});

@@ -449,7 +449,7 @@ function lookoutScenario() {
       const prompt = (await interior()).prompt;
       expect(prompt === 'Open', `at the lookout's door the prompt is ${prompt}`);
       await human.press('KeyF');
-      const open = await human.until(async () => (await interior()).doors.find((d) => d.id === 'lookout')?.angle >= 1.5, { timeout: 15000, read: interior });
+      const open = await human.until(async () => (await interior()).doors.find((d) => d.site === 'pylon-lookout' && d.id === 'lookout')?.angle >= 1.5, { timeout: 15000, read: interior });
       expect(open, 'its door never opened');
       await walk(0.0, 2.0, 'in through the door');
       let i = await interior();
@@ -792,7 +792,7 @@ function towerScenario() {
       const prompt = (await interior()).prompt;
       expect(prompt === 'Open', `at the tower's door the prompt is ${prompt}`);
       await human.press('KeyF');
-      const open = await human.until(async () => (await interior()).doors.find((d) => d.id === 'tower')?.angle >= 1.5, { timeout: 15000, read: interior });
+      const open = await human.until(async () => (await interior()).doors.find((d) => d.site === 'sydney-tower' && d.id === 'tower')?.angle >= 1.5, { timeout: 15000, read: interior });
       expect(open, 'its door never opened');
       await walk(0.0, 15.5, 'in through the door');
       let i = await interior();
@@ -839,7 +839,7 @@ function foyerScenario({ id, door, doorId, room, steps = [], inside }) {
       const prompt = (await interior()).prompt;
       expect(prompt === 'Open', `at the door the prompt is ${prompt}`);
       await human.press('KeyF');
-      const open = await human.until(async () => (await interior()).doors.find((d) => d.id === doorId)?.angle >= 1.5, { timeout: 15000, read: interior });
+      const open = await human.until(async () => (await interior()).doors.find((d) => d.site === id && d.id === doorId)?.angle >= 1.5, { timeout: 15000, read: interior });
       expect(open, 'its door never opened');
       let first = true;
       for (const [x, z, why] of inside) {
@@ -875,7 +875,7 @@ function lowerFortScenario() {
         const prompt = (await interior()).prompt;
         expect(prompt === 'Open', `at door ${id} the prompt is ${prompt}`);
         await human.press('KeyF');
-        const done = await human.until(async () => (await interior()).doors.find((d) => d.id === id)?.angle >= 1.59, { timeout: 15000, read: interior });
+        const done = await human.until(async () => (await interior()).doors.find((d) => d.site === 'lfs-west' && d.id === id)?.angle >= 1.59, { timeout: 15000, read: interior });
         expect(done, `door ${id} never opened`);
       };
       await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
@@ -898,7 +898,7 @@ function lowerFortScenario() {
       // Along the landing past the stairwell, into the sitting room, out onto the balcony
       await walk(-5.0, -0.65, 'round the top of the stair');
       await walk(0.89, -0.65, 'along the landing');
-      expect((await interior()).doors.find((d) => d.id === 'sitting')?.angle >= 1.59, 'the sitting room door isn\'t open from the start');
+      expect((await interior()).doors.find((d) => d.site === 'lfs-west' && d.id === 'sitting')?.angle >= 1.59, 'the sitting room door isn\'t open from the start');
       await walk(0.75, -2.2, 'into the sitting room');
       await walk(0.15, -4.7, 'to the balcony doors');
       await open(-0.05, -5.6, 'sitting-balcony');
@@ -944,7 +944,7 @@ function lowerFortScenario() {
       await face(human, at(-0.2, -9.6));
       await human.wait(300);
       await human.press('KeyF');
-      await human.until(async () => (await interior()).doors.find((d) => d.id === 'gate')?.angle >= 1.59, { timeout: 8000, read: interior });
+      await human.until(async () => (await interior()).doors.find((d) => d.site === 'lfs-west' && d.id === 'gate')?.angle >= 1.59, { timeout: 8000, read: interior });
       await walk(-0.2, -10.4, 'down the steps and out of the gate');
       expect((await level()) < -3.5, `out of the gate, at ${(await level()).toFixed(2)} m`);
     }
@@ -989,7 +989,7 @@ function houseScenario(id, { start, toward, inside, steps }) {
           const prompt = (await interior()).prompt;
           expect(prompt === 'Open', `at door ${c} the prompt is ${prompt}, standing at ${await local()}`);
           await human.press('KeyF');
-          expect(await human.until(async () => (await interior()).doors.find((d) => d.id === c)?.angle >= 1.59, { timeout: 15000, read: interior }),
+          expect(await human.until(async () => (await interior()).doors.find((d) => d.site === id && d.id === c)?.angle >= 1.59, { timeout: 15000, read: interior }),
             `door ${c} never opened`);
         } else if (kind === 'room') expect((await interior()).room === a, `not in ${a}: in ${(await interior()).room}, at ${await local()}`);
         else if (kind === 'level') expect(Math.abs((await level()) - a) < 0.05, `at ${(await level()).toFixed(2)} m, not ${a}`);
@@ -1842,7 +1842,7 @@ function bronteScenario() {
         const prompt = (await interior()).prompt;
         expect(prompt === 'Open', `at door ${id} the prompt is ${prompt}, standing at ${await local()}`);
         await human.press('KeyF');
-        const done = await human.until(async () => (await interior()).doors.find((d) => d.id === id)?.angle >= 1.59, { timeout: 15000, read: interior });
+        const done = await human.until(async () => (await interior()).doors.find((d) => d.site === 'bronte-pacific' && d.id === id)?.angle >= 1.59, { timeout: 15000, read: interior });
         expect(done, `door ${id} never opened`);
       };
       await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
@@ -1936,7 +1936,7 @@ function operaHouseScenario() {
         const prompt = (await interior()).prompt;
         expect(prompt === 'Open', `at door ${id} the prompt is ${prompt}`);
         await human.press('KeyF');
-        const done = await human.until(async () => (await interior()).doors.find((d) => d.id === id)?.angle >= 1.59, { timeout: 20000, read: interior });
+        const done = await human.until(async () => (await interior()).doors.find((d) => d.site === 'opera-house' && d.id === id)?.angle >= 1.59, { timeout: 20000, read: interior });
         expect(done, `door ${id} never opened`);
       };
       // Returns when F was pressed
@@ -1978,7 +1978,7 @@ function operaHouseScenario() {
       await walk(at(47.5, -14.2), 'into the west corridor');
       await walk(at(60.7, -15.2), 'along the west corridor');
       await walk(at(62.3, -15.1), 'to the hall\'s door');
-      expect((await interior()).doors.find((d) => d.id === 'hall-w')?.angle >= 1.59, 'the hall\'s west door isn\'t open from the start');
+      expect((await interior()).doors.find((d) => d.site === 'opera-house' && d.id === 'hall-w')?.angle >= 1.59, 'the hall\'s west door isn\'t open from the start');
       await walk(at(62.4, -13.3), 'into the hall');
       expect((await interior()).room === 'hall', `not in the hall but ${(await interior()).room}`);
       metric('fpsInHall', (await debug(() => window.__gameDebug.frameCost())).fps);
@@ -2041,7 +2041,7 @@ function operaHouseScenario() {
       await walk(at(103.3, -12.3), 'up the circle', { timeout: 40000 });
       expect(near(await level(), 24.25), `at the top of the circle at ${(await level()).toFixed(2)} m`);
       await walk(at(103.3, -9.5), 'to the circle\'s door');
-      expect((await interior()).doors.find((d) => d.id === 'circle-n')?.angle >= 1.59, 'the circle\'s door isn\'t open from the start');
+      expect((await interior()).doors.find((d) => d.site === 'opera-house' && d.id === 'circle-n')?.angle >= 1.59, 'the circle\'s door isn\'t open from the start');
       await walk(at(105.6, -9.3), 'out onto the stair\'s landing');
       expect((await interior()).room === 'north-foyer', `not at the head of the stair but in ${(await interior()).room}`);
       // Out of the hall, the concert fades out and stops, and its notes are let go of
@@ -2101,7 +2101,7 @@ function walkInScenario() {
       await human.press('KeyF');
       const opened = await human.until(async () => {
         const i = await interior();
-        return i.held.includes('test-interior') && i.doors.find((d) => d.id === 'front').angle >= 1.59;
+        return i.held.includes('test-interior') && i.doors.find((d) => d.site === 'test-interior' && d.id === 'front').angle >= 1.59;
       }, { timeout: 20000, read: interior });
       expect(opened, 'the door never opened, or the inside never came');
       metric('secondsToOpen', +((human.now() - pressed) / 1000).toFixed(2));
@@ -2113,7 +2113,7 @@ function walkInScenario() {
       let p = await human.state();
       expect(near(p.surfaceY, site.y, 0.05), `in the hall, standing at ${p.surfaceY.toFixed(2)}, the floor at ${site.y.toFixed(2)}`);
       // Its own doors are open from the start, so the bedroom upstairs is drawn through its doorway, two rooms off
-      for (const id of ['living', 'bedroom']) expect(i.doors.find((d) => d.id === id)?.angle >= 1.59, `the ${id} door isn't open from the start`);
+      for (const id of ['living', 'bedroom']) expect(i.doors.find((d) => d.site === 'test-interior' && d.id === id)?.angle >= 1.59, `the ${id} door isn't open from the start`);
       expect(i.drawn.includes('hall') && i.drawn.includes('bedroom'), `drawn from the hall: ${i.drawn}`);
       await debug(() => window.__gameDebug.frameCost());
       await human.wait(3000);

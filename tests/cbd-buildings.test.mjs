@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import zlib from 'node:zlib';
+import { readModel, triangles } from './helpers/glb.mjs';
 
 // Salesforce Tower, the EY Centre, Customs House and Crown Sydney (js/model-sites.js): models of their own in place of the map's boxes,
 // each with a foyer behind a door off the street. Built by scripts outside this repo, in its public/models/; these hold them to the
@@ -553,6 +554,63 @@ test('Naala Badu: up the steps to its doors from the Art Garden\'s paths, and th
   const w = toWorldOf(badu, x, foot - 1.0);
   const over = paving - (groundHeight(w.x, w.z) - badu.y);
   assert.ok(over > 0.1 && over < 0.6, `the paving at the stair's foot is ${over.toFixed(2)} m over the ground`);
+});
+
+// Both galleries' openings between rooms, arches and doorways: the sides drawn through each wall where the wall stops for it (its walls
+// for the game in the JSON), and nowhere else along a wall; and their doors out's sides, in the outside
+test('the Art Gallery\'s and Naala Badu\'s openings and doors out: their sides in them, where their walls stop, none anywhere else', async () => {
+  const lineOf = (a, b) => (Math.abs(a[0] - b[0]) < 1e-6 ? { axis: 'x', at: a[0], s0: Math.min(a[1], b[1]), s1: Math.max(a[1], b[1]) }
+    : Math.abs(a[1] - b[1]) < 1e-6 ? { axis: 'z', at: a[1], s0: Math.min(a[0], b[0]), s1: Math.max(a[0], b[0]) } : null);
+  const on = (a, b) => a.axis === b.axis && Math.abs(a.at - b.at) < 1e-3;
+  for (const id of ['art-gallery', 'art-gallery-new']) {
+    const files = insideFiles(id);
+    const walls = files.flatMap((f) => read(f).walls).map((w) => ({ ...w, ...lineOf(w.a, w.b) })).filter((w) => w.axis);
+    // an opening: a wall over a gap in its line's walls, those under it stopping at its ends; not a door out (the outside draws those)
+    const out = read(id).doors.map((d) => lineOf(d.hinge, d.latch)).filter(Boolean);
+    const under = (w, v) => on(v, w) && v.y0 < w.y0 - 0.5 && v.y1 > w.y0;
+    const openings = walls.filter((w) => walls.some((v) => under(w, v) && Math.abs(v.s1 - w.s0) < 1e-3)
+      && walls.some((v) => under(w, v) && Math.abs(v.s0 - w.s1) < 1e-3)
+      && !out.some((d) => d.axis === w.axis && Math.abs(d.at - w.at) < 0.3 && Math.abs(d.s0 - w.s0) < 0.05 && Math.abs(d.s1 - w.s1) < 0.05));
+    assert.ok(openings.length > 20, `${id}: ${openings.length} openings`);
+    // a side: a face a metre or more tall across a wall, through its thickness, facing along its line
+    const sides = [];
+    for (const file of files) {
+      for (const t of triangles(await readModel(file))) {
+        const u = t.b.map((v, i) => v - t.a[i]), v = t.c.map((q, i) => q - t.a[i]);
+        const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]], L = Math.hypot(...n);
+        const ys = [t.a[1], t.b[1], t.c[1]];
+        if (L < 1e-9 || Math.max(...ys) - Math.min(...ys) < 1) continue;
+        for (const [axis, across, along] of [['x', 0, 2], ['z', 2, 0]]) {
+          if (Math.abs(n[along] / L) < 0.999) continue;
+          const cs = [t.a[across], t.b[across], t.c[across]];
+          const wall = walls.find((w) => w.axis === axis && Math.min(...cs) > w.at - w.t / 2 - 0.01 && Math.max(...cs) < w.at + w.t / 2 + 0.01
+            && Math.max(...cs) - Math.min(...cs) > w.t - 0.02);
+          if (wall) sides.push({ file, axis, at: wall.at, s: t.a[along], y0: Math.min(...ys), y1: Math.max(...ys) });
+        }
+      }
+    }
+    const stops = (f) => walls.some((w) => on(w, f) && w.y0 <= f.y0 + 0.01 && w.y1 > f.y0 + 0.5 && (Math.abs(w.s0 - f.s) < 0.01 || Math.abs(w.s1 - f.s) < 0.01));
+    const stray = [...new Set(sides.filter((f) => !stops(f)).map((f) => `${f.file}: ${f.axis} = ${f.at} at ${f.s.toFixed(2)}, y ${f.y0.toFixed(1)}-${f.y1.toFixed(1)}`))];
+    assert.deepEqual(stray.slice(0, 8), [], `${id}: ${stray.length} faces across a wall where it doesn't stop`);
+    const missing = openings.flatMap((o) => [o.s0, o.s1].filter((s) => !sides.some((f) => on(f, o) && Math.abs(f.s - s) < 0.01))
+      .map((s) => `${o.axis} = ${o.at} at ${s}, under ${o.y0}`));
+    assert.deepEqual(missing.slice(0, 8), [], `${id}: ${missing.length} sides of openings not drawn`);
+    // the doors out: their sides in the outside, at each jamb, through the wall from the room's face to the building's
+    const outside = [...triangles(await readModel(id))];
+    for (const d of read(id).doors) {
+      const o = lineOf(d.hinge, d.latch), [across, along] = o.axis === 'x' ? [0, 2] : [2, 0];
+      for (const s of [o.s0, o.s1]) {
+        const side = outside.some((t) => {
+          const u = t.b.map((v, i) => v - t.a[i]), v = t.c.map((q, i) => q - t.a[i]);
+          const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]], L = Math.hypot(...n);
+          const cs = [t.a[across], t.b[across], t.c[across]], ys = [t.a[1], t.b[1], t.c[1]];
+          return L > 1e-9 && Math.abs(n[along] / L) > 0.999 && Math.abs(t.a[along] - s) < 0.06 && Math.min(...cs) < o.at + 0.3
+            && Math.max(...cs) > o.at - 0.3 && Math.max(...cs) - Math.min(...cs) > 0.7 && Math.max(...ys) - Math.min(...ys) > 1;
+        });
+        assert.ok(side, `${id}: the door out ${d.id} has no side through its wall at ${s}`);
+      }
+    }
+  }
 });
 
 // The Queen Victoria Building: 190 m along George St, a door on each of its four streets, three levels of shops round its atrium

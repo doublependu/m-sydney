@@ -83,11 +83,13 @@ export class Human {
     await this.up(key);
   }
 
+  // Waits till `check` holds for what `read` reads: the state it held for, or null after `timeout`. The check may be async (its
+  // promise is awaited: a promise itself is always truthy).
   async until(check, { timeout = 15000, every = 100, read = () => this.state() } = {}) {
     const deadline = this.now() + timeout;
     while (this.now() < deadline) {
       const state = await read();
-      if (check(state)) return state;
+      if (await check(state)) return state;
       await this.wait(every);
     }
     return null;

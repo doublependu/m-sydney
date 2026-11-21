@@ -1246,6 +1246,42 @@ async function initApp() {
       concertStage = null;
     }
   }
+  // The water of a pool that moves (js/pool-water.js: North Sydney Pool's), fetched the first time the camera's within POOL_REACH of one
+  // whose model is drawn, and let go of past POOL_LET_GO. A height field stepped in compute on WebGPU above low; elsewhere scrolling
+  // waves. While it's there it stands in for the model's still sheet of water (its `node`). Anything can stir it: poolWater.drop().
+  const POOL_REACH = 300, POOL_LET_GO = 360;
+  let poolWater = null, poolLoading = null, poolFailed = false;
+  function updatePool(dt, eye) {
+    const pools = interiors.pools();
+    if (poolWater) {
+      const here = pools.find((p) => p.id === poolWater.id);
+      const away = here ? Math.hypot(here.site.x - eye.x, here.site.z - eye.z) : Infinity;
+      if (!here || away > POOL_LET_GO) {
+        poolWater.water.dispose();
+        if (poolWater.still) poolWater.still.visible = true;
+        poolWater = null;
+        return;
+      }
+      if (poolWater.still) poolWater.still.visible = false;
+      poolWater.water.update(dt, here.drawn);
+      return;
+    }
+    if (poolLoading || poolFailed) return;
+    const near = pools.find((p) => p.drawn && Math.hypot(p.site.x - eye.x, p.site.z - eye.z) < POOL_REACH);
+    if (!near) return;
+    poolLoading = import('./pool-water.js').then(async ({ createPoolWater }) => {
+      const water = await createPoolWater({
+        site: near.site, pool: near.pool, renderer, reveal: (group) => revealStage(group), uniforms: cityUniforms, level: quality.level,
+        simulate: renderer.backend.isWebGPUBackend === true && quality.level !== 'low'
+      });
+      poolWater = { id: near.id, water, still: near.pool.node ? near.model.getObjectByName(near.pool.node) : null };
+    }).catch((error) => {
+      console.error('[pool-water]', error);
+      poolFailed = true;
+    }).finally(() => {
+      poolLoading = null;
+    });
+  }
   let indoors = false;
   let indoorShelter = 0.85; // how far the room you're in shuts out the sky (js/interiors.js): a glazed foyer less, a concert hall all of it
   // Inside a house the city stays drawn, for the view from its windows: only the walk slows, and the sky's light dims
@@ -1991,6 +2027,12 @@ async function initApp() {
       mapImage: (x0, z0, size, px, buildings) => mapSystem.renderImage(x0, z0, size, px, buildings),
       farBuildings: async (key) => (await fetchFarFile(key)).buildings,
       interior: () => interiors.state(),
+      // The pool's moving water (js/pool-water.js): its state, or what's keeping it; `drop` stirs it at (x, z)
+      poolProbe: () => poolWater?.water.probe() ?? null,
+      pool: (drop = null) => {
+        if (drop && poolWater) poolWater.water.drop(drop.x, drop.z, drop.radius, drop.strength);
+        return poolWater ? { id: poolWater.id, ...poolWater.water.state() } : { loading: !!poolLoading, failed: poolFailed, pools: interiors.pools().map((p) => p.id) };
+      },
       // The concert (js/concert.js): its state, or { seed } for a new performance with that seed, { at } to jump to a time in it (s);
       // null till you've sat in the Concert Hall
       concert: (command) => concert?.debug(command) ?? null,
@@ -2650,6 +2692,7 @@ async function initApp() {
       setIndoors(here.indoors);
       setInBuilding(here.building && controllerManager.activeMode === 'person');
       updateConcert(dt, here);
+      updatePool(dt, eye);
       indoorShelter = here.shelter ?? 0.85;
       showPrompt(here.prompt);
       const near = here.kept || firstPerson ? 0.1 : 0.35;

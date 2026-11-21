@@ -171,3 +171,29 @@ test('luna-park: its wheel turns about its axle, and its 24 gondolas hang from p
     }
   }
 });
+
+// A model's pools (its JSON's `pools`, js/interiors.js): still water to walkers while the model's held (js/still-water.js), and on its floors
+// a walker is held at their edge as at a pond's
+test('north-sydney-pool: its pools are still water while held, and only then; on its deck a walker is held at their edge', async () => {
+  const site = MODEL_SITES.find((s) => s.id === 'north-sydney-pool');
+  assert.ok(site && !withInside.includes(site), 'the pool has no inside, so no way out to list');
+  const { addStillWater, removeStillWater, waterAt, stillWaterDepth, modelWaterNear } = await import('../js/still-water.js');
+  const { pools } = model('north-sydney-pool');
+  assert.deepEqual(pools.map((p) => p.id), ['olympic', 'kids']);
+  const middle = toWorldOf(site, 0, 0), deck = toWorldOf(site, 0, 12.0), edge = toWorldOf(site, 0, 10.6);
+  assert.equal(waterAt(middle.x, middle.z), null, 'still water before the model\'s held');
+  addStillWater(`site:${site.id}`, pools.map((p) => p.ring.map(([x, z]) => toWorldOf(site, x, z))), 'pool');
+  try {
+    assert.equal(waterAt(middle.x, middle.z)?.kind, 'pool');
+    const kids = toWorldOf(site, 34.5, -3.0);
+    assert.equal(waterAt(kids.x, kids.z)?.kind, 'pool', 'the kids\' pool isn\'t still water');
+    assert.equal(waterAt(deck.x, deck.z), null, 'the deck is in the water');
+    assert.ok(modelWaterNear(deck.x, deck.z) && !modelWaterNear(site.x + 200, site.z), 'the pool isn\'t near its deck');
+    // 1.5 m from the edge clear; 0.1 m from it, a walker's round in it
+    assert.equal(stillWaterDepth('person', deck.x, deck.z), 0);
+    assert.ok(stillWaterDepth('person', edge.x, edge.z) > 0.1, 'a walker\'s feet over the edge aren\'t in the water');
+  } finally {
+    removeStillWater(`site:${site.id}`);
+  }
+  assert.equal(waterAt(middle.x, middle.z), null, 'still water after the model\'s let go of');
+});

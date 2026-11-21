@@ -59,9 +59,10 @@ test('an outside is drawn in a draw or so a material, its door leaves as one shu
   for (const site of MODEL_SITES) {
     const name = site.file.replace('models/', '');
     const g = gltf(name), nodes = nodeNames(name), doors = read(name).doors;
-    // what never moves is one node, and every node not a door leaf or the shut piece, or what turns (`spin`), is drawn in one draw a
-    // material
-    const moving = new Set((read(name).spin ?? []).flatMap((s) => [s.node, s.level?.node]).filter(Boolean));
+    // what never moves is one node, and every node not a door leaf or the shut piece, what turns (`spin`), or a pool's still sheet of water
+    // the game hides for its own (`pools`), is drawn in one draw a material
+    const moving = new Set([...(read(name).spin ?? []).flatMap((s) => [s.node, s.level?.node]), ...(read(name).pools ?? []).map((p) => p.node)]
+      .filter(Boolean));
     const apart = g.nodes.filter((n) => n.mesh === undefined && !/^door_|^doors_shut$/.test(n.name) && !moving.has(n.name) && n.children?.length);
     assert.ok(apart.length <= 1, `${name}: ${apart.map((n) => n.name)}`);
     if (doors.length) assert.ok(nodes.has('doors_shut'), `${name}: no doors_shut`);

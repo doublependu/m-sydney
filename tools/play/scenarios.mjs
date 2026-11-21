@@ -519,6 +519,83 @@ function lunaParkScenario() {
   };
 }
 
+// Round North Sydney Pool (js/model-sites.js, north-sydney-pool) on its deck: along the harbour side, round the shallow end, along the
+// stand's side and up its tiers; at each side, a walk at the water held at its edge (the pool's still water, js/still-water.js). Its water
+// moves (js/pool-water.js): stepped on WebGPU, its swimmers doing laps.
+function poolScenario() {
+  return {
+    async run({ human, page, metric, expect }) {
+      const debug = (fn, ...args) => page.evaluate(fn, ...args);
+      const SITE = MODEL_SITES.find((s) => s.id === 'north-sydney-pool');
+      const c = Math.cos(SITE.yaw), n = Math.sin(SITE.yaw);
+      const at = (x, z) => ({ x: SITE.x + x * c + z * n, z: SITE.z - x * n + z * c });
+      const local = async () => {
+        const s = await human.state(), dx = s.x - SITE.x, dz = s.z - SITE.z;
+        return { x: dx * c - dz * n, z: dx * n + dz * c, y: s.surfaceY - SITE.y };
+      };
+      const where = async () => { const l = await local(); return `(${l.x.toFixed(2)}, ${l.z.toFixed(2)}) at ${l.y.toFixed(2)} m`; };
+      const walk = async (x, z, why) => expect(await walkTo(human, at(x, z)), `never got ${why}, stuck at ${await where()}`);
+      // Into the water from the deck at (x, z) towards (tx, tz): held at the edge, `edge` m from the middle across or along it
+      const toTheWater = async (x, z, tx, tz, why, held) => {
+        await walk(x, z, `to the edge ${why}`);
+        await walkTo(human, at(tx, tz), { timeout: 4000 });
+        const l = await local();
+        expect(held(l), `walked into the water ${why}: at ${await where()}`);
+        return l;
+      };
+      await page.waitForFunction(() => window.__gameDebug.worldCompleteAt() !== null, null, { timeout: 180000, polling: 500 });
+      // Near it, for its model; then onto its deck on the harbour side, facing the water
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...at(0.0, 30.0), h: SITE.yaw + Math.PI });
+      await page.waitForFunction(() => window.__gameDebug.interior().sites.find((s) => s.id === 'north-sydney-pool')?.out, null, { timeout: 60000, polling: 250 });
+      await debug(({ x, z, h }) => window.__gameDebug.goto(x, z, h, 'person'), { ...at(0.0, 12.0), h: SITE.yaw + Math.PI });
+      await human.wait(1500);
+      const onDeck = await local();
+      expect(Math.abs(onDeck.y) < 0.15, `not on the deck: at ${await where()}`);
+      // The water: still water to walkers; its own, moving, with swimmers in it
+      const middle = at(0, 0);
+      const kind = (await debug(({ x, z }) => window.__gameDebug.water(x, z), middle))?.kind;
+      expect(kind === 'pool', `the pool's middle is ${kind ?? 'dry'} to a walker`);
+      const ready = await human.until(async () => (await debug(() => window.__gameDebug.pool()))?.swimmers?.length > 0, { timeout: 20000 });
+      expect(ready, 'its water never came');
+      const before = await debug(() => window.__gameDebug.pool());
+      await human.wait(2000);
+      const after = await debug(() => window.__gameDebug.pool());
+      const moved = after.swimmers.reduce((m, sw, i) => Math.max(m, Math.abs(sw.x - before.swimmers[i].x)), 0);
+      metric('swimmers', after.swimmers.length);
+      metric('swimmerMoved', +moved.toFixed(2));
+      metric('simSteps', after.simulate ? after.steps - before.steps : null);
+      expect(moved > 1, `its swimmers moved ${moved.toFixed(2)} m in 2 s`);
+      if (after.simulate) expect(after.steps - before.steps >= 40, `its water stepped ${after.steps - before.steps} times in 2 s`);
+      // Along the harbour side, then at the water: held at its edge
+      await walk(-14.0, 12.0, 'along the harbour side');
+      await walk(14.0, 12.0, 'back along it');
+      const sw = await toTheWater(0.0, 12.0, 0.0, 8.0, 'on the harbour side', (l) => l.z > 10.6);
+      metric('edgeHarbourSide', +(sw.z - 10.5).toFixed(2));
+      // Round the shallow end, and at its water: back from the edge, between the backstroke flags' pole and the umbrellas
+      await walk(0.0, 12.0, 'back from the edge');
+      await walk(15.0, 11.9, 'along the harbour side');
+      await walk(26.5, 11.9, 'to the shallow end');
+      await walk(27.0, -8.0, 'along the shallow end');
+      const se = await toTheWater(27.0, 0.0, 22.0, 0.0, 'at the shallow end', (l) => l.x > 25.1);
+      metric('edgeShallowEnd', +(se.x - 25).toFixed(2));
+      // Along the stand's side, and at its water
+      await walk(27.0, -14.0, 'round to the stand\'s side');
+      await walk(0.0, -14.0, 'along the stand\'s side');
+      const ne = await toTheWater(0.0, -14.0, 0.0, -8.0, 'on the stand\'s side', (l) => l.z < -10.6);
+      metric('edgeStandSide', +(-10.5 - ne.z).toFixed(2));
+      metric('fpsOnDeck', (await debug(() => window.__gameDebug.frameCost())).fps);
+      // Up the stand's tiers by its middle aisle
+      await walk(3.2, -16.5, 'to the foot of the stand');
+      await walk(3.2, -23.6, 'up the stand');
+      const top = await local();
+      expect(top.y > 3.0, `up the stand at ${await where()}`);
+      metric('standTop', +top.y.toFixed(2));
+      await walk(3.2, -16.5, 'down the stand');
+      expect(Math.abs((await local()).y) < 0.15, `back on the deck at ${await where()}`);
+    }
+  };
+}
+
 // Into Sydney Tower's foyer (js/model-sites.js, sydney-tower), behind its door on Market St: in, through the gates to the lifts, and out
 function towerScenario() {
   return {
@@ -2489,6 +2566,7 @@ export const SCENARIOS = {
   'pylon-lookout': lookoutScenario(),
   'pylon-lookout-phone': { ...lookoutScenario(), profile: 'phone' },
   'luna-park': lunaParkScenario(),
+  'north-sydney-pool': poolScenario(),
   'sydney-tower': towerScenario(),
   'sydney-tower-phone': { ...towerScenario(), profile: 'phone' },
   'salesforce-tower': foyerScenario({

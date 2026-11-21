@@ -2,7 +2,8 @@ import { onMap } from './geodata.js';
 import { onGroundRoad } from './surfaces.js';
 
 // Still water on land, and who it holds back: a garden's ponds, its ponds edged with rocks and its fountains' basins (tile.garden), and the
-// lakes outside the gardens (tile.lakes), all drawn by js/garden.js. The land raster has every one of them as land, so the sea's rule
+// lakes outside the gardens (tile.lakes), all drawn by js/garden.js; and the pools a model draws (its JSON's `pools`: North Sydney Pool's,
+// added by js/interiors.js while the model's held, addStillWater()). The land raster has every one of them as land, so the sea's rule
 // (js/surfaces.js clearOfWater()) never sees them. Here they're rings again, from each tile's data as it's held, before its garden is
 // built (that waits for its neighbours), so a teleport to a pond's shore is held there at once. Walker, bike and car stop at the shore
 // (js/controllers.js) and arrive out of the water (js/arrivals.js), each tested by its body, not just its middle.
@@ -202,13 +203,29 @@ function forgetPaths() {
   for (const t of pathsOf.values()) t.indexed = false;
 }
 
+// Pieces into the cells under a key (a tile's, or a model's), and out again
+function addPieces(key, pieces) {
+  const keys = new Set();
+  for (const p of pieces) put(pieceCells, BIG, p.x0, p.z0, p.x1, p.z1, p, keys);
+  pieceKeysOf.set(key, keys);
+}
+function removePieces(key) {
+  const keys = pieceKeysOf.get(key);
+  if (!keys) return false;
+  pieceKeysOf.delete(key);
+  for (const k of keys) {
+    const kept = (pieceCells.get(k) || []).filter((p) => p.tile !== key);
+    if (kept.length) pieceCells.set(k, kept);
+    else pieceCells.delete(k);
+  }
+  return true;
+}
+
 onMap({
   addTile(tile) {
     const pieces = piecesOf(tile), paths = tile.garden?.paths ?? [];
     if (!pieces.length && !paths.length) return;
-    const keys = new Set();
-    for (const p of pieces) put(pieceCells, BIG, p.x0, p.z0, p.x1, p.z1, p, keys);
-    pieceKeysOf.set(tile.key, keys);
+    addPieces(tile.key, pieces);
     if (paths.length) {
       const t = { paths, x0: Infinity, z0: Infinity, x1: -Infinity, z1: -Infinity, indexed: false };
       for (const f of paths) {
@@ -225,18 +242,44 @@ onMap({
     forgetPaths();
   },
   removeTile(tile) {
-    const keys = pieceKeysOf.get(tile.key);
-    if (!keys) return;
-    pieceKeysOf.delete(tile.key);
-    for (const key of keys) {
-      const kept = (pieceCells.get(key) || []).filter((p) => p.tile !== tile.key);
-      if (kept.length) pieceCells.set(key, kept);
-      else pieceCells.delete(key);
-    }
+    if (!removePieces(tile.key)) return;
     pathsOf.delete(tile.key);
     forgetPaths();
   }
 });
+
+/**
+ * A model's still water (its pools, js/interiors.js), held under `key` till removeStillWater(key): `rings` each a ring of { x, z } in the
+ * world's frame, its water; `kind` what waterAt() calls it. Walker, bike and car stop at its edge as at a pond's.
+ */
+function addStillWater(key, rings, kind = 'pool') {
+  removeStillWater(key);
+  const pieces = rings.filter((r) => r.length >= 3).map((r) => {
+    const flat = r.flatMap((p) => [p.x, p.z]);
+    const xs = r.map((p) => p.x), zs = r.map((p) => p.z);
+    return { kind, margin: 0, rings: [flat], tile: key, x0: Math.min(...xs), x1: Math.max(...xs), z0: Math.min(...zs), z1: Math.max(...zs) };
+  });
+  if (!pieces.length) return;
+  addPieces(key, pieces);
+  forgetPaths();
+}
+function removeStillWater(key) {
+  if (removePieces(key)) forgetPaths();
+}
+/**
+ * Whether still water a model holds (its pools) comes within `reach` m of (x, z). A model's floors are walked on past still water elsewhere
+ * (its walls bound them: a jetty), but at its own pools' edges a walker is held as at a pond's
+ */
+function modelWaterNear(x, z, reach = 2.5) {
+  for (let ix = Math.floor((x - reach) / BIG); ix <= Math.floor((x + reach) / BIG); ix++) {
+    for (let iz = Math.floor((z - reach) / BIG); iz <= Math.floor((z + reach) / BIG); iz++) {
+      for (const p of pieceCells.get(cellKey(ix, iz)) || []) {
+        if (p.tile.startsWith('site:') && x > p.x0 - reach && x < p.x1 + reach && z > p.z0 - reach && z < p.z1 + reach) return true;
+      }
+    }
+  }
+  return false;
+}
 
 /**
  * Dry ground over still water: on a road's carriageway on the ground (the sea's own rule for a road meeting water: it crosses on a culvert
@@ -252,7 +295,7 @@ function dryAt(x, z) {
   return false;
 }
 
-/** The still water at (x, z) itself (a fountain's rim isn't), { kind: 'pond' | 'rock' | 'fountain' | 'lake', dry }, or null */
+/** The still water at (x, z) itself (a fountain's rim isn't), { kind: 'pond' | 'rock' | 'fountain' | 'lake' | 'pool', dry }, or null */
 function waterAt(x, z) {
   for (const p of pieceCells.get(cellKey(Math.floor(x / BIG), Math.floor(z / BIG))) || []) {
     if (x >= p.x0 && x <= p.x1 && z >= p.z0 && z <= p.z1 && inside(p, x, z)) return { kind: p.kind, dry: dryAt(x, z) };
@@ -349,4 +392,7 @@ function stillWaterDepth(mode, x, z, heading = 0) {
 
 const inStillWater = (mode, x, z, heading = 0) => stillWaterDepth(mode, x, z, heading) > 0;
 
-export { BODIES as WATER_BODIES, RIM as FOUNTAIN_RIM, bodyInWater, dryAt, inStillWater, shoreAlong, stillWaterDepth, waterAt };
+export {
+  BODIES as WATER_BODIES, RIM as FOUNTAIN_RIM, addStillWater, bodyInWater, dryAt, inStillWater, modelWaterNear, removeStillWater, shoreAlong,
+  stillWaterDepth, waterAt
+};

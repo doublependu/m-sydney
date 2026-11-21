@@ -280,6 +280,22 @@ const MODEL_SITES = [
   {
     id: 'st-marys', file: 'models/st-marys', x: 560.5, z: -287.5, yaw: 0.025, y: 29.5, far: true, replaces: [[0, 0]], reach: 130,
     top: 74.5, radius: 54.5, clear: [[0, 57.0, 3.0], [-20.6, 26.5, 2.5]], exit: 'door'
+  },
+  // North Sydney Olympic Pool, Milsons Point (1936), between Luna Park and the Harbour Bridge's north pylons: the 50 m pool, its lanes,
+  // ropes, blocks, ladders and the steps at its shallow end; the heritage arcade along its harbour side and the old building at its
+  // north-west end, the new grandstand and the building over the 25 m pool on its north-east side, the kids' pool and the terraces to the
+  // harbour at its south-east end. Its water is real (js/pool-water.js): the JSON's `pools`. In place of the map's boxes of the stand, the
+  // new building, the old building at the end, the brick building east of the stand and the terrace's on the promenade. Its frame: the
+  // 50 m pool's middle, +x along it to the south-east, +z across it to the harbour; the deck's level. The map's ground rises across it:
+  // where it's over the deck, the stand and the pool's water, it's left undrawn. No inside; the poolside is walked on.
+  {
+    id: 'north-sydney-pool', file: 'models/north-sydney-pool', x: 19.35, z: -2671.65, yaw: -0.7046, y: 6.4, far: true,
+    replaces: [[-32.6, 0.0], [3.1, -21.2], [0.0, -40.0], [38.0, -27.0], [35.5, 12.9]],
+    cut: {
+      poly: [[-24.7, 0.6], [-16.3, 10.6], [25.6, 10.6], [25.6, 0.6], [44.0, 0.6], [44.0, -21.6], [25.8, -21.6], [25.8, -24.6], [-19.3, -24.6],
+        [-19.3, -17.8], [-29.2, -17.8], [-29.2, -4.6], [-26.2, -1.3]],
+      y: -2.4
+    }
   }
 ];
 

@@ -6,6 +6,7 @@ import {
 import { CITY_BOUNDS, blockAt } from './city-config.js';
 import { hasFirstShape, showFirstShape } from './first-shapes.js';
 import { MODEL_SITES } from './model-sites.js';
+import { addStillWater, removeStillWater } from './still-water.js';
 import { clearFloor, groundHeight, setFloor } from './surfaces.js';
 import { cityUniforms } from './tsl-materials.js';
 import {
@@ -29,6 +30,8 @@ import {
 //   buildings has none, and shows its far version from the first view, as soon as its tile is built.
 // - What turns in an outside (Luna Park's wheel), as its JSON's `spin` says, is turned on the game's clock while the model's drawn, and
 //   what it carries round (the wheel's gondolas) kept level (spinners()).
+// - A pool in an outside (its JSON's `pools`, North Sydney Pool's) is still water while the model's held: walkers stop at its edge
+//   (js/still-water.js). One with `sim` has water that moves near it (js/pool-water.js, which js/main.js fetches and places: pools()).
 // Every site's model is in its own frame (x across, z along, y up from its ground floor), placed at (x, y, z) and turned by yaw.
 
 const RELEASE = 60; // m from a building that its inside is let go of, unless its site says (`reach`)
@@ -481,6 +484,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
         leaves: true, spins };
       showLeaves(site, false);
       placeFloors(site);
+      holdPools(site);
       if (site.far?.group) site.far.group.position.y = site.y;
     } catch (e) {
       console.warn('[interiors]', site.id, e);
@@ -498,8 +502,15 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     removeDoors(out.doors);
     dispose(out.group);
     clearFloor(site.id);
+    removeStillWater(`site:${site.id}`);
     // what's drawn in its place is worked out again straight after (update())
     site.drawn = false;
+  }
+
+  /** Its pools' water, as still water in the world's frame */
+  function holdPools(site) {
+    const pools = site.out.data.pools ?? [];
+    if (pools.length) addStillWater(`site:${site.id}`, pools.map((p) => p.ring.map(([x, z]) => toWorld(site, x, z))), 'pool');
   }
 
   /** The outside's door leaves apart, each to swing on its own, or (from further off) the one shut piece in their place */
@@ -902,12 +913,26 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     };
   }
 
+  /**
+   * The pools of the outsides held whose water moves (`sim` in their JSON's `pools`): { id, site: { x, y, z, yaw }, pool, drawn, model }:
+   * `model` the model's group, `drawn` whether it's drawn now
+   */
+  function pools() {
+    const out = [];
+    for (const site of sites) {
+      for (const pool of site.out?.data.pools ?? []) {
+        if (pool.sim) out.push({ id: `${site.id}:${pool.id}`, site: { x: site.x, y: site.y, z: site.z, yaw: site.yaw }, pool, drawn: site.drawn, model: site.out.group });
+      }
+    }
+    return out;
+  }
+
   /** A show's lights in a room, or null (see `show` above) */
   function setShow(spec) {
     show = spec;
   }
 
-  return { update, use, stood, exitSpot, returnSpot, state, indoorLight, setShow };
+  return { update, use, stood, exitSpot, returnSpot, state, indoorLight, setShow, pools };
 }
 
 export { createInteriors, loadModel, materialFor };

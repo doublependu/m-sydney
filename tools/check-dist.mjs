@@ -4,7 +4,8 @@
 // And fails if any folder in the deploy or the repository has over 1,000 entries: GitHub's website lists only the first 1,000
 // of a folder, and its documentation recommends 3,000 at most. The map's files go in folders by 8 km square (js/tiles/paths.js).
 // It lists the first download's code too (what index.html loads, and what that imports), and fails if a season's is in it: the
-// seasons are fetched only in their season, once the city is complete (js/seasons.js).
+// seasons are fetched only in their season, once the city is complete (js/seasons.js); or a pool's moving water, fetched only near one
+// (js/pool-water.js).
 import { execSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -80,6 +81,7 @@ if (largest[1] > MAX_BYTES) problems.push(`${largest[0]} is over 25 MiB`);
 if (fullest[1] > MAX_IN_FOLDER) problems.push(`${fullest[0]} has ${fullest[1]} entries in the deploy, over ${MAX_IN_FOLDER}`);
 if (repoFullest[1] > MAX_IN_FOLDER) problems.push(`${repoFullest[0]} has ${repoFullest[1]} entries in the repository, over ${MAX_IN_FOLDER}`);
 for (const name of firstNames) if (/^seasons?[-.]/.test(name)) problems.push(`${name} is in the first download: a season's code is fetched only in its season`);
+for (const name of firstNames) if (/^pool-water[-.]/.test(name)) problems.push(`${name} is in the first download: a pool's water is fetched only near it`);
 if (wrangler.main || wrangler.assets?.run_worker_first) problems.push('wrangler.jsonc runs a Worker: the site has to stay static files on the free plan');
 for (const problem of problems) console.error(problem);
 process.exit(problems.length ? 1 : 0);

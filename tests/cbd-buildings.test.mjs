@@ -261,3 +261,92 @@ test('St Mary\'s windows: their glass as pictures in the palette\'s colours, on 
     }
   }
 });
+
+// North Sydney Pool (js/model-sites.js `north-sydney-pool`): no inside, no door; its deck walked on, its pools still water to walkers, the 50 m
+// pool's water moving near it (js/pool-water.js). The map's ground rises across it: the site's cut takes it out where it's over the deck.
+const nsp = MODEL_SITES.find((s) => s.id === 'north-sydney-pool');
+const DRAWN = 0.22; // m the map draws its paving over the ground (js/ground-geometry.js SIDEWALK_TOP)
+
+test('North Sydney Pool stands where the map had its stand, its buildings and the terrace\'s, and the map leaves those out', () => {
+  assert.ok(nsp.far, 'it has a far version');
+  const buildings = [...heldTiles().values()].flatMap((t) => t.buildings);
+  for (const [lx, lz] of nsp.replaces) {
+    const { x, z } = toWorldOf(nsp, lx, lz);
+    const left = buildings.filter((b) => x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ && b.polygons.some((p) => inRing(p.outer, x, z)));
+    assert.equal(left.length, 0, `the map still has a building ${Math.round(left[0]?.height)} m high at (${x.toFixed(1)}, ${z.toFixed(1)})`);
+  }
+  // ...and none of them is Luna Park's, next door
+  const luna = MODEL_SITES.find((s) => s.id === 'luna-park');
+  const theirs = luna.replaces.map(([x, z]) => toWorldOf(luna, x, z));
+  for (const [lx, lz] of nsp.replaces) {
+    const p = toWorldOf(nsp, lx, lz);
+    assert.ok(theirs.every((q) => Math.hypot(q.x - p.x, q.z - p.z) > 10), `(${p.x.toFixed(1)}, ${p.z.toFixed(1)}) is by one of Luna Park's`);
+  }
+});
+
+test('North Sydney Pool within its budgets: its outside, and its far version', () => {
+  const size = fs.statSync(new URL('../public/models/north-sydney-pool.glb.gz', import.meta.url)).size;
+  const g = gltf('north-sydney-pool');
+  const draws = g.nodes.filter((n) => n.mesh !== undefined).reduce((s, n) => s + g.meshes[n.mesh].primitives.length, 0);
+  assert.ok(size < 300_000 && draws <= 20, `${size} bytes, ${draws} draws`);
+  const far = gltf('north-sydney-pool-far');
+  const tris = far.meshes.flatMap((m) => m.primitives).reduce((s, p) => s + far.accessors[p.indices].count / 3, 0);
+  assert.ok(far.meshes.flatMap((m) => m.primitives).length <= 2 && tris <= 2000, `its far version: ${tris} triangles`);
+});
+
+test('North Sydney Pool: the map\'s paving under its deck and its water where it isn\'t cut out, so it never shows through', () => {
+  const out = read('north-sydney-pool');
+  const cut = nsp.cut.poly;
+  const inPoly = (poly, x, z) => inRing(poly.map(([px, pz]) => ({ x: px, z: pz })), x, z);
+  const [olympic] = out.pools;
+  const deck = out.floors.find((f) => f.holes?.length);
+  let water = 0, onDeck = 0;
+  for (let x = -40; x <= 50; x += 0.5) {
+    for (let z = -20; z <= 18; z += 0.5) {
+      if (inPoly(cut, x, z)) continue;
+      const p = toWorldOf(nsp, x, z);
+      const paving = groundHeight(p.x, p.z) + DRAWN - nsp.y;
+      if (inPoly(olympic.ring, x, z)) {
+        water++;
+        assert.ok(paving < olympic.surface - 0.05, `the paving at (${x}, ${z}) ${paving.toFixed(2)} m, over the water at ${olympic.surface}`);
+      } else if (inPoly(deck.poly, x, z) && !deck.holes.some((h) => inPoly(h, x, z)) && x > -27.3) {
+        // (nearer the old building than that, its planter stands over it)
+        onDeck++;
+        assert.ok(paving < -0.05, `the paving at (${x}, ${z}) ${paving.toFixed(2)} m, over the deck`);
+      }
+    }
+  }
+  assert.ok(water > 100 && onDeck > 1000, `${water} points of water and ${onDeck} of deck outside the cut`);
+});
+
+test('North Sydney Pool\'s pools: the 50 m pool in eight lanes, deep at its blocks and shallow at its steps, its ladders on its edges', () => {
+  const { pools, floors } = read('north-sydney-pool');
+  const olympic = pools.find((p) => p.id === 'olympic');
+  assert.ok(olympic.sim, 'its water doesn\'t move');
+  const xs = olympic.ring.map((p) => p[0]), zs = olympic.ring.map((p) => p[1]);
+  const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
+  assert.ok(Math.abs(x1 - x0 - 50) < 0.01 && Math.abs(z1 - z0 - 21) < 0.01, `${x1 - x0} by ${z1 - z0} m`);
+  assert.ok(olympic.lanes * olympic.lane <= z1 - z0, 'its lanes are wider than it');
+  // its depth down the profile: deepest at the blocks' end, never deeper towards the steps
+  const depth = olympic.depth;
+  for (let i = 1; i < depth.length; i++) assert.ok(depth[i][0] > depth[i - 1][0] && depth[i][1] <= depth[i - 1][1], 'its depth profile');
+  assert.ok(Math.abs(olympic.blocks - depth[0][0]) < 0.01 && depth[0][1] >= 1.8, 'its blocks aren\'t at its deep end');
+  // the steps: a stair down from the shallow end's wall, each tread lower and further out than the one before
+  const steps = [...olympic.steps].sort((a, b) => b.y - a.y);
+  let from = x1;
+  for (const st of steps) {
+    for (const [x, z] of st.poly) assert.ok(x >= x0 - 0.01 && x <= x1 + 0.01 && z >= z0 - 0.01 && z <= z1 + 0.01, 'a step outside the water');
+    assert.ok(Math.abs(Math.max(...st.poly.map(([x]) => x)) - from) < 0.01, 'a tread not on from the one over it, or the wall');
+    from = Math.min(...st.poly.map(([x]) => x));
+    assert.ok(st.y < olympic.surface && st.y > olympic.surface - depth.at(-1)[1], `a tread at ${st.y}`);
+  }
+  for (const l of olympic.ladders) {
+    assert.ok(Math.abs(Math.abs(l.at[1]) - (z1 - z0) / 2) < 0.01 && l.at[0] > x0 && l.at[0] < x1, `a ladder at ${l.at} isn't on a long edge`);
+    assert.ok(l.rungs.every((y) => y < olympic.surface), 'a ladder\'s rung over the water');
+  }
+  // the deck's floor has the pools as holes, its water's ring
+  const deck = floors.find((f) => f.holes?.length);
+  for (const p of pools) assert.ok(deck.holes.some((h) => JSON.stringify(h) === JSON.stringify(p.ring)), `the deck has no hole for ${p.id}`);
+  // the still sheet of water the game hides for its own is a node of its own
+  assert.ok(gltf('north-sydney-pool').nodes.some((n) => n.name === olympic.node), `no node ${olympic.node}`);
+});

@@ -156,7 +156,10 @@ what it did.
 
 This project is under the [GPL-3.0](LICENSE). It is built on Slop New York, © Mr.doob, used under the
 [MIT License](LICENSE-slop-newyork-MIT). The concert's piano and trumpet (`js/audio-instruments.js`) are ported from
-[BeepBox](https://github.com/johnnesky/beepbox), © John Nesky and contributing authors, used under the [MIT License](LICENSE-beepbox-MIT).
+[BeepBox](https://github.com/johnnesky/beepbox), © John Nesky and contributing authors, used under the [MIT License](LICENSE-beepbox-MIT). The
+water of North Sydney Pool (`js/pool-water.js`) is ported from Evan Wallace's [WebGL Water](https://madebyevan.com/webgl-water/), by way of
+[threejs-water](https://github.com/jeantimex/threejs-water), © 2011 Evan Wallace and © 2026 Yong Su, used under the
+[MIT License](LICENSE-webgl-water-MIT).
 The tune they play, Waltzing Matilda (Marie Cowan's of 1903), is in the public domain.
 
 Map data keeps its own licences:

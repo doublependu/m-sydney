@@ -23,7 +23,7 @@ import { polygonContact, polygonContains } from './building-collision.js';
 import { DECK_SID } from './bridge.js';
 import { BIKE_SIDES, CAR_DOORS, FLY, arrivalFor, besideVehicle, holdOnFootway } from './arrivals.js';
 import { ROOM, STRUCTURES, clearOfWater, floorBelow, freeFromDeck, groundHeight, moveOver, onFloor, structureAt, structuresAt, surfaceHeight } from './surfaces.js';
-import { inStillWater, shoreAlong, stillWaterDepth } from './still-water.js';
+import { inStillWater, modelWaterNear, shoreAlong, stillWaterDepth } from './still-water.js';
 import { WALKER } from './interior-data.js';
 import { MODEL_SITES } from './model-sites.js';
 import { buildNear, drawnOver } from './drawn-ground.js';
@@ -1479,8 +1479,8 @@ class ThirdPersonControllerManager {
         last.wet = false;
         return;
       }
-      // ...nor on a model's floor (js/surfaces.js onFloor()), which its own walls bound: a jetty out over the water (js/model-sites.js).
-      // Still water on land (js/still-water.js: ponds, fountains, lakes) holds the whole body at its shore, as the sea does: no move takes
+      // ...nor on a model's floor (js/surfaces.js onFloor()), which its own walls bound: a jetty out over the water (js/model-sites.js),
+      // but for its own pools (js/still-water.js modelWaterNear()), at whose edge its floor ends. Still water on land (js/still-water.js: ponds, fountains, lakes) holds the whole body at its shore, as the sea does: no move takes
       // it further in than it is where it was, turned as it is now, which is nowhere unless it turned there (a car steering while it's
       // held), so it can't get deeper by turning and moving in turn. One put in the water (`wet`: there before the water's tile was held)
       // isn't held by it till it's out, so it can walk or drive out.
@@ -1488,7 +1488,7 @@ class ThirdPersonControllerManager {
       last.wet ??= stillWaterDepth(mode, last.x, last.z, heading) > 0;
       const allowed = last.wet ? Infinity : stillWaterDepth(mode, last.x, last.z, heading);
       const dry = (x, z) => clearOfWater(x, z) && (last.wet || stillWaterDepth(mode, x, z, heading) <= allowed);
-      if ((mode === 'person' && onFloor(pos.x, pos.z)) || dry(pos.x, pos.z)) {
+      if ((mode === 'person' && onFloor(pos.x, pos.z) && !modelWaterNear(pos.x, pos.z)) || dry(pos.x, pos.z)) {
         last.x = pos.x;
         last.z = pos.z;
       } else {

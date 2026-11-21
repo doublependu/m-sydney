@@ -35,11 +35,12 @@ import { anchorToOrigin, auditPrecision, moveOriginNear, origin, rebaseMeshes, s
 import { createInteriors, loadModel, materialFor } from './interiors.js';
 import { PERSON_BIND, PERSON_BONES, PersonCrowd, PersonRig } from './pedestrians.js';
 import { OPERA_HOUSE, hallFrame } from './opera-house.js';
-import { addClearings, removeClearings } from './model-sites.js';
+import { MODEL_SITES, addClearings, removeClearings } from './model-sites.js';
+import { addFirstShape, dropFirstShapes, firstShapesState } from './first-shapes.js';
 import { ceilingOver, decksAt, groundHeight, groundRoadAt, inTunnel, roadRoute, structuresAt, surfaceHeight, surfaceSlope } from './surfaces.js';
 import { updateTunnelMouths } from './tunnel-mouths.js';
 import { wheelContacts, wheelGround } from './ground-geometry.js';
-import { buildNear, drawnTop, drawnWhat, dropLayer } from './drawn-ground.js';
+import { buildNear, drawnTop, drawnWhat, dropLayer, setLayer } from './drawn-ground.js';
 import { cityUniforms } from './tsl-materials.js';
 import { buildingLook } from './building-look.js';
 import { roofFrame } from './building-footprints.js';
@@ -207,8 +208,13 @@ async function initApp() {
   await showLoadingStage('Raising the nearest buildings...');
   // A house's fascia is about 22 triangles: not on the lowest level, a phone's
   const cityBlocks = createCityBlocks(scene, { fascia: quality.level !== 'low' });
+  // A model site's first shape (js/first-shapes.js), the map's buildings it replaces, with the part of its tile its middle is in
+  const siteAt = new Map(MODEL_SITES.map((s) => [s.id, s]));
+  const siteInStart = (id) => !!siteAt.get(id) && inStart(siteAt.get(id).x, siteAt.get(id).z);
   for (const record of builtTiles.values()) {
     const colliders = runToEnd(cityBlocks.addBuildings(record.tile, record.tile.buildings.filter((b) => inStart(b.cx, b.cz)), record.stages[0]));
+    runToEnd(cityBlocks.addStandIns(record.tile, siteInStart, record.stages[0]));
+    holdFirstShapes(record.stages[0], record.tile.key);
     record.colliders.push(...colliders);
     controllerManager.addColliders(colliders);
   }
@@ -1151,6 +1157,18 @@ async function initApp() {
     requestAnimationFrame(tick);
   }
 
+  // A tile's part of the model sites' first shapes (js/first-shapes.js): the map's buildings each replaces (js/buildings.js addStandIns())
+  // and the covers over their cuts (js/city-grid.js), shown and hidden with the rest of their site's from now on, and let go of with the
+  // tile (dropTile()). A cover is the ground to stand on while it's drawn (js/drawn-ground.js).
+  function holdFirstShapes(stage, key) {
+    for (const part of stage.children) {
+      const id = part.userData.firstShape, ground = part.userData.ground;
+      if (!id) continue;
+      const layer = `cover:${id}:${part.uuid}`;
+      addFirstShape(id, part, { standIn: true, tile: key, show: ground && ((on) => (on ? setLayer(layer, ground) : dropLayer(layer))) });
+    }
+  }
+
   // What a stage held on the GPU. Materials stay: every tile and window shares them, and a new one compiles nothing.
   function disposeStage(stage) {
     stage.removeFromParent();
@@ -1170,20 +1188,16 @@ async function initApp() {
 
   // --- Tiles around the player -----------------------------------------------------------------------------------------
   const shadowOf = () => [lightingSystem.sunLight.shadow, renderer.backend.isWebGPUBackend === true];
-  let operaPlain = []; // js/opera-house.js: what the Opera House's model takes the place of near it
-  let operaShells = null; // ...and its shells, which the game always draws
-  let towerPlain = null; // js/landmarks.js: Sydney Tower as the game draws it, which its model takes the place of
+  let operaShells = null; // js/opera-house.js: the Opera House's shells, which the game always draws
+  // What each model site shows in its model's place (js/first-shapes.js): the map's buildings it replaces, from the tiles (holdFirstShapes()),
+  // and the landmarks' own shapes (js/landmarks.js)
   const interiors = createInteriors({
     reveal: (group) => revealStage(group),
-    shown: (id, on) => {
-      if (id === 'opera-house') for (const mesh of operaPlain) mesh.visible = !on;
-      if (id === 'sydney-tower' && towerPlain) towerPlain.visible = !on;
-    },
     lights: lightPools.interiorLights,
     colliders: { add: (list) => controllerManager.addColliders(list), remove: (list) => controllerManager.removeColliders(list) },
     // Not in the first view: a model comes once the city round you has
     tileBuilt: (x, z) => worldCompleteAt !== null && builtTiles.get(tileKeyAt(x, z))?.done === true,
-    // ...but its far version, a draw or two, as soon as the ground it stands on is: the map's buildings it replaces aren't in the tile.
+    // ...but the far version of a site that replaces none of the map's buildings, a draw or two, as soon as the ground it stands on is.
     // Round the start, that's the part of its tile built before you can move.
     tileReady: (x, z) => {
       const record = builtTiles.get(tileKeyAt(x, z));
@@ -1361,6 +1375,7 @@ async function initApp() {
     const started = record.startPart;
     const ground = yield* buildTileGround(tile, stage, { part: started ? (x, z) => !inStart(x, z) : () => true, gardenReady });
     const buildings = yield* cityBlocks.addBuildings(tile, started ? tile.buildings.filter((b) => !inStart(b.cx, b.cz)) : tile.buildings, stage);
+    yield* cityBlocks.addStandIns(tile, started ? (id) => !siteInStart(id) : () => true, stage);
     if (builtTiles.get(key) !== record) { // let go of while it was being built
       disposeStage(stage);
       return;
@@ -1370,6 +1385,7 @@ async function initApp() {
     controllerManager.addColliders(buildings);
     yield revealStage(stage);
     record.stages.push(stage);
+    if (builtTiles.get(key) === record) holdFirstShapes(stage, key);
     const [shadow, storage] = shadowOf();
     record.culling.push(yield* setupSceneCullingSteps(scene, record.stages, shadow, storage));
     record.done = true;
@@ -1414,6 +1430,7 @@ async function initApp() {
     builtTiles.delete(key);
     gardenRebuilds.delete(key);
     dropLayer(`garden:${key}`);
+    dropFirstShapes(key);
     farLevel?.setShown(record.tile.ix, record.tile.iz, false);
     for (const handle of record.culling) removeSceneCulling(handle);
     for (const stage of record.stages) disposeStage(stage);
@@ -1621,10 +1638,8 @@ async function initApp() {
     const heldForLandmarks = landmarkTiles.filter((key) => !isHeld(key));
     yield holdTiles(landmarkTiles);
     const landmarkStage = new THREE.Group();
-    const { colliders: landmarkColliders, group: landmarks, operaPlain: plain, operaShells: shells, towerPlain: tower } = buildLandmarks(landmarkStage);
-    operaPlain = plain;
+    const { colliders: landmarkColliders, group: landmarks, operaShells: shells } = buildLandmarks(landmarkStage);
     operaShells = shells;
-    towerPlain = tower;
     controllerManager.addColliders(landmarkColliders);
     yield;
     addHarbourBridge(landmarks);
@@ -1981,6 +1996,8 @@ async function initApp() {
       concert: (command) => concert?.debug(command) ?? null,
       // ...and its stage (js/concert-stage.js): who's where doing what, whether they're drawn and on screen, the lights; null till you sit
       concertStage: () => concertStage?.debug(cameraSystem.camera) ?? null,
+      // each model site's shape, and how many parts of its first shape are held and drawn (js/first-shapes.js)
+      firstShapes: () => firstShapesState(),
       // X, as a scenario presses it: { x, z, footway, via } where it put you, or null
       exitBuilding: () => exitBuilding(),
       // What the walker can bump into within r of (x, z): each collider's bounds and heights, and whether it's a model's (`level`)

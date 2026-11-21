@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { Fn, cameraViewMatrix, color, mix, normalize, positionWorld, sin, smoothstep, step, time, uniform, vec3, vertexColor } from 'three/tsl';
 import { CITY_BOUNDS, blockAt } from './city-config.js';
+import { hasFirstShape, showFirstShape } from './first-shapes.js';
 import { MODEL_SITES } from './model-sites.js';
 import { clearFloor, groundHeight, setFloor } from './surfaces.js';
 import { cityUniforms } from './tsl-materials.js';
@@ -18,8 +19,11 @@ import {
 // - Inside, only the rooms you can see are drawn: the one you're in, and those through open doorways from it (interior-data.js).
 // - In it or beside it, the camera behind you is kept clear of its walls, floors and ceilings, so it never looks through one.
 // - Its door leaves are drawn as one shut piece until you're near (`doors_shut`), and the whole model only within NEAR of the camera
-//   (or its site's `near`). Past that, and wherever its tile isn't drawn, its far version is (`<file>-far`), if its site has one; or
-//   what the model takes the place of, which hears of it through `shown()` (the Opera House's plain podium and glass).
+//   (or its site's `near`). Past that, and wherever its tile isn't drawn, its far version is (`<file>-far`), if its site has one.
+// - Till then, and wherever neither is drawn, its first shape is (js/first-shapes.js): the map's buildings it replaces, from its tile,
+//   and for a landmark the game's own shape (the Opera House's plain podium and glass). One of the three at a time: the model within
+//   `near` once it's in, the far version past it once that's in, the first shape otherwise. A site that replaces none of the map's
+//   buildings has none, and shows its far version from the first view, as soon as its tile is built.
 // Every site's model is in its own frame (x across, z along, y up from its ground floor), placed at (x, y, z) and turned by yaw.
 
 const RELEASE = 60; // m from a building that its inside is let go of, unless its site says (`reach`)
@@ -182,18 +186,18 @@ function instance(scene, list = []) {
 /**
  * `reveal(group)` puts a group in the scene with its shaders ready. `colliders` is { add, remove }. `lights` are PointLights kept for
  * this. `tileBuilt(x, z)` says whether the tile at (x, z) is drawn, so a site can be. `tileReady(x, z)` says the same of the tile alone,
- * before the city round you is complete: a site's far version stands in from then, as the map's buildings it replaces would have, till
- * the model comes. `shown(id, on)` hears when a site's outside starts or stops being drawn, for what it takes the place of.
- * `farReach()`: m from the camera that far versions are wanted, 0 while the city round you is still coming. `debug`: the debug sites too.
+ * before the city round you is complete: the far version of a site that replaces none of the map's buildings stands in from then, till
+ * the model comes (a site that does replaces them shows them, js/first-shapes.js). `farReach()`: m from the camera that far versions
+ * are wanted, 0 while the city round you is still coming. `debug`: the debug sites too.
  */
 /**
  * `footpath(x, z, y, heading)`: the footpath in front of a door's step there, out from it along `heading` (js/arrivals.js footpathFrom()),
  * with what's clear for a walker, for the way out (exitSpot()).
  */
-function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () => false, shown = () => {}, farReach = () => 0, footpath = null, debug = false }) {
+function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () => false, farReach = () => 0, footpath = null, debug = false }) {
   const sites = MODEL_SITES.filter((s) => debug || !s.debug).map((s) => ({
     ...s, y: s.y ?? null, reach: s.reach ?? RELEASE, near: s.near ?? NEAR, out: null, inside: null, loading: false, failed: false, ref: null,
-    drawn: false, far: s.far ? { group: null, loading: false, failed: false } : null
+    drawn: false, shape: 'first', far: s.far ? { group: null, loading: false, failed: false } : null
   }));
   let here = null; // { site, room } the player is in
   let prompt = null; // { kind: 'door' | 'seat', site, door | seat, label }
@@ -363,7 +367,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     removeDoors(out.doors);
     dispose(out.group);
     clearFloor(site.id);
-    if (site.drawn) shown(site.id, false);
+    // what's drawn in its place is worked out again straight after (update())
     site.drawn = false;
   }
 
@@ -484,23 +488,30 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       const wanted = site.debug ? tileBuilt(x, z) && Math.hypot(site.x - x, site.z - z) < DEBUG_RANGE : tileBuilt(site.x, site.z);
       if (wanted && !site.out && !site.loading && !site.failed) loadOutside(site);
       else if (!wanted && site.out) dropOutside(site);
-      // The model within its `near` of the camera (a little further once it's drawn, so it doesn't flicker at the line), its far
-      // version wherever it isn't
+      // One of its three shapes (js/first-shapes.js): the model within its `near` of the camera once it's in; its far version past
+      // that once it's in; its first shape otherwise, and within `near` while the model comes, if it has one there to show. The line
+      // is a little further out for what's drawn on the near side of it, so it doesn't flicker there.
       const seen = Math.hypot(site.x - eye.x, (site.y ?? eye.y) - eye.y, site.z - eye.z);
-      const drawn = !!site.out && (seen < site.near * (site.drawn ? 1.1 : 1) || here?.site === site);
+      const near = seen < site.near * (site.shape === 'far' ? 1 : 1.1);
+      const drawn = !!site.out && (near || here?.site === site);
+      const shape = drawn ? 'model' : site.far?.group && (!near || !hasFirstShape(site.id)) ? 'far' : 'first';
       if (drawn !== site.drawn) {
         site.drawn = drawn;
         site.out.group.visible = drawn;
-        shown(site.id, drawn);
+      }
+      if (shape !== site.shape) {
+        site.shape = shape;
+        showFirstShape(site.id, shape);
       }
       // ...and its inside with it, or it would stand there alone
       if (site.inside?.group) site.inside.group.visible = drawn;
       if (site.far) {
         const away = Math.hypot(site.x - eye.x, site.z - eye.z);
-        const wantFar = (reach > 0 && away < reach) || (!site.debug && tileReady(site.x, site.z));
+        // From the first view only for a site with no first shape of the map's: one that replaces none of the map's buildings
+        const wantFar = (reach > 0 && away < reach) || (!site.debug && !site.replaces.length && tileReady(site.x, site.z));
         if (wantFar && !site.far.group && !site.far.loading && !site.far.failed) loadFar(site);
         else if (!wantFar && site.far.group && away > reach + FAR_KEEP) dropFar(site);
-        if (site.far.group) site.far.group.visible = !drawn;
+        if (site.far.group) site.far.group.visible = shape === 'far';
       }
       if (!site.out) continue;
       const doorsNear = within(site, x, z, DOORS_NEAR) || within(site, eye.x, eye.z, DOORS_NEAR)
@@ -714,7 +725,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
 
   function state() {
     return {
-      sites: sites.map((s) => ({ id: s.id, y: s.y, out: !!s.out, inside: s.inside?.state ?? null, failed: s.failed, drawn: s.drawn,
+      sites: sites.map((s) => ({ id: s.id, y: s.y, out: !!s.out, inside: s.inside?.state ?? null, failed: s.failed, drawn: s.drawn, shape: s.shape,
         leaves: s.out?.leaves ?? null, far: s.far ? (s.far.group ? (s.far.group.visible ? 'drawn' : 'held') : s.far.failed ? 'failed' : null) : undefined })),
       held: sites.filter((s) => s.inside?.state === 'ready').map((s) => s.id),
       inside: here?.site.id ?? null,

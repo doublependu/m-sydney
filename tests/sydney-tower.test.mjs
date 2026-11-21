@@ -49,14 +49,27 @@ test('the shape: profiles rising, the net in two families from the base to the c
   for (const [a, b] of cables) assert.ok(b[1] > a[1], 'a cable runs up');
 });
 
-test('the game\'s own tower is three draws, with the podium', async () => {
+test('the game\'s own tower is three draws, and its podium a fourth, drawn only while nothing else stands there', async () => {
   const THREE = await import('three/webgpu');
   const { buildLandmarks } = await import('../js/landmarks.js');
+  const { addFirstShape, dropFirstShapes, showFirstShape } = await import('../js/first-shapes.js');
   const { towerPlain } = buildLandmarks(new THREE.Group());
   const meshes = [];
   towerPlain.traverse((o) => { if (o.isMesh) meshes.push(o); });
-  assert.equal(meshes.length, 3);
+  assert.equal(meshes.length, 4);
   assert.ok(meshes.every((m) => m.frustumCulled === false), 'js/scene-culling.js would take them over');
+  const podium = meshes.find((m) => m.name === 'SydneyTowerPodium');
+  assert.ok(podium && podium.visible, 'no podium of its own while nothing else stands there');
+  // the map's podium from its tile (js/first-shapes.js), then its far version, then the model
+  addFirstShape('sydney-tower', new THREE.Group(), { standIn: true, tile: 'test' });
+  assert.deepEqual([towerPlain.visible, podium.visible], [true, false]);
+  showFirstShape('sydney-tower', 'far');
+  assert.deepEqual([towerPlain.visible, podium.visible], [true, false]);
+  showFirstShape('sydney-tower', 'model');
+  assert.equal(towerPlain.visible, false);
+  showFirstShape('sydney-tower', 'first');
+  dropFirstShapes('test');
+  assert.deepEqual([towerPlain.visible, podium.visible], [true, true]);
 });
 
 test('its model was built on the shape the game has now: build it again if not (tools/models/, sydney_tower.py)', () => {

@@ -3,6 +3,7 @@ import { color, float, max, mix, smoothstep, texture, uv, vec4 } from 'three/tsl
 import { cityUniforms } from './tsl-materials.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { LANDMARK_SITES } from './city-config.js';
+import { addFirstShape } from './first-shapes.js';
 import { groundHeight } from './surfaces.js';
 import { buildHarbourBridge, harbourBridgeColliders } from './harbour-bridge.js';
 import { buildOperaHouse } from './opera-house.js';
@@ -11,6 +12,8 @@ import { TOWER_SIGNS, placeTowerSign } from './tower-signs.js';
 import { TOWER, TOWER_AXIS, TOWER_STREET, towerCables } from './sydney-tower.js';
 
 // Sydney's icons at their real sites. The Opera House (js/opera-house.js) and the bridge have modules of their own.
+// Where a model site (js/model-sites.js) is drawn in place of one of these, the game's shape is part of the site's first shape, shown
+// till the model or its far version is drawn and hidden while it is: a line each, addFirstShape(<site id>, <object>) (js/first-shapes.js).
 
 const stone = (hex, roughness = 0.88) => new THREE.MeshStandardNodeMaterial({ color: hex, roughness });
 const SANDSTONE = () => stone(0xc9a877);
@@ -24,7 +27,9 @@ function settle(mesh, cast = true) {
 
 // Sydney Tower, from its shape (js/sydney-tower.js), and Westfield's podium round its foot: drawn from anywhere, and in place of its model
 // (js/model-sites.js `sydney-tower`) wherever that isn't drawn, so the two are made alike. Three draws: the gold, everything else in its
-// own colours, and the turret's windows, lit at night. Returns the group, for the model to stand in for near it.
+// own colours, and the turret's windows, lit at night; with its far version too, which is the podium alone. The podium is a fourth,
+// drawn only while nothing else stands there: the map's podium from its tile (js/first-shapes.js), the model, or its far version.
+// Returns the group, the podium in it.
 function buildSydneyTower(group) {
   const tower = new THREE.Group();
   tower.name = 'SydneyTower';
@@ -54,7 +59,7 @@ function buildSydneyTower(group) {
   // The podium, its outline straight up from under the street to its roof
   const shape = new THREE.Shape(TOWER.podium.outline.map(([x, z]) => new THREE.Vector2(x - TOWER_AXIS.x, -(z - TOWER_AXIS.z))));
   const podium = new THREE.ExtrudeGeometry(shape, { depth: TOWER.podium.top + 2.5, bevelEnabled: false }).rotateX(-Math.PI / 2).translate(0, -2.5, 0);
-  rest.push(coloured(podium, '#cfc3ad'));
+  const podiumGeometry = coloured(podium, '#cfc3ad');
   const cup = TOWER.parts.find((p) => p.name === 'cup').profile;
   const at = (y) => {
     const k = cup.findIndex(([y1]) => y1 >= y), i = k < 0 ? cup.length - 1 : Math.max(1, k);
@@ -68,12 +73,17 @@ function buildSydneyTower(group) {
   const restMaterial = new THREE.MeshStandardNodeMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.35 });
   const glass = new THREE.MeshStandardNodeMaterial({ color: 0x1c2228, roughness: 0.15, metalness: 0.6 });
   glass.emissiveNode = color(0xffd9a0).mul(smoothstep(0.4, 1.1, cityUniforms.uInteriorGlow).mul(0.7));
-  for (const [list, material] of [[gold, goldMaterial], [rest, restMaterial], [windows.map((g) => g.index ? g.toNonIndexed() : g), glass]]) {
+  const meshes = [];
+  for (const [list, material] of [[gold, goldMaterial], [rest, restMaterial], [windows.map((g) => g.index ? g.toNonIndexed() : g), glass], [[podiumGeometry], restMaterial]]) {
     const mesh = settle(new THREE.Mesh(mergeGeometries(list.map((g) => { g.deleteAttribute('uv'); return g; }), false), material));
     mesh.frustumCulled = false; // js/scene-culling.js leaves it be, for the model to stand in for
     tower.add(mesh);
+    meshes.push(mesh);
   }
+  meshes[3].name = 'SydneyTowerPodium';
   group.add(tower);
+  addFirstShape('sydney-tower', tower, { far: true });
+  addFirstShape('sydney-tower', meshes[3], { bare: true });
   return tower;
 }
 
@@ -197,6 +207,8 @@ function buildLandmarks(scene) {
   group.name = 'Landmarks';
   const colliders = [];
   const opera = buildOperaHouse(group, colliders);
+  // The Opera House's plain podium, glass and steps are its first shape, where its model isn't drawn
+  for (const mesh of opera.plain) addFirstShape('opera-house', mesh);
   const tower = buildSydneyTower(group);
   buildHeritage(group);
   buildLunaPark(group);

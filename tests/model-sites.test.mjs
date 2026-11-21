@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import test from 'node:test';
 import { readModel, triangles } from './helpers/glb.mjs';
 
-// The buildings drawn from models (js/model-sites.js), on the map: a site that replaces the map's buildings leaves them out of its tiles,
-// so the map draws its outline instead (js/city-map.js), which must be where the model stands.
+// The buildings drawn from models (js/model-sites.js), on the map: a site that replaces the map's buildings leaves them out of its tiles'
+// buildings, so the map draws its outline instead where it has one (js/city-map.js), which must be where the model stands; where it
+// hasn't, the map's buildings it replaces (its stand-ins, tests/first-shapes.test.mjs).
 const { MODEL_SITES, SITE_OUTLINES, toWorldOf } = await import('../js/model-sites.js');
 
 const NEAR = 0.5; // m: how far an outline can be from what it outlines
@@ -28,11 +29,12 @@ const toTriangle = (t, x, z) => {
   return toRing(P, x, z);
 };
 
-test('every site that replaces the map\'s buildings, or has a far version, has an outline for the map, and a far version', () => {
+test('every site that replaces the map\'s buildings, or has a far version, has a far version, and an outline for the map unless it replaces some', () => {
   for (const site of MODEL_SITES.filter((s) => (s.replaces.length || s.far) && !s.debug)) {
-    assert.ok(site.outline?.length, `${site.id} has no outline: the map would have a hole where its buildings were`);
+    // with none of the map's buildings to draw there, the map would have a hole
+    assert.ok(site.outline?.length || site.replaces.length, `${site.id} has no outline, and replaces nothing for the map to draw`);
     assert.ok(site.far, `${site.id} has no far version to stand in for it`);
-    for (const [h, ring] of site.outline) {
+    for (const [h, ring] of site.outline ?? []) {
       assert.ok(h > 0 && ring.length >= 3, `${site.id}: a ring of ${ring.length} points, ${h} m high`);
     }
   }

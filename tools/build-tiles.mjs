@@ -350,6 +350,36 @@ function packBuildings(list, floors) {
   uint(head, zs.length);
   return Buffer.from([...head, ...meta, ...xs, ...zs]);
 }
+// A model site's stand-ins (tools/tiles/derive.mjs), in its tile's JSON: each as packBuildings() writes a building, in 0.5 m, [height,
+// style, group, bottom, floor, low, [[outer, ...holes] of each polygon, each ring [x, z, x, z...]]] (js/tiles/tile-file.js). Only the
+// tiles a site's middle is in have them.
+const { MODEL_SITES } = await import('../js/model-sites.js');
+const siteTile = new Map(MODEL_SITES.map((s) => [s.id, KEY(...tileOf(s.x, s.z))]));
+function standInsOf(derived, key) {
+  const out = {};
+  for (const [id, list] of Object.entries(derived?.standIns || {})) {
+    if (siteTile.get(id) !== key || !list.length) continue;
+    out[id] = list.map(([i, [floor, low], height]) => {
+      const b = REAL_BUILDINGS[i];
+      const style = b.kind | (b.pitched ? 8 : 0) | (b.group ? 16 : 0) | (b.realAwning ? 32 : 0) | ((b.houseStyle || 0) << 7);
+      const rings = b.polygons.map((p) => [p.outer, ...p.holes].map((ring) => ring.flatMap((q) => [Math.round(q.x * 2), Math.round(q.z * 2)])));
+      return [height, style, b.group || 0, b.bottom || 0, floor, low, rings];
+    });
+  }
+  return Object.keys(out).length ? out : null;
+}
+// ...and for the map's screen and radar, in its far square's (js/far-level.js), those of the sites with no `outline` of their own to
+// draw there instead (js/city-map.js): [height, ring, ring...] of each, its outer rings in 0.5 m
+function farStandInsOf(derived, key) {
+  const out = [];
+  for (const site of MODEL_SITES) {
+    if (site.outline || site.debug || farKeyOfTile(...tileOf(site.x, site.z)) !== key) continue;
+    for (const [i, , height] of derived?.standIns?.[site.id] || []) {
+      out.push([height, ...REAL_BUILDINGS[i].polygons.map((p) => p.outer.flatMap((q) => [Math.round(q.x * 2), Math.round(q.z * 2)]))]);
+    }
+  }
+  return out.length ? out : null;
+}
 function packTrees(list) {
   const out = [];
   let px = 0, pz = 0;
@@ -515,7 +545,8 @@ function packFarFile(entries, parks, roads, derived, key) {
   const grid = [];
   for (let j = 0; j <= FAR_FILE / 80; j++) for (let i = 0; i <= FAR_FILE / 80; i++) grid.push(gridAt(fx * FAR_FILE + i * 80, fz * FAR_FILE + j * 80));
   const land = landRuns(fx * FAR_FILE, fz * FAR_FILE, FAR_FILE, 20, 5);
-  const json = Buffer.from(JSON.stringify({ parks, roads, grid, land }));
+  const standIns = farStandInsOf(derived, key);
+  const json = Buffer.from(JSON.stringify({ parks, roads, grid, land, ...(standIns && { standIns }) }));
   const lead = Buffer.alloc(8);
   lead.writeUInt32LE(json.length, 0);
   lead.writeUInt32LE(head.length, 4);
@@ -683,6 +714,7 @@ function write(derived, graded_ = null) {
   for (const t of tiles.values()) {
     const place = PLACES && placeGrid(PLACES, workers, t.ix, t.iz);
     if (place) placeBytes += zlib.gzipSync(JSON.stringify(place)).length;
+    const standIns = standInsOf(derived, KEY(t.ix, t.iz));
     const json = Buffer.from(JSON.stringify({
       blocks: t.blocks, lawns: t.lawns, pavements: t.pavements, fills: t.fills, signals: t.signals, postBoxes: t.postBoxes, busShelters: t.busShelters,
       nodes: [...t.nodes].flatMap(([id, [x, z]]) => [id, x, z]), links: t.links, home: t.home, scenery: t.scenery, awnings: t.awnings, tags: t.tags,
@@ -691,7 +723,8 @@ function write(derived, graded_ = null) {
       ...(place && { place }),
       ...(Object.values(t.garden).some((list) => list.length) && { garden: t.garden }),
       ...(t.sand.length && { sand: t.sand }),
-      ...(t.lakes.length && { lakes: t.lakes })
+      ...(t.lakes.length && { lakes: t.lakes }),
+      ...(standIns && { standIns })
     }));
     const buildings = packBuildings(t.buildings, derived?.floors), trees = packTrees(t.trees), heights = packHeights(t.ix, t.iz);
     const graded = packGround(graded_?.[KEY(t.ix, t.iz)]);

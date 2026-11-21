@@ -3,11 +3,15 @@
 //   file: models/<file>.glb and <file>.json, the building's outside, drawn with its tile
 //   x, z, yaw: where its middle stands, and how it's turned (the game's rotation.y), in the game's frame
 //   y: its ground floor's height, or null to stand it on the ground under its walls
-//   replaces: points in the buildings the tile build leaves out for it, in its own frame (tools/tiles/derive.mjs)
-//   cut: where the ground under it is left undrawn, for what it has below the street, in its own frame, and how deep (js/city-grid.js)
+//   replaces: points in the buildings the tile build leaves out of the map's for it, in its own frame (tools/tiles/derive.mjs). They're
+//     kept apart in its tile, as its first shape (`standIns`, js/first-shapes.js): drawn from the first view, as the map always had them,
+//     till the model comes once the city round you is complete, and wherever neither the model nor its far version is drawn
+//   cut: where the ground under it is left undrawn, for what it has below the street, in its own frame, and how deep (js/city-grid.js).
+//     While its first shape stands, a cover in the ground's own look is drawn over it, and stood on
 //   far: it has a far version, models/<file>-far.glb.gz: a shell of a draw or two, drawn past `near` and wherever its tile isn't, as
-//     far as the far level reaches (which draws no models, and leaves out what a model replaces); and from the first view, as soon as
-//     its tile is built, till the model comes once the city round you is complete
+//     far as the far level reaches (which draws no models, and leaves out what a model replaces), once the city round you is
+//     complete. A site that replaces none of the map's buildings has no first shape: its far version comes from the first view instead,
+//     as soon as its tile is built
 //   near: m from the camera that the model is drawn rather than its far version (400 unless it says)
 //   clear: [[x, z, r]] in its frame: circles before its doors where no street tree is planted (js/street-details.js)
 //   debug: drawn only with ?debug=1
@@ -15,8 +19,8 @@
 //   top, radius: how high its model stands over y, and how far from its middle it reaches, for a tower: a helicopter arriving beside it
 //     clears it before the model's in (js/controllers.js roofsNear()), as it cleared the map's box it replaces
 //   outline: [[h, [[x, z], ...]], ...] in its frame: what the map draws for it (js/city-map.js), as it draws the buildings in the tiles,
-//     a ring for each house or part, h m high for the map's shade. Every site that replaces the map's buildings has one, or there'd be
-//     a hole where they were. Its far version's footprint from above (tests/model-sites.test.mjs)
+//     a ring for each house or part, h m high for the map's shade; its far version's footprint from above (tests/model-sites.test.mjs).
+//     Only where the model differs much from the map's buildings it replaces: without one, the map draws those
 //   exit: where X takes you out of its inside (js/interior-data.js exitSpot()): [x, z, heading, y] in its frame, or 'door' for the step
 //     outside its door; without it, the footpath in front of its front door, by the street nearest it, or that step if there's none
 const MODEL_SITES = [
@@ -261,11 +265,11 @@ const toWorldOf = (site, x, z) => {
   return { x: site.x + x * c + z * s, z: site.z - x * s + z * c };
 };
 
-/** Each site's cut in the world's frame: { poly: [{ x, z }], y, minX, maxX, minZ, maxZ } */
+/** Each site's cut in the world's frame: { id, poly: [{ x, z }], y, minX, maxX, minZ, maxZ } */
 const SITE_CUTS = MODEL_SITES.filter((s) => s.cut && s.y !== null).map((s) => {
   const poly = s.cut.poly.map(([x, z]) => toWorldOf(s, x, z));
   const xs = poly.map((p) => p.x), zs = poly.map((p) => p.z);
-  return { poly, y: s.y + s.cut.y, minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs) };
+  return { id: s.id, poly, y: s.y + s.cut.y, minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs) };
 });
 
 /** Each site's outline in the world's frame, for the map: [{ h, pts: [{ x, z }] }] */

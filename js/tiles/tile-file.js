@@ -23,7 +23,24 @@ function reader(data, start, end) {
   };
 }
 
-// kind: 0 other, 1 house, 2 flats, 3 shops and offices, 4 shed, 5 civic
+// A building as the game has it, from what the tile says of it: `style` its kind (0 other, 1 house, 2 flats, 3 shops and offices, 4 shed,
+// 5 civic), whether its roof is pitched (8), it's a piece of a building (16) or has a real awning (32), and its house's style (from 128);
+// `polygons` [{ outer, holes }] of points { x, z }
+function building(height, style, group, bottom, floor, low, polygons) {
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const p of polygons) {
+    for (const q of p.outer) {
+      if (q.x < minX) minX = q.x;
+      if (q.x > maxX) maxX = q.x;
+      if (q.z < minZ) minZ = q.z;
+      if (q.z > maxZ) maxZ = q.z;
+    }
+  }
+  // houseStyle: js/house-styles.js, 0 for none
+  return { height, kind: style & 7, pitched: !!(style & 8), group, bottom, realAwning: !!(style & 32), houseStyle: (style >> 7) & 15, polygons, floor, low,
+    minX, maxX, minZ, maxZ, cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2 };
+}
+
 function unpackBuildings(data, start, end) {
   const head = reader(data, start, end);
   const metaLength = head.uint(), xLength = head.uint(), zLength = head.uint();
@@ -37,7 +54,6 @@ function unpackBuildings(data, start, end) {
     const group = style & 16 ? meta.uint() : 0, bottom = style & 16 ? meta.uint() : 0;
     const floor = meta.sint() / 10, low = meta.sint() / 10;
     const polygons = [];
-    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
     for (let n = meta.uint(); n > 0; n--) {
       const rings = [];
       for (let r = meta.uint(); r > 0; r--) {
@@ -45,22 +61,27 @@ function unpackBuildings(data, start, end) {
         for (let p = meta.uint(); p > 0; p--) {
           x += xs.sint();
           z += zs.sint();
-          const point = { x: x * 0.5, z: z * 0.5 };
-          if (point.x < minX) minX = point.x;
-          if (point.x > maxX) maxX = point.x;
-          if (point.z < minZ) minZ = point.z;
-          if (point.z > maxZ) maxZ = point.z;
-          ring.push(point);
+          ring.push({ x: x * 0.5, z: z * 0.5 });
         }
         rings.push(ring);
       }
       polygons.push({ outer: rings[0], holes: rings.slice(1) });
     }
-    // houseStyle: js/house-styles.js, 0 for none
-    out.push({ height, kind: style & 7, pitched: !!(style & 8), group, bottom, realAwning: !!(style & 32), houseStyle: (style >> 7) & 15, polygons, floor, low,
-      minX, maxX, minZ, maxZ, cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2 });
+    out.push(building(height, style, group, bottom, floor, low, polygons));
   }
   return out;
+}
+
+// The map's buildings a model site replaces, in its tile's JSON (tools/build-tiles.mjs): { site id: [building] }, each as the tile's own
+// buildings are, and kept apart from them, for the site's first shape (js/first-shapes.js)
+function unpackStandIns(standIns) {
+  const points = (flat) => {
+    const ring = [];
+    for (let i = 0; i + 1 < flat.length; i += 2) ring.push({ x: flat[i] * 0.5, z: flat[i + 1] * 0.5 });
+    return ring;
+  };
+  return Object.fromEntries(Object.entries(standIns).map(([id, list]) => [id, list.map(([height, style, group, bottom, floor, low, polygons]) =>
+    building(height, style, group, bottom, floor / 10, low / 10, polygons.map(([outer, ...holes]) => ({ outer: points(outer), holes: holes.map(points) }))))]));
 }
 
 // x and z in 0.5 m as differences, then a species class and a height for each
@@ -118,6 +139,7 @@ function unpackTile(data, heightSize, groundSize = 0) {
   if (ground !== data.length) throw new Error('Tile data is the wrong length.');
   const tile = JSON.parse(new TextDecoder().decode(data.subarray(20, json)));
   tile.buildings = unpackBuildings(data, json, buildings);
+  if (tile.standIns) tile.standIns = unpackStandIns(tile.standIns);
   tile.trees = unpackTrees(data, buildings, trees);
   tile.heights = unpackHeights(data, trees, heights, heightSize);
   tile.ground = unpackGround(data, heights, ground, groundSize);

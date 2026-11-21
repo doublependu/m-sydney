@@ -35,10 +35,12 @@ REAL_BUILDINGS.forEach((b, i) => {
     && b.polygons.some((p) => polygonBoxOverlaps(p, (c.minX + c.maxX) / 2, (c.minZ + c.maxZ) / 2, (c.maxX - c.minX) / 2, (c.maxZ - c.minZ) / 2)))) underLandmarks.push(i);
 });
 
-// ...and the buildings a model of its own is drawn in place of (js/model-sites.js), each found by a point inside it: out of the tiles
-// and the far level, where its far version stands in for it
+// ...and the buildings a model of its own is drawn in place of (js/model-sites.js), each found by a point inside it: out of the tiles'
+// buildings and the far level, and kept apart in the site's own tile, as its first shape till the model's drawn (`standIns`,
+// js/first-shapes.js)
+const { MODEL_SITES, toWorldOf } = await import('../../js/model-sites.js');
+const replacedBy = new Map(); // site id -> the buildings it replaces
 {
-  const { MODEL_SITES, toWorldOf } = await import('../../js/model-sites.js');
   const inOutline = (b, x, z) => x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ && b.polygons.some((p) => inRingXZ(p.outer, x, z));
   for (const site of MODEL_SITES) {
     for (const [lx, lz] of site.replaces || []) {
@@ -46,6 +48,8 @@ REAL_BUILDINGS.forEach((b, i) => {
       const i = REAL_BUILDINGS.findIndex((b) => inOutline(b, x, z));
       if (i < 0) throw new Error(`[derive] model site ${site.id}: no building at (${lx}, ${lz}) in its frame to draw in place of`);
       if (!underLandmarks.includes(i)) underLandmarks.push(i);
+      const list = replacedBy.get(site.id) || replacedBy.set(site.id, []).get(site.id);
+      if (!list.includes(i)) list.push(i);
     }
   }
 }
@@ -76,6 +80,18 @@ REAL_BUILDINGS.forEach((b, i) => {
   // Up, never down: a floor stays above the ground it was worked out for
   floors[i] = [Math.ceil(f.floor * 10), Math.floor(f.low * 10)];
 });
+// A site's stand-ins on the floors they'd have without it: a piece of a building over all its pieces, the others' and its own. Kept
+// apart, so the floors of the buildings in the tiles stay as they are.
+const standInFloor = new Map();
+{
+  const groups = new Set([...replacedBy.values()].flat().map((i) => REAL_BUILDINGS[i].group).filter(Boolean));
+  const pieces = new Map();
+  REAL_BUILDINGS.forEach((b) => { if (groups.has(b.group)) (pieces.get(b.group) || pieces.set(b.group, []).get(b.group)).push(...b.polygons); });
+  for (const i of [...replacedBy.values()].flat()) {
+    const b = REAL_BUILDINGS[i], f = buildingFloor(b.group ? pieces.get(b.group) : b.polygons, groundHeight);
+    standInFloor.set(i, [Math.ceil(f.floor * 10), Math.floor(f.low * 10)]);
+  }
+}
 // --- Under decks ---------------------------------------------------------------------------------------------------------
 // Where a deck passes over, what's under it has to fit. Decks are indexed by 50 m cell, so only what's near one is looked at.
 const DECK_CELL = 50;
@@ -147,9 +163,10 @@ const raisedRoadsAt = (x, z) => {
   return out;
 };
 const caps = {}, raised = {}, dropped = [], measured = [];
-REAL_BUILDINGS.forEach((b, i) => {
-  if (skip.has(i) || (b.bottom || 0) > 0 || !nearRaised(b.minX, b.minZ, b.maxX, b.maxZ)) return;
-  const floor = floors[i][0] / 10;
+// What a deck or a raised road through a building does to it: { cap } its height cut to fit under a deck, { raise } its floor raised
+// over a road, { drop } left out, or null
+function underDecks(b, floor) {
+  if ((b.bottom || 0) > 0 || !nearRaised(b.minX, b.minZ, b.maxX, b.maxZ)) return null;
   let underside = Infinity, over = -Infinity;
   for (let x = b.minX + 1; x < b.maxX; x += 2) {
     for (let z = b.minZ + 1; z < b.maxZ; z += 2) {
@@ -162,21 +179,45 @@ REAL_BUILDINGS.forEach((b, i) => {
       }
     }
   }
-  if (underside === Infinity && over === -Infinity) return;
-  const where = `${Math.round(b.cx)},${Math.round(b.cz)} ${b.height} m`;
+  if (underside === Infinity && over === -Infinity) return null;
   // Raised over a road, it has to stay under any deck over it
-  if (over > -Infinity && (over - floor > RAISE_MOST || over + 2.5 > underside - 1)) { dropped.push(i); if (!b.guess) measured.push(`${where} left out`); return; }
-  if (over > -Infinity) { raised[i] = over; if (!b.guess) measured.push(`${where} on a floor ${(over - floor).toFixed(1)} m higher`); }
+  if (over > -Infinity && (over - floor > RAISE_MOST || over + 2.5 > underside - 1)) return { drop: true };
+  const out = over > -Infinity ? { raise: over } : {};
   if (underside < Infinity) {
-    const base = raised[i] ?? floor, fits = Math.floor(underside - 1 - base);
-    if (fits < 2.5) { dropped.push(i); delete raised[i]; if (!b.guess) measured.push(`${where} left out`); return; }
-    if (base + b.height > underside - 1) { caps[i] = fits; if (!b.guess) measured.push(`${where} cut to ${fits} m`); }
+    const base = out.raise ?? floor, fits = Math.floor(underside - 1 - base);
+    if (fits < 2.5) return { drop: true };
+    if (base + b.height > underside - 1) out.cap = fits;
   }
+  return out;
+}
+REAL_BUILDINGS.forEach((b, i) => {
+  if (skip.has(i)) return;
+  const floor = floors[i][0] / 10, what = underDecks(b, floor);
+  if (!what) return;
+  const where = `${Math.round(b.cx)},${Math.round(b.cz)} ${b.height} m`;
+  if (what.drop) { dropped.push(i); if (!b.guess) measured.push(`${where} left out`); return; }
+  if (what.raise !== undefined) { raised[i] = what.raise; if (!b.guess) measured.push(`${where} on a floor ${(what.raise - floor).toFixed(1)} m higher`); }
+  if (what.cap !== undefined) { caps[i] = what.cap; if (!b.guess) measured.push(`${where} cut to ${what.cap} m`); }
 });
 for (const [i, h] of Object.entries(caps)) REAL_BUILDINGS[i].height = h;
 for (const [i, y] of Object.entries(raised)) floors[i][0] = Math.ceil(y * 10);
 for (const i of dropped) skip.add(i);
 console.log(`[derive] roads through buildings: ${Object.keys(caps).length} cut to fit under a deck, ${Object.keys(raised).length} raised over a road, ${dropped.length} left out; with measured heights: ${measured.length ? measured.join('; ') : 'none'}`);
+// Each site's stand-ins, as the tiles would have had them: { site id: [[building, [floor, low] in 0.1 m, height]] }, in the tile its middle
+// is in (tools/build-tiles.mjs). The same roads through them cut, raise or leave them out.
+const standIns = {};
+const standInNotes = [];
+for (const [id, list] of replacedBy) {
+  standIns[id] = [];
+  for (const i of list) {
+    const b = REAL_BUILDINGS[i], floor = [...standInFloor.get(i)], what = underDecks(b, floor[0] / 10);
+    if (what?.drop) { standInNotes.push(`${id}: ${b.height} m left out`); continue; }
+    if (what?.raise !== undefined) { floor[0] = Math.ceil(what.raise * 10); standInNotes.push(`${id}: ${b.height} m raised`); }
+    if (what?.cap !== undefined) standInNotes.push(`${id}: ${b.height} m cut to ${what.cap} m`);
+    standIns[id].push([i, floor, what?.cap ?? b.height]);
+  }
+}
+console.log(`[derive] the model sites' stand-ins: ${Object.values(standIns).flat().length} of the map's buildings for ${Object.keys(standIns).length} sites; under decks: ${standInNotes.join('; ') || 'none'}`);
 // Trees: one taller than the room under a deck is left out. A tree with no height on record counts as 8 m.
 const treesUnder = [];
 for (let i = 0; i < TREE_HEIGHTS.length; i++) {
@@ -236,6 +277,6 @@ const farParks = {};
 
 const round = (v) => Math.round(v * 1000) / 1000;
 fs.writeFileSync(process.argv[2], JSON.stringify({
-  tunnels, portals, floors, underLandmarks, looks, farParks, deckProfile, bridgeSpan: BRIDGE_SPAN, caps, dropped, treesUnder,
+  tunnels, portals, floors, underLandmarks, standIns, looks, farParks, deckProfile, bridgeSpan: BRIDGE_SPAN, caps, dropped, treesUnder,
   landmarkBoxes: boxes.map((c) => ({ minX: round(c.minX), maxX: round(c.maxX), minZ: round(c.minZ), maxZ: round(c.maxZ), maxY: round(c.maxY ?? 1e4) }))
 }));

@@ -769,6 +769,66 @@ function createCityBlocks(scene, { fascia: withFascia = true } = {}) {
     return colliders;
   }
 
+  /**
+   * The map's buildings a model site replaces (js/model-sites.js), from its tile's `standIns`, as its first shape (js/first-shapes.js): one
+   * group a site, into `target`, for each site `which(id)` picks. They're drawn as the tile's own buildings are, from the same records in
+   * the same looks and materials, against the same neighbours; but nothing else sees them: no colliders, no reserves for the details,
+   * lots and street trees to find, no cornices, awnings or shop lights, and their shadows their own, to go when they're hidden (not the
+   * cells' stand-ins in js/scene-culling.js). Returns the groups, each with its site's id in `userData.firstShape`.
+   */
+  function* addStandIns(tile, which, target) {
+    const groups = [];
+    const kept = wholeOf(tile);
+    for (const [id, list] of Object.entries(tile.standIns ?? {})) {
+      if (!which(id)) continue;
+      // A piece of a building the map keeps the rest of takes the look of the rest; one all of whose pieces are here, of them
+      const own = new Map();
+      for (const b of list) {
+        if (!b.group || kept.has(b.group)) continue;
+        const w = own.get(b.group);
+        if (!w) own.set(b.group, { cx: b.cx, cz: b.cz, height: b.height, floor: b.floor, low: b.low, pieces: [b] });
+        else {
+          w.height = Math.max(w.height, b.height);
+          w.pieces.push(b);
+          if (!b.bottom) { w.cx = b.cx; w.cz = b.cz; }
+        }
+      }
+      // Each other's neighbours, as the map's buildings are, for the walls they share
+      const siblings = list.map((b) => ({ x0: b.minX, x1: b.maxX, z0: b.minZ, z1: b.maxZ, height: b.height + 0.22, polygons: b.polygons }));
+      const buckets = materials.map(() => []);
+      for (const b of list) {
+        const whole = b.group ? kept.get(b.group) ?? own.get(b.group) : b;
+        const { mat, tone, roof, pitch, gabled, eaves, seed } = buildingLook(b, whole);
+        const storefronts = !b.bottom && b.height >= 6 && (b.kind === 3 || (b.kind === 0 && mulberry32(seed ^ 0x53544f52)() < 0.45));
+        // Its own floor, which the tile build worked out over all of its building's pieces, so no wall of it starts underground
+        const item = { ...b, tone, storefronts, base: b.floor, roof, pitch, gabled, eaves };
+        const style = houseOf(b);
+        if (style) Object.assign(item, { house: style, front: streetOf(tile, b, whole), fascia: withFascia ? FASCIAS[mulberry32(seed ^ 0x46415343)() < 0.65 ? 0 : 1] : null });
+        buckets[mat].push(item);
+      }
+      const group = new THREE.Group();
+      group.name = `StandIns_${id}`;
+      group.userData.firstShape = id;
+      group.userData.lifted = true;
+      for (const [i, items] of buckets.entries()) {
+        if (!items.length) continue;
+        const neighbours = (b) => [...nearbyReserves(b, 2), ...siblings.filter((r) => r.polygons !== b.polygons)];
+        const made = yield* createBuildingFootprintsSteps(materials[i], items, i < 2 || i > 4 ? neighbours : undefined, roofMaterials, {
+          groundAt: wallFootAt,
+          storey: { width: FACADES[i][1].windowWidth, height: FACADES[i][1].floorHeight }
+        });
+        for (const mesh of [...made.children]) {
+          delete mesh.userData.shadowStandIn;
+          group.add(mesh);
+        }
+      }
+      target.add(group);
+      groups.push(group);
+      yield;
+    }
+    return groups;
+  }
+
   /** Forgets a tile: its colliders are the caller's to take back, and its meshes went with the stage they were built into */
   function removeTile(tile) {
     const record = tiles.get(tile.key);
@@ -780,7 +840,7 @@ function createCityBlocks(scene, { fascia: withFascia = true } = {}) {
   }
 
   scene.add(storeLightGroup);
-  return { group, addBuildings, removeTile, update, updateLights };
+  return { group, addBuildings, addStandIns, removeTile, update, updateLights };
 }
 
 export { FACADE_TONES, ROOF_COLOURS, createCityBlocks };

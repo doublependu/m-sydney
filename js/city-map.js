@@ -332,7 +332,8 @@ function* footprintLayersSteps(all) {
     for (const f of blk.footprints || []) tones[tone(f.h)].ring(f.pts, f.holes);
     yield;
   }
-  // ...and the buildings drawn from models (js/model-sites.js), which their tiles leave out: each by its own outline
+  // ...and the buildings drawn from models (js/model-sites.js), which their tiles leave out: each by its own outline, where it has one.
+  // Where it hasn't, the map's buildings it replaces are among the far files' footprints (js/far-level.js)
   for (const f of SITE_OUTLINES) tones[tone(f.h)].ring(f.pts);
   FOOTPRINTS = { src: all, n: all.length, tones, version: FOOTPRINTS ? FOOTPRINTS.version + 1 : 1 };
 }

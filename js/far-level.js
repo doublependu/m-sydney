@@ -164,6 +164,11 @@ function createFarLevel() {
       for (const b of file.buildings) {
         footprints.push({ footprints: b.rings.map((pts) => ({ h: b.height + 0.22, pts, holes: [] })) });
       }
+      // ...and the map's buildings a model site replaces, where it has no outline of its own for the map (js/city-map.js), which the far
+      // level itself doesn't draw (tools/build-tiles.mjs)
+      for (const [height, ...rings] of file.standIns ?? []) {
+        footprints.push({ footprints: rings.map((flat) => ({ h: height + 0.22, pts: flat.flatMap((v, i) => (i % 2 ? [] : [{ x: v * 0.5, z: flat[i + 1] * 0.5 }])), holes: [] })) });
+      }
       footprintVersion++;
     }
     return record.meshes;

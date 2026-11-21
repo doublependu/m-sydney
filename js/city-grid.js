@@ -19,7 +19,7 @@ import { GroundCells, SIDEWALK_TOP, addBase, addCurb, addRoadDeck, addSurface, d
 import { SITE_CUTS } from './model-sites.js';
 import { buildStructures } from './structures.js';
 import { buildTileGarden, useMapLawn } from './garden.js';
-import { ROCK_LIFT, SAND_LIFT } from './drawn-ground.js';
+import { ROCK_LIFT, SAND_LIFT, trianglesOf } from './drawn-ground.js';
 import { outsideTunnelMouths } from './tunnel-mouths.js';
 
 // The harbour, the seawalls, the road deck, and every curb island: footpaths, traffic islands and park lawns, all laid
@@ -373,13 +373,16 @@ function* buildTileGround(tile, target, { part = () => true, last = true, garden
   // tiledPolygons()), which reach past its edge: so the cuts near it, not only in it
   const reach = 240;
   const cuts = SITE_CUTS.filter((c) => c.maxX > box.x0 - reach && c.minX < box.x1 + reach && c.maxZ > box.z0 - reach && c.minZ < box.z1 + reach);
-  const withCuts = (rings) => {
+  // ...and what each piece cut was, for its cover: [cut, the cells it's drawn in, its lift]
+  const cutFrom = [];
+  const withCuts = (rings, into, lift) => {
     let out = rings;
     for (const c of cuts) {
       if (!c.poly.every((q) => pointInPolygonXZ(rings[0], q.x, q.z))) continue;
       if (rings.slice(1).some((h) => c.poly.some((q) => pointInPolygonXZ(h, q.x, q.z)))) continue;
       if (out === rings) out = rings.slice();
       out.push(c.poly);
+      cutFrom.push([c, into, lift]);
     }
     return out;
   };
@@ -399,7 +402,7 @@ function* buildTileGround(tile, target, { part = () => true, last = true, garden
   }
   for (const [i, rings] of tile.placedPavements.entries()) {
     const mid = midOf(rings);
-    if (part(mid.x, mid.z)) addSurface(paving, cuts.length ? withCuts(rings) : rings, SIDEWALK_TOP);
+    if (part(mid.x, mid.z)) addSurface(paving, cuts.length ? withCuts(rings, paving, SIDEWALK_TOP) : rings, SIDEWALK_TOP);
     if (i % 2 === 0) yield;
   }
   // Concrete where a separator's lawn would be
@@ -410,8 +413,31 @@ function* buildTileGround(tile, target, { part = () => true, last = true, garden
   };
   for (const [i, rings] of tile.placedLawns.entries()) {
     const mid = midOf(rings);
-    if (part(mid.x, mid.z)) addSurface(onSeparator(rings) ? paving : lawns, cuts.length ? withCuts(rings) : rings, SIDEWALK_TOP + 0.02);
+    const into = onSeparator(rings) ? paving : lawns;
+    if (part(mid.x, mid.z)) addSurface(into, cuts.length ? withCuts(rings, into, SIDEWALK_TOP + 0.02) : rings, SIDEWALK_TOP + 0.02);
     if (i % 8 === 0) yield;
+  }
+  // Over each cut made here, a cover: the ground that was cut out, drawn as it was, in its own look, for the model site's first shape
+  // (js/first-shapes.js) while the map's buildings stand in for the model, which draws what's in the cut itself. It's the ground to
+  // stand on while it's drawn, where the map's own is left out (js/drawn-ground.js): its triangles in `userData.ground`.
+  const covers = new Map(); // site id -> [group, triangles]
+  for (const [c, from, lift] of cutFrom) {
+    if (!covers.has(c.id)) {
+      const group = new THREE.Group();
+      group.name = `Cover_${c.id}`;
+      group.userData.firstShape = c.id;
+      group.userData.lifted = true;
+      covers.set(c.id, [group, []]);
+    }
+    const [group, ground] = covers.get(c.id);
+    const cover = cells();
+    addSurface(cover, [c.poly], lift);
+    ground.push(trianglesOf(cover));
+    buildCells(cover, group, from === paving ? mats.sidewalk : mats.lawn);
+  }
+  for (const [group, ground] of covers.values()) {
+    group.userData.ground = ground;
+    target.add(group);
   }
   const sand = cells(), rock = cells();
   yield* addCoast(tile, sand, rock, wanted);

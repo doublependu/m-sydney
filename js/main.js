@@ -961,14 +961,37 @@ async function initApp() {
     if (compileTargetInUse) setCompileTarget(true);
   }
 
+  // The scene's lights. compileAsync(object, camera, scene) walks the whole scene for them at every call (its lights are what the
+  // object's shader is built for), and with the city in it that walk was most of what compiling a model's meshes cost on a phone's CPU.
+  // Found once for a batch of compiles, each call visits these alone: the ones shown, as its own walk would find them.
+  function sceneLights() {
+    const lights = [];
+    scene.traverse((o) => { if (o.isLight) lights.push(o); });
+    return lights;
+  }
+  const shownInScene = (o) => {
+    for (; o; o = o.parent) {
+      if (!o.visible) return false;
+      if (o === scene) return true;
+    }
+    return false;
+  };
+
   // compileAsync() culls during its synchronous start, and most of these objects are out of view by design
-  function compileObject(object) {
+  function compileObject(object, lights = null) {
     const { frustumCulled, visible } = object;
     object.frustumCulled = false;
     object.visible = true;
-    const compiled = renderer.compileAsync(object, cameraSystem.camera, scene);
-    object.frustumCulled = frustumCulled;
-    object.visible = visible;
+    // Its walk for the lights is in that synchronous start too
+    if (lights) scene.traverseVisible = (visit) => { for (const light of lights) if (shownInScene(light)) visit(light); };
+    let compiled;
+    try {
+      compiled = renderer.compileAsync(object, cameraSystem.camera, scene);
+    } finally {
+      if (lights) delete scene.traverseVisible;
+      object.frustumCulled = frustumCulled;
+      object.visible = visible;
+    }
     return compiled.catch((e) => console.warn('[compile]', e)); // the frame that needs it compiles it instead
   }
 
@@ -990,6 +1013,7 @@ async function initApp() {
     setCompileTarget(true);
     let next = 0;
     let done = 0;
+    const lights = sceneLights();
     const worker = async () => {
       while (next < now.length) {
         const job = now[next++];
@@ -997,7 +1021,7 @@ async function initApp() {
         // which must not be mid-step for two of them in the same microtask checkpoint
         for (const object of job) {
           await nextTask();
-          await compileObject(object);
+          await compileObject(object, lights);
         }
         done++;
         if (loadingStatus) {
@@ -1033,9 +1057,10 @@ async function initApp() {
       let sliceStart = performance.now();
       const total = jobs.reduce((sum, job) => sum + job.length, 0) || 1;
       let done = 0;
+      const lights = sceneLights();
       for (const job of jobs) {
         for (const object of job) {
-          await compileObject(object);
+          await compileObject(object, lights);
           task?.set(++done / total);
           if (performance.now() - sliceStart > 3) {
             await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -1830,21 +1855,24 @@ async function initApp() {
         water: CITY_BOUNDS.waterLevel,
         // Room for what a season stands in the city: no street tree planted in these circles from the next time they're put out, and
         // now if one stands in one
+        // Only the trees keep clear of the clearings, so they're taken out where they stand (js/street-details.js clear()); while
+        // the street furniture is being put out again, the new lot is put out once more after
         clear(circles) {
           addClearings(circles);
-          const field = streetDetails?.treeField;
-          if (circles.some((c) => field?.treesNear(c.x, c.z, c.r).length)) detailsDue = true;
+          if (streetDetails?.clear(circles) && detailsDoneAt === null) detailsDue = true;
           return () => removeClearings(circles);
         },
-        // What you can't walk or drive through; the walkers near you keep off it from now
+        // What you can't walk or drive through; the walkers near you keep off it once their paths are made again, which is when you're
+        // near enough for walkers to be there (unrouted, in the world's loop below), or at the traffic's next move, whichever comes first
         colliders: {
           add(list) {
             controllerManager.addColliders(list);
-            if (windowAt && list.some((c) => Math.hypot((c.minX + c.maxX) / 2 - windowAt.x, (c.minZ + c.maxZ) / 2 - windowAt.z) < TRAFFIC_RADIUS)) {
-              trafficDue = true;
-            }
+            unrouted.push(...list);
           },
-          remove: (list) => controllerManager.removeColliders(list)
+          remove(list) {
+            controllerManager.removeColliders(list);
+            unrouted = unrouted.filter((c) => !list.includes(c));
+          }
         },
         // Objects already drawn whose material a season has changed, compiled between frames as a stage is (a promise)
         compile: (objects) => compileJobs([objects]),
@@ -1862,6 +1890,10 @@ async function initApp() {
     let caughtUp = false;
     // Street furniture put out again, or the traffic's roads and paths made again, where you are: a season has made room for something
     let detailsDue = false, trafficDue = false;
+    // A season's colliders the walkers' paths don't keep off yet. Walkers are only ever within js/pedestrian-system.js's 350 m of you,
+    // so the paths are made again for them only once you're within WALKERS_NEAR of one, not as soon as it's added
+    let unrouted = [];
+    const WALKERS_NEAR = 450;
     let detailsAt = { x: startX, z: startZ };
     let detailsDoneAt = detailsAt; // where street furniture was last put out round, once it's done: null while it's being done
     let plannedAt = -Infinity, plannedX = Infinity, plannedZ = Infinity;
@@ -1877,6 +1909,7 @@ async function initApp() {
       plannedZ = z;
       const next = wantedTiles();
       if (worldCompleteAt !== null) followStreaming(x, z, next, detailsAt, detailsDoneAt);
+      if (unrouted.some((c) => Math.hypot((c.minX + c.maxX) / 2 - x, (c.minZ + c.maxZ) / 2 - z) < WALKERS_NEAR)) trafficDue = true;
       keepToBudget(performance.now());
       for (const key of next.drop) dropTile(key);
       for (const t of heldTiles()) {
@@ -1894,9 +1927,11 @@ async function initApp() {
         detailsDoneAt = null;
         yield* groundFirst(rebuildDetails());
         detailsDoneAt = { x, z };
+        unrouted = []; // the paths made now keep off every collider there is
         yield* groundFirst(rebuildTraffic(x, z));
       } else if (trafficDue || Math.hypot(x - windowAt.x, z - windowAt.z) > TRAFFIC_RADIUS * (flying() ? 0.75 : 0.4)) {
         trafficDue = false;
+        unrouted = [];
         yield* groundFirst(rebuildTraffic(x, z));
       } else if (lotDetails && !flying() && (yield* lotDetails.work(x, z))) {
         // a square's lots worked out, or what's drawn of them chosen again

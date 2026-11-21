@@ -1048,9 +1048,30 @@ function* buildStreetDetails(scene, allColliders = [], lightPools, addedTrees = 
     }
   }
 
+  /**
+   * The trees in any of `circles` ({ x, z, r }) taken away, with their pits and grates: room made for what a season stands in the city,
+   * as putting the street furniture out again would make it (only the trees keep clear of js/model-sites.js's clearings), without doing
+   * that. Returns how many trees went.
+   */
+  function clear(circles) {
+    const gone = treeField.clear(circles);
+    const inside = (t) => circles.some((c) => (t.x - c.x) ** 2 + (t.z - c.z) ** 2 <= c.r * c.r);
+    const none = new THREE.Matrix4().makeScale(0, 0, 0);
+    for (const [mesh, list] of [[pitCurbInst, sidewalkTreePositions], [pitSoilInst, sidewalkTreePositions], [pitGrateInst, gratedTrees]]) {
+      let hidden = false;
+      list.forEach((t, i) => {
+        if (!inside(t)) return;
+        mesh.setMatrixAt(i, none);
+        hidden = true;
+      });
+      if (hidden) mesh.instanceMatrix.needsUpdate = true;
+    }
+    return gone;
+  }
+
   scene.add(group);
   const updateSignals = (elapsed, dt, traffic) => updateSignalHeads(signalJunctions, elapsed, dt, traffic);
-  return { group, footprints, signalClock, signalIntersections, audioSignals, treeField, update, updateSignals, replantAdded };
+  return { group, footprints, signalClock, signalIntersections, audioSignals, treeField, update, updateSignals, replantAdded, clear };
 }
 
 // How often the board is rewritten, and how far the junctions out of traffic's reach are apart in their own slow cycle

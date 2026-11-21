@@ -3419,6 +3419,13 @@ export const SCENARIOS = {
   'qvb': qvbScenario(),
   'circular-quay': circularQuayScenario(),
   'central-station': centralStationScenario(),
+  // The same walks on the phone profile (its screen, 3x pixels, touch), for the insides' frames there: their fps* metrics
+  'st-marys-phone': { ...stMarysScenario(), profile: 'phone' },
+  'art-gallery-phone': { ...artGalleryScenario(), profile: 'phone' },
+  'art-gallery-new-phone': { ...artGalleryNewScenario(), profile: 'phone' },
+  'qvb-phone': { ...qvbScenario(), profile: 'phone' },
+  'circular-quay-phone': { ...circularQuayScenario(), profile: 'phone' },
+  'central-station-phone': { ...centralStationScenario(), profile: 'phone' },
   'origin-move': originScenario(''),
   'origin-far': originScenario('originTest=85000'),
   'signal-wait': {

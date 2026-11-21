@@ -1498,6 +1498,32 @@ function* createTreeFieldSteps(_scene, sites, colliders = [], { reserve = null, 
     return out;
   }
 
+  /**
+   * The trees standing in any of `circles` ({ x, z, r }) taken out of the field, as if they'd never been planted there: room for what a
+   * season stands in the city (js/model-sites.js addClearings()), without the field made again. Only the cells they're in are packed
+   * again. Returns how many went.
+   */
+  function clear(circles) {
+    const inside = (i) => circles.some((c) => (px[i] - c.x) ** 2 + (pz[i] - c.z) ** 2 <= c.r * c.r);
+    let gone = 0;
+    for (const cell of cellList) {
+      if (!circles.some((c) => Math.hypot(cell.cx - c.x, cell.cz - c.z) <= c.r + cell.radius)) continue;
+      const kept = cell.trees.filter((i) => !inside(i));
+      if (kept.length === cell.trees.length) continue;
+      gone += cell.trees.length - kept.length;
+      // ...and from what setAdded() packs the cell from again
+      cell.baseTrees = cell.baseTrees.filter((i) => !inside(i));
+      fit(cell, kept);
+      cell.uniformLod = -1;
+      dirtyCells.add(cell);
+    }
+    if (gone) {
+      rebuild();
+      last.set(Infinity, Infinity, Infinity);
+    }
+    return gone;
+  }
+
   // Levels for the start-up view (Macquarie St), so the precompile pass sees the tree meshes
   yield;
   update(new V3(0, 10, 140));
@@ -1522,7 +1548,7 @@ function* createTreeFieldSteps(_scene, sites, colliders = [], { reserve = null, 
     triangles: geos.map((v) => v.map((l) => l.map((g) => g && g.userData.triangles))),
     cards: geos.map((v) => v.map((l) => l.map((g) => g && g.userData.cards)))
   };
-  return { group, material, atlas, update, setAdded, treesNear, meshes: instanced, stats, sites: plantedSites };
+  return { group, material, atlas, update, setAdded, treesNear, clear, meshes: instanced, stats, sites: plantedSites };
 }
 
 function createTreeField(_scene, sites, colliders = [], options = {}) {

@@ -15,8 +15,8 @@ import {
 } from './interior-data.js';
 
 // Buildings drawn from models of their own (js/model-sites.js), and the insides of those that have one.
-// - The outside comes with its tile, like any building: its walls, the leaves of its doors, the floors in front of them. Nothing about it
-//   says whether there's anything behind its front door.
+// - The outside comes with its tile, like any building, once you're on your way to it (within its `near` and LOAD_AHEAD): its walls, the
+//   leaves of its doors, the floors in front of them. Nothing about it says whether there's anything behind its front door.
 // - At a door, within reach and facing it, F opens it (a hand button on touch, X on a gamepad). If there's an inside, that's when it's
 //   fetched: the door swings to a little open while it comes, then all the way. It's let go of RELEASE metres after you leave.
 // - A big inside is several files (a gallery's levels): a door inside can name another (`inside`), the door at the head of a stair down
@@ -50,6 +50,7 @@ const EYE_EASE = 2.5; // m/s the camera goes back out once a wall's no longer in
 const EYE_CLOSE = 0.7; // m from over your head: nearer than this, you aren't drawn, or you'd fill the view
 const SEEN_DEPTH = 3; // rooms deep, through open doorways, that the camera sees
 const NEAR = 400; // m from the camera that a model is drawn, rather than its far version, unless its site says (`near`)
+const LOAD_AHEAD = 250; // m further out that its model is fetched: 15 s at 60 km/h, and its first shape stands till it's in
 const DOORS_NEAR = 20; // m from a model, for the player or the camera, that its door leaves are drawn apart, ready to swing
 const FAR_KEEP = 1000; // m past the far level's reach before a far version is let go of
 
@@ -730,7 +731,11 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     const reach = farReach();
     for (const site of sites) {
       const wanted = site.debug ? tileBuilt(x, z) && Math.hypot(site.x - x, site.z - z) < DEBUG_RANGE : tileBuilt(site.x, site.z);
-      if (wanted && !site.out && !site.loading && !site.failed) loadOutside(site);
+      // Fetched once the player or the camera comes within LOAD_AHEAD of where it's drawn, not as soon as its tile is: on low that's
+      // every site within a kilometre, most of them never drawn, all fetched and compiled in the seconds after the city completes.
+      // Once held, it's held while its tile is.
+      const coming = Math.min(Math.hypot(site.x - x, site.z - z), Math.hypot(site.x - eye.x, site.z - eye.z)) < site.near + LOAD_AHEAD;
+      if (wanted && coming && !site.out && !site.loading && !site.failed) loadOutside(site);
       else if (!wanted && site.out) dropOutside(site);
       // One of its three shapes (js/first-shapes.js): the model within its `near` of the camera once it's in; its far version past
       // that once it's in; its first shape otherwise, and within `near` while the model comes, if it has one there to show. The line

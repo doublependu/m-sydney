@@ -164,6 +164,29 @@ test('every tunnel mouth faces into its tube, with the cutting behind it', () =>
   assert.equal(PORTALS.filter((m) => Math.hypot(m.x - 1405, m.z - 75) < 12).length, 2);
 });
 
+test('the Eastern Distributor\'s ramps at Moore Park are covered up to their portals, not open in the lanes of the streets over them', (t) => {
+  // tools/local/moore-park.json: each ramp 6.7 m or more under the ground 6 m in from its portal, and the street it comes up into
+  // sunk into a cutting from there. Tiles built before that edit have the Anzac Pde off-ramp 6 m in from its portal at the ground's height
+  if (!isHeld(tileKeyAt(1300, 1300))) return t.skip('Moore Park isn\'t held');
+  const portal = (name, x, z) => {
+    for (const l of LINKS) {
+      if (l.kind !== KIND.TUNNEL || l.name !== name) continue;
+      if (Math.hypot(l.pts[0].x - x, l.pts[0].z - z) < 2) return { l, open: l.openA };
+      if (Math.hypot(l.pts[l.pts.length - 1].x - x, l.pts[l.pts.length - 1].z - z) < 2) return { l, open: l.openB };
+    }
+    return null;
+  };
+  const anzac = portal('Anzac Parade Offramp', 1376.8, 1429);
+  assert.ok(anzac, 'no Anzac Pde off-ramp portal at (1377, 1429)');
+  if (heightOn(anzac.l, 1373.9, 1424.4) > 42) return t.skip('the tiles are from before tools/local/moore-park.json');
+  for (const [name, x, z] of [['Anzac Parade Offramp', 1376.8, 1429], ['Moore Park Road Offramp', 1462.5, 1321.6], ['Eastern Distributor Onramp', 1236.6, 1236.3]]) {
+    const p = portal(name, x, z);
+    assert.ok(p, `no ${name} portal at (${x}, ${z})`);
+    // ...open only the cutting's own end and slope past the portal
+    assert.ok(p.open <= 12, `${name} is open ${p.open.toFixed(0)} m in from its portal`);
+  }
+});
+
 test('a street overlapping a cutting alongside leaves its road alone, and digs no pit beside it', () => {
   // William St's cutting, under the edge of the wide William St beside it
   const road = LINKS.find((l) => l.cut && l.name === 'William Street' && l.pts.some((p) => Math.hypot(p.x - 1383, p.z - 58) < 1));

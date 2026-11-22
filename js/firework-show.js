@@ -223,14 +223,38 @@ function showCues(places) {
 }
 
 /** The cues launched after `from` and up to `to`, s into the loop, round the loop's end if `to` is past it */
+// The cues by their times, for cuesBetween(): it's asked every frame at midnight, a few of the show's 1,500 cues at most each time
+const byTime = new WeakMap(); // cues -> { order: their indices by time, times }
 function cuesBetween(cues, from, to) {
-  const out = [];
   if (to - from >= LOOP) return cues.slice();
-  const a = ((from % LOOP) + LOOP) % LOOP, b = a + (to - from);
-  for (const cue of cues) {
-    if ((cue.t > a && cue.t <= b) || (b > LOOP && cue.t + LOOP > a && cue.t + LOOP <= b)) out.push(cue);
+  let sorted = byTime.get(cues);
+  if (!sorted) {
+    const order = cues.map((_, i) => i).sort((i, j) => cues[i].t - cues[j].t);
+    sorted = { order, times: order.map((i) => cues[i].t) };
+    byTime.set(cues, sorted);
   }
-  return out;
+  const { order, times } = sorted;
+  const a = ((from % LOOP) + LOOP) % LOOP, b = a + (to - from);
+  // The first by time at or after t (a little before, so the exact test below decides at the edge)
+  const first = (t) => {
+    let lo = 0, hi = times.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (times[mid] < t - 1e-6) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+  const picked = [];
+  for (let k = first(a); k < times.length && times[k] <= b + 1e-6; k++) if (times[k] > a && times[k] <= b) picked.push(order[k]);
+  // ...and past the loop's end, those from its start
+  if (b > LOOP) {
+    for (let k = first(a - LOOP); k < times.length && times[k] <= b - LOOP + 1e-6; k++) {
+      if (times[k] + LOOP > a && times[k] + LOOP <= b) picked.push(order[k]);
+    }
+  }
+  // In the list's own order, as a walk through all of them gives them
+  return picked.sort((i, j) => i - j).map((i) => cues[i]);
 }
 
 // The colours the bridge's outline and the Opera House's sails are washed in, from each time on (s into the loop), with the show's sections

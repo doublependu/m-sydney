@@ -240,3 +240,21 @@ test('the season: nothing made until midnight, drawn only at midnight, the sea a
   season.stop();
   assert.equal(removed[0], revealed[0]);
 });
+
+test('the cues between two times are those a walk through all of them finds, in their order, anywhere in the loop', () => {
+  const walk = (a0, b0) => {
+    const a = ((a0 % LOOP) + LOOP) % LOOP, b = a + (b0 - a0);
+    return cues.filter((c) => (c.t > a && c.t <= b) || (b > LOOP && c.t + LOOP > a && c.t + LOOP <= b));
+  };
+  let seed = 3;
+  const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let k = 0; k < 3000; k++) {
+    const from = random() * LOOP * 4 - LOOP, to = from + random() * (k % 10 === 0 ? 40 : 0.1);
+    assert.deepEqual(cuesBetween(cues, from, to), walk(from, to), `from ${from} to ${to}`);
+  }
+  // ...and at a cue's own time, either side of it
+  for (const c of cues.slice(0, 200)) {
+    assert.deepEqual(cuesBetween(cues, c.t - 0.05, c.t), walk(c.t - 0.05, c.t));
+    assert.deepEqual(cuesBetween(cues, c.t, c.t + 0.05), walk(c.t, c.t + 0.05));
+  }
+});

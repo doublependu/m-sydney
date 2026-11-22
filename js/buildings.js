@@ -178,6 +178,15 @@ const ROOF_COLOURS = [
 // The board along a house's eaves: white, or cream
 const FASCIAS = [0xf0eee6, 0xe2d6b8].map((c) => new THREE.Color(c));
 
+// A house of one piece with no street address, in a tile that has addresses, under this is a shed or a garage: no front door
+const SHED = 40; // m²
+const ringArea = (ring) => {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) a += ring[j].x * ring[i].z - ring[i].x * ring[j].z;
+  return Math.abs(a) / 2;
+};
+const areaOf = (b) => b.polygons.reduce((sum, p) => sum + ringArea(p.outer) - p.holes.reduce((s, r) => s + ringArea(r), 0), 0);
+
 /**
  * Spatial 2D quadtree for range queries around the active player/camera position.
  */
@@ -681,9 +690,17 @@ function createCityBlocks(scene, { fascia: withFascia = true } = {}) {
 
   // The style of a building that's a house (js/house-styles.js look), or 0
   const houseOf = (b) => (HOUSE_STYLES[b.houseStyle || 0]?.look ? b.houseStyle : 0);
-  // The street a house faces (js/street-front.js), from its middle, for its walls to put its front to: { x, z }, null where there's none
-  // near, or false for a piece of a house whose front another piece has (the piece on the ground nearest the street)
+  // Whether a tile has the buildings' street addresses (js/addresses.js): any building in it with one
+  const addressed = (tile) => (tile.addressed ??= tile.buildings.some((b) => b.address));
+  // The street a house faces, for its walls to put its front to: { x, z }, null where there's none near, or false for a piece of a house
+  // whose front another piece has, and for a shed. Where the tile gives its street address, its main street's point (the piece holding
+  // it has the front: tools/addresses.mjs gives it to the piece on the ground nearest that street). Otherwise the nearest street to its
+  // middle (js/street-front.js), its front on the piece on the ground nearest that; but in a tile that has addresses, a house of one
+  // piece with none under SHED m² is a shed or a garage, with no front door.
   function streetOf(tile, b, whole) {
+    const own = b.group ? whole.pieces.find((p) => p.address) : b.address && b;
+    if (own) return own === b && { x: b.address[0].x, z: b.address[0].z };
+    if (!b.group && addressed(tile) && areaOf(b) < SHED) return false;
     const found = streetFront(tileStreets(tile), whole.cx, whole.cz);
     const street = found && { x: found.x, z: found.z };
     if (!b.group) return street;
@@ -728,6 +745,9 @@ function createCityBlocks(scene, { fascia: withFascia = true } = {}) {
       const style = houseOf(b);
       if (style) {
         Object.assign(item, { house: style, front: streetOf(tile, b, whole), fascia: withFascia ? FASCIAS[mulberry32(seed ^ 0x46415343)() < 0.65 ? 0 : 1] : null });
+        // A house its address gives a front: its digits from its own seed, so its door is where the tiles' floor was set for it
+        // (js/building-door.js), whichever buildings come in with it
+        if (b.address) item.seed = seed;
         houses.push([item, b]);
       }
       surveyedBuckets[mat].push(item);

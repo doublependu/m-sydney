@@ -14,7 +14,8 @@ const { roofFrame } = await import('../../js/building-footprints.js');
 const { DECK_DEPTH, KIND, LINKS, STRUCTURES, deriveTunnels, groundHeight, groundRoadAt, roadHeight, structuresAt } = await import('../../js/surfaces.js');
 const { roomOver } = await import('../../js/deck-room.js');
 const { CLEAR_OVER_ROAD } = await import('../../js/wall-foot.js');
-const { buildingFloor } = await import('../../js/building-floor.js');
+const { DOOR_KEEP, MAX_CUT, buildingFloor, doorFloor } = await import('../../js/building-floor.js');
+const { doorOf } = await import('../../js/building-door.js');
 const { polygonBoxOverlaps } = await import('../../js/building-collision.js');
 const { landmarkColliders } = await import('../../js/landmarks.js');
 const GENERATED = fileURLToPath(new URL('../data/generated/', import.meta.url));
@@ -68,14 +69,31 @@ function inRingXZ(ring, x, z) {
   return c;
 }
 
-// Floors in 0.1 m. The pieces of a building share one, over all of them
+// Floors in 0.1 m. The pieces of a building share one, over all of them: at the highest ground along their walls, or where the tiles
+// give its street address and it has a door to that street (a house, a low-rise flat or shop: js/building-door.js), at the ground at
+// its door, its uphill walls cut into the slope (js/building-floor.js doorFloor())
 const skip = new Set(underLandmarks);
 const wholes = new Map();
+const lookWholes = new Map(); // as js/buildings.js wholeOf() has a building in pieces, for its look's seed
 REAL_BUILDINGS.forEach((b, i) => {
-  if (b.group && !skip.has(i)) (wholes.get(b.group) || wholes.set(b.group, []).get(b.group)).push(...b.polygons);
+  if (!b.group || skip.has(i)) return;
+  (wholes.get(b.group) || wholes.set(b.group, []).get(b.group)).push(...b.polygons);
+  const w = lookWholes.get(b.group);
+  if (!w) lookWholes.set(b.group, { cx: b.cx, cz: b.cz, height: b.height });
+  else {
+    w.height = Math.max(w.height, b.height);
+    if (!b.bottom) { w.cx = b.cx; w.cz = b.cz; }
+  }
+});
+const doorGround = new Map(); // a building (its group, or its index) to the ground at its door
+REAL_BUILDINGS.forEach((b, i) => {
+  if (skip.has(i) || !b.address) return;
+  const door = doorOf(b, buildingLook(b, b.group ? lookWholes.get(b.group) : b).seed);
+  if (door) doorGround.set(b.group ? `g${b.group}` : i, groundHeight(door.x, door.z));
 });
 const groupFloor = new Map();
 const floors = {};
+const atDoor = { buildings: 0, cut: 0, deepest: 0, kept: 0 };
 REAL_BUILDINGS.forEach((b, i) => {
   if (skip.has(i)) return;
   let f;
@@ -83,9 +101,17 @@ REAL_BUILDINGS.forEach((b, i) => {
     f = groupFloor.get(b.group);
     if (!f) groupFloor.set(b.group, (f = buildingFloor(wholes.get(b.group), groundHeight)));
   } else f = buildingFloor(b.polygons, groundHeight);
+  const door = doorGround.get(b.group ? `g${b.group}` : i);
+  const floor = door === undefined ? f.floor : doorFloor(f.floor, door);
+  if (door !== undefined && (!b.group || !b.bottom)) {
+    atDoor.buildings++;
+    if (floor < f.floor) { atDoor.cut++; atDoor.deepest = Math.max(atDoor.deepest, f.floor - floor); }
+    else atDoor.kept++;
+  }
   // Up, never down: a floor stays above the ground it was worked out for
-  floors[i] = [Math.ceil(f.floor * 10), Math.floor(f.low * 10)];
+  floors[i] = [Math.ceil(floor * 10), Math.floor(Math.min(f.low, floor) * 10)];
 });
+console.log(`[derive] floors at the door: ${atDoor.buildings} buildings with a door to their address street, ${atDoor.cut} cut into the slope (at most ${MAX_CUT} m; the deepest ${atDoor.deepest.toFixed(1)} m), ${atDoor.kept} kept (the door within ${DOOR_KEEP} m of the ground, or downhill of it)`);
 // A site's stand-ins on the floors they'd have without it: a piece of a building over all its pieces, the others' and its own. Kept
 // apart, so the floors of the buildings in the tiles stay as they are.
 const standInFloor = new Map();

@@ -39,9 +39,13 @@ const THREE = {
 };
 const collision = loadModule(readFileSync(join(__dirname, '../js/building-collision.js'), 'utf8'));
 const WALL_KINDS = { shop: 0, front: 1, rear: 2, lotLine: 3, side: 4, below: 5 };
+const ONE_HOUSE = 0.125;
+const houseStyles = require('./helpers/house-styles.cjs');
+const addresses = loadModule(readFileSync(join(__dirname, '../js/addresses.js'), 'utf8'));
+const houseEntry = loadModule(readFileSync(join(__dirname, '../js/house-entry.js'), 'utf8'), { imports: { './house-styles.js': houseStyles, './addresses.js': addresses } });
 const { createBuildingFootprints } = loadModule(readFileSync(join(__dirname, '../js/building-footprints.js'), 'utf8'), {
-  imports: { 'three/webgpu': THREE, './tsl-materials.js': { WALL_KINDS },
-    './building-collision.js': collision, './house-styles.js': require('./helpers/house-styles.cjs') }
+  imports: { 'three/webgpu': THREE, './tsl-materials.js': { WALL_KINDS, ONE_HOUSE },
+    './building-collision.js': collision, './house-styles.js': houseStyles, './addresses.js': addresses, './house-entry.js': houseEntry }
 });
 const p = (x, z) => ({ x, z });
 const square = (x = 0) => [p(x, 0), p(x + 10, 0), p(x + 10, 10), p(x, 10)];
@@ -353,4 +357,85 @@ test('a house\'s fascia hangs under its roof\'s edge all round, up a gable\'s ra
     close(Math.max(...ys), gabled ? 0.22 + 3.2 + 4 * tan30 : edge);
     assert.ok(white.every((c) => c === 1));
   }
+});
+
+// Where the tile gives a building's street addresses (js/addresses.js, as js/tiles/tile-file.js reads them: [{ x, z, wall, number }],
+// `wall` an index into outerWalls()), they decide its fronts
+const facing = (polygons, nx, nz) => addresses.outerWalls(polygons).findIndex((w) => Math.abs(-(w.b.y - w.a.y) / w.width - nx) < 1e-6 && Math.abs((w.b.x - w.a.x) / w.width - nz) < 1e-6);
+
+test('a house faces the wall its address gives, not the nearer street, and its digits come from its own seed', () => {
+  const outer = [p(0, 0), p(12, 0), p(12, 9), p(0, 9)];
+  const b = house(outer, { front: { x: 6, z: -8 }, seed: 4321 });
+  b.address = [{ x: 6, z: 30, wall: facing(b.polygons, 0, 1), number: '12' }];
+  const walls = wallsOf(build([b]).children[0]);
+  const fronts = walls.filter((w) => w.kind === WALL_KINDS.front);
+  assert.equal(fronts.length, 1);
+  close(fronts[0].nz, 1);
+  assert.equal(walls.filter((w) => w.kind === WALL_KINDS.side).length, 3);
+  assert.equal(b.frontWall.digits, 321);
+  assert.equal(b.frontWall.single, false, 'only a terrace is cut into a row');
+  // Its wall even where a neighbour in the tiles held stands against it: the build found none against every building
+  const c = house(outer, { front: { x: 6, z: -8 } }), neighbour = record([p(0, 9), p(12, 9), p(12, 20), p(0, 20)], { height: 12 });
+  c.address = [{ x: 6, z: 30, wall: facing(c.polygons, 0, 1), number: '12' }];
+  const against = wallsOf(build([c], () => [reserve(c), reserve(neighbour)]).children[0]);
+  assert.ok(against.find((w) => w.nz > 0.99).kind === WALL_KINDS.front);
+  // With no wall (every wall against a neighbour, to the build), its front as before, to the street's point
+  const d = house(outer, { front: { x: 6, z: 30 } });
+  d.address = [{ x: 6, z: 30, wall: -1, number: '12' }];
+  assert.ok(wallsOf(build([d]).children[0]).find((w) => w.kind === WALL_KINDS.front).nz > 0.99);
+});
+
+test('a terrace with an address: its back is a front only to another of its address streets, where it meets the ground; one number is one house', () => {
+  // A 10 m terrace-styled house (Victorian, style 1), 12 m deep, its street to the south: the facade would draw it as two
+  let outer = [p(0, 0), p(10, 0), p(10, 12), p(0, 12)];
+  const make = (address, groundAt = () => 0) => {
+    const b = house(outer, { front: { x: 12, z: -8 }, house: 1 });
+    b.address = address.map((a) => ({ ...a, wall: facing(b.polygons, a.nx, a.nz) }));
+    triangulations = [];
+    // The walls, not the stone under them (WALL_KINDS.below and up)
+    return { b, walls: wallsOf(createBuildingFootprints({}, [b], undefined, null, { groundAt }).children[0]).filter((w) => w.kind < WALL_KINDS.below) };
+  };
+  const kinds = (walls) => walls.map((w) => [Math.round(w.nx), Math.round(w.nz), w.kind]);
+  // One street: one front, no door at the back
+  let { b, walls } = make([{ x: 12, z: -8, nx: 0, nz: -1, number: '405' }]);
+  assert.deepEqual(walls.filter((w) => w.kind < WALL_KINDS.rear || Math.abs(w.kind - WALL_KINDS.front) < 0.25).map((w) => Math.round(w.nz)), [-1]);
+  assert.ok(walls.find((w) => w.nz > 0.99).kind === WALL_KINDS.side, `${JSON.stringify(kinds(walls))}`);
+  // ...of one number: one house, never cut into a row
+  close(walls.find((w) => w.nz < -0.99).kind, WALL_KINDS.front + ONE_HOUSE);
+  assert.equal(b.frontWall.single, true);
+  assert.equal(houseEntry.houseEntry(b.frontWall, 1).row, null);
+  // A range is houses: cut as before
+  ({ b, walls } = make([{ x: 12, z: -8, nx: 0, nz: -1, number: '1-3' }]));
+  assert.equal(walls.find((w) => w.nz < -0.99).kind, WALL_KINDS.front);
+  assert.equal(houseEntry.houseEntry(b.frontWall, 1).row.houses, 2);
+  // ...and so is a front long enough for three houses or more, though it has one number: its other houses' numbers fell outside it
+  outer = [p(0, 0), p(24, 0), p(24, 12), p(0, 12)];
+  ({ b, walls } = make([{ x: 12, z: -8, nx: 0, nz: -1, number: '43' }]));
+  assert.equal(walls.find((w) => w.nz < -0.99).kind, WALL_KINDS.front);
+  assert.equal(houseEntry.houseEntry(b.frontWall, 1).row.houses, 4);
+  outer = [p(0, 0), p(10, 0), p(10, 12), p(0, 12)];
+  // A lane address behind it: its back a front too, on the flat
+  ({ walls } = make([{ x: 12, z: -8, nx: 0, nz: -1, number: '405' }, { x: 12, z: 20, nx: 0, nz: 1, number: '76' }]));
+  assert.equal(walls.find((w) => w.nz > 0.99).kind, WALL_KINDS.front);
+  // ...but not where it stands 2 m over the ground: the floor's at the street's side (js/building-floor.js doorFloor())
+  ({ walls } = make([{ x: 12, z: -8, nx: 0, nz: -1, number: '405' }, { x: 12, z: 20, nx: 0, nz: 1, number: '76' }], (x, z) => (z > 6 ? -2 : 0)));
+  assert.equal(walls.find((w) => w.nz > 0.99).kind, WALL_KINDS.side);
+  // Its ends are sides whatever its addresses say
+  assert.ok(walls.filter((w) => Math.abs(w.nx) > 0.99).every((w) => w.kind === WALL_KINDS.side));
+});
+
+test('a low-rise shop with an address has entrances and shopfronts only on its walls to its address streets; the others are plain', () => {
+  const b = record(square(), { height: 6, kind: 3, storefronts: true });
+  b.address = [{ x: 5, z: -10, wall: facing(b.polygons, 0, -1), number: '20' }];
+  const walls = wallsOf(build([b]).children[0]);
+  assert.equal(walls.find((w) => w.nz < -0.99).kind, WALL_KINDS.shop);
+  assert.deepEqual(walls.filter((w) => w.nz > -0.99).map((w) => w.kind), [WALL_KINDS.side, WALL_KINDS.side, WALL_KINDS.side]);
+  // A corner: both streets' walls
+  b.address.push({ x: 20, z: 5, wall: facing(b.polygons, 1, 0), number: '1' });
+  const corner = wallsOf(build([b]).children[0]);
+  assert.equal(corner.filter((w) => w.kind === WALL_KINDS.shop).length, 2);
+  // A wall against its neighbour stays a lot line; a building with no wall to its street (not low-rise) is as before
+  const tower = record(square(), { height: 40, kind: 3, storefronts: true });
+  tower.address = [{ x: 5, z: -10, wall: -1, number: '20' }];
+  assert.ok(wallsOf(build([tower]).children[0]).every((w) => w.kind === WALL_KINDS.shop));
 });

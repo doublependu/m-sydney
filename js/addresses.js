@@ -116,6 +116,40 @@ function facingWalls(walls, street, cx, cz, front) {
     && ((-(w.b.y - w.a.y) / w.width) * dx + ((w.b.x - w.a.x) / w.width) * dz) / d >= FACING));
 }
 
+/**
+ * A flat's or shop's walls to its address streets (`address`, the tiles' [{ x, z, wall }]): each street's own (`wall`, an index into
+ * `walls`) and those facing it (facingWalls(), from `front`: `frontOf(street)`, js/building-footprints.js houseFront() facing it). Its
+ * entrances and shopfronts go only on these. `walls` as houseFront() takes them, in outerWalls()' order.
+ */
+function streetWalls(walls, address, cx, cz, frontOf) {
+  const out = new Set();
+  for (const street of address) {
+    if (walls[street.wall]) out.add(walls[street.wall]);
+    for (const w of facingWalls(walls, street, cx, cz, frontOf(street))) out.add(w);
+  }
+  return out;
+}
+
+/** Whether a building's main street gives it one number, not a range (`7-9`): one house. `number` as the tiles have it, or parseNumber()'s */
+function oneNumber(address) {
+  const number = address?.[0]?.number;
+  if (!number) return false;
+  return typeof number === 'string' ? !number.includes('-') : !number.to;
+}
+
+// The entrances the city's facade draws along a wall (js/tsl-materials.js createBuildingEntrance()): its length over the nearest whole
+// number of ENTRANCE_EVERY m (facadeCounts()), each in the middle of its stretch, so from either end the same
+const ENTRANCE_EVERY = 28; // m
+const entrancesOn = (width) => Math.max(Math.floor(width / ENTRANCE_EVERY + 0.50005), 1);
+/** The entrance along a wall { a, b, width } (outerWalls()') nearest (x, z): { x, z, s } with s m from a */
+function entranceNear(w, x, z) {
+  const n = entrancesOn(w.width), ux = (w.b.x - w.a.x) / (w.width || 1), uz = (w.b.y - w.a.y) / (w.width || 1);
+  const along = (x - w.a.x) * ux + (z - w.a.y) * uz;
+  const k = Math.max(0, Math.min(n - 1, Math.floor((along / w.width) * n)));
+  const s = ((k + 0.5) * w.width) / n;
+  return { x: w.a.x + ux * s, z: w.a.y + uz * s, s };
+}
+
 /** How far (x, z) is from a wall { a, b } as outerWalls() gives them */
 function wallDistance(w, x, z) {
   const dx = w.b.x - w.a.x, dz = w.b.y - w.a.y, L2 = dx * dx + dz * dz || 1;
@@ -123,4 +157,5 @@ function wallDistance(w, x, z) {
   return Math.hypot(w.a.x + dx * t - x, w.a.y + dz * t - z);
 }
 
-export { facingWalls, looseStreetKey, numberCodes, numberFromCodes, numberSpan, numberText, outerWalls, parseNumber, streetKey, wallDistance };
+export { ENTRANCE_EVERY, entranceNear, entrancesOn, facingWalls, looseStreetKey, numberCodes, numberFromCodes, numberSpan, numberText, oneNumber, outerWalls, parseNumber, streetKey,
+  streetWalls, wallDistance };

@@ -427,6 +427,10 @@ function apartmentInteriorBehind(coverage, uCoord, vCoord, winUV, cellId, winW, 
 // Street fronts may have shops; courtyard walls have windows and shared lot-line walls are solid masonry. A house has one front, to
 // its street, and its other outer walls are sides (js/building-footprints.js).
 const WALL_KINDS = { shop: 0, front: 1, rear: 2, lotLine: 3, side: 4, below: 5 }; // below: under the floor, plus metres clear of the ground
+// A house's front whose street address says it's one house carries WALL_KINDS.front + this: a front to everything that reads the kind,
+// but never cut into a row of terraces (houseWall()). A city wall that isn't to one of its building's address streets is a `side`: no
+// entrance (createBuildingEntrance()) and no shopfront (js/building-footprints.js gives it none)
+const ONE_HOUSE = 0.125;
 
 // The house styles' looks (js/house-styles.js look), HOUSE_ROWS rows a style: [bay on the front, on the sides, share of the front's bays
 // with a window, of the sides'], then the front's window and the sides' [width, height, sill, panes], then [front's transom, sides',
@@ -481,7 +485,7 @@ const TERRACE_HOUSE = 5.5; // m: a row of terraces is cut into houses of its fro
  * in every pixel of it too.
  * A terrace's front long enough for two houses or more of TERRACE_HOUSE is a row of them (the map draws many rows as one footprint): two
  * bays a house, a door in one and a window in the other downstairs, and in place of a door's bay, which of each house's bays has its
- * door (rowDoor()) + 1.
+ * door (rowDoor()) + 1. Not where its kind says it's one house (ONE_HOUSE).
  * `wall`: the facadeWall attribute (its kind in z); `table`: HOUSE_TABLE.
  */
 function houseWall(box, wall, normal, table = HOUSE_TABLE) {
@@ -493,7 +497,9 @@ function houseWall(box, wall, normal, table = HOUSE_TABLE) {
   const isFront = step(abs(wall.z.sub(WALL_KINDS.front)), 0.25);
   const pier = min(float(HOUSE_PIER), box.x.mul(0.2));
   const houses = max(floor(box.x.div(TERRACE_HOUSE).add(0.50005)), 1.0);
-  const terraces = kinds.z.mul(isFront).mul(step(1.5, houses));
+  // ...not on a front of one house (ONE_HOUSE)
+  const oneHouse = step(ONE_HOUSE * 0.5, abs(wall.z.sub(WALL_KINDS.front)));
+  const terraces = kinds.z.mul(isFront).mul(step(1.5, houses)).mul(float(1.0).sub(oneHouse));
   const bays = mix(max(floor(box.x.sub(pier.mul(2.0)).div(mix(spacing.y, spacing.x, isFront)).add(0.50005)), 1.0), houses.mul(2.0), terraces);
   const last = bays.sub(1.0);
   // The house's own choices, the same on each of its walls. Where its door and garage door go is from the bits of its digits, exactly:
@@ -852,6 +858,7 @@ function createBuildingEntrance(facade, trim, local, modern = false) {
   const grounded = local ? float(1).sub(step(0.35, vCoord.add(fromTop).sub(wallH))) : float(1);
   const mask = band(x, halfWidth.add(0.20).negate(), halfWidth.add(0.20), fw.x)
     .mul(band(y, 0, height.add(0.20), fw.y)).mul(grounded).mul(step(WALL_KINDS.shop + 0.5, kind))
+    .mul(float(1).sub(step(abs(kind.sub(WALL_KINDS.side)), 0.25)))
     .mul(float(1).sub(max(max(back, isRoof), coping))).mul(step(1.3, width)).mul(step(1.7, height)).toVar();
   const recess = band(x, halfWidth.add(0.07).negate(), halfWidth.add(0.07), fw.x)
     .mul(band(y, 0.06, height.add(0.07), fw.y));
@@ -3122,6 +3129,7 @@ function createConcreteMaterial() {
 export {
   cityUniforms,
   WALL_KINDS,
+  ONE_HOUSE,
   filteredPulse,
   createCurtainWallMaterial,
   createPreWarBuildingMaterial,

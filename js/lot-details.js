@@ -40,6 +40,7 @@ const THINGS = { low: 70, medium: 110, high: 130 }; // m: and the rest of them, 
 // The verges' trees planted, the nearest: each is most of a thousand triangles near, with its shadows
 const TREES = { low: 6, medium: 12, high: 16 };
 const THICK = [0.12, 0.12, 0.34]; // m of concrete under a slab's top: driveway, crossover, layback
+const ADDRESS_REACH = 1.5; // m: a street address's point (in 0.5 m) is on its road within this
 // The inner city, where the map paves the kerb islands right through and there's no lawn to keep a fence on (tools/geodata/region-worker.mjs
 // PAVED_AREA)
 const PAVED_AREA = { x0: -2100, x1: 2700, z0: -4500, z1: 2100 };
@@ -181,6 +182,20 @@ function* squareWork(square, tiles) {
   const busStops = [];
   const stops = heldList('busShelters');
   for (let i = 0; i < stops.length; i += 2) if (stops[i] >= x0 && stops[i] <= x1 && stops[i + 1] >= z0 && stops[i + 1] <= z1) busStops.push({ x: stops[i], z: stops[i + 1] });
+  // The road on the ground nearest (x, z) within r, and the way its segment runs there: { x, z, ux, uz, link }, or null
+  const roadNear = (x, z, r) => {
+    let best = null, bestD = r;
+    for (let ix = Math.floor((x - r) / CELL); ix <= Math.floor((x + r) / CELL); ix++) {
+      for (let iz = Math.floor((z - r) / CELL); iz <= Math.floor((z + r) / CELL); iz++) {
+        for (const seg of cells.get(ix * 100000 + iz) || []) {
+          const t = Math.max(0, Math.min(seg.L, (x - seg.x) * seg.ux + (z - seg.z) * seg.uz));
+          const px = seg.x + seg.ux * t, pz = seg.z + seg.uz * t, d = Math.hypot(px - x, pz - z);
+          if (d <= bestD) { bestD = d; best = { x: px, z: pz, ux: seg.ux, uz: seg.uz, link: seg.link }; }
+        }
+      }
+    }
+    return best;
+  };
   const roadsNear = (x, z, r) => {
     const best = new Map();
     for (let ix = Math.floor((x - r) / CELL); ix <= Math.floor((x + r) / CELL); ix++) {
@@ -234,7 +249,13 @@ function* squareWork(square, tiles) {
   };
   yield;
   const env = {
+    // Its main street's, where the tile gives its street address (js/addresses.js), as its walls have it (js/buildings.js streetOf()):
+    // the road at that point, among those held, so it's found whichever tile it's in. Otherwise, or where that's no road on the ground,
+    // the nearest street among its own tile's
     streetOf: (w) => {
+      const a = w.pieces.find((b) => b.address)?.address[0];
+      const road = a && roadNear(a.x, a.z, ADDRESS_REACH);
+      if (road) return road;
       const found = streetFront(tileStreets(w.tile), w.cx, w.cz);
       return found && { x: found.x, z: found.z, ux: found.ux, uz: found.uz, link: found.link };
     },

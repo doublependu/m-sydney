@@ -1,7 +1,9 @@
 import * as THREE from 'three/webgpu';
-import { WALL_KINDS } from './tsl-materials.js';
+import { ONE_HOUSE, WALL_KINDS } from './tsl-materials.js';
 import { polygonContains } from './building-collision.js';
 import { HOUSE_STYLES } from './house-styles.js';
+import { streetWalls } from './addresses.js';
+import { frontWallOf, oneHouse } from './house-entry.js';
 
 function partyWallHeight(record, a, b, neighbours) {
   const dx = b.x - a.x, dz = b.y - a.y, length = Math.hypot(dx, dz);
@@ -282,8 +284,13 @@ function wallSeed(record, index) {
 // groundAt(x, z, floor): the ground's height under a wall, to stand it on. storey: { width, height } of the facade's window bays.
 // A house (record.house: its style) has one front, its other outer walls are sides (a terrace's walls parallel to its front are fronts
 // too: terraceFronts()); record.front is the street it faces ({ x, z }; null
-// where there's none near, and it fronts with its longest wall; false where another piece of it has the front). record.fascia: the colour
-// of the board along its eaves. A house's front wall is left on its record as `frontWall` (js/house-entry.js).
+// where there's none near, and it fronts with its longest wall; false where it has no front: another piece of it has it, or it's a
+// shed). record.fascia: the colour of the board along its eaves. A house's front wall is left on its record as `frontWall`
+// (js/house-entry.js). record.seed: its look's (js/building-look.js), which its digits come from; without it, its place in `records`.
+// Where the tile gives its street addresses (record.address, js/addresses.js), they decide: a house's front is the wall facing its main
+// street, a terrace's other fronts only those another of its address streets faces that meet the ground, and a terrace of one number is
+// one house, never cut into a row (js/house-entry.js oneHouse()); a low-rise flat or shop (one with a wall to its street) has entrances
+// and shopfronts only on its walls to its address streets, the others plain (WALL_KINDS.side). Without them, as before.
 function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMaterials = null, { groundAt = null, storey = null } = {}) {
   const cells = new Map();
   for (const [index, record] of records.entries()) {
@@ -316,9 +323,18 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
       }));
       shapes.push({ rings, walls });
     }
+    const outer = shapes.flatMap((s) => s.walls[0]);
+    const address = record.address?.length ? record.address : null;
+    // A wall within NO_SHOP_ABOVE of the ground beside its middle
+    const meetsGround = (w) => !bottom && (!groundAt || base - groundAt((w.a.x + w.b.x) / 2, (w.a.y + w.b.y) / 2) <= NO_SHOP_ABOVE);
     const front = record.house && record.front !== false
-      ? houseFront(shapes.flatMap((s) => s.walls[0]), record.front ?? null, record.cx, record.cz) : null;
-    const fronts = new Set([front, ...(HOUSE_STYLES[record.house]?.look?.terrace ? terraceFronts(shapes.flatMap((s) => s.walls[0]), front) : [])]);
+      ? (address && outer[address[0].wall]) || houseFront(outer, record.front ?? null, record.cx, record.cz) : null;
+    const terrace = !!HOUSE_STYLES[record.house]?.look?.terrace;
+    const others = terrace ? terraceFronts(outer, front) : [];
+    const fronts = new Set([front, ...(address ? others.filter((w) => address.some((a, k) => k && outer[a.wall] === w) && meetsGround(w)) : others)]);
+    const single = terrace && !!front && oneHouse(address, front.width);
+    const toStreets = !record.house && address?.some((a) => a.wall >= 0)
+      ? streetWalls(outer, address, record.cx, record.cz, (street) => houseFront(outer, street, record.cx, record.cz)) : null;
 
     for (const { rings, walls } of shapes) {
       // A pitched roof over a footprint with no courtyard, simple enough for one
@@ -329,18 +345,17 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
           const dx = b.x - a.x, dz = b.y - a.y;
           if (width === 0) continue;
           const offset = cell.positions.length / 3;
-          // A shopfront only where the wall meets the pavement
-          const meetsGround = !bottom && (!groundAt || base - groundAt((a.x + b.x) / 2, (a.y + b.y) / 2) <= NO_SHOP_ABOVE);
-          const kind = i ? WALL_KINDS.rear : adjacentHeight ? WALL_KINDS.lotLine
-            : record.house ? (fronts.has(wall) ? WALL_KINDS.front : WALL_KINDS.side)
-              : record.storefronts && meetsGround ? WALL_KINDS.shop : WALL_KINDS.front;
+          // A shopfront only where the wall meets the pavement. A house's front is one whatever stands against it in the tiles held: its
+          // address gave it against every building
+          const kind = i ? WALL_KINDS.rear : record.house && fronts.has(wall) ? WALL_KINDS.front + (single && wall === front ? ONE_HOUSE : 0)
+            : adjacentHeight ? WALL_KINDS.lotLine : record.house ? WALL_KINDS.side
+              : toStreets && !toStreets.has(wall) ? WALL_KINDS.side
+                : record.storefronts && meetsGround(wall) ? WALL_KINDS.shop : WALL_KINDS.front;
           const exposedHeight = adjacentHeight ? Math.max(0, height + 0.22 - adjacentHeight) : height;
           // Match the positive-world-axis tangent used by the shared interior-map view ray.
           const reverse = (Math.abs(dz) >= Math.abs(dx) ? dz : dx) < 0;
           // Kept for whatever needs to know where its door is (js/house-entry.js): the wall, which end its bays count from, its digits
-          if (wall === front) {
-            record.frontWall = { ax: a.x, az: a.y, bx: b.x, bz: b.y, reverse, width, digits: Math.floor(seed) % 1000 };
-          }
+          if (wall === front) record.frontWall = frontWallOf(wall, Math.floor(seed) % 1000, single);
           cell.positions.push(a.x, base + bottom, a.y, b.x, base + bottom, b.y, a.x, top, a.y, b.x, top, b.y);
           for (let k = 0; k < 4; k++) {
             cell.normals.push(-dz / width, 0, dx / width);

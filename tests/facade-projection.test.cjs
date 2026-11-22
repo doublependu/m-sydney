@@ -244,6 +244,7 @@ const houseSource = source.match(/function houseWall\([\s\S]*?\n}\n/);
 const { HOUSE_STYLES } = require('./helpers/house-styles.cjs');
 const kindsSource = source.match(/const WALL_KINDS = (\{[^}]*\})/);
 const WALL_KINDS = kindsSource && vm.runInNewContext(`(${kindsSource[1]})`);
+const ONE_HOUSE = Number(source.match(/const ONE_HOUSE = ([\d.]+);/)?.[1]);
 const fract = (x) => f(x - Math.floor(x));
 const hash = (p) => fract(f(Math.sin(f(f(p[0] * f(127.1)) + f(p[1] * f(311.7)))) * f(43758.5453)));
 const ROWS = (look) => look ? [
@@ -261,7 +262,7 @@ const tsl = {
   mix: (a, b, t) => binary(binary(a, t, (v, t) => v * (1 - t)), binary(b, t, (v, t) => v * t), (a, b) => a + b),
   dot: (a, b) => new Node(values(a).reduce((sum, v, i) => f(sum + f(v * values(b)[i])), 0)),
   vec2: (...v) => new Node(v.flatMap(values)), vec3: (...v) => new Node(v.flatMap(values)), vec4: (...v) => new Node(v.flatMap(values)),
-  hash2D: (p) => new Node(hash(values(p))), HOUSE_TABLE: table, HOUSE_ROWS: 5, HOUSE_PIER: 0.45, TERRACE_HOUSE: 5.5, WALL_KINDS,
+  hash2D: (p) => new Node(hash(values(p))), HOUSE_TABLE: table, HOUSE_ROWS: 5, HOUSE_PIER: 0.45, TERRACE_HOUSE: 5.5, WALL_KINDS, ONE_HOUSE,
   Fn: (fn) => () => fn(), If: (cond, fn) => { if (scalar(cond)) fn(); }
 };
 const houseWall = houseSource && vm.runInNewContext(`(function () { ${houseSource[0]} return houseWall; })()`, tsl);
@@ -429,6 +430,52 @@ test('the game finds each house of a row, and its door, where the facade draws t
         assert.ok(u.door.s > u.s0 + 0.5 && u.door.s < u.s1 - 0.5, `house ${k}'s door at ${u.door.s} in ${u.s0}-${u.s1}`);
         assert.ok(u.s1 - u.s0 > 4 && u.s1 - u.s0 < 7.5, `house ${k} is ${u.s1 - u.s0} m`);
       }
+    }
+  }
+});
+
+test('a terrace\'s front of one house (its address\'s one number) is never a row, and the game finds its one door where the facade draws it', async () => {
+  const { houseEntry } = await import('../js/house-entry.js');
+  assert.ok(ONE_HOUSE > 0 && ONE_HOUSE < 0.25, 'a front to everything else that reads the kind');
+  let wide = 0;
+  for (const [style, { look }] of HOUSES) {
+    for (let width = 2; width <= 40; width += 0.37) {
+      for (const seed of [0.5, 40.5, 64.2, 140.5, 999.9]) {
+        const shader = houseOf(width, style, WALL_KINDS.front + ONE_HOUSE, { seed });
+        assert.equal(shader.row, 0, `${HOUSE_STYLES[style].name} ${width} m: one house`);
+        const cpu = houseEntry({ ax: 0, az: 0, bx: width, bz: 0, reverse: false, width, digits: Math.floor(seed), single: true }, style);
+        assert.equal(cpu.row, null);
+        assert.equal(cpu.bays, shader.bays, `${HOUSE_STYLES[style].name} ${width} m: bays`);
+        assert.equal(cpu.doorBay, shader.door, `${HOUSE_STYLES[style].name} ${width} m, seed ${seed}: the door's bay`);
+        assert.equal(cpu.garageBay, shader.garage);
+        // Elsewhere as any front: a house of another style, or a terrace too short for a row, has the same counts either way
+        const plain = houseOf(width, style, WALL_KINDS.front, { seed });
+        if (!plain.row) assert.deepEqual(shader, plain);
+        else wide++;
+      }
+    }
+  }
+  assert.ok(wide > 0, 'terraces long enough for a row');
+});
+
+test('the city\'s entrances along a wall are where the build finds the one nearest an address (js/addresses.js entranceNear())', async () => {
+  const { ENTRANCE_EVERY, entranceNear, entrancesOn } = await import('../js/addresses.js');
+  // createBuildingEntrance(): stretches of the wall's length over facadeCounts()' count, an entrance in the middle of each
+  const entrance = source.slice(source.indexOf('function createBuildingEntrance('), source.indexOf('\n}\n', source.indexOf('function createBuildingEntrance(')));
+  assert.match(entrance, /const width = local \? wallW\.div\(entrances\)/);
+  assert.match(entrance, /const x = fract\(grid\)\.sub\(0\.5\)\.mul\(width\)/);
+  assert.match(countsSource[0], new RegExp(`count\\(wallWidth, ${ENTRANCE_EVERY}\\.0\\)`));
+  // ...and none on a wall that isn't to an address street (WALL_KINDS.side)
+  assert.match(entrance, /\.mul\(float\(1\)\.sub\(step\(abs\(kind\.sub\(WALL_KINDS\.side\)\), 0\.25\)\)\)/);
+  for (let width = 2.5; width <= 150; width += 0.5) {
+    for (const s of [-1, 0, 1]) assert.equal(entrancesOn(nextFloat(width, s)), countsOf(nextFloat(width, s), 2.6, 1.2)[2], `entrances on ${width} m`);
+    const n = entrancesOn(width), wall = { a: { x: 10, y: 5 }, b: { x: 10 + width * 0.6, y: 5 + width * 0.8 }, width };
+    for (let k = 0; k < n; k++) {
+      // The middle of each stretch, from either end: the facade measures from whichever end it reads the wall from
+      const s0 = ((k + 0.5) * width) / n;
+      const at = { x: 10 + s0 * 0.6 + 0.8 * 3, z: 5 + s0 * 0.8 - 0.6 * 3 };
+      const door = entranceNear(wall, at.x, at.z);
+      assert.ok(Math.abs(door.s - s0) < 1e-9 && Math.abs(width - door.s - ((n - 1 - k + 0.5) * width) / n) < 1e-9, `${width} m, entrance ${k}`);
     }
   }
 });

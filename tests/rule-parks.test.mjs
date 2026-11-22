@@ -235,6 +235,12 @@ test('parks by rule come out as the aerial has them: the bush OSM draws no wood 
     const e = land.find((el) => el.tags?.name === name && el.tags.leisure === 'park');
     assert.equal(kindOf(e.type, e.id), 'bush', name);
   }
+  // Forest the whole map's read found formal by the rule (no wood in OSM, zoned for recreation): bush by hand
+  for (const name of ['Landsdowne Park', 'Little Salt Pan Reserve', 'Galston Recreation Reserve', 'Dog Pound Creek Conservation Reserve',
+    'Lieutenant Cantello Reserve', 'Deepwater Park', 'Fred Caterson Reserve', 'Currawong Reserve']) {
+    const e = land.find((el) => el.tags?.name === name && el.tags.leisure === 'park');
+    assert.equal(kindOf(e.type, e.id), 'bush', name);
+  }
   // Parramatta Park's lawns, Sydney Park, Heffron Park, Tempe Reserve: formal
   for (const [type, id] of [['relation', 2913327], ['way', 174137106]]) assert.equal(kindOf(type, id), 'formal', `${type}/${id}`);
   for (const name of ['Heffron Park', 'Tempe Reserve', 'Mackey Park']) {

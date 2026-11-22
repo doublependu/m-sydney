@@ -228,7 +228,25 @@ export const PARK_OVERRIDES = [
   { id: 'way/1075245506', expect: { name: 'Oatley Park', leisure: 'park' }, kind: 'bush',
     why: 'NSW\'s aerial: eucalypt forest down to Lime Kiln Bay and the Georges River, its one oval and a few clearings; zoned RE1, no wood in OSM' },
   { id: 'way/240278788', expect: { leisure: 'park' }, kind: 'bush',
-    why: 'NSW\'s aerial: the forest of the gully west of Hunts Creek Reserve, Carlingford, at (-18820, -7560); unzoned, no wood in OSM' }
+    why: 'NSW\'s aerial: the forest of the gully west of Hunts Creek Reserve, Carlingford, at (-18820, -7560); unzoned, no wood in OSM' },
+  // Read against the aerial over the whole map: forest from edge to edge, or nearly, that OSM draws no wood in and the zoning has as
+  // public recreation, so every point of it was formal and its raised lawn ran under the trees, kerbed along its paths
+  { id: 'way/23650384', expect: { name: 'Landsdowne Park', leisure: 'park' }, kind: 'bush',
+    why: 'NSW\'s aerial: woodland from edge to edge, at (-20338, 5712), a few small clearings' },
+  { id: 'relation/2975002', expect: { name: 'Little Salt Pan Reserve', leisure: 'park' }, kind: 'bush',
+    why: 'NSW\'s aerial: forest down its creek, at (-15447, 12493), a strip of lawn at its north end' },
+  { id: 'way/587216818', expect: { name: 'Galston Recreation Reserve', leisure: 'park' }, kind: 'bush',
+    why: 'NSW\'s aerial: forest over about four fifths of it, at (-19014, -21361); its sports fields on its east side' },
+  { id: 'way/675577142', expect: { name: 'Dog Pound Creek Conservation Reserve', leisure: 'park' }, kind: 'bush',
+    why: 'NSW\'s aerial: forest from edge to edge down its creek, at (-14488, -16574), its tracks through it' },
+  { id: 'way/41998477', expect: { name: 'Lieutenant Cantello Reserve', leisure: 'park' }, kind: 'bush',
+    why: 'NSW\'s aerial: woodland by the Georges River, at (-20466, 11576), one grassy clearing at its south-west corner' },
+  { id: 'way/24430042', expect: { name: 'Deepwater Park', leisure: 'park' }, kind: 'bush',
+    why: 'NSW\'s aerial: woodland and scrub by the Georges River, at (-19873, 11399), its ponds and a few clearings in it' },
+  { id: 'way/427180424', expect: { name: 'Fred Caterson Reserve', leisure: 'park' }, kind: 'bush',
+    why: 'NSW\'s aerial: forest over about three quarters of it, at (-22860, -14131); a strip of sports fields down its middle' },
+  { id: 'way/273185778', expect: { name: 'Currawong Reserve', leisure: 'park' }, kind: 'bush',
+    why: 'NSW\'s aerial: a strip of forest between houses, at (-17236, -11261), one track through it' }
 ];
 
 /** A point inside a ring: on its middle row, the middle of the widest stretch inside it */

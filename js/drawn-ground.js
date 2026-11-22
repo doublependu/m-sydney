@@ -398,8 +398,14 @@ function drawnSlope(x, z, y) {
   const key = keyOf(x, z, CELL);
   for (const layer of layers.values()) {
     if (x < layer.x0 || x > layer.x1 || z < layer.z0 || z > layer.z1) continue;
-    const T = layer.tris;
-    for (const i of layer.cells.get(key) || []) take(T[i], T[i + 1], T[i + 2], T[i + 3], T[i + 4], T[i + 5], T[i + 6], T[i + 7], T[i + 8], 0);
+    // A layer's cells are slots into its packed list (setLayer()), as drawnTop() reads them
+    const slot = layer.cells.get(key);
+    if (slot === undefined) continue;
+    const T = layer.tris, items = layer.items;
+    for (let k = layer.from[slot], end = layer.from[slot + 1]; k < end; k++) {
+      const i = items[k];
+      take(T[i], T[i + 1], T[i + 2], T[i + 3], T[i + 4], T[i + 5], T[i + 6], T[i + 7], T[i + 8], 0);
+    }
   }
   return slope;
 }

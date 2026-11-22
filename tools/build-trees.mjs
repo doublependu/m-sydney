@@ -20,7 +20,9 @@ const gardenRings = GARDEN.areas.map((a) => ({ rings: a.rings.map((f) => f.reduc
 const inGarden = (x, z) => gardenRings.some((a) => a.rings.some((r) => pointInRing(r, x, z)) && !a.except.some((b) => x >= b.x0 && x <= b.x1 && z >= b.z0 && z <= b.z1));
 // The parks by rule's paths (garden.json's after the areas', `byRule`): their trees are these, so one of OSM's or a seeded one on a path is
 // moved straight off it, OFF_PATH past its edge (kept to the half metre, it stays off), or left out if that's on another, as build-garden
-// moves OSM's trees off the areas' paths. The City's register's are where they were surveyed.
+// moves OSM's trees off the areas' paths. The City's register's are where they were surveyed, unless the middle of a trunk is on one: the
+// paths are OSM's lines at a width by their kind, often wider than the paths under the register's trees and a metre or two off them, and a
+// trunk in a path's middle, as some were, reads as wrong. That one is moved off the same way, or left where surveyed if that's on another.
 const OFF_PATH = 0.5;
 const PATH_CELL = 16;
 const pathCells = new Map();
@@ -46,19 +48,32 @@ const nearestPath = (x, z) => {
   }
   return best;
 };
-let offPaths = 0, onPaths = 0;
-/** (x, z), or moved off a park by rule's path it's on, or null if it can't be */
-const offPath = (x, z) => {
-  const near = nearestPath(x, z);
-  if (!near || near.d - near.sg.r >= OFF_PATH) return [x, z];
+let offPaths = 0, onPaths = 0, registerOff = 0;
+/** A trunk at (x, z) by path `near` (nearestPath()) moved straight off it, OFF_PATH past its edge; null if that's on another path */
+const pushOff = (near, x, z) => {
   const [ux, uz] = near.d > 1e-3 ? [(x - near.cx) / near.d, (z - near.cz) / near.d] : (() => {
     const L = Math.hypot(near.sg.bx - near.sg.ax, near.sg.bz - near.sg.az) || 1;
     return [-(near.sg.bz - near.sg.az) / L, (near.sg.bx - near.sg.ax) / L];
   })();
   const out = [near.cx + ux * (near.sg.r + OFF_PATH), near.cz + uz * (near.sg.r + OFF_PATH)];
   const again = nearestPath(...out);
-  if (again && again.d - again.sg.r < OFF_PATH - 0.01) { onPaths++; return null; }
-  offPaths++;
+  return again && again.d - again.sg.r < OFF_PATH - 0.01 ? null : out;
+};
+/** (x, z), or moved off a park by rule's path it's on, or null if it can't be */
+const offPath = (x, z) => {
+  const near = nearestPath(x, z);
+  if (!near || near.d - near.sg.r >= OFF_PATH) return [x, z];
+  const out = pushOff(near, x, z);
+  if (out) offPaths++; else onPaths++;
+  return out;
+};
+/** A register tree's place: where surveyed, or moved off a park by rule's path its trunk's middle is on, where it can be */
+const registerAt = (x, z) => {
+  const near = nearestPath(x, z);
+  if (!near || near.d >= near.sg.r) return [x, z];
+  const out = pushOff(near, x, z);
+  if (!out) return [x, z];
+  registerOff++;
   return out;
 };
 const RULES = [
@@ -79,7 +94,7 @@ const taken = new Set();
 const key = (x, z) => Math.round(x / 2) * 100000 + Math.round(z / 2);
 for (const [lon, lat, name, height, status] of register) {
   if (name === 'Not Applicable' || (status && status !== 'Tree')) continue;
-  const [x, z] = toWorld(lon, lat);
+  const [x, z] = registerAt(...toWorld(lon, lat));
   if (!inDetail(x, z) || inPond(x, z)) continue;
   taken.add(key(x, z));
   trees.push({ x, z, kind: classOf(name), height: Math.min(40, parseInt(height, 10) || 0) });
@@ -236,4 +251,4 @@ export const TREE_KINDS = data.subarray(zs.end(), zs.end() + count);
 export const TREE_HEIGHTS = data.subarray(zs.end() + count, zs.end() + count * 2);
 `);
 const by = Object.fromEntries(Object.keys(CLASS).map((k) => [k, trees.filter((t) => t.kind === CLASS[k]).length]));
-console.log('[trees]', trees.length, 'trees,', fromRegister, 'from the register,', gardenPlants, 'in the gardens,', `${offPaths} moved off the parks' paths and ${onPaths} left out on them,`, (packed.length / 1024).toFixed(0), 'KB gzip', JSON.stringify(by));
+console.log('[trees]', trees.length, 'trees,', fromRegister, 'from the register,', gardenPlants, 'in the gardens,', `${offPaths} moved off the parks' paths and ${onPaths} left out on them, ${registerOff} of the register's moved off them,`, (packed.length / 1024).toFixed(0), 'KB gzip', JSON.stringify(by));

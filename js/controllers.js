@@ -26,7 +26,7 @@ import { ROOM, STRUCTURES, clearOfWater, floorBelow, floorFlow, freeFromDeck, gr
 import { inStillWater, modelWaterNear, shoreAlong, stillWaterDepth } from './still-water.js';
 import { WALKER } from './interior-data.js';
 import { MODEL_SITES } from './model-sites.js';
-import { buildNear, drawnOver } from './drawn-ground.js';
+import { bankHolds, buildNear, drawnOver } from './drawn-ground.js';
 
 // On the Harbour Bridge's deck: any of its roads' structures, the corridor's and those of the carriageways east of it (plan 5)
 const onDeck = (sid) => !!sid && !!STRUCTURES[sid]?.deck;
@@ -253,6 +253,11 @@ const JUMP_CROUCH = 0.085; // s crouched before taking off: the press, or one he
 const KERB_EASE = 18; // /s the body eases at, up or down a kerb or onto the footway, which the feet step over
 const FALLING = 0.3; // m over the ground (in the flat simulation) that's a fall, not a kerb
 const BIKE_AXLE = 0.58; // m along the bike from its middle to each wheel's hub
+// Each wheel's hub, [across to the right, along], from the middle: the car's as js/ground-geometry.js wheelContacts() stands them
+const CAR_WHEELS = [[-0.8, 1.4], [0.8, 1.4], [-0.8, -1.4], [0.8, -1.4]];
+const BIKE_WHEELS = [[0, BIKE_AXLE], [0, -BIKE_AXLE]];
+// m from the middle to the front: the car's bumper, the bike's front tyre (js/surfaces.js edgeHolds(), turned towards a road's edge)
+const CAR_FRONT = 2.2, BIKE_FRONT = BIKE_AXLE + 0.35;
 const HEAD_ON = 0.02; // cosine of the turn a wall makes in a walker's move (89 degrees), past which it's held square on, not sliding along
 
 // A soft shadow on the ground, `width` across and `length` along its owner, `peak` dark in the middle (js/tsl-materials.js)
@@ -1500,10 +1505,25 @@ class ThirdPersonControllerManager {
       const y = active.surfaceY ?? surfaceHeight(sid, last.x, last.z);
       // Kept its margin in from what holds it, and on the ground under a deck only where it fits under it
       const margin = carEntity ? 1.0 : radius * 0.6, room = carEntity ? ROOM.car : ROOM.foot;
+      // On wheels, the car or the bike: a road's edge holds it where the ground beside the road is a step off it (js/surfaces.js
+      // edgeHolds()), and a bank steeper than BANK does, its climb taken out of the move at each wheel meeting it (js/drawn-ground.js)
+      const wheels = !!carEntity || this.activeMode === 'cyclist';
+      const facing = (entity ?? active)?.heading ?? 0;
+      const moved = Math.hypot(pos.x - last.x, pos.z - last.z) || 1;
+      let banked = false;
+      if (wheels && !sid) {
+        const sin = Math.sin(facing), cos = Math.cos(facing);
+        const at = carEntity ? CAR_WHEELS : BIKE_WHEELS;
+        const bank = bankHolds(last.x, last.z, pos.x, pos.z, y, at.map(([side, along]) => [sin * along + cos * side, cos * along - sin * side]));
+        if (bank) {
+          pos.x = bank.x;
+          pos.z = bank.z;
+          banked = true;
+        }
+      }
       // A car driven into what holds it loses speed as squarely as it hit
-      const here = moveOver(sid, y, last.x, last.z, pos.x, pos.z, margin, room);
-      if (here.held && carEntity && carEntity.speed) {
-        const moved = Math.hypot(pos.x - last.x, pos.z - last.z) || 1;
+      const here = moveOver(sid, y, last.x, last.z, pos.x, pos.z, margin, room, wheels && { heading: facing, length: carEntity ? CAR_FRONT : BIKE_FRONT });
+      if ((here.held || banked) && carEntity && carEntity.speed) {
         // Not more for being moved out of a deck it was left inside (js/surfaces.js freeFromDeck()), further than it was going
         carEntity.speed *= 0.5 + 0.5 * Math.min(1, Math.hypot(here.x - last.x, here.z - last.z) / moved);
       }

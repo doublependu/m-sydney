@@ -672,7 +672,7 @@ test('poseCharacters draws only the one you are: nobody on a parked bike, no wal
       './building-collision.js': polygonCollision,
       './interior-data.js': { WALKER: 0.22 },
       './model-sites.js': { MODEL_SITES: [] },
-      './drawn-ground.js': { buildNear: () => false, drawnOver: () => null }
+      './drawn-ground.js': { bankHolds: () => null, buildNear: () => false, drawnOver: () => null }
     }
   });
 

@@ -1256,7 +1256,7 @@ function groundRoadDistance(x, z, limit = 30) {
 // null (js/bridge.js deckOver(), which sets it: it imports this module, so this one can't import it)
 let bridgeDeck = null;
 const setBridgeDeck = (fn) => { bridgeDeck = fn; };
-let solidWay = null; // the way the deck runs that last made the ground solid (chooseSurface()), to slide along it
+let solidWay = null; // the way the deck runs that last made the ground solid, or the road whose edge held something on wheels (chooseSurface()), to slide along it
 
 // Whether a road on the ground carries on from the Harbour Bridge's structure: it meets one of its roads at a node
 const offBridge = (road) => [road.a, road.b].some((n) => (linksAtNode.get(n) || []).some((o) => o.sid === DECK_STRUCTURE && o.kind));
@@ -1278,14 +1278,85 @@ function solidUnder(x, z, ground, over, margin, room, road) {
   return true;
 }
 
+// --- A road's edge, to something on wheels --------------------------------------------------------------------------------------------
+// Past its carriageway a road's surface is drawn on only a little way, under the kerb, and the ground beyond is graded to meet it at the
+// kerb, stored every 5 m (tools/tiles/grade-ground.mjs). Where that ground is a step off the road (a median between two carriageways at
+// different levels, a cutting's bank, the grid's mix of the road and the bank beyond), a car or a bike moving onto it climbed or dropped
+// it at once, and held at its road's height beside it, its side was drawn that far into the ground. So for something on wheels a road's
+// edge holds where the ground under its side is SWITCH or more over its level, or under its middle that much over or under it: it stops
+// with its side at a step up, or its middle at a drop, as at a wall, and slides along it. Not in a junction, where a turn's curve cuts the corner between two roads. Something on foot steps up or
+// down it as before (a step of STEP or more holds everything, chooseSurface()).
+
+/**
+ * The road on the ground at height `y` whose edge a body on wheels at (x, z), its middle kept `margin` in from what holds it, is over:
+ * { link, d, gap, ux, uz }, `d` its middle's distance from the road's centre line, `gap` how far over `y` the ground under its side is,
+ * or off `y` under its middle, (ux, uz) the road's way there. Null on no road at that level, or in a junction. `only`: that road's edge, or null. `body`:
+ * { heading, length } where it's known which way it points and how far its front is from its middle: turned towards the edge, its side
+ * reaches that much further out, a corner first.
+ */
+function edgeUnder(y, x, z, margin, only = null, body = null) {
+  let best = null, bp = null;
+  const most = Math.max(margin, body?.length ?? 0);
+  for (const seg of segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || []) {
+    const l = seg.link;
+    if (l.kind || (only && l !== only)) continue;
+    const p = project(seg, x, z);
+    if (p.d > l.half + most || (bp && p.d >= bp.d)) continue;
+    if (!only && Math.abs(roadHeight(l, x, z) - y) >= SWITCH) continue;
+    best = seg;
+    bp = p;
+  }
+  if (!best || inJunction(best.link, x, z)) return null;
+  let reach = margin;
+  if (body) {
+    const sh = Math.sin(body.heading), ch = Math.cos(body.heading);
+    reach = Math.max(margin, margin * Math.abs(sh * best.ux + ch * best.uz) + body.length * Math.abs(sh * best.uz - ch * best.ux));
+  }
+  const l = best.link, side = bp.d + reach;
+  if (side <= l.width / 2 || bp.d < 1e-6) return { link: l, d: bp.d, gap: 0, ux: best.ux, uz: best.uz };
+  const nx = (x - bp.px) / bp.d, nz = (z - bp.pz) / bp.d, sx = bp.px + nx * side, sz = bp.pz + nz * side;
+  // Under its side, the ground over its level: a step up it would be drawn into. Under its middle, either way: a step up, or a drop it
+  // would drive off. Its side over a drop (a ramp's bank falling away beside it) is nothing it touches. Another road there (its
+  // carriageway and the margin past it) is where roads are drawn overlapping or touching, at different heights: a step of STEP holds
+  // there, as ever
+  let gap = onOtherRoad(l, sx, sz) ? 0 : Math.max(0, groundHeight(sx, sz) - y);
+  if (bp.d > l.width / 2 && !onOtherRoad(l, x, z)) gap = Math.max(gap, Math.abs(groundHeight(x, z) - y));
+  return { link: l, d: bp.d, gap, ux: best.ux, uz: best.uz };
+}
+/** Whether (x, z) is on a road on the ground other than `link`, its carriageway or the margin past it */
+function onOtherRoad(link, x, z) {
+  for (const seg of segCells.get(Math.floor(x / CELL) * 100000 + Math.floor(z / CELL)) || []) {
+    if (seg.link !== link && !seg.link.kind && segmentDistance(seg, x, z) <= seg.link.half) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a road's edge holds something on wheels at height `y` moving from `from` ({ x, z }, and { heading, length } where they're
+ * known: edgeUnder()) to (x, z): the ground under its side or middle there SWITCH or more off its level, where it wasn't; or, where
+ * it was, the move taking it further out from the road's middle, or the step getting bigger as it moves along. Sets solidWay to the road's way, to slide along it (moveOver()).
+ */
+function edgeHolds(y, from, x, z, margin) {
+  const body = from.length ? from : null;
+  const to = edgeUnder(y, x, z, margin, null, body);
+  if (!to || to.gap < SWITCH) return false;
+  const was = edgeUnder(y, from.x, from.z, margin, to.link, body);
+  // Already over a step (put there, turned there, or the step starting under it): free to move back in, or along it, never further
+  // out, while it gets no worse
+  if (was && was.gap >= SWITCH && (to.d < was.d - 1e-4 || (to.d <= was.d + 1e-3 && to.gap <= was.gap))) return false;
+  solidWay = to;
+  return true;
+}
+
 /**
  * The surface under (x, z) for something now at height `y` on surface `current`: the nearest road within STEP of that
  * height, the ground counting as a road where it's nearest. `margin` keeps a body's middle in from a structure's barriers
- * and walls (decksAt()); `room`, what it needs under a deck to be on the ground there (ROOM; 0, anything). Returns { sid, y },
+ * and walls (decksAt()); `room`, what it needs under a deck to be on the ground there (ROOM; 0, anything). `from`: where something on
+ * wheels was ({ x, z }), for the edge of its road (edgeHolds()); null for something on foot. Returns { sid, y },
  * with { x, z } as well where a barrier holds the body back to there, or null when every surface there is out of reach: the
- * edge of a deck, a tunnel's wall, the side of a deck too low to be under.
+ * edge of a deck, a tunnel's wall, the side of a deck too low to be under, a road's edge to wheels.
  */
-function chooseSurface(current, y, x, z, margin = 0, room = 0) {
+function chooseSurface(current, y, x, z, margin = 0, room = 0, from = null) {
   solidWay = null;
   const candidates = [];
   const consider = (sid, height, d, push = null, joins = 0) => {
@@ -1346,6 +1417,8 @@ function chooseSurface(current, y, x, z, margin = 0, room = 0) {
     if (rank < bestRank) { best = c; bestRank = rank; }
   }
   if (!best) return null;
+  // Onto the ground, on wheels, from a road at its level: not over its edge where the ground is a step off it
+  if (from && !current && !best.sid && edgeHolds(y, from, x, z, margin)) return null;
   return best.push ? { sid: best.sid, y: best.y, x: best.push.x, z: best.push.z } : { sid: best.sid, y: best.y };
 }
 
@@ -1354,21 +1427,24 @@ function chooseSurface(current, y, x, z, margin = 0, room = 0) {
  * `room` under a deck (chooseSurface()): where it ends, and on what. Held back to a barrier's line where it's pressed into one; where
  * nothing is in reach (over a deck's edge, into a tunnel's wall, at the side of a deck too low to be under), stopped at the edge and
  * slid along it as along a wall. Left inside a deck (teleported there, or a tile arriving round it), lifted onto it or moved out beside
- * it (freeFromDeck()). { x, z, sid, y, held }. The player's every step (js/controllers.js), and what the checks drive by.
+ * it (freeFromDeck()). `wheels`: on wheels, a car or a bike, which a road's edge holds where the ground beside it is a step off
+ * (edgeHolds()): true, or { heading, length } (its front's distance from its middle) where they're known. { x, z, sid, y, held }. The
+ * player's every step (js/controllers.js), and what the checks drive by.
  */
-function moveOver(sid, y, fx, fz, tx, tz, margin = 0, room = 0) {
-  let here = chooseSurface(sid, y, tx, tz, margin, room), x = tx, z = tz;
+function moveOver(sid, y, fx, fz, tx, tz, margin = 0, room = 0, wheels = false) {
+  const from = wheels ? { x: fx, z: fz, heading: wheels.heading ?? 0, length: wheels.length ?? 0 } : null;
+  let here = chooseSurface(sid, y, tx, tz, margin, room, from), x = tx, z = tz;
   const held = !here || here.x !== undefined;
   if (!here) {
-    // Along the wall where we know which way it runs, a structure's edge, or the side of a deck the ground's stopped at: keeping one
-    // axis of the move instead would cost a car skimming a diagonal barrier most of its speed, every frame, and stop it dead for no
-    // reason it can see
+    // Along the wall where we know which way it runs, a structure's edge, the side of a deck the ground's stopped at, or a road's edge:
+    // keeping one axis of the move instead would cost a car skimming a diagonal barrier most of its speed, every frame, and stop it dead
+    // for no reason it can see
     const along = sid ? structureAt(sid, fx, fz, 2)?.seg : solidWay;
     const run = along ? (tx - fx) * along.ux + (tz - fz) * along.uz : 0;
     const sx = along ? fx + along.ux * run : 0, sz = along ? fz + along.uz * run : 0;
-    if (along && (here = chooseSurface(sid, y, sx, sz, margin, room))) { x = sx; z = sz; }
-    else if ((here = chooseSurface(sid, y, tx, fz, margin, room))) z = fz;
-    else if ((here = chooseSurface(sid, y, fx, tz, margin, room))) x = fx;
+    if (along && (here = chooseSurface(sid, y, sx, sz, margin, room, from))) { x = sx; z = sz; }
+    else if ((here = chooseSurface(sid, y, tx, fz, margin, room, from))) z = fz;
+    else if ((here = chooseSurface(sid, y, fx, tz, margin, room, from))) x = fx;
     else if (!sid && room > 0 && (here = freeFromDeck(y, fx, fz, margin, room))) { x = here.x; z = here.z; }
     else { x = fx; z = fz; here = { sid, y }; }
   }

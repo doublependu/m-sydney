@@ -52,7 +52,7 @@ function keyboardHarness(nyc = {}, drawn = {}, arrivals = {}, water = stillWater
       './model-sites.js': { MODEL_SITES: [] },
       './still-water.js': water,
       // Nothing drawn over the ground: the paving's height on a kerb's island, the road's off it
-      './drawn-ground.js': { buildNear: () => false, drawnOver: () => null, ...drawn }
+      './drawn-ground.js': { bankHolds: () => null, buildNear: () => false, drawnOver: () => null, ...drawn }
     }
   });
   // Exercise the production event handlers without constructing the scene's 3D models.

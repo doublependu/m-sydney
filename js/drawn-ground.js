@@ -342,6 +342,69 @@ function drawnTop(x, z) {
 }
 const drawnWhat = () => lastWhat;
 
+// --- Banks, to something on wheels ---------------------------------------------------------------------------------------------------
+// A car or a bike drove up a cutting's bank or a lawn graded to a road far above it, 50 or 60 degrees, as up a ramp. What's drawn steeper
+// than BANK is a wall to wheels: the part of a move that climbs it is taken out, so it stops at its foot and slides along it, and drives
+// down it or away from it as before. On foot it's climbed as ever.
+const BANK = Math.tan((35 * Math.PI) / 180);
+
+/**
+ * The slope (rise over run, { gx, gz }) of the highest thing drawn at (x, z) within CLIFF of height `y`, however steep, or null where
+ * nothing's drawn there near that height (a road; a surface whose triangles aren't made yet)
+ */
+function drawnSlope(x, z, y) {
+  let best = -Infinity, slope = null;
+  const lo = y - CLIFF, hi = y + CLIFF;
+  const take = (ax, ay, az, bx, by, bz, cx, cy, cz, lift) => {
+    const h = heightIn(ax, ay, az, bx, by, bz, cx, cy, cz, x, z);
+    if (h === null || h + lift <= best || h + lift < lo || h + lift > hi) return;
+    const ux = bx - ax, uy = by - ay, uz = bz - az, vx = cx - ax, vy = cy - ay, vz = cz - az;
+    const den = ux * vz - uz * vx;
+    if (Math.abs(den) < 1e-9) return;
+    best = h + lift;
+    slope = { gx: (uy * vz - uz * vy) / den, gz: (ux * vy - uy * vx) / den };
+  };
+  const list = mapCells.get(keyOf(x, z, BOX));
+  if (list && !(SITE_CUTS.length > 0 && inCut(x, z))) {
+    for (const e of list) {
+      const s = e.s;
+      if (!s.tris || x < s.x0 || x > s.x1 || z < s.z0 || z > s.z1) continue;
+      for (const [a, b, c] of s.tris.get(keyOf(x, z, CELL)) || []) take(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2], e.lift);
+    }
+  }
+  const key = keyOf(x, z, CELL);
+  for (const layer of layers.values()) {
+    if (x < layer.x0 || x > layer.x1 || z < layer.z0 || z > layer.z1) continue;
+    const T = layer.tris;
+    for (const i of layer.cells.get(key) || []) take(T[i], T[i + 1], T[i + 2], T[i + 3], T[i + 4], T[i + 5], T[i + 6], T[i + 7], T[i + 8], 0);
+  }
+  return slope;
+}
+
+const TYRE = 0.35; // m from an axle to the front of its tyre, which meets a slope first
+/**
+ * Something on wheels at height `y` moving from (fx, fz) to (tx, tz), its wheels at `wheels` ([dx, dz] from its middle, in the world's
+ * frame): where it gets to, { x, z }, with the climb taken out of the move at each wheel whose tyre meets what's drawn steeper than BANK
+ * rising the way it moves; null where nothing holds it
+ */
+function bankHolds(fx, fz, tx, tz, y, wheels) {
+  let mx = tx - fx, mz = tz - fz;
+  const L = Math.hypot(mx, mz);
+  if (L < 1e-6) return null;
+  const ax = (mx / L) * TYRE, az = (mz / L) * TYRE;
+  let held = false;
+  for (const [ox, oz] of wheels) {
+    const g = drawnSlope(fx + mx + ox + ax, fz + mz + oz + az, y);
+    if (!g) continue;
+    const g2 = g.gx * g.gx + g.gz * g.gz, climb = mx * g.gx + mz * g.gz;
+    if (g2 <= BANK * BANK || climb <= 0) continue;
+    mx -= (g.gx * climb) / g2;
+    mz -= (g.gz * climb) / g2;
+    held = true;
+  }
+  return held ? { x: fx + mx, z: fz + mz } : null;
+}
+
 /** How far over the ground (groundHeight(), the flat simulation's) the highest thing drawn at (x, z) is, or null where there's nothing */
 function drawnOver(x, z) {
   const y = drawnTop(x, z);
@@ -378,6 +441,6 @@ function buildNear(x, z, reach = AHEAD) {
 }
 
 export {
-  KERB_PROUD, LAWN_TOP, LIFT, PATH_TOP, RAISE, RAISED_TOP, ROCK_LIFT, SAND_LIFT, TRACK, TRACK_LIFT, TRACK_TOP, buildNear, pathTop, buildSurface, drawnOver,
-  drawnTop, drawnWhat, dropLayer, dropLayers, heightInTriangle, heightOn, raisedLawnTest, setLayer, surfaceOf, trianglesOf
+  BANK, KERB_PROUD, LAWN_TOP, LIFT, PATH_TOP, RAISE, RAISED_TOP, ROCK_LIFT, SAND_LIFT, TRACK, TRACK_LIFT, TRACK_TOP, bankHolds, buildNear, pathTop, buildSurface, drawnOver,
+  drawnSlope, drawnTop, drawnWhat, dropLayer, dropLayers, heightInTriangle, heightOn, raisedLawnTest, setLayer, surfaceOf, trianglesOf
 };

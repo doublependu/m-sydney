@@ -172,19 +172,22 @@ const BODY = [[0.9, 2.2], [-0.9, 2.2], [0.9, -2.2], [-0.9, -2.2], [0, 0]];
 const WHEELS = [[0.8, 1.4], [-0.8, 1.4], [0.8, -1.4], [-0.8, -1.4]];
 function walk(path, sid0, y0, name, out) {
   if (tiles && !path.some((p) => wanted(p.x, p.z))) return;
-  let sid = sid0, y = y0, prevRoll = null;
+  let sid = sid0, y = y0, prevRoll = null, from = null;
   const ys = [];
   for (const p of path) {
+    // On wheels, from the path's last point: a road's edge holds it where the ground beside is a step off (js/surfaces.js edgeHolds())
+    const was = from;
+    from = { x: p.x, z: p.z };
     if (!wanted(p.x, p.z)) {
       // On its way into the part being looked at, so it gets there on the right level
-      const passing = chooseSurface(sid, y, p.x, p.z, CAR, CAR_ROOM);
+      const passing = chooseSurface(sid, y, p.x, p.z, CAR, CAR_ROOM, was);
       if (passing) { y = passing.y; sid = passing.sid; }
       ys.push(null);
       prevRoll = null;
       continue;
     }
     out.metres++;
-    const here = chooseSurface(sid, y, p.x, p.z, CAR, CAR_ROOM);
+    const here = chooseSurface(sid, y, p.x, p.z, CAR, CAR_ROOM, was);
     if (!here) { out.stops.add(p.x, p.z, name); ys.push(null); prevRoll = null; continue; }
     y = here.y; sid = here.sid;
     ys.push(y);
@@ -491,7 +494,7 @@ const over = (places, limit) => places.all.filter((w) => w[0] > limit).length;
     for (let i = 0; i < limit; i++) {
       const dx = tx - x, dz = tz - z, L = Math.hypot(dx, dz);
       if (L < 0.05) break;
-      const m = moveOver(sid, y, x, z, x + (dx / L) * Math.min(0.1, L), z + (dz / L) * Math.min(0.1, L), CAR, CAR_ROOM);
+      const m = moveOver(sid, y, x, z, x + (dx / L) * Math.min(0.1, L), z + (dz / L) * Math.min(0.1, L), CAR, CAR_ROOM, true);
       if (Math.hypot(m.x - x, m.z - z) < 0.002) { stopped = true; break; }
       ({ x, z, sid, y } = m);
       if (!sid && past(x, z)) ground = Math.min(ground, y);
@@ -606,7 +609,7 @@ const over = (places, limit) => places.all.filter((w) => w[0] > limit).length;
     for (let i = 0; i < len * 10 + 20; i++) {
       const dx = tx - x, dz = tz - z, L = Math.hypot(dx, dz);
       if (L < 0.05) break;
-      const m = moveOver(sid, y, x, z, x + (dx / L) * Math.min(0.1, L), z + (dz / L) * Math.min(0.1, L), CAR, CAR_ROOM);
+      const m = moveOver(sid, y, x, z, x + (dx / L) * Math.min(0.1, L), z + (dz / L) * Math.min(0.1, L), CAR, CAR_ROOM, true);
       if (Math.hypot(m.x - x, m.z - z) < 0.002) { held++; return; }
       ({ x, z, sid, y } = m);
       if (sid) { on++; return; }
@@ -620,7 +623,7 @@ const over = (places, limit) => places.all.filter((w) => w[0] > limit).length;
     const y = groundHeight(x, z);
     if (!insideAt(topAt(x, z), x, z, y) || !clearOfWater(x, z)) return;
     placed++;
-    const m = moveOver(0, y, x, z, x, z, CAR, CAR_ROOM);
+    const m = moveOver(0, y, x, z, x, z, CAR, CAR_ROOM, true);
     if (!m.sid && insideAt(topAt(m.x, m.z), m.x, m.z, m.y)) stuck.add(x, z, name, topAt(x, z) - y);
   };
   for (const l of LINKS) {

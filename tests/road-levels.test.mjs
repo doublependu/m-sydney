@@ -6,7 +6,7 @@ import test from 'node:test';
 // Roads on more than one level: the stacks the game once drew at one height, what the road graph's heights now make of
 // them (tools/build-heights.mjs), and how something moving through them picks its surface (js/surfaces.js).
 globalThis.fetch = async (url) => new Response(fs.readFileSync(new URL(url)));
-const { DECK_DEPTH, KIND, LINKS, PORTALS, STRUCTURES, TUNNEL_HEIGHT, ceilingOver, chooseSurface, groundHeight, inTunnel, roadHeight, roadRoute, structuresAt, surfaceHeight, tunnelCovered } = await import('../js/surfaces.js');
+const { DECK_DEPTH, KIND, LINKS, PORTALS, ROOM, STRUCTURES, TUNNEL_HEIGHT, ceilingOver, chooseSurface, groundHeight, inTunnel, roadHeight, roadRoute, structuresAt, surfaceHeight, tunnelCovered } = await import('../js/surfaces.js');
 const { STACK_CLEARANCE } = await import('../js/ground-geometry.js');
 
 // Tests under SYDNEY_TILES hold only a part of the map
@@ -302,25 +302,26 @@ const centreAt = (id, x) => {
   return null;
 };
 // `each(x, z, sid, y)` after every step
-async function drive(sid, y, points, margin, room = 0, each = null) {
+async function drive(sid, y, points, margin, room = 0, each = null, wheels = false) {
   const { moveOver } = await import('../js/surfaces.js');
-  let [x, z] = points[0], held = 0, lowest = Infinity, ground = false;
+  let [x, z] = points[0], held = 0, lowest = Infinity, highest = -Infinity, ground = false;
   for (const [tx, tz] of points.slice(1)) {
     for (let i = 0; i < 2000; i++) {
       const dx = tx - x, dz = tz - z, L = Math.hypot(dx, dz);
       if (L < 0.05) break;
-      const m = moveOver(sid, y, x, z, x + (dx / L) * Math.min(0.1, L), z + (dz / L) * Math.min(0.1, L), margin, room);
+      const m = moveOver(sid, y, x, z, x + (dx / L) * Math.min(0.1, L), z + (dz / L) * Math.min(0.1, L), margin, room, wheels);
       if (m.held) held++;
       const stopped = Math.hypot(m.x - x, m.z - z) < 0.002;
       ({ x, z, sid, y } = m);
       each?.(x, z, sid, y);
       lowest = Math.min(lowest, y);
+      highest = Math.max(highest, y);
       if (!sid) ground = true;
       if (stopped) break;
     }
   }
   const [ex, ez] = points[points.length - 1];
-  return { x, z, sid, y, held, lowest, ground, left: Math.hypot(ex - x, ez - z) };
+  return { x, z, sid, y, held, lowest, highest, ground, left: Math.hypot(ex - x, ez - z) };
 }
 
 test('the Cahill\'s westbound deck past the on-ramp\'s island is one deck, as drawn: nothing drops through the middle of it', async () => {
@@ -411,6 +412,74 @@ const nearestOn = (link, x, z) => {
 };
 // ...and inside a bridge link's own drawn width
 const insideLink = (link, x, z, y, room) => { const p = nearestOn(link, x, z); return p.d <= link.half && p.y - y > SWITCH && p.y - DECK_DEPTH - y < room; };
+
+test('a car or a bike stops at a road\'s edge where the ground past it is a step off, under STEP: the Warringah Fwy by its raised median', async () => {
+  // At (-174, -4107) the freeway's road is at 47.1 m, and past its kerb a median 1.2-2 m higher runs between it and the carriageway beside
+  // it at 49.2 m. A car drove up onto it, and pressed along it at its road's height its side was drawn up to 2 m into it
+  const link = LINKS.find((l) => l.id === 45421);
+  if (!link || nearEdgeOfHeld({ x: -174, z: -4107 })) return;
+  const p = nearestOn(link, -174.3, -4107.2), at = (along, off) => [p.x + p.ux * along - p.uz * off, p.z + p.uz * along + p.ux * off];
+  const road = roadHeight(link, ...at(0, 0));
+  assert.ok(groundHeight(...at(0, link.half + 0.3)) - road > 1, `the median is ${(groundHeight(...at(0, link.half + 0.3)) - road).toFixed(2)} m over the road`);
+  for (const [body, margin, room] of MARGINS) {
+    const wheels = body !== 'a walker';
+    const r = await drive(0, roadHeight(link, ...at(-10, 2)), [at(-10, 2), at(10, 8)], margin, room, null, wheels);
+    const off = -(r.x - p.x) * p.uz + (r.z - p.z) * p.ux;
+    if (wheels) {
+      // Held with its side at the kerb, on along the road beside it, and never up the step
+      assert.ok(!r.sid && off <= link.half - margin + 0.15, `${body} ends ${off.toFixed(2)} m out, its kerb ${link.half} m`);
+      assert.ok(r.highest - roadHeight(link, ...at(-10, 2)) < 0.6, `${body} climbed ${(r.highest - road).toFixed(2)} m`);
+    } else assert.ok(off > link.half && r.y - road > 1, `${body} steps up onto the median: ${off.toFixed(2)} m out, ${r.y.toFixed(2)}`);
+  }
+  // ...and a car turned 30 degrees towards it is held with its front corner at the kerb, its middle further in
+  {
+    const { moveOver } = await import('../js/surfaces.js');
+    // Along the road and out, (-uz, ux), towards the median
+    const wx = Math.cos(Math.PI / 6) * p.ux - Math.sin(Math.PI / 6) * p.uz, wz = Math.cos(Math.PI / 6) * p.uz + Math.sin(Math.PI / 6) * p.ux;
+    const heading = Math.atan2(wx, wz), out = -wx * p.uz + wz * p.ux;
+    let [x, z] = at(-6, 1), y = roadHeight(link, x, z), sid = 0;
+    for (let i = 0; i < 200; i++) ({ x, z, sid, y } = moveOver(sid, y, x, z, x + wx * 0.1, z + wz * 0.1, 1.0, ROOM.car, { heading, length: 2.2 }));
+    const off = -(x - p.x) * p.uz + (z - p.z) * p.ux, reach = 1.0 * Math.cos(Math.PI / 6) + 2.2 * Math.sin(Math.PI / 6);
+    assert.ok(out > 0 && !sid && off <= link.half - reach + 0.15 && off > link.half - reach - 0.5, `a car turned towards the median ends ${off.toFixed(2)} m out`);
+  }
+  // ...but not without its wheels' rule: chooseSurface() with nowhere it came from is as before
+  assert.ok(chooseSurface(0, road, ...at(0, link.half + 0.3), 1.0)?.y > road + 1, 'chooseSurface() alone takes the median');
+  // ...and from the median's low side, under the other carriageway's level, it drives back down onto the road
+  const back = await drive(0, groundHeight(...at(0, link.half + 0.3)), [at(0, link.half + 0.3), at(0, 1)], 1.0, ROOM.car, null, true);
+  assert.ok(!back.sid && back.left < 0.1 && Math.abs(back.y - road) < 0.3, `back off the median: ${JSON.stringify(back)}`);
+});
+
+test('a bank steeper than 35 degrees holds a car or a bike: 40 degrees holds, 30 doesn\'t, and either is driven down and along', async () => {
+  const { BANK, bankHolds, dropLayer, setLayer } = await import('../js/drawn-ground.js');
+  assert.ok(Math.abs(BANK - Math.tan((35 * Math.PI) / 180)) < 1e-9);
+  // A slope drawn rising east, 6 m across from x = 0, 20 m north to south, its foot at 10 m, somewhere off the map
+  const X = 90000, Z = 90000, Y = 10;
+  const slope = (degrees) => {
+    const k = Math.tan((degrees * Math.PI) / 180), y = (x) => Y + k * Math.max(0, x);
+    const tris = [];
+    for (let x = -4; x < 6; x += 2) {
+      const a = [X + x, y(x), Z - 10], b = [X + x + 2, y(x + 2), Z - 10], c = [X + x + 2, y(x + 2), Z + 10], d = [X + x, y(x), Z + 10];
+      tris.push(...a, ...d, ...c, ...a, ...c, ...b);
+    }
+    setLayer('test:bank', new Float32Array(tris));
+  };
+  slope(40);
+  // Up it, its front wheel 1.4 m ahead of its middle, the tyre meeting the slope's foot: no further up
+  const front = [[1.4, 0]];
+  const up = bankHolds(X - 1.8, Z, X - 1.7, Z, Y, front);
+  assert.ok(up && Math.abs(up.x - (X - 1.8)) < 1e-6 && Math.abs(up.z - Z) < 1e-6, `up a 40 degree bank: ${JSON.stringify(up)}`);
+  // ...across it at a slant: along its foot
+  const slant = bankHolds(X - 1.7, Z, X - 1.6, Z + 0.1, Y, front);
+  assert.ok(slant && Math.abs(slant.x - (X - 1.7)) < 1e-6 && Math.abs(slant.z - (Z + 0.1)) < 1e-6, `at a slant: ${JSON.stringify(slant)}`);
+  // ...down it, and along it on it, nothing holds
+  const on = Y + Math.tan((40 * Math.PI) / 180) * 3;
+  assert.equal(bankHolds(X + 3, Z, X + 2.9, Z, on, [[-1.4, 0]]), null, 'down a 40 degree bank');
+  assert.equal(bankHolds(X + 3, Z, X + 3, Z + 0.1, on, [[0, 1.4]]), null, 'along a 40 degree bank');
+  // ...and a gentler one is climbed
+  slope(30);
+  assert.equal(bankHolds(X - 1.8, Z, X - 1.7, Z, Y, front), null, 'up a 30 degree bank');
+  dropLayer('test:bank');
+});
 
 test('the second video\'s crossing: from the Harbour Bridge\'s railway into its lanes, nothing ends on the ground under the deck', async () => {
   const B = await import('../js/bridge.js');

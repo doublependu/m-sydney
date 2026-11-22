@@ -17,6 +17,7 @@ import { loadPonds } from './pond-pieces.mjs';
 import { onRegionEdge } from './geodata/regions.mjs';
 import { untangle } from './tiles/simple-rings.mjs';
 import { farFile, tileFile } from '../js/tiles/paths.js';
+import { packBuildings } from './tiles/pack-buildings.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const SRC = path.join(ROOT, 'tools/data/generated');
@@ -317,39 +318,6 @@ function cutMap(derived) {
 
 const uint = (out, v) => { while (v > 127) { out.push((v & 127) | 128); v = Math.floor(v / 128); } out.push(v); };
 const sint = (out, v) => uint(out, v >= 0 ? v * 2 : -v * 2 - 1);
-function packBuildings(list, floors) {
-  const meta = [], xs = [], zs = [];
-  let px = 0, pz = 0;
-  uint(meta, list.length);
-  for (const { b, i } of list) {
-    uint(meta, b.height);
-    uint(meta, b.kind | (b.pitched ? 8 : 0) | (b.group ? 16 : 0) | (b.realAwning ? 32 : 0) | ((b.houseStyle || 0) << 7));
-    if (b.group) { uint(meta, b.group); uint(meta, b.bottom || 0); }
-    const [floor, low] = floors?.[i] || [0, 0];
-    sint(meta, floor);
-    sint(meta, low);
-    uint(meta, b.polygons.length);
-    for (const polygon of b.polygons) {
-      const rings = [polygon.outer, ...polygon.holes];
-      uint(meta, rings.length);
-      for (const ring of rings) {
-        uint(meta, ring.length);
-        for (const p of ring) {
-          const x = Math.round(p.x * 2), z = Math.round(p.z * 2);
-          sint(xs, x - px);
-          sint(zs, z - pz);
-          px = x;
-          pz = z;
-        }
-      }
-    }
-  }
-  const head = [];
-  uint(head, meta.length);
-  uint(head, xs.length);
-  uint(head, zs.length);
-  return Buffer.from([...head, ...meta, ...xs, ...zs]);
-}
 // A model site's stand-ins (tools/tiles/derive.mjs), in its tile's JSON: each as packBuildings() writes a building, in 0.5 m, [height,
 // style, group, bottom, floor, low, [[outer, ...holes] of each polygon, each ring [x, z, x, z...]]] (js/tiles/tile-file.js). Only the
 // tiles a site's middle is in have them.

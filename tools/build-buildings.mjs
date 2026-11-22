@@ -12,6 +12,7 @@ import { dataPath, jsonLines, Raster, DETAIL_BOUNDS as B, inDetail, load, rdpRin
 import { USE, ZONE, loadPlaces } from './population/places.mjs';
 import { HOUSE_STYLES, STOREY, STYLE, pick } from '../js/house-styles.js';
 import { localAreas } from './local-edits.mjs';
+import { numberCodes } from '../js/addresses.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const OUT = process.argv[2] || path.join(ROOT, 'tools/data/generated/building-geodata.js');
@@ -561,6 +562,54 @@ const order = (r) => {
   return o;
 };
 buildings.sort((p, q) => order(p) - order(q));
+
+// --- Street addresses ---------------------------------------------------------------------------------------------------
+// The street each building faces and its numbers, from G-NAF's points (tools/fetch-data.mjs overture_addresses), matched to the buildings
+// and roads by tools/addresses.mjs, after the pieces are stacked and in the tiles' order: worked out once here, so the tiles, the floors
+// and the lots all read the same answer. Street names G-NAF spells otherwise than OSM are aliased by hand (tools/local/, `streets`).
+const ADDRESSES = dataPath('overture_addresses.json');
+if (!fs.existsSync(ADDRESSES)) console.warn('[buildings] no overture_addresses.json (node tools/fetch-data.mjs overture_addresses): no street addresses');
+else {
+  const { matchAddresses, FIND } = await import('./addresses.mjs');
+  const { parseNumber, streetKey } = await import('../js/addresses.js');
+  const { GEO } = await import(path.join(path.dirname(OUT), 'geodata.js'));
+  const RG = GEO.roadGraph;
+  const roads = RG.links.map(([a, b, ni, , , , inner, , deck, kind = 0]) => {
+    const pts = [[RG.nodes[a * 2], RG.nodes[a * 2 + 1]]];
+    for (let k = 0; k < inner.length; k += 2) pts.push([inner[k], inner[k + 1]]);
+    pts.push([RG.nodes[b * 2], RG.nodes[b * 2 + 1]]);
+    return { name: streetKey(RG.names[ni]), pts, onGround: !kind && !deck };
+  });
+  const aliases = new Map(), aliasOf = new Map();
+  for (const area of localAreas()) {
+    for (const edit of area.streets || []) {
+      aliases.set(streetKey(edit.address), streetKey(edit.road));
+      aliasOf.set(streetKey(edit.address), { area, edit });
+    }
+  }
+  const points = (function* () {
+    for (const a of jsonLines(ADDRESSES)) {
+      const [x, z] = toWorld(a.lon, a.lat);
+      yield { x, z, street: streetKey(a.street), number: parseNumber(a.number), addresses: a.addresses || 1 };
+    }
+  })();
+  const records = buildings.map((r) => ({
+    outline: r.polygons.map(([outer, ...holes]) => ({ outer: outer.map(([qx, qz]) => ({ x: qx * PRECISION, z: qz * PRECISION })),
+      holes: holes.map((ring) => ring.map(([qx, qz]) => ({ x: qx * PRECISION, z: qz * PRECISION }))) })),
+    area: r.area, height: r.height, kind: r.kind, group: r.group || 0, bottom: r.bottom || 0, house: !r.part && !!HOUSE_STYLES[r.style || 0]?.look
+  }));
+  const { address, stats, notFound, aliased } = matchAddresses(records, points, roads, { aliases });
+  for (const [i, list] of address) buildings[i].address = list;
+  // An alias each building it's there for finds its road by: `expect` [lo, hi] buildings, or the data under it has changed
+  for (const [name, { area, edit }] of aliasOf) {
+    const n = aliased.get(name) || 0, [lo, hi] = edit.expect;
+    if (n < lo || n > hi) throw new Error(`tools/local/${area.file}: ${n} buildings on ${edit.address} found ${edit.road} by its alias, not ${lo}-${hi}: check the alias (${edit.why})`);
+    console.log(`[buildings] tools/local/${area.file}: ${n} buildings on ${edit.address} found ${edit.road}`);
+  }
+  console.log(`[buildings] street addresses: ${JSON.stringify(stats)}; streets not found by name within ${FIND} m, by buildings: `
+    + [...notFound].sort((p, q) => q[1].buildings - p[1].buildings).slice(0, 40).map(([n, { buildings: k, at }]) => `${n} ${k} (${at})`).join(', '));
+}
+
 const meta = [], xs = [], zs = [];
 const uint = (out, v) => { while (v > 127) { out.push((v & 127) | 128); v = Math.floor(v / 128); } out.push(v); };
 const sint = (out, v) => uint(out, v >= 0 ? v * 2 : -v * 2 - 1);
@@ -573,10 +622,23 @@ for (const r of buildings) {
   const pitched = !r.group && (r.styledByHand ? !!style?.roofs : shape ? /gabled|hipped|pyramidal|mansard|gambrel|half/.test(shape)
     : style ? !!style.roofs : (r.kind === KIND.house && r.height < 13) || (r.kind === KIND.shed && r.area > 30) || (r.height < 10 && r.kind === KIND.civic));
   uint(meta, Math.max(1, Math.round(r.height)));
-  uint(meta, r.kind | (pitched ? 8 : 0) | (r.group ? 16 : 0) | (!r.part && !r.joined && frontsAwning(r) ? 32 : 0) | (r.guess ? 64 : 0) | ((r.part ? 0 : r.style || 0) << 7));
+  uint(meta, r.kind | (pitched ? 8 : 0) | (r.group ? 16 : 0) | (!r.part && !r.joined && frontsAwning(r) ? 32 : 0) | (r.guess ? 64 : 0) | ((r.part ? 0 : r.style || 0) << 7)
+    | (r.address ? 2048 : 0));
   if (r.group) {
     uint(meta, r.group);
     uint(meta, Math.round(r.bottom || 0));
+  }
+  // Its streets (above): how many, then each one's point, wall (+1, 0 for none), its address points' middle and its numbers
+  if (r.address) {
+    uint(meta, r.address.length);
+    for (const s of r.address) {
+      sint(meta, Math.round(s.x / PRECISION));
+      sint(meta, Math.round(s.z / PRECISION));
+      uint(meta, s.wall + 1);
+      sint(meta, Math.round(s.at.x / PRECISION));
+      sint(meta, Math.round(s.at.z / PRECISION));
+      for (const c of s.number ? numberCodes(s.number) : [0]) uint(meta, c);
+    }
   }
   uint(meta, r.polygons.length);
   for (const polygon of r.polygons) {
@@ -640,6 +702,18 @@ export const REAL_BUILDINGS = Array.from({ length: count }, () => {
   const height = uint(), style = uint(), polygons = [];
   // A building in several pieces: which, and how far up this piece starts
   const group = style & 16 ? uint() : 0, bottom = style & 16 ? uint() : 0;
+  // Its streets, the one most of its addresses are on first: the point on each nearest its middle, the wall of its outline facing it
+  // (js/addresses.js outerWalls(), -1 for none), its address points' middle there, and its numbers (js/addresses.js numberCodes())
+  const address = style & 2048 ? Array.from({ length: uint() }, () => {
+    const x = delta(metadata) * 0.5, z = delta(metadata) * 0.5, wall = uint() - 1, at = { x: delta(metadata) * 0.5, z: delta(metadata) * 0.5 };
+    const head = uint();
+    let number = null;
+    if (head) {
+      number = { n: Math.floor(head / 4), letter: head & 1 ? uint() : 0, to: 0, toLetter: 0 };
+      if (head & 2) { const t = uint(); number.to = Math.floor(t / 2); if (t & 1) number.toLetter = uint(); }
+    }
+    return { x, z, wall, at, number };
+  }) : null;
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
   for (let n = uint(); n > 0; n--) {
     const rings = [];
@@ -658,7 +732,7 @@ export const REAL_BUILDINGS = Array.from({ length: count }, () => {
   }
   // guess: nothing measured or counted its height. houseStyle: js/house-styles.js, 0 for none
   return { height, kind: style & 7, pitched: !!(style & 8), group, bottom, realAwning: !!(style & 32), guess: !!(style & 64), houseStyle: (style >> 7) & 15, polygons,
-    minX, maxX, minZ, maxZ, cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2 };
+    address, minX, maxX, minZ, maxZ, cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2 };
 });
 if (!metadata.done() || !xs.done() || !zs.done()) throw invalidData();
 `);

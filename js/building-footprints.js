@@ -435,4 +435,4 @@ function createBuildingFootprints(material, records, getNeighbours, roofMaterial
   return step.value;
 }
 
-export { createBuildingFootprints, createBuildingFootprintsSteps, houseFront, roofFrame, roofRise, rooflineOf, terraceFronts };
+export { createBuildingFootprints, createBuildingFootprintsSteps, houseFront, partyWallHeight, roofFrame, roofRise, rooflineOf, terraceFronts };

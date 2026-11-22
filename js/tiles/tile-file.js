@@ -1,5 +1,6 @@
 // One tile's file (tools/build-tiles.mjs): a 20 byte head giving the length of each part, then JSON for what's sparse,
 // and binary for buildings, trees, heights and how far the ground moves to meet the roads.
+import { numberFromCodes, numberText } from '../addresses.js';
 
 function reader(data, start, end) {
   let cursor = start;
@@ -24,8 +25,8 @@ function reader(data, start, end) {
 }
 
 // A building as the game has it, from what the tile says of it: `style` its kind (0 other, 1 house, 2 flats, 3 shops and offices, 4 shed,
-// 5 civic), whether its roof is pitched (8), it's a piece of a building (16) or has a real awning (32), and its house's style (from 128);
-// `polygons` [{ outer, holes }] of points { x, z }
+// 5 civic), whether its roof is pitched (8), it's a piece of a building (16), has a real awning (32) or a street address (64), and its
+// house's style (from 128); `polygons` [{ outer, holes }] of points { x, z }
 function building(height, style, group, bottom, floor, low, polygons) {
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
   for (const p of polygons) {
@@ -36,9 +37,25 @@ function building(height, style, group, bottom, floor, low, polygons) {
       if (q.z > maxZ) maxZ = q.z;
     }
   }
-  // houseStyle: js/house-styles.js, 0 for none
+  // houseStyle: js/house-styles.js, 0 for none. address: its streets (readAddress()), null where it has none
   return { height, kind: style & 7, pitched: !!(style & 8), group, bottom, realAwning: !!(style & 32), houseStyle: (style >> 7) & 15, polygons, floor, low,
-    minX, maxX, minZ, maxZ, cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2 };
+    address: null, minX, maxX, minZ, maxZ, cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2 };
+}
+
+// A building's streets, as tools/tiles/pack-buildings.mjs writes them after its outline: [{ x, z, wall, number }], the street most
+// of its addresses are on first. (x, z) the point on it nearest the building's middle; `wall` the wall of its outline facing it (an index
+// into js/addresses.js outerWalls(), -1 for none: only houses and low-rise flats and shops have one); `number` as a plate shows it
+// ('399A', '1-3'), or null
+function readAddress(meta, b) {
+  const ox = Math.floor(b.cx * 2), oz = Math.floor(b.cz * 2);
+  const out = [];
+  for (let more = true; more;) {
+    const x = (ox + meta.sint()) * 0.5, z = (oz + meta.sint()) * 0.5, w = meta.uint();
+    more = !!(w & 1);
+    const number = numberFromCodes(() => meta.uint());
+    out.push({ x, z, wall: Math.floor(w / 2) - 1, number: number.n ? numberText(number) : null });
+  }
+  return out;
 }
 
 function unpackBuildings(data, start, end) {
@@ -67,7 +84,9 @@ function unpackBuildings(data, start, end) {
       }
       polygons.push({ outer: rings[0], holes: rings.slice(1) });
     }
-    out.push(building(height, style, group, bottom, floor, low, polygons));
+    const b = building(height, style, group, bottom, floor, low, polygons);
+    if (style & 64) b.address = readAddress(meta, b);
+    out.push(b);
   }
   return out;
 }
@@ -174,4 +193,4 @@ function unpackFarFile(data) {
   return file;
 }
 
-export { unpackFarFile, unpackTile };
+export { unpackBuildings, unpackFarFile, unpackTile };

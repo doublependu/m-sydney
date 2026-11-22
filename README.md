@@ -104,6 +104,7 @@ curl -L -o tools/data/osm/australia-latest.osm.pbf https://download.geofabrik.de
 BOX=150.8743,-34.1571,151.4826,-33.4732                # the map and a margin: west, south, east, north
 node tools/extract-osm.mjs $BOX tools/data/east        # cuts the roads, land, rail, coast, beaches and footpaths out of it, in seconds
 SYDNEY_DATA=tools/data/east SYDNEY_BOX='-34.1571,150.8743,-33.4732,151.4826' node tools/fetch-data.mjs overture_syd,overture_parts   # 3 min
+SYDNEY_DATA=tools/data/east SYDNEY_BOX='-34.1571,150.8743,-33.4732,151.4826' node tools/fetch-data.mjs overture_addresses   # street addresses (G-NAF): 147 MB, 40 s
 node tools/fetch-data.mjs overture_density             # for the horizon: 90 s
 node tools/fetch-elevation.mjs --cell=100              # for the horizon: 4 min
 node tools/fetch-elevation.mjs --cell=5 --box=$BOX     # about 1 GB, 15 min

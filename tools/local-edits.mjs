@@ -22,7 +22,10 @@
 //   move: [{ id: OSM way id, points: [[x, z], ...], expect: { from: [x, z], to: [x, z] }, why }]: a road OSM draws where it overlaps
 //   another, moved: each of the way's nodes, in OSM's order and ends included, to its point. A node moves for every way through it, so
 //   a junction takes its other roads with it; two edits moving one node must agree. `expect` is where its first and last nodes are in
-//   OSM: if they've moved more than half a metre, or the way has another number of nodes, the build stops }
+//   OSM: if they've moved more than half a metre, or the way has another number of nodes, the build stops;
+//   streets: [{ address, road, expect: [lo, hi], why }]: a street G-NAF's addresses name (`address`) that OSM spells otherwise (`road`),
+//   for a building whose addresses' street isn't found under its own name near it (tools/addresses.mjs). The build stops if the number
+//   of buildings that find their street by it isn't between lo and hi }
 // `expect` is what the ways' tags were when the edit was made: if OSM has changed them since, the build stops and says so, as the
 // edit may no longer be right. A tag set to null is taken away. Each way an edit names is marked `local` (its area's file): the
 // build takes in some ways only where an area has been looked at by hand, as bus-only roads (tools/build-geodata.mjs).

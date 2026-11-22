@@ -1,0 +1,6 @@
+{
+  "name": "Streets G-NAF's addresses spell otherwise than OSM (tools/addresses.mjs): each found under OSM's name where it isn't under its own",
+  "streets": [
+    {"address": "CONNEMARRA STREET", "road": "Conemarra Street", "expect": [20, 40], "why": "G-NAF's Connemarra Street is OSM's Conemarra Street, 26 m from the first of its houses (-6194, 10507); 30 buildings find it by this (2026-11)"}
+  ]
+}

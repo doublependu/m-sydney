@@ -122,6 +122,25 @@ if (wanted('overture_density')) {
   console.log('overture_density and overture_tall written');
 }
 
+// Street addresses (G-NAF, Geoscape Australia, by way of OpenAddresses into Overture's addresses theme, of the release the buildings
+// come from), for the street each building faces and its numbers (tools/build-buildings.mjs). JSON lines, one for each street number at
+// each point: lon, lat, street, number, how many addresses it is there and how many of those had a unit (the units themselves are
+// dropped), and a G-NAF id, for checking only
+if (wanted('overture_addresses')) {
+  const { DuckDBInstance } = await import('@duckdb/node-api');
+  const db = await DuckDBInstance.create(':memory:');
+  const c = await db.connect();
+  await c.run("INSTALL httpfs; LOAD httpfs; INSTALL spatial; LOAD spatial; SET s3_region='us-west-2';");
+  const [south, west, north, east] = BOX.split(',').map(Number);
+  await c.run(`CREATE TABLE a AS SELECT round(ST_X(geometry), 6) AS lon, round(ST_Y(geometry), 6) AS lat, street, number,
+      count(*)::INT AS addresses, count(unit)::INT AS units, min(sources[1].record_id) AS id
+    FROM read_parquet('s3://overturemaps-us-west-2/release/${OVERTURE_RELEASE}/theme=addresses/type=address/*', hive_partitioning=1)
+    WHERE bbox.xmin > ${west} AND bbox.xmax < ${east} AND bbox.ymin > ${south} AND bbox.ymax < ${north} AND street IS NOT NULL AND number IS NOT NULL
+    GROUP BY ALL ORDER BY lon, lat, street, number`);
+  await c.run(`COPY a TO '${path.join(DATA, 'overture_addresses.json')}' (FORMAT JSON)`);
+  console.log('overture_addresses written');
+}
+
 // Overture building parts: where a tower's real height and shape are, while its building record often holds only its podium
 if (wanted('overture_parts')) {
   const { DuckDBInstance } = await import('@duckdb/node-api');

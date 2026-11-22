@@ -1,5 +1,6 @@
 import { HOUSE_STYLES } from './house-styles.js';
 import { houseEntry } from './house-entry.js';
+import { DOOR_KEEP } from './building-floor.js';
 import { LAWN_TOP, PANEL, SLAB, SLAB_PIECE, acrossAt, alongOf, depthOf, hashOf, inRing, insideSpans, keyOf, slab } from './house-lots.js';
 
 // What stands in a house's lot besides its fences between neighbours (js/house-lots.js), by the house's era (js/house-styles.js):
@@ -13,6 +14,9 @@ import { LAWN_TOP, PANEL, SLAB, SLAB_PIECE, acrossAt, alongOf, depthOf, hashOf, 
 //   those without a front fence, holding the walker as a fence would.
 // - A verandah on terraces and Federation houses, a porch on bungalows (on brick piers) and post-war houses (over the door), a deck
 //   to the street on beach houses.
+// - Steps up to a door its floor left over the ground: where its street address set the floor at its door and the cut into the slope
+//   stopped at MAX_CUT (js/building-floor.js doorFloor()). Straight out where the yard holds them, along the front wall where it doesn't,
+//   up to STEPS_TO; their treads go to the ground's lookup (`treads`), so a walker climbs them, and their open sides hold the walker.
 // Boxes go to js/lot-details.js' instanced box of things ({ x, y, z: the middle of its foot; a: its length along, b: its width across,
 // each a vector, with a rise in y for a slope; h: how high; kind (THING); colour; small: drawn only near }); paths go with the driveways'
 // concrete; front fences' panels with the other fences'.
@@ -36,9 +40,16 @@ const GATE = 1.1; // m: the gap in a front fence for the path
 const BRICK_RUN = 4.8; // m: a low brick wall's pieces at most, each level
 const HEDGE_RUN = 4; // m: a hedge's
 const PATH_TINT = [0.86, 0.58, 0.47]; // brick pavers, on the older houses' paths
+const RISER = 0.18; // m at most
+const TREAD = 0.28; // m
+const LANDING = 1.0; // m deep, at the door
+const STAIR = 1.2; // m wide
+const STEPS_TO = 3; // m: a door higher over the ground than this has none
+const CONCRETE = [0xb3aea4, 0xa59f94];
 
 // Colours, linear
 const lin = (hex) => { const c = [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255].map((v) => (v / 255) ** 2.2); return c; };
+const pickOf = (list, roll) => lin(list[Math.floor(roll * list.length) % list.length]);
 const BRICKS = { 'California bungalow': [0x6e2f22, 0x5a2a20, 0x7a3a28], 'Triple-fronted brick veneer': [0xd8c49a, 0xc9b080, 0xe0cfa8],
   Federation: [0x8a3a26, 0x9a4630, 0x7e3422], other: [0x9a5a40, 0xb07a5a] };
 const COLORBOND = [0xf0eee6, 0xc9bea2, 0x7c846a, 0x4f514b]; // Surfmist, Paperbark, Pale Eucalypt, Woodland Grey
@@ -55,7 +66,7 @@ const IRON_ROOFS = [0x8a8f92, 0x9a3e30, 0x6c7a6a];
  */
 function lotThings(lot, obstacles, env) {
   const h = lot.home, f = lot.frame, style = HOUSE_STYLES[h.house], look = style?.look;
-  const out = { boxes: [], slabs: [], panels: [], fences: [] };
+  const out = { boxes: [], slabs: [], panels: [], fences: [], treads: [], steps: null };
   if (!look) return out;
   const name = style.name;
   const unit = lot.unit ?? null;
@@ -71,6 +82,9 @@ function lotThings(lot, obstacles, env) {
   const entry = unit ? { door: unit.door, garage: null } : h.frontWall ? houseEntry(h.frontWall, h.house) : null;
   const door = entry && { a: alongOf(f, entry.door.x, entry.door.z), d: depthOf(f, entry.door.x, entry.door.z) };
   const drive = lot.drive;
+  // Steps up to the door, where its floor is over the ground outside it: where the path meets them
+  const foot = door && h.address ? steps(out, { h, lot, f, door, yard, drive, others, at, ground, inLot, blocked, name, roll }) : null;
+  const pathA = foot ? foot.a : door?.a;
 
   /** An upright box square to the lot's frame, a0-a1 along and d0-d1 deep, standing on the lawn: `height` over its highest corner */
   const box = (a0, a1, d0, d1, height, kind, colour, { small = false, lift = 0 } = {}) => {
@@ -151,7 +165,7 @@ function lotThings(lot, obstacles, env) {
   // Its line: along the lot's front edges, a little inside, with a gap for the driveway and one for the path to the door
   const gaps = [];
   if (drive) gaps.push([drive.a - drive.w / 2 - 0.2, drive.a + drive.w / 2 + 0.2]);
-  const gateAt = door && !(drive && drive.side) ? door.a : null;
+  const gateAt = door && !(drive && drive.side) ? pathA : null;
   if (gateAt !== null) gaps.push([gateAt - GATE / 2, gateAt + GATE / 2]);
   const frontLine = (inset) => {
     const pieces = [];
@@ -233,22 +247,22 @@ function lotThings(lot, obstacles, env) {
   const tint = OLDER.has(name) && roll(16) < 0.6 ? PATH_TINT : null;
   const legs = [];
   if (door && door.d - lot.front > 1.2) {
-    const wall = door.d - 0.05;
+    const wall = foot ? foot.d : door.d - 0.05;
     if (drive && drive.side) {
-      const edge = drive.a - Math.sign(drive.a - door.a) * (drive.w / 2);
+      const edge = drive.a - Math.sign(drive.a - pathA) * (drive.w / 2);
       const d = Math.max(lot.front + 0.8, wall - 1.4);
-      if (Math.abs(edge - door.a) > 0.8) legs.push([edge, d, door.a, d]);
-      legs.push([door.a, d - pathWidth / 2, door.a, wall]);
+      if (Math.abs(edge - pathA) > 0.8) legs.push([edge, d, pathA, d]);
+      legs.push([pathA, d - pathWidth / 2, pathA, wall]);
     } else if (drive) {
       // A project home's: from its driveway beside the door
-      const edge = drive.a - Math.sign(drive.a - door.a) * (drive.w / 2);
+      const edge = drive.a - Math.sign(drive.a - pathA) * (drive.w / 2);
       const d = wall - 1.0;
-      if (Math.abs(edge - door.a) > 0.6 && d > lot.front + 0.5) {
-        legs.push([edge, d, door.a, d]);
-        legs.push([door.a, d - pathWidth / 2, door.a, wall]);
+      if (Math.abs(edge - pathA) > 0.6 && d > lot.front + 0.5) {
+        legs.push([edge, d, pathA, d]);
+        legs.push([pathA, d - pathWidth / 2, pathA, wall]);
       }
     } else {
-      legs.push([door.a, lot.front + 0.05, door.a, wall]);
+      legs.push([pathA, lot.front + 0.05, pathA, wall]);
     }
   }
   for (const [a0, d0, a1, d1] of legs) {
@@ -313,6 +327,90 @@ function lotThings(lot, obstacles, env) {
     verandah(out, name, wall, entry, yard, lot, others, ground, roll, pick);
   }
   return out;
+}
+
+/**
+ * Steps up to a house's door where its floor is more than DOOR_KEEP over the ground outside it, into `out` (boxes from the ground up to
+ * each tread, the treads' tops for the lookup, and fences along their open sides to hold the walker): straight out from the door where the
+ * yard holds them, else along the front wall beside a landing at the door; none over STEPS_TO, or where neither fits (`out.steps` says
+ * which). The point where a path meets them, { a, d } in the lot's frame, or null where there are none.
+ */
+function steps(out, { h, lot, f, door, yard, drive, others, at, ground, inLot, blocked, name, roll }) {
+  const sill = h.wallBase;
+  const outside = ground(...Object.values(at(door.a, door.d - 0.3)));
+  if (!(sill - outside > DOOR_KEEP)) return null;
+  if (sill - outside > STEPS_TO) { out.steps = { kind: 'high', rise: sill - outside }; return null; }
+  const kind = OLDER.has(name) ? THING.brick : name === 'Beach house' ? THING.boards : THING.paint;
+  const colour = kind === THING.brick ? pickOf(BRICKS[name] || BRICKS.other, roll(60)) : kind === THING.boards ? lin(0x8a6a4c) : pickOf(CONCRETE, roll(60));
+  const g = (a, d) => ground(...Object.values(at(a, d)));
+  /** A block square to the lot's frame from the ground up to `top`, and its top for the lookup */
+  const block = (a0, a1, d0, d1, top, tread = true) => {
+    const low = Math.min(g(a0, d0), g(a1, d0), g(a0, d1), g(a1, d1)) - 0.05;
+    const c = at((a0 + a1) / 2, (d0 + d1) / 2);
+    const piece = { x: c.x, y: low, z: c.z, ax: f.tx * (a1 - a0), ay: 0, az: f.tz * (a1 - a0), bx: f.nx * (d1 - d0), by: 0, bz: f.nz * (d1 - d0) };
+    out.boxes.push({ ...piece, h: top - low, kind, colour });
+    if (tread) out.treads.push({ ...piece, y: top });
+  };
+  const hold = (a0, d0, a1, d1, top) => out.fences.push({ a: at(a0, d0), b: at(a1, d1), hold: Math.max(0.3, top - Math.min(g(a0, d0), g(a1, d1))) });
+  // How many risers from a foot whose ground is `low`: never over RISER
+  const risers = (low) => Math.max(1, Math.ceil((sill - low) / RISER - 1e-6));
+  const clear = (pts) => pts.every(inLot) && !blocked(pts, others) && !(drive && pts.some((p) => {
+    const a = (p.x - f.px) * f.tx + (p.z - f.pz) * f.tz, d = (p.x - f.px) * f.nx + (p.z - f.pz) * f.nz;
+    return Math.abs(a - drive.a) < drive.w / 2 + 0.1 && d >= drive.d0 - 0.1 && d <= drive.d1 + 0.1;
+  }));
+  const a0 = door.a - STAIR / 2, a1 = door.a + STAIR / 2, top = door.d - 0.02;
+  // Straight out: the ground at its foot sets how many, which sets where its foot is; more till the foot's ground needs no more, so none
+  // is over RISER
+  let n = risers(outside);
+  for (let k = 0; k < 24; k++) {
+    const more = risers(g(door.a, door.d - LANDING - (n - 1) * TREAD - 0.15));
+    if (more <= n) break;
+    n = more;
+  }
+  const footD = door.d - LANDING - (n - 1) * TREAD;
+  const straight = [];
+  for (let d = footD; d <= top; d += 0.5) for (const a of [a0, door.a, a1]) straight.push(at(a, d));
+  if (footD - 0.3 >= lot.front && clear(straight)) {
+    const low = g(door.a, footD - 0.15);
+    const rise = (sill - low) / n;
+    for (let j = 1; j < n; j++) block(a0, a1, footD + (j - 1) * TREAD, footD + j * TREAD, low + j * rise);
+    block(a0, a1, door.d - LANDING, top, sill - 0.02);
+    if (sill - low > 0.6) { hold(a0, footD + TREAD, a0, top - 0.1, sill); hold(a1, footD + TREAD, a1, top - 0.1, sill); }
+    out.steps = { kind: 'straight', rise: sill - low, risers: n };
+    return { a: door.a, d: footD - 0.05 };
+  }
+  // Along the wall: a landing at the door, the flight down beside it to whichever side holds it, nearer the wall than the landing's edge
+  const width = LANDING + 0.2, d0 = door.d - width, d1 = door.d - 0.02;
+  for (const side of [1, -1]) {
+    let m = risers(outside);
+    for (let k = 0; k < 24; k++) {
+      const more = risers(g(door.a + side * (STAIR / 2 + (m - 1) * TREAD + 0.15), (d0 + d1) / 2));
+      if (more <= m) break;
+      m = more;
+    }
+    const length = (m - 1) * TREAD;
+    const end = door.a + side * (STAIR / 2 + length);
+    const pts = [];
+    for (let a = door.a - STAIR / 2; a <= door.a + STAIR / 2; a += 0.4) for (const d of [d0, d1]) pts.push(at(a, d));
+    for (let s = 0; s <= length + 0.3; s += 0.4) for (const d of [d0, (d0 + d1) / 2, d1]) pts.push(at(door.a + side * (STAIR / 2 + s), d));
+    if (yard < width + 0.3 || !clear(pts)) continue;
+    const low = g(end + side * 0.15, (d0 + d1) / 2), rise = (sill - low) / m;
+    block(a0, a1, d0, d1, sill - 0.02);
+    for (let j = 1; j < m; j++) {
+      // the j-th from the landing down
+      const s0 = STAIR / 2 + (j - 1) * TREAD, s1 = STAIR / 2 + j * TREAD;
+      const [p0, p1] = side > 0 ? [door.a + s0, door.a + s1] : [door.a - s1, door.a - s0];
+      block(p0, p1, d0 + 0.2, d1, sill - j * rise);
+    }
+    if (sill - low > 0.6) {
+      hold(door.a - side * STAIR / 2, d0, end, d0 + 0.2, sill);
+      hold(door.a - side * STAIR / 2, d0, door.a - side * STAIR / 2, d1 - 0.1, sill);
+    }
+    out.steps = { kind: 'along', rise: sill - low, risers: m };
+    return { a: end + side * 0.5, d: (d0 + d1) / 2 };
+  }
+  out.steps = { kind: 'none', rise: sill - outside };
+  return null;
 }
 
 /** A house's front wall as a frame: along it from a, out from it away from the house, and its foot and top */

@@ -43,9 +43,11 @@ const ONE_HOUSE = 0.125;
 const houseStyles = require('./helpers/house-styles.cjs');
 const addresses = loadModule(readFileSync(join(__dirname, '../js/addresses.js'), 'utf8'));
 const houseEntry = loadModule(readFileSync(join(__dirname, '../js/house-entry.js'), 'utf8'), { imports: { './house-styles.js': houseStyles, './addresses.js': addresses } });
+const wallGround = loadModule(readFileSync(join(__dirname, '../js/wall-ground.js'), 'utf8'));
 const { createBuildingFootprints } = loadModule(readFileSync(join(__dirname, '../js/building-footprints.js'), 'utf8'), {
   imports: { 'three/webgpu': THREE, './tsl-materials.js': { WALL_KINDS, ONE_HOUSE },
-    './building-collision.js': collision, './house-styles.js': houseStyles, './addresses.js': addresses, './house-entry.js': houseEntry }
+    './building-collision.js': collision, './house-styles.js': houseStyles, './addresses.js': addresses, './house-entry.js': houseEntry,
+    './wall-ground.js': wallGround }
 });
 const p = (x, z) => ({ x, z });
 const square = (x = 0) => [p(x, 0), p(x + 10, 0), p(x + 10, 10), p(x, 10)];
@@ -422,6 +424,88 @@ test('a terrace with an address: its back is a front only to another of its addr
   assert.equal(walls.find((w) => w.nz > 0.99).kind, WALL_KINDS.side);
   // Its ends are sides whatever its addresses say
   assert.ok(walls.filter((w) => Math.abs(w.nx) > 0.99).every((w) => w.kind === WALL_KINDS.side));
+});
+
+// Where the ground runs up a wall over its floor (js/wall-ground.js): the wall in pieces at its window bays' edges, each with the line the
+// facade hides windows under, packed in its kind
+const piecesOf = (mesh) => {
+  const a = mesh.geometry.attributes, out = [];
+  for (let i = 0; i < a.position.array.length / 3; i += 4) {
+    if (a.normal.array[i * 3 + 1] > 0.5) continue; // the roof
+    const { kind, line } = wallGround.unpackKind(a.facadeWall.array[i * 3 + 2]);
+    if (kind >= WALL_KINDS.below) continue; // the stone under the floor
+    const P = a.position.array;
+    out.push({ kind, line, nx: Math.round(a.normal.array[i * 3]), nz: Math.round(a.normal.array[i * 3 + 2]), width: a.box.array[i * 4],
+      along: [a.facadeWall.array[i * 3], a.facadeWall.array[(i + 1) * 3]], foot: [[P[i * 3], P[i * 3 + 2]], [P[(i + 1) * 3], P[(i + 1) * 3 + 2]]] });
+  }
+  return out;
+};
+
+test('a house cut into the slope has its uphill walls in pieces at their bays\' edges, each with the ground\'s line over its floor, covering it', () => {
+  const outer = [p(0, 0), p(12, 0), p(12, 10), p(0, 10)];
+  const b = house(outer, { front: { x: 6, z: -8 }, base: 0 });
+  b.address = [{ x: 6, z: -8, wall: facing(b.polygons, 0, -1), number: '7' }];
+  // The ground rises 3 m from its front (z = 0) to its back (z = 10): its floor at its door, its back cut 3 m into the slope
+  const groundAt = (x, z) => Math.max(0, z) * 0.3;
+  const pieces = piecesOf(createBuildingFootprints({}, [b], undefined, null, { groundAt, storey: { width: 3, height: 3, pier: 1.2 } }).children[0]);
+  for (const w of pieces) {
+    const [[x0, z0], [x1, z1]] = w.foot;
+    for (let t = 0; t <= 1; t += 0.01) {
+      const g = groundAt(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t);
+      assert.ok(g <= Math.max(w.line, wallGround.WALL_BURIED) + 1e-6, `the ground ${g.toFixed(2)} over the line ${w.line} on the wall facing ${w.nx},${w.nz}`);
+    }
+  }
+  // The front, on the ground: one piece, as any wall; the back: buried its whole length, one piece; each side: its bays from the front's
+  // ground to the back's, joined where they hide the same, each of its edges a bay's edge
+  const front = pieces.filter((w) => w.nz === -1), back = pieces.filter((w) => w.nz === 1);
+  assert.equal(front.length, 1);
+  assert.equal(front[0].line, 0);
+  assert.equal(back.length, 1);
+  close(back[0].line, 3);
+  const look = houseStyles.HOUSE_STYLES[9].look;
+  for (const nx of [-1, 1]) {
+    const side = pieces.filter((w) => w.nx === nx);
+    assert.ok(side.length >= 2, `the side facing ${nx}: ${side.length} pieces`);
+    assert.ok(side.every((w) => w.kind === WALL_KINDS.side));
+    const { bays, pier } = wallGround.houseBays(10, WALL_KINDS.side, look);
+    const edges = wallGround.bayEdges(10, bays, pier);
+    for (const w of side) for (const along of w.along) assert.ok(edges.some((e) => Math.abs(e - along * 10) < 1e-4), `${along * 10} m isn't a bay's edge`);
+    assert.ok(side.some((w) => w.line === 0) && side.some((w) => w.line >= 2.9));
+  }
+  // On the flat, every wall is one piece, as before
+  b.address = [{ x: 6, z: -8, wall: facing(b.polygons, 0, -1), number: '7' }];
+  const flat = piecesOf(createBuildingFootprints({}, [b], undefined, null, { groundAt: () => 0, storey: { width: 3, height: 3, pier: 1.2 } }).children[0]);
+  assert.equal(flat.length, 4);
+  assert.ok(flat.every((w) => w.line === 0));
+});
+
+test('the ground\'s line along a wall passes over a read of the ground that isn\'t a number (a seam), and covers what it reads', () => {
+  // 1.1 m over the floor all along, and NaN at one point, as the ground gave a hair off a tile's edge
+  const groundAt = (x) => (Math.abs(x - 0.85) < 1e-9 ? NaN : 1.1);
+  const pieces = wallGround.wallLine({ x: 0, y: 0 }, { x: 2.5, y: 0 }, 2.5, 0, groundAt, { edges: wallGround.bayEdges(2.5, 1, 0.45) });
+  assert.equal(JSON.stringify(pieces.map((w) => [w.t0, w.t1])), '[[0,1]]');
+  close(pieces[0].line, 1.1);
+  assert.equal(wallGround.mostOver({ x: 0, y: 0 }, { x: 2.5, y: 0 }, 2.5, 0, groundAt), 1.1);
+});
+
+test('a shop\'s front buried along a rising street keeps its shopfronts where they meet the ground, a shopfront at a time; no door at a terrace\'s back cut into the slope', () => {
+  // A shop on a street rising 1 m along its 20 m front: its floor at the low end, its front buried 1 m at the other
+  const shop = record([p(0, 0), p(20, 0), p(20, 10), p(0, 10)], { height: 6, kind: 3, storefronts: true, base: 0 });
+  const rising = (x) => x * 0.05;
+  let pieces = piecesOf(createBuildingFootprints({}, [shop], undefined, null, { groundAt: (x) => rising(x), storey: { width: 2.6, height: 3.5, pier: 1.2 } }).children[0]);
+  // Its front and back: shopfronts, in pieces at their edges (three of 6.67 m), the ground's line on those it runs over
+  for (const nz of [-1, 1]) {
+    const wall = pieces.filter((w) => w.nz === nz);
+    assert.ok(wall.every((w) => w.kind === WALL_KINDS.shop));
+    for (const w of wall) for (const along of w.along) assert.ok([0, 1, 2, 3].some((k) => Math.abs(along * 20 - (k * 20) / 3) < 1e-4), `${along * 20} m`);
+    // ...the low one's at the ground, the high one's buried past its foot, which the facade draws no shopfront on
+    assert.ok(wall.some((w) => w.line <= 0.22 + wallGround.WINDOW_CLEAR) && wall.some((w) => w.line > 0.22 + wallGround.WINDOW_CLEAR));
+  }
+  // A terrace with a lane address behind it, its back 2 m into the slope: no door there
+  const b = house([p(0, 0), p(10, 0), p(10, 12), p(0, 12)], { front: { x: 12, z: -8 }, house: 1, base: 0 });
+  b.address = [{ x: 12, z: -8, wall: facing(b.polygons, 0, -1), number: '405' }, { x: 12, z: 20, wall: facing(b.polygons, 0, 1), number: '76' }];
+  pieces = piecesOf(createBuildingFootprints({}, [b], undefined, null, { groundAt: (x, z) => (z > 6 ? 2 : 0), storey: { width: 3, height: 3, pier: 1.2 } }).children[0]);
+  assert.ok(pieces.filter((w) => w.nz === 1).every((w) => w.kind === WALL_KINDS.side));
 });
 
 test('a low-rise shop with an address has entrances and shopfronts only on its walls to its address streets; the others are plain', () => {

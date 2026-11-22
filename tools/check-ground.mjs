@@ -4,8 +4,9 @@
 //   kerbs      just outside each kerb: no surface at all (the harbour shows), the road below the kerb's foot (a slit),
 //              or the road lying over the footpath; lawn there is a surface, counted apart
 //   crossings  roads that cross with no junction, and how far apart their surfaces are there
-//   buildings  whether the ground beside any wall rises over its foot, and how much stone shows under floors; and the floors the tiles
-//              put at a door (js/building-floor.js doorFloor()), under the highest ground along their walls: never more than MAX_CUT
+//   buildings  where the ground beside a wall rises over its foot (the tiles' floor), and whether the facade's line along it covers that
+//              (js/wall-ground.js: no window under it); how much stone shows under floors; and the floors the tiles put at a door
+//              (js/building-floor.js doorFloor()), under the highest ground along their walls: never more than MAX_CUT
 //   grid       steps between neighbouring cells of the height grid on land
 //   kerb line  a kerb drawn straight between its points that strays from the ground under it: up in the air, or buried
 // usage: node tools/check-ground.mjs [--json] [--strict] [--tiles=0_-2,1_-2]
@@ -20,6 +21,7 @@ const { groundHeight, structuresAt } = await import('../js/surfaces.js');
 const { heldTiles, isHeld, tileExists, tileKeyAt } = await import('../js/geodata.js');
 const REAL_BUILDINGS = heldTiles().flatMap((t) => t.buildings);
 const { MAX_CUT, buildingFloor, eachWall } = await import('../js/building-floor.js');
+const { WALL_BURIED, bayCount, bayEdges, wallLine } = await import('../js/wall-ground.js');
 
 const RG = GEO.roadGraph;
 const json = process.argv.includes('--json');
@@ -256,10 +258,13 @@ function drawnRoad(x, z, near = Infinity, below = 1) {
 }
 
 // --- Buildings ----------------------------------------------------------------------------------------------------------
-// The ground beside each wall against the wall's lowest row of windows, and how much stone shows under the floor
+// The ground beside each wall against its foot, at the floor the tiles give it: where it rises over it (a floor at its door, its uphill
+// walls cut into the slope), the line the facade hides windows and entrances under (js/wall-ground.js wallLine(), with a house side's
+// bays) must cover it, or a window is drawn into the ground. And how much stone shows under floors
 {
   const FLOOR_SILL = 0.22; // the wall starts this far above the floor's ground (js/building-footprints.js)
-  let walls = 0, buried = 0, worst = 0, at = null, buildings = 0;
+  const OVER = 0.05; // m: the ground this far over a wall's foot, or over its line, counts
+  let walls = 0, over = 0, uncovered = 0, worst = 0, at = null, buildings = 0, lined = 0, deepest = 0;
   const stone = [];
   // The tiles' floors under the highest ground along a building's walls, past their 0.1 m rounding: cut into the slope at a door. Not
   // within CUT_EDGE of a tile of the map that isn't held (SYDNEY_TILES): the ground there isn't what the tiles were made on
@@ -272,25 +277,40 @@ function drawnRoad(x, z, near = Infinity, below = 1) {
     buildings++;
     const { floor, low } = buildingFloor(b.polygons, groundHeight);
     stone.push(floor - low);
-    if (!b.bottom && floor - b.floor > 0.15 && amidHeld(b)) {
+    const held = amidHeld(b);
+    if (!b.bottom && floor - b.floor > 0.15 && held) {
       cut.buildings++;
       if (floor - b.floor > cut.deepest) { cut.deepest = floor - b.floor; cut.at = [Math.round(b.cx), Math.round(b.cz)]; }
     }
+    // A piece standing on another has no wall at the ground
+    if (b.bottom) continue;
     eachWall(b.polygons, (p, q) => {
       const L = Math.hypot(q.x - p.x, q.z - p.z);
-      for (let t = 0; t <= L; t += 2) {
-        const x = p.x + ((q.x - p.x) * t) / (L || 1), z = p.z + ((q.z - p.z) * t) / (L || 1);
-        const over = groundHeight(x, z) - (floor + FLOOR_SILL);
+      if (!(L > 0)) return;
+      const a = { x: p.x, y: p.z }, c = { x: q.x, y: q.z };
+      const pier = Math.min(0.45, L * 0.2);
+      const pieces = wallLine(a, c, L, b.floor, groundHeight, { edges: bayEdges(L, bayCount(L - 2 * pier, 3), pier) });
+      if (pieces?.some((w) => w.line > 0) && held) {
+        lined++;
+        deepest = Math.max(deepest, ...pieces.map((w) => w.line));
+      }
+      for (let s = 0; s <= L; s += 2) {
+        const x = p.x + ((q.x - p.x) * s) / L, z = p.z + ((q.z - p.z) * s) / L;
+        const g = groundHeight(x, z) - b.floor;
         walls++;
-        if (over > 0.05) buried++;
-        if (over > worst) { worst = over; at = [Math.round(x), Math.round(z)]; }
+        if (g - FLOOR_SILL > OVER) over++;
+        const t = s / L, line = pieces?.find((w) => t >= w.t0 - 1e-9 && t <= w.t1 + 1e-9)?.line ?? 0;
+        const above = g - Math.max(line, WALL_BURIED);
+        if (above > OVER) uncovered++;
+        if (above > worst) { worst = above; at = [Math.round(x), Math.round(z)]; }
       }
     });
   }
   stone.sort((p, q) => p - q);
   const q = (f) => +(stone[Math.floor(stone.length * f)] ?? 0).toFixed(1);
   report.buildings = {
-    buildings, wallSamples: walls, groundOverWall: buried, worst: +worst.toFixed(2), at,
+    buildings, wallSamples: walls, overFoot: over, groundOverWall: uncovered, worst: +worst.toFixed(2), at,
+    lined: { walls: lined, deepest: +deepest.toFixed(2) },
     cut: { buildings: cut.buildings, deepest: +cut.deepest.toFixed(2), at: cut.at },
     stone: { median: q(0.5), p90: q(0.9), p99: q(0.99), max: +(stone.at(-1) ?? 0).toFixed(1), over4m: stone.filter((d) => d > 4).length }
   };
@@ -361,7 +381,8 @@ else {
   console.log(`crossings ${r.crossings.total} without a junction (${JSON.stringify(r.crossings.byKinds)} by level: 0 ground, 1 bridge, 2 tunnel), ${r.crossings.tooClose} closer than ${ground.STACK_CLEARANCE} m`);
   for (const c of r.crossings.examples.slice(0, 6)) console.log(`          ${c.a} x ${c.b} at (${c.x}, ${c.z}): ${c.apart} m apart`);
   const bs = r.buildings;
-  console.log(`buildings ${bs.buildings}: ground over the wall's foot at ${bs.groundOverWall} of ${bs.wallSamples} samples, worst ${bs.worst} m${bs.at ? ` at ${bs.at.join(',')}` : ''}; stone under floors median ${bs.stone.median} m, 99th percentile ${bs.stone.p99} m, ${bs.stone.over4m} over 4 m`);
+  console.log(`buildings ${bs.buildings}: ground over the wall's foot at ${bs.overFoot} of ${bs.wallSamples} samples, over the facade's line at ${bs.groundOverWall}, worst ${bs.worst} m${bs.at ? ` at ${bs.at.join(',')}` : ''}; stone under floors median ${bs.stone.median} m, 99th percentile ${bs.stone.p99} m, ${bs.stone.over4m} over 4 m`);
+  console.log(`          walls the ground runs up, with a line: ${bs.lined.walls}, the highest ${bs.lined.deepest} m over the floor`);
   console.log(`          floors at a door cut into the slope: ${bs.cut.buildings}, the deepest ${bs.cut.deepest} m${bs.cut.at ? ` at ${bs.cut.at.join(',')}` : ''}`);
   console.log(`kerb line ${r.kerbLine.metres} m of kerb: ${r.kerbLine.over50cm} m off the ground by over 50 cm, ${r.kerbLine.over1m} m by over 1 m${r.kerbLine.worst.length ? `, worst ${r.kerbLine.worst.map(([g, x, z]) => `${g} m (${x}, ${z})`).join('; ')}` : ''}`);
   console.log(`grid      ${r.grid.landCells} land cells: ${r.grid.stepsOver4m} steps over 4 m, ${r.grid.stepsOver10m} over 10 m, worst ${r.grid.worst} m at ${r.grid.at}`);
@@ -378,7 +399,8 @@ if (strict) {
     // 40 till plan 4 moved tunnels side by side apart (tools/tiles/separate-tubes.mjs): a few of them now cross over another road
     [r.crossings.tooClose, 45, 'crossings too close'],
     [r.grid.stepsOver10m, 2000, 'height grid steps over 10 m'], // real cliffs and quarries: the 5 m model has them where contours smoothed them over
-    [r.buildings.groundOverWall, 5, 'wall samples with the ground over the wall'],
+    // ...over the line the facade hides windows under (js/wall-ground.js), at the tiles' floors
+    [r.buildings.groundOverWall, 5, 'wall samples with the ground over the facade\'s line'],
     // A floor at its door is never cut more than MAX_CUT into the slope (and 0.15 m for the ground sampled every 4 m and the rounding)
     [r.buildings.cut.deepest, MAX_CUT + 0.15, 'm a floor is cut into the slope at its door'],
     // What's left is on cliffs, where a kerb can't follow the ground in steps of a metre

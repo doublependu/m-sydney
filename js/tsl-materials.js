@@ -67,6 +67,7 @@ import {
 import { patternXZ } from './world-origin.js';
 import { CITY_BOUNDS } from './city-config.js';
 import { HOUSE_STYLES } from './house-styles.js';
+import { CITY_SILL, WINDOW_CLEAR } from './wall-ground.js';
 
 // Procedural city materials: facades and interiors, vegetation, roads, water and lighting effects.
 
@@ -432,6 +433,18 @@ const WALL_KINDS = { shop: 0, front: 1, rear: 2, lotLine: 3, side: 4, below: 5 }
 // entrance (createBuildingEntrance()) and no shopfront (js/building-footprints.js gives it none)
 const ONE_HOUSE = 0.125;
 
+/**
+ * A footprint wall's kind, and the ground's line over its floor's ground along it (m), from its facadeWall's z: where the ground runs up it
+ * over its floor (js/wall-ground.js packKind()) that's -(8 * tenths of a metre + kind + 2), which no kind is; 0 for the line elsewhere.
+ * mix() with the flag, never select(): with the flag 0, mix() gives the kind exactly.
+ */
+function wallKind(z) {
+  const packed = step(z, -0.5);
+  const raw = z.negate();
+  const tenths = floor(raw.mul(0.125));
+  return { kind: mix(z, raw.sub(tenths.mul(8.0)).sub(2.0), packed), line: tenths.mul(0.1).mul(packed) };
+}
+
 // The house styles' looks (js/house-styles.js look), HOUSE_ROWS rows a style: [bay on the front, on the sides, share of the front's bays
 // with a window, of the sides'], then the front's window and the sides' [width, height, sill, panes], then [front's transom, sides',
 // frame, door], then [painted walls, garage, terrace, 1]. One table for every house, read with the style a wall carries.
@@ -557,6 +570,7 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
   let gridU = uCoord.div(bayWidth);
   let inPier = float(0.0);
   let kind = float(WALL_KINDS.front);
+  let line = float(0.0);
   let tone = float(0.5);
   let wallS = float(0.0);
   let wallW = float(1.0);
@@ -576,12 +590,12 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
     // Merged footprints carry normalized distance along each wall, metres below its top, and its WALL_KINDS treatment.
     const wall = footprintLocal ? attribute('facadeWall', 'vec3') : null;
     const wallWidth = footprintLocal ? box.x : mix(box.x, box.z, alongZ);
-    if (footprintLocal) kind = wall.z;
+    if (footprintLocal) ({ kind, line } = wallKind(wall.z));
     // The seed's fraction (0.1..0.9, never near an integer so floor() is stable on inexact varyings) is the tone
     tone = fract(box.w).sub(0.1).div(0.8);
     boxSeed = floor(box.w);
     const withHouses = houses && footprintLocal;
-    const counts = varying(facadeCounts(box, normalGeometry, windowWidth, cornerPier, footprintLocal, withHouses ? wall : null), 'vFacadeCounts')
+    const counts = varying(facadeCounts(box, normalGeometry, windowWidth, cornerPier, footprintLocal, withHouses ? vec3(wall.x, wall.y, kind) : null), 'vFacadeCounts')
       .setInterpolation(THREE.InterpolationSamplingType.FLAT, THREE.InterpolationSamplingMode.EITHER);
     wallSeed = counts.y;
     entrances = counts.z;
@@ -652,6 +666,11 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
   const rowBase = floor(gridV).mul(floorHeight);
   const lowerWindows = belowFloor.mul(step(rowBase, -0.01)).mul(step(float(0.4).sub(clearOfGround), rowBase));
   let plinth = belowFloor.mul(float(1.0).sub(lowerWindows));
+  // Where the ground runs up the wall over its floor (js/wall-ground.js): no window whose sill is under it plus WINDOW_CLEAR, a city
+  // wall's lowest at CITY_SILL over its storey's floor; and no shopfront where it's over the wall's foot by more than WINDOW_CLEAR (a shop's
+  // wall comes in pieces a shopfront long: js/building-footprints.js)
+  const underGround = (sill) => step(rowBase.add(sill), line.add(WINDOW_CLEAR)).mul(step(0.05, line)).mul(wall);
+  const buriedRow = mix(underGround(CITY_SILL), step(0.22 + WINDOW_CLEAR, line).mul(wall), isGroundFloor);
   // A box that isn't a whole number of storeys (landmark tiers) ends in a solid parapet instead of slicing a row of
   // windows, and starts with one above the roof it stands on; every wall is capped by a coping at its top
   let partial = float(0.0);
@@ -666,12 +685,14 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
     // (not up a gable end, which is above the wall's top: js/building-footprints.js)
     coping = float(1.0).sub(step(0.32, fromTop)).mul(step(-0.05, fromTop)).mul(wall);
   }
-  const solid = max(max(max(inPier.mul(float(1.0).sub(isGroundFloor)), blank), max(partial, baseWall)), plinth);
+  const solid = max(max(max(inPier.mul(float(1.0).sub(isGroundFloor)), blank), max(partial, baseWall)), max(plinth, buriedRow));
   let wallSolid = solid;
   if (house) {
     // On a row of terraces, the door of the house this bay is in
     house.door = mix(house.door, rowDoor(cellId.x.sub(wallSeed), house.door), house.terraces);
     Object.assign(house, houseLayout(house, cellId.x.sub(wallSeed), cellId.y, kind, wallSeed));
+    // ...and none under the ground, at its style's sill (js/wall-ground.js)
+    house.window = house.window.mul(float(1.0).sub(underGround(mix(house.rows[2].z, house.rows[1].z, house.front).add(0.22))));
     house.wallSeed = wallSeed;
     house.along = alongM;
     house.pier = pier;
@@ -683,7 +704,7 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0, footprin
   }
   return {
     isRoof, uCoord, vCoord, gridV, cellId, cellUV, fw, bayWidth, isGroundFloor, solid: wallSolid, back, blank, tone,
-    wallS, wallW, wallH, exposedHeight, fromTop, boxSeed, partial, coping, kind, plinth, entrances, shopfronts, house
+    wallS, wallW, wallH, exposedHeight, fromTop, boxSeed, partial, coping, kind, line, plinth, entrances, shopfronts, house
   };
 }
 
@@ -845,7 +866,7 @@ function createStorefront(facade, seed, local) {
 
 // Entrances share the facade surface, including its lighting, shadows and distance filtering.
 function createBuildingEntrance(facade, trim, local, modern = false) {
-  const { wallS, wallW, wallH, fromTop, boxSeed, uCoord, vCoord, back, isRoof, coping, kind, entrances } = facade;
+  const { wallS, wallW, wallH, fromTop, boxSeed, uCoord, vCoord, back, isRoof, coping, kind, line, entrances } = facade;
   const width = local ? wallW.div(entrances) : float(28);
   const horizontal = local ? wallS : uCoord.mul(mix(sign(facadeWorldNormal.z), sign(facadeWorldNormal.x).negate(), facadeAlongZ));
   const grid = horizontal.div(width);
@@ -859,7 +880,9 @@ function createBuildingEntrance(facade, trim, local, modern = false) {
   const mask = band(x, halfWidth.add(0.20).negate(), halfWidth.add(0.20), fw.x)
     .mul(band(y, 0, height.add(0.20), fw.y)).mul(grounded).mul(step(WALL_KINDS.shop + 0.5, kind))
     .mul(float(1).sub(step(abs(kind.sub(WALL_KINDS.side)), 0.25)))
-    .mul(float(1).sub(max(max(back, isRoof), coping))).mul(step(1.3, width)).mul(step(1.7, height)).toVar();
+    .mul(float(1).sub(max(max(back, isRoof), coping))).mul(step(1.3, width)).mul(step(1.7, height))
+    // ...nor where the ground runs over its foot by more than WINDOW_CLEAR (js/wall-ground.js)
+    .mul(float(1).sub(step(0.22 + WINDOW_CLEAR, line))).toVar();
   const recess = band(x, halfWidth.add(0.07).negate(), halfWidth.add(0.07), fw.x)
     .mul(band(y, 0.06, height.add(0.07), fw.y));
   const leaf = band(x, halfWidth.negate(), halfWidth, fw.x).mul(band(y, 0.10, height, fw.y));
@@ -3130,6 +3153,7 @@ export {
   cityUniforms,
   WALL_KINDS,
   ONE_HOUSE,
+  wallKind,
   filteredPulse,
   createCurtainWallMaterial,
   createPreWarBuildingMaterial,

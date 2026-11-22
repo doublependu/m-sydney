@@ -479,3 +479,49 @@ test('the city\'s entrances along a wall are where the build finds the one neare
     }
   }
 });
+
+// Where the ground runs up a wall over its floor (js/wall-ground.js): the line rides in the wall's kind, and the CPU lays the wall out in
+// pieces at the bays' edges the facade draws, so each bay has its window or doesn't
+test('the facade unpacks a wall\'s kind and the ground\'s line along it as js/wall-ground.js packs them', async () => {
+  const { packKind, unpackKind, WALL_BURIED, LINE_UNIT } = await import('../js/wall-ground.js');
+  const kindSource = source.match(/function wallKind\([\s\S]*?\n}\n/);
+  assert.ok(kindSource, 'js/tsl-materials.js wallKind() unpacks a footprint wall\'s kind');
+  const wallKind = vm.runInNewContext(`(function () { ${kindSource[0]} return wallKind; })()`, tsl);
+  for (const kind of [...Object.values(WALL_KINDS).filter((k) => k < WALL_KINDS.below), WALL_KINDS.front + ONE_HOUSE]) {
+    for (const line of [0, 0.2, WALL_BURIED + 0.01, 0.8, 1.55, 2.95, 3.9, 6.2]) {
+      const packed = packKind(kind, line);
+      const cpu = unpackKind(packed);
+      assert.equal(cpu.kind, kind);
+      // ...rounded up to its unit, where it's over WALL_BURIED; 0 elsewhere
+      const want = line > WALL_BURIED ? Math.ceil(line / LINE_UNIT - 1e-6) * LINE_UNIT : 0;
+      assert.ok(Math.abs(cpu.line - want) < 1e-9 && cpu.line >= line - 1e-9 || !(line > WALL_BURIED), `${kind} ${line}: ${cpu.line}`);
+      // In float32, and a little off, as a value interpolated over a triangle whose corners all have it comes out
+      for (const nudge of [0, -3e-5, 3e-5]) {
+        const gpu = wallKind(new Node(f(packed * (1 + nudge))));
+        assert.ok(Math.abs(gpu.kind.values[0] - kind) < 0.02, `kind ${kind}, line ${line}, nudge ${nudge}: ${gpu.kind.values[0]}`);
+        assert.ok(Math.abs(gpu.line.values[0] - cpu.line) < 1e-3, `line ${line}, nudge ${nudge}: ${gpu.line.values[0]}`);
+      }
+    }
+  }
+  // What's under a floor (WALL_KINDS.below and the metres clear) is never packed, and comes back as it went
+  for (const below of [5, 5.4, 12.7, 60]) assert.deepEqual(wallKind(new Node(below)).kind.values, [f(below)]);
+});
+
+test('the CPU lays a wall\'s bays out as the facade does (js/wall-ground.js houseBays(), cityBays())', async () => {
+  const { houseBays, cityBays } = await import('../js/wall-ground.js');
+  for (const [style, s] of HOUSES) {
+    for (let width = 2.3; width <= 24; width += 0.37) {
+      for (const kind of [WALL_KINDS.front, WALL_KINDS.front + ONE_HOUSE, WALL_KINDS.side, WALL_KINDS.rear]) {
+        assert.equal(houseBays(width, kind, s.look).bays, houseOf(width, style, kind).bays, `${s.name}, ${width} m, kind ${kind}`);
+      }
+    }
+  }
+  for (const [windowWidth, pier] of [[2.6, 1.2], [3.0, 1.2], [2.7, 0], [2.9, 0]]) {
+    for (let width = 2.5; width <= 60; width += 0.43) {
+      assert.equal(cityBays(width, { width: windowWidth, pier }).bays, countsOf(width, windowWidth, pier)[0], `${width} m at ${windowWidth}, pier ${pier}`);
+    }
+  }
+  // Its sill: the style's window's, front or side, over the 0.22 the wall starts at, as the masonry draws a house's windows
+  assert.match(source, /const sill = mix\(sideRow\.z, frontRow\.z, house\.front\);\n[^\n]*\n[^\n]*\n\s*hy0 = sill\.add\(0\.22\)/);
+  assert.match(source, /underGround\(mix\(house\.rows\[2\]\.z, house\.rows\[1\]\.z, house\.front\)\.add\(0\.22\)\)/);
+});

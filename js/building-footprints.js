@@ -2,8 +2,9 @@ import * as THREE from 'three/webgpu';
 import { ONE_HOUSE, WALL_KINDS } from './tsl-materials.js';
 import { polygonContains } from './building-collision.js';
 import { HOUSE_STYLES } from './house-styles.js';
-import { streetWalls } from './addresses.js';
+import { entrancesOn, streetWalls } from './addresses.js';
 import { frontWallOf, oneHouse } from './house-entry.js';
+import { CITY_SILL, ENTRANCE_HALF, WINDOW_CLEAR, bayCount, bayEdges, cityBays, hides, houseBays, mostOver, packKind, wallLine } from './wall-ground.js';
 
 function partyWallHeight(record, a, b, neighbours) {
   const dx = b.x - a.x, dz = b.y - a.y, length = Math.hypot(dx, dz);
@@ -204,6 +205,32 @@ function rooflineOf(f, a, b) {
 const SEAL = 0.3; // how far a wall's foot goes into the ground, so nothing shows between them
 const STRIP = 5; // metres: how often a wall's foot follows the ground
 const NO_SHOP_ABOVE = 1; // a wall this far above the ground beside it has no shopfront
+const SHOPFRONT = 7.5; // m: a shopfront's stretch of the wall, about (js/tsl-materials.js facadeCounts())
+
+/**
+ * Where the ground runs up a wall over its floor (js/wall-ground.js): its pieces at its window bays' edges as the facade lays them out
+ * (houseWall() for a house's, facadeCounts() for a city wall's, with `storey` { width, height, pier } its material's), each with the line
+ * the facade hides windows and entrances under; null where the ground stays at its foot. `kind`: its WALL_KINDS; `floor`: its floor's
+ * ground; `look`: a house's (js/house-styles.js), or null.
+ */
+function wallPieces(wall, kind, floor, groundAt, storey, look, reverse) {
+  const { a, b, width } = wall;
+  if (look) {
+    const { bays, pier, sill } = houseBays(width, kind, look);
+    return wallLine(a, b, width, floor, groundAt, { edges: bayEdges(width, bays, pier), reverse, outcome: (line) => hides(line, storey.height, sill) });
+  }
+  // A shop's ground floor is its shopfronts, about 7.5 m each end to end (facadeCounts()): one is drawn or not, as the ground runs over its
+  // foot; the storeys over them never reach the ground's line
+  if (kind === WALL_KINDS.shop) {
+    const shops = bayCount(width, SHOPFRONT);
+    return wallLine(a, b, width, floor, groundAt, { edges: bayEdges(width, shops, 0), reverse, outcome: (line) => hides(line, storey.height, CITY_SILL) });
+  }
+  const { bays, pier } = cityBays(width, storey);
+  // An entrance every 28 m or so on a city building's front (createBuildingEntrance()), in the middle of its stretch of the wall
+  const entrances = kind === WALL_KINDS.front ? entrancesOn(width) : 0;
+  const spans = Array.from({ length: entrances }, (_, k) => [((k + 0.5) * width) / entrances - ENTRANCE_HALF, ((k + 0.5) * width) / entrances + ENTRANCE_HALF]);
+  return wallLine(a, b, width, floor, groundAt, { edges: bayEdges(width, bays, pier), reverse, spans, outcome: (line) => hides(line, storey.height, CITY_SILL) });
+}
 
 // The stretch of a wall below its floor, from the floor down to the ground. Each piece is a strip of the wall with kind
 // WALL_KINDS.below + (metres of it clear of the ground), which is how the facade knows whether a storey of windows fits.
@@ -281,7 +308,9 @@ function wallSeed(record, index) {
   return ((digits + 1000) % 1000) + 1000 * record.house + 0.1 + 0.8 * (record.tone ?? 0.5);
 }
 
-// groundAt(x, z, floor): the ground's height under a wall, to stand it on. storey: { width, height } of the facade's window bays.
+// groundAt(x, z, floor): the ground's height under a wall, to stand it on; groundTop(x, z): the ground as it's drawn (groundAt where it's
+// not given), which the facade hides windows under where it runs up a wall over its floor (js/wall-ground.js). storey: { width, height,
+// pier } of the facade's window bays.
 // A house (record.house: its style) has one front, its other outer walls are sides (a terrace's walls parallel to its front are fronts
 // too: terraceFronts()); record.front is the street it faces ({ x, z }; null
 // where there's none near, and it fronts with its longest wall; false where it has no front: another piece of it has it, or it's a
@@ -291,7 +320,7 @@ function wallSeed(record, index) {
 // street, a terrace's other fronts only those another of its address streets faces that meet the ground, and a terrace of one number is
 // one house, never cut into a row (js/house-entry.js oneHouse()); a low-rise flat or shop (one with a wall to its street) has entrances
 // and shopfronts only on its walls to its address streets, the others plain (WALL_KINDS.side). Without them, as before.
-function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMaterials = null, { groundAt = null, storey = null } = {}) {
+function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMaterials = null, { groundAt = null, groundTop = null, storey = null } = {}) {
   const cells = new Map();
   for (const [index, record] of records.entries()) {
     yield;
@@ -325,13 +354,19 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
     }
     const outer = shapes.flatMap((s) => s.walls[0]);
     const address = record.address?.length ? record.address : null;
+    // The drawn ground along its walls, which the facade hides windows under (js/wall-ground.js): not where its wall's foot stops over a
+    // road in a cutting (js/wall-foot.js), whose ground is the road
+    const groundUnder = groundTop || groundAt;
     // A wall within NO_SHOP_ABOVE of the ground beside its middle
     const meetsGround = (w) => !bottom && (!groundAt || base - groundAt((w.a.x + w.b.x) / 2, (w.a.y + w.b.y) / 2) <= NO_SHOP_ABOVE);
+    // ...and nowhere along it buried past WINDOW_CLEAR over its foot (its floor at its door, its uphill walls cut into the slope): a door
+    // there would go into the ground. A shop's front is cut where it's buried, a shopfront at a time (wallPieces())
+    const doorGround = (w) => meetsGround(w) && !(groundAt && mostOver(w.a, w.b, w.width, base - 0.22, groundUnder) > 0.22 + WINDOW_CLEAR);
     const front = record.house && record.front !== false
       ? (address && outer[address[0].wall]) || houseFront(outer, record.front ?? null, record.cx, record.cz) : null;
     const terrace = !!HOUSE_STYLES[record.house]?.look?.terrace;
     const others = terrace ? terraceFronts(outer, front) : [];
-    const fronts = new Set([front, ...(address ? others.filter((w) => address.some((a, k) => k && outer[a.wall] === w) && meetsGround(w)) : others)]);
+    const fronts = new Set([front, ...(address ? others.filter((w) => address.some((a, k) => k && outer[a.wall] === w) && doorGround(w)) : others)]);
     const single = terrace && !!front && oneHouse(address, front.width);
     const toStreets = !record.house && address?.some((a) => a.wall >= 0)
       ? streetWalls(outer, address, record.cx, record.cz, (street) => houseFront(outer, street, record.cx, record.cz)) : null;
@@ -344,7 +379,6 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
           const wall = walls[i][j], { a, b, width, adjacentHeight } = wall;
           const dx = b.x - a.x, dz = b.y - a.y;
           if (width === 0) continue;
-          const offset = cell.positions.length / 3;
           // A shopfront only where the wall meets the pavement. A house's front is one whatever stands against it in the tiles held: its
           // address gave it against every building
           const kind = i ? WALL_KINDS.rear : record.house && fronts.has(wall) ? WALL_KINDS.front + (single && wall === front ? ONE_HOUSE : 0)
@@ -356,14 +390,25 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
           const reverse = (Math.abs(dz) >= Math.abs(dx) ? dz : dx) < 0;
           // Kept for whatever needs to know where its door is (js/house-entry.js): the wall, which end its bays count from, its digits
           if (wall === front) record.frontWall = frontWallOf(wall, Math.floor(seed) % 1000, single);
-          cell.positions.push(a.x, base + bottom, a.y, b.x, base + bottom, b.y, a.x, top, a.y, b.x, top, b.y);
-          for (let k = 0; k < 4; k++) {
-            cell.normals.push(-dz / width, 0, dx / width);
-            // Footprint walls use the box's unused depth for the exposed height above adjoining roofs.
-            cell.boxes.push(width, height, exposedHeight, seed);
-            cell.walls.push(reverse ? 1 - k % 2 : k % 2, k < 2 ? height - bottom : 0, kind);
+          // Where the ground runs up it over its floor, in pieces at its bays' edges, each with the line the facade hides windows under
+          // (js/wall-ground.js); a party wall is solid anyway
+          const pieces = groundAt && !bottom && storey && kind !== WALL_KINDS.lotLine
+            ? wallPieces(wall, kind, base - 0.22, groundUnder, storey, HOUSE_STYLES[record.house]?.look ?? null, reverse) : null;
+          // (its ends exactly where its neighbours' are)
+          const xAt = (t) => (t === 0 ? a.x : t === 1 ? b.x : a.x + dx * t), zAt = (t) => (t === 0 ? a.y : t === 1 ? b.y : a.y + dz * t);
+          for (const { t0, t1, line } of pieces || [{ t0: 0, t1: 1, line: 0 }]) {
+            const o = cell.positions.length / 3;
+            cell.positions.push(xAt(t0), base + bottom, zAt(t0), xAt(t1), base + bottom, zAt(t1), xAt(t0), top, zAt(t0), xAt(t1), top, zAt(t1));
+            const packed = packKind(kind, line);
+            for (let k = 0; k < 4; k++) {
+              cell.normals.push(-dz / width, 0, dx / width);
+              // Footprint walls use the box's unused depth for the exposed height above adjoining roofs.
+              cell.boxes.push(width, height, exposedHeight, seed);
+              const along = k % 2 ? t1 : t0;
+              cell.walls.push(reverse ? 1 - along : along, k < 2 ? height - bottom : 0, packed);
+            }
+            cell.indices.push(o, o + 1, o + 2, o + 2, o + 1, o + 3);
           }
-          cell.indices.push(offset, offset + 1, offset + 2, offset + 2, offset + 1, offset + 3);
           if (groundAt && !bottom) addWallFoot(cell, a, b, width, height, base, seed, reverse, groundAt, storey);
           // Up to the roof, where the wall stands under it: a gable end, the inside corner of an L. The wall's own, with no windows:
           // above the wall's top, no storey of windows fits (js/tsl-materials.js facadeCell)

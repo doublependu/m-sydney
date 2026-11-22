@@ -153,3 +153,70 @@ test('a row of terraces drawn as one footprint: a lot for each house, its own fr
   }
   assert.ok(!slabs.some((s) => s.kind === 1), 'no crossover: no driveway');
 });
+
+// Steps up to a door its floor left over the ground (its cut into the slope stopped at MAX_CUT: js/building-floor.js doorFloor()): only
+// where the tiles give its street address, so on tiles without them every lot is as it was
+test('steps up to a door its floor left over the ground: risers of 0.18 m at most, a landing at the door, the path to their foot; none over 3 m', () => {
+  const raised = (floor, address) => HOUSES.map((b) => ({ b: { ...b, floor, address: address ? [{ x: b.cx, z: 0, wall: 0, number: '7' }] : undefined }, tile }));
+  const runWith = (entries) => {
+    const job = squareLots(entries, env, SQUARE);
+    let step = job.next();
+    while (!step.done) step = job.next();
+    return step.value;
+  };
+  // No address: as before, whatever the floor
+  assert.equal(runWith(raised(1.5, false)).treads.length, 0);
+  // 1.5 m up: steps for every house with a door
+  const up = runWith(raised(1.5, true));
+  let flights = 0;
+  for (const lot of up.lots) {
+    const things = lotThings(lot, [{ rings: lot.home.rings, whole: lot.home }], env);
+    if (!things.steps) continue;
+    flights++;
+    assert.ok(things.steps.kind === 'straight' || things.steps.kind === 'along', `${styleOf(lot)}: ${things.steps.kind}`);
+    const sill = 1.5 + 0.22;
+    const tops = things.treads.map((t) => t.y).sort((a, b) => a - b);
+    // The landing at the door's sill, and every riser 0.18 m at most, from the lawn (0.24 over the ground, 0 here) up
+    assert.ok(Math.abs(tops.at(-1) - (sill - 0.02)) < 1e-6);
+    const rises = [tops[0] - 0.24, ...tops.slice(1).map((y, i) => y - tops[i])];
+    assert.ok(rises.every((r) => r <= 0.18 + 1e-6), `${styleOf(lot)}: risers ${rises.map((r) => r.toFixed(3))}`);
+    // The landing's at the door, outside the house
+    const entry = houseEntry(lot.home.frontWall, lot.home.house);
+    const landing = things.treads.find((t) => Math.abs(t.y - (sill - 0.02)) < 1e-6);
+    assert.ok(Math.hypot(landing.x - entry.door.x, landing.z - entry.door.z) < 1.0 && landing.z < 12, `${styleOf(lot)}: the landing at ${landing.x.toFixed(1)}, ${landing.z.toFixed(1)}`);
+    // Each tread a block from the ground up, among the things drawn
+    assert.ok(things.treads.every((t) => things.boxes.some((b) => Math.abs(b.x - t.x) < 1e-9 && Math.abs(b.z - t.z) < 1e-9 && Math.abs(b.y + b.h - t.y) < 1e-6)));
+  }
+  assert.ok(flights >= up.lots.length * 0.8, `${flights} of ${up.lots.length} lots have steps`);
+  // ...and the square's treads are in its result, for the ground's lookup (js/lot-details.js groundOf())
+  assert.ok(up.treads.length >= flights * 9);
+  // A door more than 3 m up has none
+  const high = runWith(raised(3.2, true));
+  assert.equal(high.treads.length, 0);
+  assert.ok(high.lots.every((lot) => lotThings(lot, [{ rings: lot.home.rings, whole: lot.home }], env).steps?.kind !== 'straight'));
+});
+
+test('steps down a front that falls away to the street, along the wall where the yard is short: none over 0.18 m', () => {
+  // The ground 1.2 m under the floor at the front wall (z = 12), falling 0.25 m a metre towards the street
+  const fall = (x, z) => Math.min(0, (z - 12) * 0.25) - 1.2;
+  const sloped = { ...env, groundAt: fall, lawnAt: fall };
+  sloped.lotThings = (lot, near) => lotThings(lot, near, sloped);
+  const job = squareLots(HOUSES.map((b) => ({ b: { ...b, address: [{ x: b.cx, z: 0, wall: 0, number: '7' }] }, tile })), sloped, SQUARE);
+  let step = job.next();
+  while (!step.done) step = job.next();
+  let flights = 0;
+  const kinds = {};
+  for (const lot of step.value.lots) {
+    const things = lotThings(lot, [{ rings: lot.home.rings, whole: lot.home }], sloped);
+    kinds[things.steps?.kind ?? 'no'] = (kinds[things.steps?.kind ?? 'no'] || 0) + 1;
+    if (!things.treads.length) continue;
+    flights++;
+    const tops = things.treads.map((t) => ({ y: t.y, z: t.z })).sort((a, b) => a.y - b.y);
+    // The lowest tread over the lawn at its foot (straight out, 0.15 m past it; along the wall, beside it, as level as the wall is
+    // here), every riser after, 0.18 m at most
+    const foot = (things.steps.kind === 'straight' ? fall(0, tops[0].z - 0.14 - 0.15) : fall(0, tops[0].z)) + 0.24;
+    const rises = [tops[0].y - foot, ...tops.slice(1).map((t, i) => t.y - tops[i].y)];
+    assert.ok(rises.every((r) => r <= 0.18 + 1e-6), `${styleOf(lot)}, ${things.steps.kind}: risers ${rises.map((r) => r.toFixed(3))}`);
+  }
+  assert.ok(flights > 0, JSON.stringify(kinds));
+});

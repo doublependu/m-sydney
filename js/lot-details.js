@@ -302,7 +302,8 @@ function* squareWork(square, tiles) {
 
 /**
  * What a square's lots draw over the ground, as triangles in the world (for js/drawn-ground.js, which the walker and what's ridden stand on):
- * { lawn, path, slabs }, its verges' lawn and footpath, and the tops of its slabs (driveways, crossovers, laybacks and paths)
+ * { lawn, path, slabs, treads }, its verges' lawn and footpath, the tops of its slabs (driveways, crossovers, laybacks and paths), and of
+ * its steps up to doors (js/lot-things.js)
  */
 function groundOf(result) {
   const inWorld = (chunks) => chunks.map((c) => {
@@ -315,15 +316,18 @@ function groundOf(result) {
     return t;
   });
   // A slab's top: its middle, half its length either way along (a) and half its width across (b), as js/house-lots.js slab() makes it
-  const tops = new Float32Array(result.slabs.length * 18);
-  let n = 0;
-  for (const s of result.slabs) {
-    const at = (u, w) => [s.x + s.ax * u + s.bx * w, s.y + s.ay * u + s.by * w, s.z + s.az * u + s.bz * w];
-    const a = at(-0.5, -0.5), b = at(0.5, -0.5), c = at(0.5, 0.5), d = at(-0.5, 0.5);
-    tops.set([...a, ...b, ...c, ...a, ...c, ...d], n);
-    n += 18;
-  }
-  return { lawn: inWorld(result.verge.lawn), path: inWorld(result.verge.path), slabs: [tops] };
+  const topsOf = (list) => {
+    const tops = new Float32Array(list.length * 18);
+    let n = 0;
+    for (const s of list) {
+      const at = (u, w) => [s.x + s.ax * u + s.bx * w, s.y + s.ay * u + s.by * w, s.z + s.az * u + s.bz * w];
+      const a = at(-0.5, -0.5), b = at(0.5, -0.5), c = at(0.5, 0.5), d = at(-0.5, 0.5);
+      tops.set([...a, ...b, ...c, ...a, ...c, ...d], n);
+      n += 18;
+    }
+    return [tops];
+  };
+  return { lawn: inWorld(result.verge.lawn), path: inWorld(result.verge.path), slabs: topsOf(result.slabs), treads: topsOf(result.treads || []) };
 }
 
 /** A unit box from (-0.5, 0, -0.5) to (0.5, 1, 0.5): each of the lots' things */
@@ -469,7 +473,8 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
       if (next.keys.every((k) => isHeld(k))) {
         squares.set(next.key, { square: next.square, keys: next.keys, result });
         // Each by itself, so the lookup can say which it stood on
-        for (const [what, tris] of Object.entries(groundOf(result))) setLayer(`lots:${next.key}:${what}`, tris);
+        // A house's steps up to its door reach as high over the ground as STEPS_TO (js/lot-things.js)
+        for (const [what, tris] of Object.entries(groundOf(result))) setLayer(`lots:${next.key}:${what}`, tris, what === 'treads' ? { above: 3.5 } : {});
       }
       changed = true;
       return true;

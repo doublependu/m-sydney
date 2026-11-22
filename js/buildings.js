@@ -150,6 +150,14 @@ const FACADES = [
     seed: 78.1
   }]
 ];
+// A facade's window bays and storeys, for the walls laid out on the CPU as it lays them out (js/building-footprints.js): its bays' width,
+// its storeys' height, and the solid pier at each end of a masonry wall (createPreWarBuildingMaterial()'s cornerPier; a curtain wall's
+// bays run end to end)
+const storeyOf = (i) => {
+  const [create, o] = FACADES[i];
+  return { width: o.windowWidth, height: o.floorHeight, pier: create === createCurtainWallMaterial ? 0 : o.cornerPier ?? 1.2 };
+};
+
 // What each facade averages out to from far away: its walls and its windows together
 const FACADE_TONES = FACADES.map(([create, o]) => create === createCurtainWallMaterial
   ? new THREE.Color(o.glassTint).lerp(new THREE.Color(o.frameTint), 0.25).multiplyScalar(1.5)
@@ -778,7 +786,8 @@ function createCityBlocks(scene, { fascia: withFascia = true } = {}) {
       if (!items.length) continue;
       const made = yield* createBuildingFootprintsSteps(materials[i], items, i < 2 || i > 4 ? (b) => nearbyReserves(b, 2) : undefined, roofMaterials, {
         groundAt: wallFootAt,
-        storey: { width: FACADES[i][1].windowWidth, height: FACADES[i][1].floorHeight }
+        groundTop: groundHeight,
+        storey: storeyOf(i)
       });
       for (const mesh of [...made.children]) target.add(mesh);
       yield;
@@ -835,7 +844,8 @@ function createCityBlocks(scene, { fascia: withFascia = true } = {}) {
         const neighbours = (b) => [...nearbyReserves(b, 2), ...siblings.filter((r) => r.polygons !== b.polygons)];
         const made = yield* createBuildingFootprintsSteps(materials[i], items, i < 2 || i > 4 ? neighbours : undefined, roofMaterials, {
           groundAt: wallFootAt,
-          storey: { width: FACADES[i][1].windowWidth, height: FACADES[i][1].floorHeight }
+          groundTop: groundHeight,
+          storey: storeyOf(i)
         });
         for (const mesh of [...made.children]) {
           delete mesh.userData.shadowStandIn;

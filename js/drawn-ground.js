@@ -202,9 +202,10 @@ function cellsOf(all, i, each) {
 
 /**
  * What something draws over the ground, as triangles facing up: `tris`, x, y, z of each corner, in the world's heights, or a list of
- * such arrays. Replaces what was there under `name`.
+ * such arrays. Replaces what was there under `name`. `above`: how far over the ground its tops still hold (CLIFF; a house's steps up to its
+ * door reach further: js/lot-things.js).
  */
-function setLayer(name, tris) {
+function setLayer(name, tris, { above = CLIFF } = {}) {
   const all = Array.isArray(tris) ? concat(tris) : tris;
   if (!all.length) {
     layers.delete(name);
@@ -231,7 +232,7 @@ function setLayer(name, tris) {
   for (let s = 0; s < counts.length; s++) from[s + 1] = from[s] + counts[s];
   const items = new Int32Array(total), next = from.slice(0, counts.length);
   for (let i = 0; i < all.length; i += 9) cellsOf(all, i, (key, t) => { items[next[cells.get(key)]++] = t; });
-  layers.set(name, { x0, x1, z0, z1, tris: all, cells, from, items });
+  layers.set(name, { x0, x1, z0, z1, tris: all, cells, from, items, above });
 }
 function concat(list) {
   const out = new Float32Array(list.reduce((n, a) => n + a.length, 0));
@@ -354,7 +355,7 @@ function drawnTop(x, z) {
       const y = standingIn(T[i], T[i + 1], T[i + 2], T[i + 3], T[i + 4], T[i + 5], T[i + 6], T[i + 7], T[i + 8], x, z);
       if (y === null || y <= best) continue;
       if (lo === null) band();
-      if (y >= lo && y <= hi) {
+      if (y >= lo && y <= hi - CLIFF + layer.above) {
         best = y;
         what = name;
       }

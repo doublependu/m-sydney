@@ -18,6 +18,49 @@ const GARDEN = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/data/generated/
 const gardenRings = GARDEN.areas.map((a) => ({ rings: a.rings.map((f) => f.reduce((out, v, i) => (i % 2 ? out[out.length - 1].push(v) : out.push([v]), out), [])), except: a.except }));
 /** In one of the gardens: its plants are build-garden's */
 const inGarden = (x, z) => gardenRings.some((a) => a.rings.some((r) => pointInRing(r, x, z)) && !a.except.some((b) => x >= b.x0 && x <= b.x1 && z >= b.z0 && z <= b.z1));
+// The parks by rule's paths (garden.json's after the areas', `byRule`): their trees are these, so one of OSM's or a seeded one on a path is
+// moved straight off it, OFF_PATH past its edge (kept to the half metre, it stays off), or left out if that's on another, as build-garden
+// moves OSM's trees off the areas' paths. The City's register's are where they were surveyed.
+const OFF_PATH = 0.5;
+const PATH_CELL = 16;
+const pathCells = new Map();
+for (const [, , width, ...line] of GARDEN.byRule ? GARDEN.paths.slice(GARDEN.byRule.paths) : []) {
+  for (let i = 2; i + 1 < line.length; i += 2) {
+    const sg = { ax: line[i - 2], az: line[i - 1], bx: line[i], bz: line[i + 1], r: width / 2 };
+    for (let cx = Math.floor((Math.min(sg.ax, sg.bx) - 4) / PATH_CELL); cx <= Math.floor((Math.max(sg.ax, sg.bx) + 4) / PATH_CELL); cx++) {
+      for (let cz = Math.floor((Math.min(sg.az, sg.bz) - 4) / PATH_CELL); cz <= Math.floor((Math.max(sg.az, sg.bz) + 4) / PATH_CELL); cz++) {
+        const key = cx * 100000 + cz;
+        (pathCells.get(key) || pathCells.set(key, []).get(key)).push(sg);
+      }
+    }
+  }
+}
+/** The nearest path to (x, z): { sg, cx, cz, d } (its segment, the nearest point on its line, how far), or null */
+const nearestPath = (x, z) => {
+  let best = null;
+  for (const sg of pathCells.get(Math.floor(x / PATH_CELL) * 100000 + Math.floor(z / PATH_CELL)) || []) {
+    const dx = sg.bx - sg.ax, dz = sg.bz - sg.az, L2 = dx * dx + dz * dz || 1e-9;
+    const t = Math.max(0, Math.min(1, ((x - sg.ax) * dx + (z - sg.az) * dz) / L2));
+    const cx = sg.ax + dx * t, cz = sg.az + dz * t, d = Math.hypot(x - cx, z - cz);
+    if (!best || d - sg.r < best.d - best.sg.r) best = { sg, cx, cz, d };
+  }
+  return best;
+};
+let offPaths = 0, onPaths = 0;
+/** (x, z), or moved off a park by rule's path it's on, or null if it can't be */
+const offPath = (x, z) => {
+  const near = nearestPath(x, z);
+  if (!near || near.d - near.sg.r >= OFF_PATH) return [x, z];
+  const [ux, uz] = near.d > 1e-3 ? [(x - near.cx) / near.d, (z - near.cz) / near.d] : (() => {
+    const L = Math.hypot(near.sg.bx - near.sg.ax, near.sg.bz - near.sg.az) || 1;
+    return [-(near.sg.bz - near.sg.az) / L, (near.sg.bx - near.sg.ax) / L];
+  })();
+  const out = [near.cx + ux * (near.sg.r + OFF_PATH), near.cz + uz * (near.sg.r + OFF_PATH)];
+  const again = nearestPath(...out);
+  if (again && again.d - again.sg.r < OFF_PATH - 0.01) { onPaths++; return null; }
+  offPaths++;
+  return out;
+};
 const RULES = [
   [/palm/i, CLASS.palm],
   [/jacaranda/i, CLASS.jacaranda],
@@ -47,7 +90,9 @@ const surveyed = new Set(trees.map((t) => `${Math.floor(t.x / 200)},${Math.floor
 const west = Math.min(...trees.map((t) => t.x));
 for (const e of load('nodes.json').elements) {
   if (e.tags?.natural !== 'tree') continue;
-  const [x, z] = toWorld(e.lon, e.lat);
+  const at = offPath(...toWorld(e.lon, e.lat));
+  if (!at) continue;
+  const [x, z] = at;
   if (!inDetail(x, z) || surveyed.has(`${Math.floor(x / 200)},${Math.floor(z / 200)}`) || inGarden(x, z) || inPond(x, z)) continue;
   if (taken.has(key(x, z))) continue;
   taken.add(key(x, z));
@@ -71,7 +116,10 @@ for (const [x, z, kind, height] of GARDEN.plants) {
     return s - Math.floor(s);
   };
   const isSurveyed = (x, z) => surveyed.has(`${Math.floor(x / 200)},${Math.floor(z / 200)}`);
-  const plant = (x, z) => {
+  const plant = (sx, sz) => {
+    const at = offPath(sx, sz);
+    if (!at) return;
+    const [x, z] = at;
     if (!inDetail(x, z) || isSurveyed(x, z) || taken.has(key(x, z)) || inGarden(x, z) || inPond(x, z)) return;
     taken.add(key(x, z));
     const r = seeded(x, z, 2);
@@ -188,4 +236,4 @@ export const TREE_KINDS = data.subarray(zs.end(), zs.end() + count);
 export const TREE_HEIGHTS = data.subarray(zs.end() + count, zs.end() + count * 2);
 `);
 const by = Object.fromEntries(Object.keys(CLASS).map((k) => [k, trees.filter((t) => t.kind === CLASS[k]).length]));
-console.log('[trees]', trees.length, 'trees,', fromRegister, 'from the register,', gardenPlants, 'in the gardens,', (packed.length / 1024).toFixed(0), 'KB gzip', JSON.stringify(by));
+console.log('[trees]', trees.length, 'trees,', fromRegister, 'from the register,', gardenPlants, 'in the gardens,', `${offPaths} moved off the parks' paths and ${onPaths} left out on them,`, (packed.length / 1024).toFixed(0), 'KB gzip', JSON.stringify(by));

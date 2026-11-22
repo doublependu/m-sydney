@@ -36,10 +36,13 @@ const whole = ['world.json', 'far.json.gz', 'map.json.gz', 'far-heights.bin.gz',
 
 // A tile is in an area if it touches the area's box: those edited by hand, and the gardens (their paths, beds and plants)
 const gardenFile = path.join(ROOT, 'tools/data/generated/garden.json');
-const gardens = fs.existsSync(gardenFile) ? JSON.parse(fs.readFileSync(gardenFile, 'utf8')).areas.map((a) => {
+const gardenData = fs.existsSync(gardenFile) ? JSON.parse(fs.readFileSync(gardenFile, 'utf8')) : null;
+const gardens = gardenData ? gardenData.areas.map((a) => {
   const xs = a.rings.flatMap((r) => r.filter((_, i) => i % 2 === 0)), zs = a.rings.flatMap((r) => r.filter((_, i) => i % 2 === 1));
   return { name: `${a.name}: its garden (tools/build-garden.mjs)`, box: [Math.min(...xs) - 10, Math.min(...zs) - 10, Math.max(...xs) + 10, Math.max(...zs) + 10] };
 }) : [];
+// ...and the parks by rule with paths, each its box (garden.json's `parks`: [id, kind, x0, z0, x1, z1]), counted together
+const ruleParks = (gardenData?.parks || []).map(([, , x0, z0, x1, z1]) => ({ name: 'the parks by rule (tools/build-garden.mjs)', box: [x0 - 10, z0 - 10, x1 + 10, z1 + 10] }));
 // ...and the buildings drawn from models of their own, which leave the map's buildings there out (js/model-sites.js)
 const { MODEL_SITES } = await import('../js/model-sites.js');
 const sites = MODEL_SITES.filter((s) => !s.debug).map((s) => ({ name: `${s.id}: a model (js/model-sites.js)`, box: [s.x - 80, s.z - 80, s.x + 80, s.z + 80] }));
@@ -54,7 +57,7 @@ const pondFile = path.join(ROOT, 'tools/data/generated/ponds.json');
 const ponds = fs.existsSync(pondFile) ? JSON.parse(fs.readFileSync(pondFile, 'utf8')).ponds.map((p) => ({
   name: 'still water (tools/build-ponds.mjs)', box: [p.box[0] - 100, p.box[1] - 100, p.box[2] + 100, p.box[3] + 100]
 })) : [];
-const areas = [...localAreas(), ...gardens, ...sites, ...sand, ...ponds];
+const areas = [...localAreas(), ...gardens, ...sites, ...sand, ...ponds, ...ruleParks];
 const inArea = (key) => {
   const [ix, iz] = key.split('_').map(Number);
   const x0 = ix * size, z0 = iz * size, x1 = x0 + size, z1 = z0 + size;
@@ -63,9 +66,10 @@ const inArea = (key) => {
 const outside = tiles.filter((k) => !inArea(k));
 
 console.log(`tiles: ${tiles.length} of ${Object.keys(now.tiles).length} changed against ${against}, ${outside.length} outside the areas edited by hand`);
-for (const a of areas.filter((x) => !sand.includes(x) && !ponds.includes(x))) console.log(`  ${a.name}: ${tiles.filter((k) => inArea(k) === a).length} tiles`);
+for (const a of areas.filter((x) => !sand.includes(x) && !ponds.includes(x) && !ruleParks.includes(x))) console.log(`  ${a.name}: ${tiles.filter((k) => inArea(k) === a).length} tiles`);
 if (sand.length) console.log(`  the beaches and the coast's rock (tools/build-sand.mjs): ${tiles.filter((k) => sand.includes(inArea(k))).length} tiles`);
 if (ponds.length) console.log(`  still water (tools/build-ponds.mjs): ${tiles.filter((k) => ponds.includes(inArea(k))).length} tiles`);
+if (ruleParks.length) console.log(`  the parks by rule (tools/build-garden.mjs): ${tiles.filter((k) => ruleParks.includes(inArea(k))).length} tiles`);
 console.log(`far squares: ${far.length} changed${far.length ? ` (${far.join(', ')})` : ''}`);
 console.log(`whole-map files changed: ${whole.join(', ') || 'none'}`);
 if (list || outside.length <= 20) for (const k of outside) console.log(`  outside: ${k}`);

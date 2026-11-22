@@ -3,20 +3,29 @@
 // all_roads.json, tools/extract-osm.mjs), the Royal Botanic Garden's own map and the City of Sydney's tree register (cos_trees.json). Writes
 // tools/data/generated/garden.json. tools/build-trees.mjs adds its plants to the trees; tools/build-tiles.mjs cuts the rest into the tiles.
 // It reads the game's tiles as last built too, for the Harbour Bridge's feet and the room under the decks (js/harbour-bridge.js,
-// js/deck-room.js): not while tools/build-tiles.mjs writes them. Paths elsewhere wait: they'd change where everyone walks.
-//   node tools/build-garden.mjs
+// js/deck-room.js): not while tools/build-tiles.mjs writes them. And every other park on the map with paths, by rule (tools/garden-areas.mjs
+// ruleParks()): its paths, and in a formal one its raised lawn, a tile at a time (tools/garden/rule-parks.mjs), after the areas'.
+//   node tools/build-garden.mjs [--tiles=0_-1,2_2] [--no-parks] [--out=garden.json]
+// --tiles lays out only those tiles' parks by rule (a trial: the 240 m squares starting in them), --no-parks none of them; --out writes
+// elsewhere.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BitRaster, Raster, bbox, elementRings, flat, load, pointInRing, q1, rdp, ringArea, rdpRing, tiledPolygons, toWorld } from './geo-common.mjs';
-import { MODEL_GATES, gardenAreas, gateHeading, pathKind } from './garden-areas.mjs';
+import { BitRaster, bbox, dataPath, elementRings, flat, load, pointInRing, q1, rdp, ringArea, rdpRing, toWorld } from './geo-common.mjs';
+import { SQUARE, traceRaised } from './garden/raised-lawn.mjs';
+import { MODEL_GATES, gardenAreas, gateHeading, pathKind, pockets as bushPockets, ruleParks } from './garden-areas.mjs';
+import { MIN_PATHS, ParkIndex, Pockets, kindAt, parkLawns, parkPaths } from './garden/rule-parks.mjs';
+import { loadPonds, pondTest } from './pond-pieces.mjs';
 import { onRegionEdge } from './geodata/regions.mjs';
 import { localAreas } from './local-edits.mjs';
 import { beachBehind, beachTest, loadSand } from './sand-pieces.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const GENERATED = path.join(ROOT, 'tools/data/generated');
-const OUT = path.join(GENERATED, 'garden.json');
+const arg = (name) => process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
+const OUT = arg('out') ? path.resolve(arg('out')) : path.join(GENERATED, 'garden.json');
+const ONLY = arg('tiles')?.split(',') ?? null;
+const NO_PARKS = process.argv.includes('--no-parks');
 const log = (...args) => console.log('[garden]', ...args);
 const started = Date.now();
 
@@ -318,6 +327,7 @@ const inPond = (x, z, margin = 0) => {
 // the paving along the Pool of Reflection. The map draws a park's as lawn; the garden paves them where it does (the raised lawn, below), on
 // the ground's level. Untagged, paving.
 const plazaSource = [];
+const otherPlazas = [];
 for (const els of [load('all_roads.json').elements, pathsSource]) {
   for (const e of els) {
     const t = e.tags || {};
@@ -329,7 +339,11 @@ for (const els of [load('all_roads.json').elements, pathsSource]) {
       if (ring.length < 4) continue;
       const b = bbox(ring);
       const area = areaAt((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2);
-      if (!area) continue;
+      // Elsewhere, one the parks by rule may pave (below)
+      if (!area) {
+        otherPlazas.push({ tags: t, rings: [ring, ...inner.filter((h) => h.length > 3 && pointInRing(ring, h[0][0], h[0][1]))], middle: [(b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2] });
+        continue;
+      }
       const surface = t.surface ? surfaceOf(t, area) : 0;
       if (surface === 4) continue;
       plazaSource.push({ surface, rings: [ring, ...inner.filter((h) => h.length > 3 && pointInRing(ring, h[0][0], h[0][1]))] });
@@ -421,34 +435,9 @@ for (const rings of GEO.shores) {
 log(`${seawalls.length} sea walls, ${(wallMetres / 1000).toFixed(2)} km, round the parks' shores`);
 
 // --- Raised lawns ----------------------------------------------------------------------------------------------------------------------
-// In a formal area the lawn stands RAISE over the map's (js/garden.js), with a kerb along every edge of it and its paved paths down
-// between: the map's lawn in the area (its pieces, tools/geodata/region-worker.mjs) less a corridor along each kerbed path, steps too
-// (half its width and the kerb's: the kerb stands in the corridor, at the path's edge), and less the ponds (the kerb round one stands in
-// its water, under its coping). Tracks are worn into it, not cut out of it; beds and hedges stand on it. A gate stands on its path, its
-// pillars on the lawn either side, so its opening is the path's corridor. Areas that meet are one raster, so no kerb runs along where
-// they meet. Traced in the map's 240 m squares, as its lawns are, so each piece is cheap to lay on the lawn's triangles; each traced point
-// is then moved onto what its cells stand for (a corridor's edge, a pond's edge, the lawn's or the area's outline), so a kerb stands at
-// its path's edge, not wherever the cells put it, and kept to the centimetre. [[kerb, outer, ...holes]], each ring [x, z, ...]; `kerb` what
-// its kerbs are, by the area most of its outline is in: 0 concrete, 1 sandstone (tools/garden-areas.mjs `kerb`). Nor is it raised where
-// the map draws a beach's sand or the coast's rock over the lawn (tools/build-sand.mjs): it stops at their edge.
-const RAISED_RES = 0.5; // m: the raster's cells
-const KERB = 0.1; // m: the kerb's width (js/garden.js)
-const SNAP = 0.6; // m a traced point may move onto what its cells stand for
-const MIN_LAWN = 1; // m²: smaller pieces of raised lawn, and holes in it, are left out
-const SLIVER = 0.3; // m: raised lawn narrower than twice this is left out
-const SPIKE = 0.06; // m²: a traced point that turns the ring back on itself, the triangle with its two neighbours smaller than this, is left out
-const SQUARE = 240; // m: the map's lawns' squares (tools/geodata/region-worker.mjs)
-const kerbed = (kind, surface) => kind !== 3 && surface !== 4; // tracks aren't, and trodden grass that isn't one isn't drawn
-/** Each point's way across a polyline ([[x, z], ...]), with its mitre's stretch, as js/garden.js across() draws a path's */
-const mitres = (pts) => pts.map((p, i) => {
-  const unit = (x, z) => { const L = Math.hypot(x, z) || 1; return [x / L, z / L]; };
-  const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
-  const prev = i > 0 ? unit(p[0] - a[0], p[1] - a[1]) : null, next = i < pts.length - 1 ? unit(b[0] - p[0], b[1] - p[1]) : null;
-  const d = prev && next ? unit(prev[0] + next[0], prev[1] + next[1]) : prev || next;
-  const stretch = prev && next ? Math.min(2, 1 / Math.max(0.5, d[0] * next[0] + d[1] * next[1])) : 1;
-  return [-d[1] * stretch, d[0] * stretch];
-});
-const q2 = (v) => Math.round(v * 100) / 100;
+// In a formal area (tools/garden/raised-lawn.mjs): the lawn raised over its paved paths, kerbed along every edge. Areas that meet are one
+// raster, so no kerb runs along where they meet. `kerb` what its kerbs are, by the area most of its outline is in: 0 concrete, 1 sandstone
+// (tools/garden-areas.mjs `kerb`).
 const lawns = [];
 const plazas = [];
 let plazaArea = 0;
@@ -465,259 +454,41 @@ let plazaArea = 0;
     }
     clusters.push(merged);
   }
-  let pieces = 0, area = 0, moved = 0, kept = 0, corners = 0;
+  const ringOf = (f) => { const out = []; for (let k = 0; k + 1 < f.length; k += 2) out.push([f[k], f[k + 1]]); return out; };
+  const wet = [...[...ponds, ...rockPonds].map((f) => ({ ring: ringOf(f), val: 1 })), ...islands.map((f) => ({ ring: ringOf(f), val: 0 }))];
+  // Its kerbs' stone, by the area most of its outline is in
+  const kerbOf = (outer) => {
+    const votes = new Map();
+    for (const [x, z] of outer) {
+      const a = areaAt(x, z, 1);
+      if (a) votes.set(a, (votes.get(a) || 0) + 1);
+    }
+    const home = [...votes].sort((p, q) => q[1] - p[1])[0]?.[0];
+    return home?.kerb === 'sandstone' ? 1 : 0;
+  };
+  const sum = { pieces: 0, area: 0, moved: 0, kept: 0, corners: 0 };
   for (const cluster of clusters) {
     const box = { x0: Math.floor(cluster.box.x0 / SQUARE) * SQUARE, z0: Math.floor(cluster.box.z0 / SQUARE) * SQUARE,
       x1: Math.ceil(cluster.box.x1 / SQUARE) * SQUARE, z1: Math.ceil(cluster.box.z1 / SQUARE) * SQUARE };
-    const blank = () => new Raster(box.x0, box.z0, box.x1 - RAISED_RES, box.z1 - RAISED_RES, RAISED_RES);
-    // What its cells stand for, as lines: each { a, b, r }, the edge r out from the segment a-b
-    const LINE_CELL = 8;
-    const lines = new Map();
-    const addLine = (a, b, r = 0) => {
-      const s = { a, b, r };
-      for (let cx = Math.floor((Math.min(a[0], b[0]) - r - SNAP) / LINE_CELL); cx <= Math.floor((Math.max(a[0], b[0]) + r + SNAP) / LINE_CELL); cx++) {
-        for (let cz = Math.floor((Math.min(a[1], b[1]) - r - SNAP) / LINE_CELL); cz <= Math.floor((Math.max(a[1], b[1]) + r + SNAP) / LINE_CELL); cz++) {
-          const key = cx * 100000 + cz;
-          (lines.get(key) || lines.set(key, []).get(key)).push(s);
-        }
-      }
-    };
-    // A lawn piece's edge along its square's (a seam, where the next piece goes on) is nothing to stand at
-    const onSeam = (a, b) => (a[0] === b[0] && Math.abs(a[0] / SQUARE - Math.round(a[0] / SQUARE)) < 1e-9)
-      || (a[1] === b[1] && Math.abs(a[1] / SQUARE - Math.round(a[1] / SQUARE)) < 1e-9);
-    const ringLines = (ring, r = 0) => { for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) if (!onSeam(ring[j], ring[i])) addLine(ring[j], ring[i], r); };
-    const inBox = (pts) => pts.some(([x, z]) => x >= box.x0 - 10 && x <= box.x1 + 10 && z >= box.z0 - 10 && z <= box.z1 + 10);
-
     // The areas, less what's left out of them
-    const raised = blank();
-    for (const a of cluster.areas) {
-      for (const ring of a.rings) { raised.fillRing(ring, 1); ringLines(ring); }
-      for (const b of a.except) {
-        const ring = [[b.x0, b.z0], [b.x1, b.z0], [b.x1, b.z1], [b.x0, b.z1]];
-        raised.fillRing(ring, 0);
-        ringLines(ring);
-      }
-    }
-    // ...where the map has lawn: each piece's outline less its holes
-    const lawn = blank();
-    for (const rings of GEO.lawns) {
-      const pts = rings.map((f) => { const out = []; for (let k = 0; k + 1 < f.length; k += 2) out.push([f[k], f[k + 1]]); return out; });
-      if (!inBox(pts[0])) continue;
-      lawn.fillRing(pts[0], 1);
-      for (const hole of pts.slice(1)) lawn.fillRing(hole, 0);
-      for (const ring of pts) ringLines(ring);
-    }
-    for (let i = 0; i < raised.d.length; i++) raised.d[i] &= lawn.d[i];
-    // ...less the paved areas, each surface's traced on its own (below) where it's on the map's lawn in an area
-    const plazaBy = new Map();
-    for (const p of plazaSource) {
-      if (!inBox(p.rings[0])) continue;
-      const r = plazaBy.get(p.surface) || plazaBy.set(p.surface, blank()).get(p.surface);
-      r.fillRing(p.rings[0], 1);
-      for (const hole of p.rings.slice(1)) r.fillRing(hole, 0);
-      for (const ring of p.rings) ringLines(ring);
-    }
-    for (const r of plazaBy.values()) {
-      for (let i = 0; i < r.d.length; i++) {
-        r.d[i] &= raised.d[i];
-        if (r.d[i]) raised.d[i] = 0;
-      }
-    }
-    // ...less the corridors of its kerbed paths and steps, and its ponds
-    // A corridor is its path as js/garden.js draws it (mitred where it bends: pathPieces()), KERB wider either side, and KERB past each end:
-    // its kerb across a path that ends on the lawn
-    for (const [kind, surface, width, ...line] of paths) {
-      if (!kerbed(kind, surface)) continue;
-      const pts = [];
-      for (let k = 0; k + 1 < line.length; k += 2) pts.push([line[k], line[k + 1]]);
-      if (!inBox(pts)) continue;
-      const r = width / 2 + KERB;
-      const side = mitres(pts);
-      for (let i = 1; i < pts.length; i++) {
-        const [ax, az] = pts[i - 1], [bx, bz] = pts[i];
-        const L = Math.hypot(bx - ax, bz - az);
-        if (L < 1e-3) continue;
-        const ux = (bx - ax) / L, uz = (bz - az) / L;
-        const back = i === 1 ? KERB : 0, on = i === pts.length - 1 ? KERB : 0;
-        const a = [ax - ux * back, az - uz * back], b = [bx + ux * on, bz + uz * on];
-        const [sa, sb] = [side[i - 1], side[i]];
-        const quad = [[a[0] + sa[0] * r, a[1] + sa[1] * r], [b[0] + sb[0] * r, b[1] + sb[1] * r], [b[0] - sb[0] * r, b[1] - sb[1] * r], [a[0] - sa[0] * r, a[1] - sa[1] * r]];
-        raised.fillRing(quad, 0);
-        addLine(quad[0], quad[1]);
-        addLine(quad[3], quad[2]);
-        if (back) addLine(quad[0], quad[3]);
-        if (on) addLine(quad[1], quad[2]);
-      }
-    }
-    // ...its water, that is: not its islands, which are lawn as the park's round it is
-    const wet = blank();
-    let anyWet = false;
-    for (const [list, val] of [[[...ponds, ...rockPonds], 1], [islands, 0]]) {
-      for (const f of list) {
-        const ring = [];
-        for (let k = 0; k + 1 < f.length; k += 2) ring.push([f[k], f[k + 1]]);
-        if (!inBox(ring)) continue;
-        wet.fillRing(ring, val);
-        ringLines(ring);
-        anyWet = true;
-      }
-    }
-    if (anyWet) {
-      for (let i = 0; i < wet.d.length; i++) {
-        if (!wet.d[i]) continue;
-        raised.d[i] = 0;
-        for (const r of plazaBy.values()) r.d[i] = 0;
-      }
-    }
-    // ...and the sand and rock on land, each piece's outline less its holes: a piece over no raised lawn adds no lines to move points onto
-    for (const [kind, ...flats] of sandPieces) {
-      if (kind > 1) continue;
-      const rings = flats.map((f) => { const out = []; for (let k = 0; k + 1 < f.length; k += 2) out.push([f[k], f[k + 1]]); return out; });
-      if (!inBox(rings[0])) continue;
-      const b = bbox(rings[0]);
-      // Its own cells, on the same grid as the area's
-      const piece = new Raster(Math.max(b.x0, box.x0), Math.max(b.z0, box.z0), Math.min(b.x1, box.x1 - RAISED_RES), Math.min(b.z1, box.z1 - RAISED_RES), RAISED_RES);
-      if (piece.w < 1 || piece.h < 1) continue;
-      piece.fillRing(rings[0], 1);
-      for (const hole of rings.slice(1)) piece.fillRing(hole, 0);
-      const di = Math.round((piece.x0 - raised.x0) / RAISED_RES), dj = Math.round((piece.z0 - raised.z0) / RAISED_RES);
-      let cut = 0;
-      for (let j = 0; j < piece.h; j++) {
-        for (let i = 0; i < piece.w; i++) {
-          const k = (j + dj) * raised.w + i + di;
-          if (piece.d[j * piece.w + i] && i + di < raised.w && j + dj < raised.h && raised.d[k]) { raised.d[k] = 0; cut++; }
+    const fill = (raised, ringLines) => {
+      for (const a of cluster.areas) {
+        for (const ring of a.rings) { raised.fillRing(ring, 1); ringLines(ring); }
+        for (const b of a.except) {
+          const ring = [[b.x0, b.z0], [b.x1, b.z0], [b.x1, b.z1], [b.x0, b.z1]];
+          raised.fillRing(ring, 0);
+          ringLines(ring);
         }
       }
-      if (cut) for (const ring of rings) ringLines(ring);
-    }
-
-    // ...less what's too narrow for its cells to draw: a strip between two corridors that close is lawn at the paths' level
-    raised.open(SLIVER);
-    // A traced point moved onto the nearest line within SNAP, or where two meet onto both, with the lines it's on; a point on its square's
-    // edge stays put
-    const project = (p, s) => {
-      const [ax, az] = s.a, [bx, bz] = s.b;
-      const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz || 1e-12;
-      const t = Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - az) * dz) / L2));
-      const cx = ax + dx * t, cz = az + dz * t, d = Math.hypot(p[0] - cx, p[1] - cz);
-      if (!s.r) return { at: [cx, cz], off: d };
-      if (d < 1e-6) return null;
-      return { at: [cx + ((p[0] - cx) / d) * s.r, cz + ((p[1] - cz) / d) * s.r], off: Math.abs(d - s.r) };
     };
-    const moveOnto = (p, onEdge) => {
-      if (onEdge(p[0], p[1])) return { at: alongSeam(p), on: [] };
-      const near = [];
-      for (const s of lines.get(Math.floor(p[0] / LINE_CELL) * 100000 + Math.floor(p[1] / LINE_CELL)) || []) {
-        const hit = project(p, s);
-        if (hit && hit.off < SNAP) near.push({ s, ...hit });
-      }
-      if (!near.length) { kept++; return { at: p, on: [] }; }
-      near.sort((u, v) => u.off - v.off);
-      moved++;
-      // Where two lines meet: onto both, turn about
-      if (near.length > 1 && near[1].off < SNAP / 2 && near[1].s !== near[0].s) {
-        let q = p;
-        for (let k = 0; k < 12; k++) q = project(project(q, near[0].s)?.at ?? q, near[1].s)?.at ?? q;
-        const a = project(q, near[0].s), b = project(q, near[1].s);
-        if (a && b && a.off < 0.02 && b.off < 0.02 && Math.hypot(q[0] - p[0], q[1] - p[1]) < SNAP) return { at: q, on: [near[0].s, near[1].s] };
-      }
-      return { at: near[0].at, on: [near[0].s] };
-    };
-    // A point on a square's edge, slid along it onto the nearest line that crosses it there: the same for the squares either side, whose
-    // pieces meet on it. One at a square's corner stays put.
-    const alongSeam = (p) => {
-      const onX = Math.abs(p[0] / SQUARE - Math.round(p[0] / SQUARE)) < 1e-9, onZ = Math.abs(p[1] / SQUARE - Math.round(p[1] / SQUARE)) < 1e-9;
-      if (onX === onZ) return p;
-      let best = null, far = SNAP;
-      for (const s of lines.get(Math.floor(p[0] / LINE_CELL) * 100000 + Math.floor(p[1] / LINE_CELL)) || []) {
-        if (s.r) continue;
-        const [ax, az] = s.a, [bx, bz] = s.b;
-        // Where the line crosses the seam, if it does within its length
-        const [u, ua, ub] = onX ? [p[0], ax, bx] : [p[1], az, bz];
-        if ((ua - u) * (ub - u) > 0 || ua === ub) continue;
-        const t = (u - ua) / (ub - ua);
-        const at = onX ? [p[0], az + (bz - az) * t] : [ax + (bx - ax) * t, p[1]];
-        const d = Math.hypot(at[0] - p[0], at[1] - p[1]);
-        if (d < far) { far = d; best = at; }
-      }
-      return best || p;
-    };
-    // Where two straight lines cross, carried on past their ends
-    const meet = (s, t) => {
-      const [ax, az] = s.a, [bx, bz] = s.b, [cx, cz] = t.a, [dx, dz] = t.b;
-      const ux = bx - ax, uz = bz - az, vx = dx - cx, vz = dz - cz, den = ux * vz - uz * vx;
-      if (Math.abs(den) < 1e-6 * Math.hypot(ux, uz) * Math.hypot(vx, vz)) return null;
-      const k = ((cx - ax) * vz - (cz - az) * vx) / den;
-      return [ax + ux * k, az + uz * k];
-    };
-    const snap = (ring, onEdge) => {
-      const moved = ring.map((p) => moveOnto(p, onEdge));
-      const out = [];
-      for (let i = 0; i < moved.length; i++) {
-        const p = moved[i], q = moved[(i + 1) % moved.length];
-        out.push(p.at);
-        // Two points on two lines that meet between them: the corner too, which the straight edge from one to the other would cut
-        const s = p.on[p.on.length - 1], t = q.on[0];
-        if (!s || !t || s === t || p.on.includes(t) || q.on.includes(s) || s.r || t.r) continue;
-        const c = meet(s, t);
-        if (!c) continue;
-        const pq = Math.hypot(q.at[0] - p.at[0], q.at[1] - p.at[1]);
-        const cp = Math.hypot(c[0] - p.at[0], c[1] - p.at[1]), cq = Math.hypot(c[0] - q.at[0], c[1] - q.at[1]);
-        if (cp < 0.005 || cq < 0.005 || cp > 12 || cq > 12 || cp + cq > pq + 0.75) continue;
-        out.push(c);
-        corners++;
-      }
-      return despike(out).map(([x, z]) => [q2(x), q2(z)]);
-    };
-    // Without a point where the ring doubles back on itself, a thin spike: one moved onto a line just past where it meets another
-    const despike = (ring) => {
-      let out = ring;
-      for (let changed = true; changed && out.length > 3;) {
-        changed = false;
-        const keep = out.filter((b, i) => {
-          const a = out[(i + out.length - 1) % out.length], c = out[(i + 1) % out.length];
-          const ux = b[0] - a[0], uz = b[1] - a[1], vx = c[0] - b[0], vz = c[1] - b[1];
-          const lu = Math.hypot(ux, uz), lv = Math.hypot(vx, vz);
-          if (lu < 1e-6 || lv < 1e-6) { changed = true; return false; }
-          if (Math.abs(ux * vz - uz * vx) / 2 < SPIKE && ux * vx + uz * vz < -0.5 * lu * lv) { changed = true; return false; }
-          return true;
-        });
-        if (keep.length < 3) break;
-        out = keep;
-      }
-      return out;
-    };
-    for (const rings of tiledPolygons(raised, SQUARE, 0.02, MIN_LAWN / RAISED_RES ** 2, MIN_LAWN, null, snap)) {
-      if (Math.abs(ringArea(rings[0])) - rings.slice(1).reduce((t, r) => t + Math.abs(ringArea(r)), 0) < MIN_LAWN) continue;
-      const votes = new Map();
-      for (const [x, z] of rings[0]) {
-        const a = areaAt(x, z, 1);
-        if (a) votes.set(a, (votes.get(a) || 0) + 1);
-      }
-      const home = [...votes].sort((p, q) => q[1] - p[1])[0]?.[0];
-      // To the centimetre, without a point repeated once rounded, nor the first again at the end
-      lawns.push([home?.kerb === 'sandstone' ? 1 : 0, ...rings.map((r) => r.map(([x, z]) => [q2(x), q2(z)]).filter((p, i, all) => {
-        const q = all[(i + 1) % all.length];
-        return p[0] !== q[0] || p[1] !== q[1];
-      }).flat())]);
-      pieces++;
-      area += Math.abs(ringArea(rings[0])) - rings.slice(1).reduce((t, r) => t + Math.abs(ringArea(r)), 0);
-    }
-    // The paved areas, traced as the raised lawn is, so their edges and its meet on the same lines: [surface, outer, ...holes]
-    for (const [surface, r] of [...plazaBy].sort((p, q) => p[0] - q[0])) {
-      for (const rings of tiledPolygons(r, SQUARE, 0.02, MIN_LAWN / RAISED_RES ** 2, MIN_LAWN, null, snap)) {
-        const held = Math.abs(ringArea(rings[0])) - rings.slice(1).reduce((t, q) => t + Math.abs(ringArea(q)), 0);
-        if (held < MIN_LAWN) continue;
-        plazas.push([surface, ...rings.map((q) => q.map(([x, z]) => [q2(x), q2(z)]).filter((p, i, all) => {
-          const n = all[(i + 1) % all.length];
-          return p[0] !== n[0] || p[1] !== n[1];
-        }).flat())]);
-        plazaArea += held;
-      }
-    }
+    const traced = traceRaised({ box, fill, lawns: GEO.lawns, plazas: plazaSource, paths, wet, sand: sandPieces, kerbOf });
+    lawns.push(...traced.lawns);
+    plazas.push(...traced.plazas);
+    for (const k of Object.keys(sum)) sum[k] += traced.stats[k];
+    plazaArea += traced.stats.plazaArea;
   }
   log(`${plazas.length} paved areas traced, ${(plazaArea / 1e4).toFixed(2)} ha`);
-  log(`${pieces} pieces of raised lawn, ${(area / 1e4).toFixed(1)} ha, in ${clusters.length} rasters; ${moved} traced points moved onto their lines, ${kept} not, ${corners} corners put back`);
+  log(`${sum.pieces} pieces of raised lawn, ${(sum.area / 1e4).toFixed(1)} ha, in ${clusters.length} rasters; ${sum.moved} traced points moved onto their lines, ${sum.kept} not, ${sum.corners} corners put back`);
 }
 
 // --- Plants ----------------------------------------------------------------------------------------------------------------------------
@@ -994,8 +765,143 @@ const names = Object.fromEntries(Object.entries(K).map(([k, v]) => [v, k]));
 log(`${plants.length} plants: ${osmTrees} trees from OSM (${movedOff} moved off a path, ${offFeet} left out by the bridge's feet), ${byHand} by hand; by zone ${JSON.stringify(planted)}; ${registerTrees} of the register's trees kept clear of`);
 log(`by kind: ${Object.entries(counts).map(([k, v]) => `${names[k]} ${v}`).join(', ')}; ${beds.length} beds`);
 
+// --- The parks by rule ---------------------------------------------------------------------------------------------------------------
+// Every other park on the map with paths (tools/garden-areas.mjs ruleParks()), laid out after the areas, which are as they were: their
+// paths (kept where they're in a park and off what's in the way, as an area's, and off the lakes, the sand and rock and the model sites'
+// cuts), and where
+// a park is formal its raised lawn and paved areas, a 240 m square at a time (tools/garden/rule-parks.mjs): bush where it's wood or scrub in OSM or
+// bush land in NSW's zoning, or all over where its tags or an override say. OSM's concrete is drawn as concrete there:
+// no one has looked at their paths, and the older areas' asphalt for concrete was a choice made before there was a concrete to draw.
+// Added after the areas' in garden.json's paths, lawns and plazas (`byRule`: how many are the areas'), and listed in `parks`: [id, kind,
+// x0, z0, x1, z1].
+const RULE = { name: 'the parks by rule', surfaces: { concrete: 'concrete' } };
+const parkList = [], parkOut = { paths: [], lawns: [], plazas: [] };
+if (!NO_PARKS) {
+  const t0 = Date.now();
+  const { SITE_CUTS } = await import('../js/model-sites.js');
+  const { TILE, tileExists } = await import('../js/geodata.js');
+  const cuts = SITE_CUTS.map((c) => c.poly.map((p) => [p.x, p.z]));
+  // Where a park is bush: OSM's wood and scrub, and the bush land in NSW's zoning
+  const zoningFile = dataPath('nsw_zoning.json');
+  if (!fs.existsSync(zoningFile)) console.warn('[garden] no nsw_zoning.json: the parks by rule are bush only where OSM has wood (npm run data:fetch)');
+  const pocketList = bushPockets(land, fs.existsSync(zoningFile) ? JSON.parse(fs.readFileSync(zoningFile, 'utf8')) : []);
+  const pockets = new Pockets(pocketList);
+  const { parks: ruled, left } = ruleParks(land, areas, { cuts, woods: pocketList });
+  const why = new Map();
+  for (const l of left) why.set(l.why, (why.get(l.why) || 0) + 1);
+  log(`parks by rule: ${ruled.length} (most of it formal ${ruled.filter((p) => p.kind === 'formal').length}, bush ${ruled.filter((p) => p.kind === 'bush').length}; bush all over ${ruled.filter((p) => p.forced === 'bush').length}; ${pocketList.length} pockets of bush); left out ${left.length}: ${[...why].sort((p, q) => q[1] - p[1]).map(([k, n]) => `${n} ${k}`).join(', ')}`);
+  const index = new ParkIndex(ruled);
+  // The 240 m squares laid out: those a park reaches, starting in one of the tiles asked for (a trial), or in any; and only what's in the
+  // map's own tiles (world.json), so no garden makes a tile of its own
+  const SQ = 240;
+  const squareSet = new Set();
+  for (const p of ruled) {
+    const b = p.outline.box;
+    for (let i = Math.floor(b.x0 / SQ); i <= Math.floor(b.x1 / SQ); i++) {
+      for (let j = Math.floor(b.z0 / SQ); j <= Math.floor(b.z1 / SQ); j++) {
+        if (!ONLY || ONLY.includes(`${Math.floor((i * SQ) / TILE)}_${Math.floor((j * SQ) / TILE)}`)) squareSet.add(i * 100000 + j);
+      }
+    }
+  }
+  const mapTile = (x, z) => tileExists(`${Math.floor(x / TILE)}_${Math.floor(z / TILE)}`);
+  const within = (x, z) => mapTile(x, z) && squareSet.has(Math.floor(x / SQ) * 100000 + Math.floor(z / SQ));
+  const squares = [...squareSet].map((k) => { const i = Math.round(k / 100000); return [i, k - i * 100000]; }).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  log(`parks by rule: ${squares.length} squares to lay out${ONLY ? ` in the ${ONLY.length} tiles asked for` : ''}, ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+
+  // What's in the way, over the whole map: the roads on the ground, as roadClear() has them round the areas
+  const cells = new Map();
+  for (const l of RG.links) {
+    if (!l) continue;
+    const [a, b, , width, , , inner, , , kind = 0] = l;
+    if (kind === 1 || kind === 2) continue;
+    const pts = [[RG.nodes[a * 2], RG.nodes[a * 2 + 1]]];
+    for (let k = 0; k < inner.length; k += 2) pts.push([inner[k], inner[k + 1]]);
+    pts.push([RG.nodes[b * 2], RG.nodes[b * 2 + 1]]);
+    for (let i = 1; i < pts.length; i++) {
+      const seg = [pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1], width / 2];
+      for (let cx = Math.floor((Math.min(seg[0], seg[2]) - 12) / ROAD_CELL); cx <= Math.floor((Math.max(seg[0], seg[2]) + 12) / ROAD_CELL); cx++) {
+        for (let cz = Math.floor((Math.min(seg[1], seg[3]) - 12) / ROAD_CELL); cz <= Math.floor((Math.max(seg[1], seg[3]) + 12) / ROAD_CELL); cz++) {
+          const key = cx * 100000 + cz;
+          (cells.get(key) || cells.set(key, []).get(key)).push(seg);
+        }
+      }
+    }
+  }
+  const offRoads = (x, z) => {
+    for (const s of cells.get(Math.floor(x / ROAD_CELL) * 100000 + Math.floor(z / ROAD_CELL)) || []) if (segDist(x, z, [s[0], s[1]], [s[2], s[3]]) - s[4] <= 0.6) return false;
+    return true;
+  };
+  const pondPieces = loadPonds(GENERATED).pieces;
+  const inLake = pondTest(pondPieces);
+  const inCut = (x, z) => cuts.some((c) => pointInRing(c, x, z));
+  // ...and a beach's sand and the coast's rock, drawn over the lawn a path is laid on (tools/build-sand.mjs): a path there would be under them
+  const onSand = pondTest(sandPieces.filter(([kind]) => kind <= 1));
+  const clear = (x, z) => offRoads(x, z) && !inBuilding(x, z) && landBits.at(x, z) === 1 && !inLake(x, z) && !onSand(x, z) && !inCut(x, z)
+    && roomOver(x, z) >= ROOM.foot;
+  // OSM's paths near a park, as they're read for the areas
+  const ways = [];
+  for (const e of pathsSource) {
+    if (e.type !== 'way' || !e.geometry) continue;
+    const t = e.tags || {};
+    const kind = KINDS[t.highway];
+    if (kind === undefined || skipPath(t)) continue;
+    const pts = e.geometry.map((g) => toWorld(g.lon, g.lat));
+    const b = bbox(pts);
+    if (!index.touches(b)) continue;
+    const surface = surfaceOf(t, RULE);
+    ways.push({ tags: t, pts, kind, surface, width: (k) => widthOf(t, k, surface) });
+  }
+  const found = parkPaths(ways, index, { inArea: (x, z) => areaAt(x, z, REACH), clear, within, pockets });
+  parkOut.paths.push(...found.paths);
+  log(`parks by rule: ${found.paths.length} paths, ${(found.metres / 1000).toFixed(1)} km (${found.byKind.map((m, k) => `${['footpaths', 'steps', 'cycleways', 'tracks'][k]} ${(m / 1000).toFixed(1)}`).join(', ')}), from ${ways.length} of OSM's near them, ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+  const withPaths = ruled.filter((p) => (p.metres || 0) >= MIN_PATHS);
+  log(`parks by rule with paths (${MIN_PATHS} m or more): ${withPaths.length}, most of it formal ${withPaths.filter((p) => p.kind === 'formal').length}, bush ${withPaths.filter((p) => p.kind === 'bush').length}`);
+  // Paved areas in a formal park's raised lawn, as in an area's
+  const plazasIn = [];
+  for (const p of otherPlazas) {
+    const park = index.at(p.middle[0], p.middle[1]);
+    if (!park || kindAt(park, ...p.middle, pockets) !== 'formal' || (park.metres || 0) < MIN_PATHS || !within(...p.middle)) continue;
+    const surface = p.tags.surface ? surfaceOf(p.tags, RULE) : 0;
+    if (surface !== 4) plazasIn.push({ surface, rings: p.rings });
+  }
+  const raised = parkLawns(squares, { parks: ruled, pockets: pocketList, areas: areas.map((a) => a.rings), cuts, lawns: GEO.lawns, plazas: plazasIn,
+    paths: [...paths, ...parkOut.paths], lakes: pondPieces, sand: sandPieces, mapTile: (ix, iz) => tileExists(`${ix}_${iz}`), tile: TILE });
+  parkOut.lawns.push(...raised.lawns);
+  parkOut.plazas.push(...raised.plazas);
+  const st = raised.stats;
+  log(`parks by rule: ${st.pieces} pieces of raised lawn, ${(st.area / 1e4).toFixed(1)} ha, in ${st.squares} squares; ${raised.plazas.length} paved areas, ${(st.plazaArea / 1e4).toFixed(2)} ha; ${st.moved} traced points moved onto their lines, ${st.kept} not, ${st.corners} corners put back; ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+  // Nothing in a tile the map hasn't (tools/build-tiles.mjs would make one for it): a piece by the point its tile is found by, a path by
+  // each segment's middle
+  let dropped = 0;
+  const middleIn = (f) => { const m = (f.length >> 2) << 1; return mapTile(f[m], f[m + 1]); };
+  for (const list of [parkOut.lawns, parkOut.plazas]) {
+    const kept = list.filter(([, outer]) => middleIn(outer));
+    dropped += list.length - kept.length;
+    list.splice(0, list.length, ...kept);
+  }
+  const cutPaths = [];
+  for (const [kind, surface, width, ...line] of parkOut.paths) {
+    let run = [];
+    const flush = () => { if (run.length >= 4) cutPaths.push([kind, surface, width, ...run]); run = []; };
+    for (let i = 0; i + 3 < line.length; i += 2) {
+      if (!mapTile((line[i] + line[i + 2]) / 2, (line[i + 1] + line[i + 3]) / 2)) { dropped++; flush(); continue; }
+      if (!run.length) run.push(line[i], line[i + 1]);
+      run.push(line[i + 2], line[i + 3]);
+    }
+    flush();
+  }
+  parkOut.paths.splice(0, parkOut.paths.length, ...cutPaths);
+  if (dropped) log(`parks by rule: ${dropped} pieces and path segments left out, in tiles the map hasn't`);
+  // ...every park with any of its paths laid out (its raised lawn only with MIN_PATHS of them), for tools/tile-diff.mjs
+  for (const p of ruled.filter((q) => q.metres > 0)) {
+    const b = bbox(p.rings.flat());
+    parkList.push([p.id, p.kind, Math.floor(b.x0), Math.floor(b.z0), Math.ceil(b.x1), Math.ceil(b.z1)]);
+  }
+}
 fs.writeFileSync(OUT, JSON.stringify({
   areas: areas.map((a) => ({ name: a.name, rings: a.rings.map((r) => flat(rdpRing(r, 0.5))), except: a.except })),
-  paths, gates, hedges, ponds, rockPonds, islands, fountains, beds, seawalls, lawns, plazas, plants, small: [...SMALL]
+  paths: [...paths, ...parkOut.paths], gates, hedges, ponds, rockPonds, islands, fountains, beds, seawalls, lawns: [...lawns, ...parkOut.lawns],
+  plazas: [...plazas, ...parkOut.plazas], plants, small: [...SMALL],
+  ...(parkList.length && { parks: parkList, byRule: { paths: paths.length, lawns: lawns.length, plazas: plazas.length } })
 }));
 log(`wrote ${path.relative(ROOT, OUT)} (${(fs.statSync(OUT).size / 1024).toFixed(0)} KB) in ${((Date.now() - started) / 1000).toFixed(1)} s`);

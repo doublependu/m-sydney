@@ -228,7 +228,11 @@ function cutMap(derived) {
   for (let i = 0; i + 1 < ROAD_TAGS.zebras.length; i += 2) at(ROAD_TAGS.zebras[i], ROAD_TAGS.zebras[i + 1]).tags.zebras.push(ROAD_TAGS.zebras[i], ROAD_TAGS.zebras[i + 1]);
   for (const d of ROAD_TAGS.directions) at(d[1], d[2]).tags.directions.push(d);
   if (GARDEN) {
-    for (const [kind, surface, width, ...line] of GARDEN.paths) cut(line, (t, run) => t.garden.paths.push([kind, surface, width, ...run]));
+    // The parks by rule's come after the areas' in each list (tools/build-garden.mjs `byRule`, how many are the areas'): a tile with any
+    // says where they start in its own, garden.byRule [paths, lawns, plazas], for the game to tell them apart
+    const from = GARDEN.byRule || { paths: Infinity, lawns: Infinity, plazas: Infinity };
+    const byRule = (t, field, i) => { if (i >= from[field]) (t.byRule ||= {})[field] ??= t.garden[field].length - 1; };
+    GARDEN.paths.forEach(([kind, surface, width, ...line], i) => cut(line, (t, run) => { t.garden.paths.push([kind, surface, width, ...run]); byRule(t, 'paths', i); }));
     for (const [height, width, ...line] of GARDEN.hedges) cut(line, (t, run) => t.garden.hedges.push([height, width, ...run]));
     for (const [side, ...line] of GARDEN.seawalls || []) cut(line, (t, run) => t.garden.seawalls.push([side, ...run]));
     for (const g of GARDEN.gates) at(g[0], g[1]).garden.gates.push(g);
@@ -236,12 +240,17 @@ function cutMap(derived) {
     for (const ring of GARDEN.ponds) middle(ring).garden.ponds.push(ring);
     for (const [kind, ...ring] of GARDEN.beds) middle(ring).garden.beds.push([kind, ...ring]);
     // A formal park's raised lawn: each piece (a 240 m square's, at most) with the tile its outline's middle is in
-    for (const [kerb, ...rings] of GARDEN.lawns || []) middle(rings[0]).garden.lawns.push([kerb, ...rings]);
+    (GARDEN.lawns || []).forEach(([kerb, ...rings], i) => {
+      const t = middle(rings[0]);
+      t.garden.lawns.push([kerb, ...rings]);
+      byRule(t, 'lawns', i);
+    });
     // ...and its paved areas, the same way, and its fountains where they stand: a tile with none has no field for them
-    for (const [surface, ...rings] of GARDEN.plazas || []) {
-      const g = middle(rings[0]).garden;
-      (g.plazas ||= []).push([surface, ...rings]);
-    }
+    (GARDEN.plazas || []).forEach(([surface, ...rings], i) => {
+      const t = middle(rings[0]);
+      (t.garden.plazas ||= []).push([surface, ...rings]);
+      byRule(t, 'plazas', i);
+    });
     for (const f of GARDEN.fountains || []) (at(f[0], f[1]).garden.fountains ||= []).push(f);
     // Ponds edged with rocks, as ponds are, but in a field of their own where a tile has any
     for (const ring of GARDEN.rockPonds || []) (middle(ring).garden.rockPonds ||= []).push(ring);
@@ -257,6 +266,9 @@ function cutMap(derived) {
       const pond = [...GARDEN.ponds, ...(GARDEN.rockPonds || [])].find((f) => inFlat(f, ring[0], ring[1]));
       if (!pond) throw new Error(`an island at ${ring[0]}, ${ring[1]} in no pond`);
       (middle(pond).garden.islands ||= []).push(ring);
+    }
+    for (const t of tiles.values()) {
+      if (t.byRule) t.garden.byRule = ['paths', 'lawns', 'plazas'].map((f) => t.byRule[f] ?? t.garden[f]?.length ?? 0);
     }
   }
 

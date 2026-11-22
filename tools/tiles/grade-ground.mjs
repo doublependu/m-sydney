@@ -3,12 +3,14 @@
 // to the terrain over BLEND metres beyond it. Each tile gets a 5 m grid of the difference, so the game's groundHeight() stays a quick
 // lookup: working this out as the game runs would be far too slow on a phone.
 // A beach's sand is graded down to the water too: the survey has it a metre or two over the sea where it meets it, which is 2.2 m under
-// the survey's zero (js/city-config.js), so the sand would end in a step.
+// the survey's zero (js/city-config.js), so the sand would end in a step. And the ground over a tunnel under a cover drawn by hand with
+// a `top` (a land bridge, tools/local/*.json) is raised over the tube's ceiling, so the tube can't be seen into from above.
 import fs from 'node:fs';
 
 globalThis.fetch = async (url) => new Response(fs.readFileSync(new URL(url)));
 const { GEO, heldTiles } = await import('../../js/geodata.js');
-const { LINKS, roadHeight } = await import('../../js/surfaces.js');
+const { KIND, LINKS, TUNNEL_HEIGHT, roadHeight } = await import('../../js/surfaces.js');
+const { localCovers } = await import('../local-edits.mjs');
 const { rawTerrainHeight } = await import('../../js/terrain.js');
 const { CITY_BOUNDS, landAt } = await import('../../js/city-config.js');
 
@@ -123,6 +125,51 @@ function beachDrop(x, z, ground, roadEdge) {
   return w * Math.min(0, target - ground);
 }
 
+// --- Covers with a `top`: inside the ring, the ground at least `top` m over the ceiling of each tunnel under it (TUNNEL_HEIGHT over its
+// road) to LID_FLAT past the tube's edge, then less by LID_SLOPE a metre out to LID_REACH: the 5 m grid's corners round any point over the
+// tube hold it up to within 0.16 m, and the bank beside it is no steeper than the grid makes it. Never lowered. Not within LID_MOUTH of
+// a tunnel's ends, where its mouth and the cutting before it are (js/tunnel-mouths.js).
+const LID_FLAT = 2.5;
+const LID_SLOPE = 0.5;
+const LID_REACH = 7.5;
+const LID_MOUTH = 12;
+const lids = localCovers().filter((c) => c.top).map(({ ring, top }) => {
+  const xs = ring.map((p) => p[0]), zs = ring.map((p) => p[1]);
+  const box = [Math.min(...xs), Math.min(...zs), Math.max(...xs), Math.max(...zs)];
+  const segs = [];
+  for (const l of LINKS) {
+    if (l.kind !== KIND.TUNNEL) continue;
+    const at = [0];
+    for (let i = 1; i < l.pts.length; i++) at.push(at[i - 1] + Math.hypot(l.pts[i].x - l.pts[i - 1].x, l.pts[i].z - l.pts[i - 1].z));
+    const length = at[at.length - 1], reach = l.half + LID_REACH;
+    for (let i = 1; i < l.pts.length; i++) {
+      const a = l.pts[i - 1], b = l.pts[i], len = at[i] - at[i - 1];
+      if (len < 1e-6 || Math.max(a.x, b.x) < box[0] - reach || Math.min(a.x, b.x) > box[2] + reach || Math.max(a.z, b.z) < box[1] - reach || Math.min(a.z, b.z) > box[3] + reach) continue;
+      segs.push({ l, a, b, len, s0: at[i - 1], length, reach });
+    }
+  }
+  return { ring: ring.flat(), top, box, segs };
+});
+/** How far the ground at (x, z), now at `ground`, comes up over a tube under a cover with a `top`: 0 or more */
+function lidRaise(x, z, ground) {
+  let raise = 0;
+  for (const lid of lids) {
+    if (x < lid.box[0] || x > lid.box[2] || z < lid.box[1] || z > lid.box[3] || !inFlatRing(lid.ring, x, z)) continue;
+    for (const { l, a, b, len, s0, length, reach } of lid.segs) {
+      const ux = (b.x - a.x) / len, uz = (b.z - a.z) / len;
+      const along = Math.max(0, Math.min(len, (x - a.x) * ux + (z - a.z) * uz));
+      const d = Math.hypot(a.x + ux * along - x, a.z + uz * along - z);
+      if (d > reach) continue;
+      const s = s0 + along;
+      if (s < LID_MOUTH || s > length - LID_MOUTH) continue;
+      const lower = LID_SLOPE * Math.max(0, d - l.half - LID_FLAT);
+      raise = Math.max(raise, a.y + ((b.y - a.y) * along) / len + TUNNEL_HEIGHT + lid.top - lower - ground);
+    }
+  }
+  return raise;
+}
+if (lids.length) console.log(`[ground] ${lids.length} covers over tunnels with a top (tools/local/)`);
+
 const smooth = (t) => t * t * (3 - 2 * t);
 function moved(x, z) {
   const terrain = rawTerrainHeight(x, z);
@@ -151,7 +198,8 @@ function moved(x, z) {
     weight += w;
   }
   const roads = weight ? sum / weight : 0;
-  return roads + beachDrop(x, z, terrain + roads, roadEdge);
+  const graded = roads + beachDrop(x, z, terrain + roads, roadEdge);
+  return lids.length ? graded + lidRaise(x, z, terrain + graded) : graded;
 }
 
 const out = {};

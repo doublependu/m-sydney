@@ -22,7 +22,11 @@ const GENERATED = fileURLToPath(new URL('../data/generated/', import.meta.url));
 const { REAL_BUILDINGS } = await import(path.join(GENERATED, 'building-geodata.js'));
 const { REAL_TREES, TREE_HEIGHTS } = await import(path.join(GENERATED, 'tree-geodata.js'));
 
-const { tunnels, portals } = deriveTunnels();
+// Tunnels under a cover drawn by hand (tools/local/*.json `cover`: a land bridge) are covered there, whatever the ground over them
+const { localCovers } = await import('../local-edits.mjs');
+const covers = localCovers();
+const { tunnels, portals } = deriveTunnels(covers.map((c) => c.ring));
+if (covers.length) console.log(`[derive] ${covers.length} covers over tunnels drawn by hand (tools/local/)`);
 
 // The Harbour Bridge's deck and span, whichever tiles are held (js/bridge.js)
 const { BRIDGE_LENGTH, BRIDGE_SPAN, DECK_REACH, DECK_STEP, bridgePoint, deckHeight, deckUndersideAt } = await import('../../js/bridge.js');

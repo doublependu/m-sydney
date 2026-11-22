@@ -1,0 +1,16 @@
+{
+  "name": "The Art Gallery of NSW's Naala Badu: the land bridge over the Eastern Distributor and the Cahill Expressway",
+  "box": [
+    860,
+    -800,
+    1010,
+    -640
+  ],
+  "cover": [
+    {
+      "ring": [[906, -772], [988, -675], [982, -664], [962, -678], [925, -665], [890, -727]],
+      "top": 0.3,
+      "why": "The land bridge, with Naala Badu's south-west pavilions and the Art Garden on it, over the Cowper Wharf Road Offramp (way 173918035) to OSM's portal at (979, -669), and over the Cahill's tubes. The elevation data has its top 5.3-6.1 m over the off-ramp's road, under TUNNEL_COVER, which left it a trench from 51 m along to its end. Drawn clear of the open trench under Art Gallery Rd's bridge (x 879-896) and of the Cahill's and Sir John Young Cres's portals south-east of it. Its top: the ground over the off-ramp's tube 0.3 m over its ceiling, where the elevation data has it up to 0.7 m under (you'd see into the tube along its north-east side from s 59 to 131)"
+    }
+  ]
+}

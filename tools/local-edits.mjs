@@ -25,7 +25,13 @@
 //   OSM: if they've moved more than half a metre, or the way has another number of nodes, the build stops;
 //   streets: [{ address, road, expect: [lo, hi], why }]: a street G-NAF's addresses name (`address`) that OSM spells otherwise (`road`),
 //   for a building whose addresses' street isn't found under its own name near it (tools/addresses.mjs). The build stops if the number
-//   of buildings that find their street by it isn't between lo and hi }
+//   of buildings that find their street by it isn't between lo and hi;
+//   cover: [{ ring: [[x, z], ...], top, why }]: an area where a tunnel is under cover whatever the ground over it (a land bridge, a lid),
+//   read when the tiles are made (tools/tiles/derive.mjs, deriveTunnels() in js/surfaces.js): a tunnel open at an end is open only till
+//   its road goes under the ring, and one whose end is under it keeps a metre open there for its mouth. Draw it clear of every other
+//   tunnel's open ends, which it would close: over a stretch the ground already covers, it changes nothing. With `top` (m), the ground
+//   inside it is raised to at least that much over the ceiling of each tunnel under it, away from their ends
+//   (tools/tiles/grade-ground.mjs), where the tube would otherwise be seen into from above }
 // `expect` is what the ways' tags were when the edit was made: if OSM has changed them since, the build stops and says so, as the
 // edit may no longer be right. A tag set to null is taken away. Each way an edit names is marked `local` (its area's file): the
 // build takes in some ways only where an area has been looked at by hand, as bus-only roads (tools/build-geodata.mjs).
@@ -84,6 +90,22 @@ export function localLevels(elements, toWorld, areas = localAreas()) {
     }
   }
   return out;
+}
+
+const RING_POINTS = 3;
+const MAX_TOP = 3; // m: more over a tube's ceiling than a land bridge's soil and slab
+/** Every area's covers, checked: [{ ring: [[x, z], ...], top, why, file }]. The build stops on a ring that isn't one, a top that isn't
+ *  a few metres, or one with no `why` */
+export function localCovers(areas = localAreas()) {
+  return areas.flatMap((area) => (area.cover || []).map((edit, n) => {
+    const name = `tools/local/${area.file}, cover ${n + 1}`;
+    if (!edit.why) throw new Error(`${name}: needs a why`);
+    if (!Array.isArray(edit.ring) || edit.ring.length < RING_POINTS || !edit.ring.every((p) => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite))) {
+      throw new Error(`${name}: its ring needs ${RING_POINTS} or more points [x, z] in the game's frame (${edit.why})`);
+    }
+    if (edit.top !== undefined && !(edit.top >= 0 && edit.top <= MAX_TOP)) throw new Error(`${name}: its top is m over a tube's ceiling, 0 to ${MAX_TOP} (${edit.why})`);
+    return { ring: edit.ring, top: edit.top || 0, why: edit.why, file: area.file };
+  }));
 }
 
 /** Every area's water edits: [{ key: 'way/1' | 'relation/1', sea, expect, why, file }]. tools/sea-water.mjs checks them against OSM. */

@@ -6,7 +6,8 @@ import test from 'node:test';
 // Roads on more than one level: the stacks the game once drew at one height, what the road graph's heights now make of
 // them (tools/build-heights.mjs), and how something moving through them picks its surface (js/surfaces.js).
 globalThis.fetch = async (url) => new Response(fs.readFileSync(new URL(url)));
-const { DECK_DEPTH, KIND, LINKS, PORTALS, ROOM, STRUCTURES, TUNNEL_HEIGHT, ceilingOver, chooseSurface, groundHeight, inTunnel, roadHeight, roadRoute, structuresAt, surfaceHeight, tunnelCovered } = await import('../js/surfaces.js');
+const { DECK_DEPTH, KIND, LINKS, PORTALS, ROOM, STRUCTURES, TUNNEL_HEIGHT, ceilingOver, chooseSurface, groundHeight, inTunnel, openTunnels, roadHeight, roadRoute, structuresAt, surfaceHeight, tunnelCovered } = await import('../js/surfaces.js');
+const { localCovers } = await import('../tools/local-edits.mjs');
 const { STACK_CLEARANCE } = await import('../js/ground-geometry.js');
 
 // Tests under SYDNEY_TILES hold only a part of the map
@@ -184,6 +185,79 @@ test('the Eastern Distributor\'s ramps at Moore Park are covered up to their por
     assert.ok(p, `no ${name} portal at (${x}, ${z})`);
     // ...open only the cutting's own end and slope past the portal
     assert.ok(p.open <= 12, `${name} is open ${p.open.toFixed(0)} m in from its portal`);
+  }
+});
+
+// Naala Badu's land bridge (tools/local/art-gallery.json `cover`): the Cowper Wharf Rd off-ramp under it, OSM's tunnel to (979, -669)
+const passes = (l, x, z, r) => l.pts.some((a, i) => {
+  const b = l.pts[i + 1];
+  if (!b) return false;
+  const dx = b.x - a.x, dz = b.z - a.z, t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / (dx * dx + dz * dz || 1)));
+  return Math.hypot(a.x + dx * t - x, a.z + dz * t - z) < r;
+});
+const offRamp = () => LINKS.find((l) => l.kind === KIND.TUNNEL && l.name === 'Cowper Wharf Road Offramp' && passes(l, 934, -726, 3));
+
+test('Naala Badu\'s land bridge covers the Cowper Wharf Rd off-ramp and no other tunnel: worked out with and without the covers', (t) => {
+  if (!isHeld(tileKeyAt(946, -720))) return t.skip('the Domain isn\'t held');
+  // The links within 600 m, copied: openTunnels() sets their open ends
+  const near = () => LINKS.filter((l) => l.pts.some((p) => Math.hypot(p.x - 946, p.z + 720) < 600)).map((l) => ({ ...l }));
+  const without = new Map(openTunnels(near()).map((l) => [l.id, l]));
+  const changed = openTunnels(near(), localCovers().map((c) => c.ring)).filter((l) => {
+    const o = without.get(l.id);
+    return Math.abs(o.openA - l.openA) > 0.01 || Math.abs(o.openB - l.openB) > 0.01;
+  });
+  assert.deepEqual(changed.map((l) => l.name), ['Cowper Wharf Road Offramp']);
+  const [ramp] = changed, before = without.get(ramp.id);
+  assert.equal(ramp.id, offRamp()?.id);
+  assert.ok(before.openA + before.openB < ramp.length, 'a tube in the middle without the cover too');
+  assert.equal(ramp.openA, before.openA, 'open as before at Art Gallery Rd\'s end');
+  assert.equal(ramp.openB, 1, 'its mouth at OSM\'s end');
+});
+
+test('Art Gallery Rd\'s bridge stays over the open trench, the off-ramp and the Cahill open under its deck', (t) => {
+  if (!isHeld(tileKeyAt(885, -740))) return t.skip('the Domain isn\'t held');
+  const bridge = LINKS.find((l) => l.kind === KIND.BRIDGE && l.name === 'Art Gallery Road' && passes(l, 885, -741, 3));
+  assert.ok(bridge, 'no bridge on Art Gallery Rd at (885, -741)');
+  const open = new Set();
+  for (let i = 1; i < bridge.pts.length; i++) {
+    const p = bridge.pts[i - 1], q = bridge.pts[i], L = Math.hypot(q.x - p.x, q.z - p.z);
+    for (let d = 0; d < L; d += 1) {
+      const x = p.x + ((q.x - p.x) * d) / L, z = p.z + ((q.z - p.z) * d) / L;
+      for (const o of structuresAt(x, z)) {
+        if (o.sid === bridge.sid || STRUCTURES[o.sid].kind !== KIND.TUNNEL || inTunnel(o.sid, x, z)) continue;
+        open.add(STRUCTURES[o.sid].links.find((l) => passes(l, x, z, l.half))?.name);
+      }
+    }
+  }
+  assert.ok(open.has('Cowper Wharf Road Offramp') && open.has('Cahill Expressway'), `open under the bridge: ${[...open].join(', ')}`);
+});
+
+test('the Cowper Wharf Rd off-ramp is a tube under Naala Badu\'s land bridge, from where the ground covers it to its portal at OSM\'s end', (t) => {
+  if (!isHeld(tileKeyAt(946, -720))) return t.skip('the Domain isn\'t held');
+  const ramp = offRamp();
+  assert.ok(ramp, 'no Cowper Wharf Rd off-ramp under the Domain');
+  // Tiles from before the cover have it open 90 m from its east end, a trench through Naala Badu's outline
+  if (ramp.openB > 50) return t.skip('the tiles are from before tools/local/art-gallery.json');
+  assert.ok(ramp.openA > 12 && ramp.openA < 25, `open ${ramp.openA.toFixed(1)} m under Art Gallery Rd's bridge`);
+  for (let s = 0; s < 12; s += 2) assert.equal(tunnelCovered(ramp, s), false, `covered ${s} m along, under Art Gallery Rd's bridge`);
+  for (let s = 25; s < ramp.length - 2; s += 2) assert.equal(tunnelCovered(ramp, s), true, `open ${s.toFixed(0)} m along, under the land bridge`);
+  assert.ok(ramp.openB <= 2, `open ${ramp.openB.toFixed(1)} m in from OSM's end`);
+  const end = ramp.pts[ramp.pts.length - 1];
+  assert.ok(PORTALS.some((m) => Math.hypot(m.x - end.x, m.z - end.z) < 3), `no mouth at its end (${end.x.toFixed(0)}, ${end.z.toFixed(0)})`);
+  // ...and the ground over it (the cover's top, tools/tiles/grade-ground.mjs) over its ceiling across its width, from where the ground
+  // covers it to 12 m from its mouth: not a tube you'd see into from above
+  let acc = 0;
+  for (let i = 1; i < ramp.pts.length; i++) {
+    const a = ramp.pts[i - 1], b = ramp.pts[i], L = Math.hypot(b.x - a.x, b.z - a.z), ux = (b.x - a.x) / L, uz = (b.z - a.z) / L;
+    for (let d = 0; d < L; d += 2) {
+      const s = acc + d, ceiling = a.y + ((b.y - a.y) * d) / L + TUNNEL_HEIGHT;
+      if (s < 25 || s > ramp.length - 12) continue;
+      for (const off of [-ramp.width / 2, 0, ramp.width / 2]) {
+        const x = a.x + ux * d - uz * off, z = a.z + uz * d + ux * off;
+        assert.ok(groundHeight(x, z) > ceiling + 0.05, `the ground at (${x.toFixed(1)}, ${z.toFixed(1)}), ${s.toFixed(0)} m along, ${(ceiling - groundHeight(x, z)).toFixed(2)} m under its ceiling`);
+      }
+    }
+    acc += L;
   }
 });
 

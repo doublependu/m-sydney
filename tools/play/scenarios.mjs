@@ -331,7 +331,11 @@ const LEVEL_ROUTES = {
   // (-337, -1066); (-362, -1078) is its northbound one's)
   westernSuburbsOff: [{ x: 149, z: -2805, name: 'Bradfield Highway' }, { x: -337, z: -1066, name: 'Western Distributor' }, { x: -459, z: -587, name: 'Western Distributor' }],
   grosvenorOff: [{ x: 149, z: -2805, name: 'Bradfield Highway' }, { x: -200, z: -1062, name: 'Grosvenor Street' }],
-  cahillOff: [{ x: 157, z: -2806, name: 'Cahill Expressway' }, { x: -246, z: -1365 }, { x: 405, z: -1345 }]
+  cahillOff: [{ x: 157, z: -2806, name: 'Cahill Expressway' }, { x: -246, z: -1365 }, { x: 405, z: -1345 }],
+  // The Eastern Distributor's way down to Woolloomooloo: from its cutting in the Domain, under Art Gallery Rd's bridge, through the tube
+  // under Naala Badu's land bridge (tools/local/art-gallery.json) and out at OSM's portal onto Cowper Wharf Rd
+  cowperWharfOff: [{ x: 749, z: -809, name: 'Cowper Wharf Road Offramp' }, { x: 979, z: -669, name: 'Cowper Wharf Road Offramp' }, { x: 994, z: -643 },
+    { x: 1023, z: -651 }]
 };
 
 async function driveLevels(human, page, metric, expect, names) {

@@ -233,17 +233,36 @@ onMap({
   }
 });
 
+// Whether the ground has closed over a tunnel's road at (x, z), at height y: TUNNEL_COVER of it over the road, or the road deep under
+// the sea
+const groundClosed = (x, z, y) => cutGround(x, z) - y >= TUNNEL_COVER || (y < -8 && !landAt(x, z));
+function inRing(ring, x, z) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [ax, az] = ring[i], [bx, bz] = ring[j];
+    if ((az > z) !== (bz > z) && x < ((bx - ax) * (z - az)) / (bz - az) + ax) inside = !inside;
+  }
+  return inside;
+}
+
 /**
- * Open at an end where it reaches the surface, for as long as the ground hasn't closed over it, and a tube everywhere else.
- * Never open in the middle: a street's cutting that passes over a deeper tunnel leaves that tunnel less cover, not a hole in
- * the street. A link wholly open passes the opening on to the links after it. Run once with the whole map, when the tiles
- * are made (tools/tiles/derive.mjs): the game reads the results off each link.
+ * Where each tunnel among `links` is open to the sky: at an end where it reaches the surface, for as long as the ground hasn't closed
+ * over it (`closed(x, z, y)`), and a tube everywhere else. Never open in the middle: a street's cutting that passes over a deeper
+ * tunnel leaves that tunnel less cover, not a hole in the street. A link wholly open passes the opening on to the links after it.
+ * `covers` are rings, [[x, z], ...], drawn by hand where a tunnel is under cover whatever the ground over it (a land bridge, a lid:
+ * tools/local/*.json `cover`): an open end stops where its road goes under one, and a tunnel whose end is under one keeps only
+ * MOUTH_AT_NODE open there. A ring over a stretch the ground already covers changes nothing. Sets each tunnel's length, openA and
+ * openB, and returns the tunnels.
  */
-function deriveTunnels() {
+function openTunnels(links, covers = [], closed = groundClosed) {
+  const rings = covers.map((ring) => ({
+    ring, x0: Math.min(...ring.map((p) => p[0])), x1: Math.max(...ring.map((p) => p[0])), z0: Math.min(...ring.map((p) => p[1])), z1: Math.max(...ring.map((p) => p[1]))
+  }));
+  const underCover = (x, z) => rings.some((c) => x >= c.x0 && x <= c.x1 && z >= c.z0 && z <= c.z1 && inRing(c.ring, x, z));
   const linksAt = new Map();
-  for (const l of LINKS) for (const n of [l.a, l.b]) (linksAt.get(n) || linksAt.set(n, []).get(n)).push(l);
+  for (const l of links) for (const n of [l.a, l.b]) (linksAt.get(n) || linksAt.set(n, []).get(n)).push(l);
   const lengthOf = (l) => l.pts.reduce((sum, p, i) => (i ? sum + Math.hypot(p.x - l.pts[i - 1].x, p.z - l.pts[i - 1].z) : 0), 0);
-  // Metres open from one end of a link: till the ground closes over it
+  // Metres open from one end of a link: till the ground closes over it, or it goes under a cover
   const openFrom = (l, fromA) => {
     if (l.openCutting) return Infinity;
     const pts = fromA ? l.pts : [...l.pts].reverse();
@@ -252,13 +271,13 @@ function deriveTunnels() {
       const p = pts[i - 1], q = pts[i], L = Math.hypot(q.x - p.x, q.z - p.z);
       for (let d = 0; d < L; d += 2) {
         const t = d / L, x = p.x + (q.x - p.x) * t, z = p.z + (q.z - p.z) * t, y = p.y + (q.y - p.y) * t;
-        if (cutGround(x, z) - y >= TUNNEL_COVER || (y < -8 && !landAt(x, z))) return s + d;
+        if (closed(x, z, y) || (rings.length && underCover(x, z))) return s + d;
       }
       s += L;
     }
     return Infinity;
   };
-  const tunnels = LINKS.filter((l) => l.kind === KIND.TUNNEL);
+  const tunnels = links.filter((l) => l.kind === KIND.TUNNEL);
   // Nodes where a tunnel can come to the surface: it stops being a tunnel there. Those where a road joins it, or where the tunnel
   // before it is open all the way, are open to the sky: a tunnel covered from its first metre there has its mouth right at the node
   const mouths = [], entrances = new Set();
@@ -292,6 +311,15 @@ function deriveTunnels() {
   }
   // A roof a few metres long is no tunnel
   for (const l of tunnels) if ((l.openA || l.openB) && l.length - l.openA - l.openB < 5) l.openA = l.length;
+  return tunnels;
+}
+
+/**
+ * Every tunnel's open ends (openTunnels()) over the whole map, and their mouths. Run once with the whole map, when the tiles are made
+ * (tools/tiles/derive.mjs, with tools/local/'s covers): the game reads the results off each link.
+ */
+function deriveTunnels(covers = []) {
+  const tunnels = openTunnels(LINKS, covers);
   for (const seg of SEGMENTS) {
     const l = seg.link;
     if (l.kind === KIND.TUNNEL && (seg.s0 < l.openA || seg.s0 + seg.len > l.length - l.openB)) addToCells(lowCells, seg, l.half + 1);
@@ -1550,7 +1578,7 @@ function roadRoute(waypoints, step = 8) {
 }
 
 export {
-  setFloor, clearFloor, onFloor, floorFlow, decksAt, DECK_DEPTH, ROOM, freeFromDeck, setBridgeDeck, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, ROAD_CLASS, ROAD_CLASSES, deriveTunnels, linkById, roadClass, SAME_LEVEL, SEGMENTS, STATION_STEP, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
+  setFloor, clearFloor, onFloor, floorFlow, decksAt, DECK_DEPTH, ROOM, freeFromDeck, setBridgeDeck, DECK_HALF, DECK_STRUCTURE, KIND, LINKS, PORTALS, ROAD_CLASS, ROAD_CLASSES, deriveTunnels, linkById, openTunnels, roadClass, SAME_LEVEL, SEGMENTS, STATION_STEP, STEP, STRUCTURES, TUNNEL_COVER, TUNNEL_HEIGHT, ceilingOver, chooseSurface,
   clearOfWater, EDGE_GAP, edgeHeight, edgeNeighbour, floorBelow, laneAt, linkEdges, linkStations, moveOver, offsetLine, groundHeight, groundRoadAt, groundRoadDistance, inTunnel, onGroundRoad, ownLaneOffsets, roadHeight, roadRoute, roomUnderDeck, sameLevel,
   linksAt, structureAt, structuresAt, surfaceHeight, surfaceSlope, tunnelAtPortal, tunnelCovered
 };

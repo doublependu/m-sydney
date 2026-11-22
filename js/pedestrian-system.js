@@ -103,24 +103,43 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
     return true;
   }
 
-  // A garden's path near (focusX, focusZ), each about as likely as any other
+  // The gardens' path tracks: a hand-made area's, and the parks' laid out by rule (tools/build-garden.mjs), which are in every suburb and
+  // are walked as the streets round them are (gardenShare())
+  let areaPaths = [], rulePaths = [];
+  function splitPaths() {
+    rulePaths = pedRoutes.paths.filter((t) => t.byRule);
+    areaPaths = rulePaths.length ? pedRoutes.paths.filter((t) => !t.byRule) : pedRoutes.paths;
+  }
+  splitPaths();
+  // A garden's path near (focusX, focusZ), each about as likely as any other: a park by rule's by its share (gardenShare())
   function pathTrack() {
-    const list = pedRoutes.paths;
+    let list = ruleShare > 0 && Math.random() < ruleShare ? nearRule : areaPaths;
+    if (!list.length) list = list === areaPaths ? nearRule : areaPaths;
     if (!list.length) return false;
     const route = list[Math.floor(Math.random() * list.length)];
     Object.assign(track, route, { route });
     return true;
   }
-  // What share of those out walking are on a garden's paths: as much as the paths' length near the focus is of all the footpaths'
-  let pathShare = 0, shareAt = { x: Infinity, z: Infinity, edges: -1 };
+  // What share of those out walking are on a garden's paths: as much as the paths' length near the focus is of all the footpaths'. The
+  // parks by rule's count no more than the streets' footpaths near: a suburb's park is as busy as its streets, not filled
+  // (js/traffic.js peopleWanted counts them the same way)
+  let pathShare = 0, ruleShare = 0, nearRule = [], shareAt = { x: Infinity, z: Infinity, edges: -1 };
   function gardenShare() {
     if (Math.hypot(focusX - shareAt.x, focusZ - shareAt.z) < 40 && shareAt.edges === nearEdges.length) return pathShare;
     shareAt = { x: focusX, z: focusZ, edges: nearEdges.length };
-    let onPaths = 0, onStreets = 0;
+    let onPaths = 0, onRule = 0, onStreets = 0;
     const r2 = NEAR_RADIUS * NEAR_RADIUS;
-    for (const t of pedRoutes.paths) if ((t.ax - focusX) ** 2 + (t.az - focusZ) ** 2 < r2) onPaths += t.len;
+    for (const t of areaPaths) if ((t.ax - focusX) ** 2 + (t.az - focusZ) ** 2 < r2) onPaths += t.len;
+    nearRule = [];
+    for (const t of rulePaths) {
+      if ((t.ax - focusX) ** 2 + (t.az - focusZ) ** 2 >= r2) continue;
+      onRule += t.len;
+      nearRule.push(t);
+    }
     for (const e of nearEdges) onStreets += e.deck ? 0 : e.len * 2;
-    pathShare = onPaths / (onPaths + onStreets || 1);
+    const rule = Math.min(onRule, onStreets);
+    pathShare = (onPaths + rule) / (onPaths + rule + onStreets || 1);
+    ruleShare = rule / (onPaths + rule || 1);
     return pathShare;
   }
 
@@ -417,10 +436,11 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
     const ahead = p.dir > 0 ? p.len - p.t : p.t;
     const gdx = p.x - p.goalX, gdz = p.z - p.goalZ;
     if (clock >= p.goalTime || gdx * gdx + gdz * gdz < 625) {
-      // Someone in a garden mostly makes for somewhere else in it
-      const stroll = p.route?.path && pedRoutes.paths.length && Math.random() < 0.75;
+      // Someone in a garden mostly makes for somewhere else in it: in a park by rule's, somewhere near
+      const goals = p.route?.byRule ? nearRule : areaPaths;
+      const stroll = p.route?.path && goals.length && Math.random() < 0.75;
       const destination = stroll ? null : nearEdges[Math.floor(Math.random() * nearEdges.length)];
-      const spot = stroll ? pedRoutes.paths[Math.floor(Math.random() * pedRoutes.paths.length)] : null;
+      const spot = stroll ? goals[Math.floor(Math.random() * goals.length)] : null;
       p.goalX = spot ? spot.ax : destination ? destination.sx + destination.dx * destination.len * 0.5 : p.x;
       p.goalZ = spot ? spot.az : destination ? destination.sz + destination.dz * destination.len * 0.5 : p.z;
       p.goalTime = clock + 120 + Math.random() * 180;
@@ -726,6 +746,14 @@ function createPedestrianSystem(network, { player, nearEdges, nearSignals, mayCr
   function setNetwork(next, keyOf) {
     network = next;
     pedRoutes = createPedestrianRoutes(next, blockAt);
+    // The parks by rule's tracks near are the new network's, worked out again at the next spawn
+    const hadRule = rulePaths.length > 0;
+    splitPaths();
+    if (hadRule || rulePaths.length) {
+      nearRule = [];
+      ruleShare = 0;
+      shareAt = { x: Infinity, z: Infinity, edges: -1 };
+    }
     prepareNodes();
     curbNodes.length = 0;
     walkedNodes.length = 0;

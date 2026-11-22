@@ -1177,19 +1177,21 @@ function* buildRoadNetworkSteps(obstacles, signalIntersections = [], area = null
 }
 
 /**
- * The garden paths in the tiles held (tools/build-garden.mjs), as { kind, surface, width, pts, top }: a path's cut where it crosses a tile's
- * edge; `top`, its top over the ground as drawn, for the crowd walking it: a track's on the raised lawn where its middle is on one
+ * The garden paths in the tiles held (tools/build-garden.mjs), as { kind, surface, width, pts, top, byRule }: a path's cut where it crosses a
+ * tile's edge; `top`, its top over the ground as drawn, for the crowd walking it: a track's on the raised lawn where its middle is on one;
+ * `byRule`, whether it's a park's laid out by rule rather than a hand-made area's (the tile's `garden.byRule`, where those start)
  */
 function gardenPaths() {
   const out = [];
   let onRaised = null;
   for (const t of heldTiles()) {
-    for (const [kind, surface, width, ...line] of t.garden?.paths || []) {
+    const fromRule = t.garden?.byRule?.[0] ?? Infinity;
+    for (const [i, [kind, surface, width, ...line]] of (t.garden?.paths || []).entries()) {
       const pts = [];
       for (let i = 0; i + 1 < line.length; i += 2) pts.push({ x: line[i], z: line[i + 1] });
       const mid = pts[pts.length >> 1];
       const raised = kind === TRACK && (onRaised ||= raisedLawnTest())(mid.x, mid.z);
-      out.push({ kind, surface, width, pts, top: pathTop(kind, surface, raised) });
+      out.push({ kind, surface, width, pts, top: pathTop(kind, surface, raised), byRule: i >= fromRule });
     }
   }
   return out;

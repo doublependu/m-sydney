@@ -186,7 +186,19 @@ const inCut = (x, z) => SITE_CUTS.some((c) => x >= c.minX && x <= c.maxX && z >=
 
 // --- Layers handed over as triangles -------------------------------------------------------------------------------------------------
 
-const layers = new Map(); // name -> { x0, x1, z0, z1, tris (x, y, z, each corner of each, in the world), cells: CELL cell -> [index of a triangle] }
+// name -> { x0, x1, z0, z1, tris (x, y, z, each corner of each, in the world), cells: CELL cell -> its slot, items: the index of each
+// triangle in each slot's cell, in turn, from[slot] up to from[slot + 1] }. Packed so: a park's garden reaches 25,000 cells, a list each
+// they were 7 MB of a tile's.
+const layers = new Map();
+
+/** Each cell a triangle (at `i` in `all`) reaches, to `each(key, i)` */
+function cellsOf(all, i, each) {
+  const ax = Math.min(all[i], all[i + 3], all[i + 6]), bx = Math.max(all[i], all[i + 3], all[i + 6]);
+  const az = Math.min(all[i + 2], all[i + 5], all[i + 8]), bz = Math.max(all[i + 2], all[i + 5], all[i + 8]);
+  for (let cx = Math.floor(ax / CELL); cx <= Math.floor(bx / CELL); cx++) {
+    for (let cz = Math.floor(az / CELL); cz <= Math.floor(bz / CELL); cz++) each(cx * 100000 + cz, i);
+  }
+}
 
 /**
  * What something draws over the ground, as triangles facing up: `tris`, x, y, z of each corner, in the world's heights, or a list of
@@ -199,19 +211,27 @@ function setLayer(name, tris) {
     return;
   }
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-  const cells = new Map();
+  // How many triangles each cell holds, its slot the order it was first reached in; then each slot's triangles, in turn
+  const cells = new Map(), counts = [];
+  let total = 0;
+  const count = (key) => {
+    const slot = cells.get(key);
+    if (slot === undefined) {
+      cells.set(key, counts.length);
+      counts.push(1);
+    } else counts[slot]++;
+    total++;
+  };
   for (let i = 0; i < all.length; i += 9) {
-    const ax = Math.min(all[i], all[i + 3], all[i + 6]), bx = Math.max(all[i], all[i + 3], all[i + 6]);
-    const az = Math.min(all[i + 2], all[i + 5], all[i + 8]), bz = Math.max(all[i + 2], all[i + 5], all[i + 8]);
-    x0 = Math.min(x0, ax); x1 = Math.max(x1, bx); z0 = Math.min(z0, az); z1 = Math.max(z1, bz);
-    for (let cx = Math.floor(ax / CELL); cx <= Math.floor(bx / CELL); cx++) {
-      for (let cz = Math.floor(az / CELL); cz <= Math.floor(bz / CELL); cz++) {
-        const key = cx * 100000 + cz;
-        (cells.get(key) || cells.set(key, []).get(key)).push(i);
-      }
-    }
+    x0 = Math.min(x0, all[i], all[i + 3], all[i + 6]); x1 = Math.max(x1, all[i], all[i + 3], all[i + 6]);
+    z0 = Math.min(z0, all[i + 2], all[i + 5], all[i + 8]); z1 = Math.max(z1, all[i + 2], all[i + 5], all[i + 8]);
+    cellsOf(all, i, count);
   }
-  layers.set(name, { x0, x1, z0, z1, tris: all, cells });
+  const from = new Int32Array(counts.length + 1);
+  for (let s = 0; s < counts.length; s++) from[s + 1] = from[s] + counts[s];
+  const items = new Int32Array(total), next = from.slice(0, counts.length);
+  for (let i = 0; i < all.length; i += 9) cellsOf(all, i, (key, t) => { items[next[cells.get(key)]++] = t; });
+  layers.set(name, { x0, x1, z0, z1, tris: all, cells, from, items });
 }
 function concat(list) {
   const out = new Float32Array(list.reduce((n, a) => n + a.length, 0));
@@ -326,8 +346,11 @@ function drawnTop(x, z) {
   const key = keyOf(x, z, CELL);
   for (const [name, layer] of layers) {
     if (x < layer.x0 || x > layer.x1 || z < layer.z0 || z > layer.z1) continue;
-    const T = layer.tris;
-    for (const i of layer.cells.get(key) || []) {
+    const slot = layer.cells.get(key);
+    if (slot === undefined) continue;
+    const T = layer.tris, items = layer.items;
+    for (let k = layer.from[slot], end = layer.from[slot + 1]; k < end; k++) {
+      const i = items[k];
       const y = standingIn(T[i], T[i + 1], T[i + 2], T[i + 3], T[i + 4], T[i + 5], T[i + 6], T[i + 7], T[i + 8], x, z);
       if (y === null || y <= best) continue;
       if (lo === null) band();

@@ -3,26 +3,33 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 // The gardens (tools/build-garden.mjs, js/garden.js): the paths, beds and plants of the Royal Botanic Garden, the Domain and round the
-// Opera House, and the parks since (the CBD's, Bradfield Park, Prince Alfred Park, Darling Harbour's), as the tiles have them; people
-// walking the paths (js/pedestrian-routes.js); and The Ribbon's model at Darling Harbour.
+// Opera House, and the parks since (the CBD's, Bradfield Park, Prince Alfred Park, Darling Harbour's), as the tiles have them; every other
+// park, laid out by rule where the tiles have them (`garden.byRule`); people walking the paths (js/pedestrian-routes.js); and The Ribbon's
+// model at Darling Harbour. Each test checks what holds wherever it runs, and what only one place has where that place's tiles are held:
+// on suburb tiles alone (SYDNEY_TILES) there are no hand-made areas.
 const { heldTiles, heldTrees } = await import('../js/geodata.js');
 const { groundRoadAt } = await import('../js/surfaces.js');
 const { createPedestrianRoutes } = await import('../js/pedestrian-routes.js');
 const { MODEL_SITES } = await import('../js/model-sites.js');
 
 const garden = heldTiles().filter((t) => t.garden);
-const paths = garden.flatMap((t) => t.garden.paths.map(([kind, surface, width, ...line]) => {
+const paths = garden.flatMap((t) => t.garden.paths.map(([kind, surface, width, ...line], i) => {
   const pts = [];
   for (let i = 0; i + 1 < line.length; i += 2) pts.push({ x: line[i], z: line[i + 1] });
-  return { kind, surface, width, pts };
+  return { kind, surface, width, pts, byRule: i >= (t.garden.byRule?.[0] ?? Infinity) };
 }));
+// The Royal Botanic Garden's tile, and with it the CBD's gardens: what's counted by the CBD's paths and plants needs it. A test of one place
+// needs every tile its boxes reach held, or it counts short at the window's edge
+const cbd = garden.some((t) => t.key === '0_-2');
+const keys = new Set(heldTiles().map((t) => t.key));
+const held = (...list) => list.every((k) => keys.has(k));
 const segDist = (x, z, a, b) => {
   const dx = b.x - a.x, dz = b.z - a.z, L2 = dx * dx + dz * dz || 1e-9;
   const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / L2));
   return Math.hypot(a.x + dx * t - x, a.z + dz * t - z);
 };
 
-test('the Royal Botanic Garden and the Domain have their footpaths, from OpenStreetMap', () => {
+test('the Royal Botanic Garden and the Domain have their footpaths, from OpenStreetMap', { skip: !cbd && 'the Royal Botanic Garden\'s tiles not held' }, () => {
   let metres = 0;
   for (const p of paths) for (let i = 1; i < p.pts.length; i++) metres += Math.hypot(p.pts[i].x - p.pts[i - 1].x, p.pts[i].z - p.pts[i - 1].z);
   assert.ok(metres > 20000, `${(metres / 1000).toFixed(1)} km of path`);
@@ -70,7 +77,8 @@ test('no garden plant stands on a path, and the small ones are planted close', (
       assert.ok(segDist(x, z, s.a, s.b) > s.r + 0.1, `a plant of kind ${kinds[i]} at (${x}, ${z}) on a path`);
     }
   }
-  assert.ok(planted > 5000 && small > planted / 2, `${planted} plants, ${small} of them small`);
+  // The CBD's gardens' plants: the parks laid out by rule have none (their trees are tools/build-trees.mjs')
+  if (cbd) assert.ok(planted > 5000 && small > planted / 2, `${planted} plants, ${small} of them small`);
 });
 
 test('paths join where they meet, and to a street\'s footpath where one ends beside it', () => {
@@ -291,7 +299,7 @@ function along(p, step, trim = 0) {
   return out;
 }
 
-test('the raised lawn covers a kerbed path\'s middle at 2 points in 10,000 at most, and none of it is under a square metre', { skip: !raisedPieces.length && 'no raised lawn in the tiles held' }, () => {
+test('the raised lawn covers a kerbed path\'s middle at 2 points in 10,000 at most, and none of it is under a square metre', { skip: !raisedPieces.length && 'no raised lawn in the tiles held' }, (t) => {
   let samples = 0;
   const over = [];
   for (const p of kerbedPaths) {
@@ -300,10 +308,12 @@ test('the raised lawn covers a kerbed path\'s middle at 2 points in 10,000 at mo
       if (onRaised(q.x, q.z)) over.push([+q.x.toFixed(2), +q.z.toFixed(2)]);
     }
   }
-  assert.ok(samples > 10000, `${samples} points on kerbed paths`);
+  // The CBD's gardens have more than 10,000; a few suburbs' parks fewer, and a few hundred say little
+  if (cbd) assert.ok(samples > 10000, `${samples} points on kerbed paths`);
+  else if (samples < 2000) return t.skip(`only ${samples} points on kerbed paths`);
   // Where a kerbed path ends on a track (worn into the raised lawn, not cut from it) the traced corner of its corridor's end can cut across
-  // it: a few points in tens of thousands, at its very end
-  assert.ok(over.length <= samples * 2e-4, `the raised lawn over the middle of a path at ${over.length} of ${samples} points: ${JSON.stringify(over.slice(0, 8))}`);
+  // it: a few points in tens of thousands, at its very end (two of 4,644 in Darling Harbour's gardens alone)
+  assert.ok(over.length <= Math.max(2, samples * 2e-4), `the raised lawn over the middle of a path at ${over.length} of ${samples} points: ${JSON.stringify(over.slice(0, 8))}`);
   for (const p of raisedPieces) {
     const area = ringArea(p.rings[0]) - p.rings.slice(1).reduce((t, r) => t + ringArea(r), 0);
     assert.ok(area >= 1, `a piece of ${area.toFixed(2)} m² at (${p.rings[0][0].x}, ${p.rings[0][0].z})`);
@@ -311,7 +321,7 @@ test('the raised lawn covers a kerbed path\'s middle at 2 points in 10,000 at mo
   }
 });
 
-test('a kerbed path has the raised lawn beside it, on one side at least, wherever there\'s lawn beside it', { skip: !raisedPieces.length && 'no raised lawn in the tiles held' }, async () => {
+test('a kerbed path has the raised lawn beside it, on one side at least, wherever there\'s lawn beside it', { skip: !raisedPieces.length && 'no raised lawn in the tiles held' }, async (t) => {
   const { lawnSurface } = await import('../js/garden.js');
   const lawnAt = new Map();
   const lawn = (x, z) => {
@@ -325,28 +335,39 @@ test('a kerbed path has the raised lawn beside it, on one side at least, whereve
     for (let i = 1; i < p.pts.length; i++) if (segDist(x, z, p.pts[i - 1], p.pts[i]) < p.width / 2 + 0.1) return true;
     return false;
   });
-  let beside = 0, bare = 0;
-  const where = [];
+  // The hand-made areas' paths, and the parks' laid out by rule, counted apart
+  const count = { area: { beside: 0, bare: 0, where: [] }, byRule: { beside: 0, bare: 0, where: [] } };
   for (const p of kerbedPaths) {
+    const c = count[p.byRule ? 'byRule' : 'area'];
     for (const q of along(p, 2, 3)) {
       // ...and off a paved area: a path across a plaza has the plaza beside it
       const sides = [1, -1].map((k) => ({ x: q.x + q.nx * k * (p.width / 2 + 0.35), z: q.z + q.nz * k * (p.width / 2 + 0.35) }))
         .filter((s) => lawn(s.x, s.z) !== null && !inCorridor(s.x, s.z) && !onPlaza(s.x, s.z));
       if (!sides.length) continue;
-      if (sides.some((s) => onRaised(s.x, s.z))) beside++;
+      if (sides.some((s) => onRaised(s.x, s.z))) c.beside++;
       else {
-        bare++;
-        if (where.length < 6) where.push([+q.x.toFixed(1), +q.z.toFixed(1)]);
+        c.bare++;
+        if (c.where.length < 6) c.where.push([+q.x.toFixed(1), +q.z.toFixed(1)]);
       }
     }
   }
-  assert.ok(beside > 3000, `${beside} points with the raised lawn beside them`);
-  // Left bare: a path along an area's outline, with only the map's lawn outside it. Centennial Park's outline runs along the footpaths of
-  // the streets round it (Alison Rd, Oxford St), a seventh of its paths' points
-  assert.ok(bare / (beside + bare) < 0.04, `${bare} of ${beside + bare} points on a path with lawn beside it but none raised: ${JSON.stringify(where)}`);
+  if (cbd) assert.ok(count.area.beside > 3000, `${count.area.beside} points with the raised lawn beside them`);
+  // Left bare: a path along a park's outline, with only the map's lawn outside it. Centennial Park's outline runs along the footpaths of
+  // the streets round it (Alison Rd, Oxford St), a seventh of its paths' points: 11.5% of the areas' points with its tiles alone, under 4%
+  // with the CBD's gardens. A park by rule's path is kept up to 4 m past its outline (tools/garden/rule-parks.mjs), with the map's lawn
+  // between it and the raised lawn, and its streets' nature strips beyond: 4-11% of its points in part of the map's parks (Sydney Park
+  // 4.1%, Heffron Park's 10.7%, George Kendall Riverside Park's 11.4%), nearly all outside the park
+  let checked = 0;
+  for (const [k, most] of [['area', cbd ? 0.04 : 0.15], ['byRule', 0.15]]) {
+    const { beside, bare, where } = count[k];
+    if (beside + bare < 500) continue;
+    checked++;
+    assert.ok(bare / (beside + bare) < most, `${bare} of ${beside + bare} points on ${k === 'area' ? 'an area\'s' : 'a park by rule\'s'} path with lawn beside it but none raised: ${JSON.stringify(where)}`);
+  }
+  if (!checked) t.skip('fewer than 500 points beside a kerbed path');
 });
 
-test('the CBD\'s parks are gardens: Hyde Park\'s paths, the Archibald Fountain in its plaza and the Pool of Reflection, Barangaroo Reserve, Observatory Hill and Wynyard Park', { skip: !garden.some((t) => t.key === '0_-1') && 'Hyde Park\'s tiles not held' }, () => {
+test('the CBD\'s parks are gardens: Hyde Park\'s paths, the Archibald Fountain in its plaza and the Pool of Reflection, Barangaroo Reserve, Observatory Hill and Wynyard Park', { skip: !held('0_-1', '0_0', '-1_-2', '-1_-1') && 'Hyde Park\'s tiles not held' }, () => {
   for (const [x, z, what] of [[415, -150, 'the fig avenue'], [413, 60, 'Hyde Park South'], [-720, -1409, 'Barangaroo Reserve'], [-366, -1462, 'Observatory Hill'], [-190, -734, 'Wynyard Park']]) {
     assert.ok(paths.some((p) => p.pts.some((q, i) => i && segDist(x, z, p.pts[i - 1], q) < p.width / 2 + 1)), `no path at ${what} (${x}, ${z})`);
   }
@@ -367,7 +388,7 @@ test('the CBD\'s parks are gardens: Hyde Park\'s paths, the Archibald Fountain i
   }
 });
 
-test('a paved area has no raised lawn over it, and none is under a square metre', { skip: !plazaPieces.length && 'no paved areas in the tiles held' }, () => {
+test('a paved area has no raised lawn over it, and none is under a square metre', { skip: !plazaPieces.length && 'no paved areas in the tiles held' }, (t) => {
   let samples = 0;
   const over = [];
   for (const p of plazaPieces) {
@@ -382,11 +403,13 @@ test('a paved area has no raised lawn over it, and none is under a square metre'
       }
     }
   }
-  assert.ok(samples > 1000, `${samples} points on paved areas`);
+  // The CBD's have more than 1,000; the parks by rule's are few (36 over the map)
+  if (cbd) assert.ok(samples > 1000, `${samples} points on paved areas`);
+  else if (samples < 200) return t.skip(`only ${samples} points on paved areas`);
   assert.ok(over.length <= samples * 0.005, `the raised lawn over a paved area at ${over.length} of ${samples} points: ${JSON.stringify(over.slice(0, 8))}`);
 });
 
-test('where the garden\'s trees are the City\'s register\'s (Hyde Park, Prince Alfred Park), it plants none of its own over them', { skip: !garden.some((t) => t.key === '0_-1') && 'Hyde Park\'s tiles not held' }, () => {
+test('where the garden\'s trees are the City\'s register\'s (Hyde Park, Prince Alfred Park), it plants none of its own over them', { skip: !held('0_-1', '0_0', '-1_1', '0_1') && 'Hyde Park\'s tiles not held' }, () => {
   const { points, kinds } = heldTrees();
   // Hyde Park North and South, less their edges along the streets; Prince Alfred Park; not the small plants (cycads and up)
   for (const [x0, x1, z0, z1, least, what] of [[300, 505, -395, 345, 400, 'Hyde Park'], [-120, 175, 1430, 1805, 200, 'Prince Alfred Park']]) {
@@ -408,7 +431,7 @@ const inFlatRing = (f, x, z) => {
   return k;
 };
 
-test('Bradfield Park, Prince Alfred Park, Tumbalong Park and the Chinese Garden of Friendship are gardens: their paths, pale concrete only where a park says so, and the Chinese Garden\'s lake edged with rocks', { skip: !garden.some((t) => t.key === '-1_0') && 'Darling Harbour\'s tile not held' }, () => {
+test('Bradfield Park, Prince Alfred Park, Tumbalong Park and the Chinese Garden of Friendship are gardens: their paths, pale concrete only where a park says so, and the Chinese Garden\'s lake edged with rocks', { skip: !held('-1_0', '0_-3', '-1_1', '0_1') && 'Darling Harbour\'s tile not held' }, () => {
   for (const [x, z, what] of [[140, -2694.2, 'Bradfield Park, under the bridge'], [-53, 1726, 'Prince Alfred Park'], [-441, 359, 'Tumbalong Park'], [-305, 442.9, 'the Chinese Garden']]) {
     assert.ok(paths.some((p) => p.pts.some((q, i) => i && segDist(x, z, p.pts[i - 1], q) < p.width / 2 + 1)), `no path at ${what} (${x}, ${z})`);
   }
@@ -479,7 +502,7 @@ test('the Chinese Garden\'s ponds are edged with rocks all round, but not where 
   assert.ok(shared > 5 && rocked === 0, `rocks at ${rocked} of ${shared} points where two ponds meet`);
 });
 
-test('nothing of a garden stands in the Harbour Bridge\'s pylons or piers: Bradfield Park\'s trees, plants and gates', { skip: !garden.some((t) => t.key === '0_-3') && 'Bradfield Park\'s tiles not held' }, async () => {
+test('nothing of a garden stands in the Harbour Bridge\'s pylons or piers: Bradfield Park\'s trees, plants and gates', { skip: !held('-1_-4', '0_-4', '-1_-3', '0_-3') && 'Bradfield Park\'s tiles not held' }, async () => {
   const { bridgeFeet } = await import('../js/harbour-bridge.js');
   const feet = bridgeFeet();
   assert.ok(feet.length > 20, `${feet.length} feet`);
@@ -509,7 +532,7 @@ test('no garden sea wall stands where a region\'s edge cut the land: Hyde Park S
   }
 });
 
-test('Centennial Park and Moore Park are gardens: Centennial\'s paved paths and its tracks, the bridle track 4 m wide, its lakes and their islands, and the Moore Park by Anzac Parade', { skip: !garden.some((t) => t.key === '2_2') && 'Centennial Park\'s tiles not held' }, () => {
+test('Centennial Park and Moore Park are gardens: Centennial\'s paved paths and its tracks, the bridle track 4 m wide, its lakes and their islands, and the Moore Park by Anzac Parade', { skip: !['1', '2', '3'].every((x) => held(`${x}_1`, `${x}_2`, `${x}_3`)) && 'Centennial Park\'s tiles not held' }, () => {
   const inBox = (p, x0, x1, z0, z1) => p.pts.some(({ x, z }) => x > x0 && x < x1 && z > z0 && z < z1);
   const km = (list) => list.reduce((t, p) => t + p.pts.slice(1).reduce((s, q, i) => s + Math.hypot(q.x - p.pts[i].x, q.z - p.pts[i].z), 0), 0) / 1000;
   const centennial = paths.filter((p) => inBox(p, 1930, 3930, 1420, 3320));
@@ -544,7 +567,7 @@ test('Centennial Park and Moore Park are gardens: Centennial\'s paved paths and 
   }
 });
 
-test('a lake is laid on the lawn\'s triangles: its water whole, round its islands, and cheap', { skip: !garden.some((t) => t.key === '2_2') && 'Centennial Park\'s tiles not held' }, async () => {
+test('a lake is laid on the lawn\'s triangles: its water whole, round its islands, and cheap', { skip: !held('2_2', '2_3', '3_2', '3_3') && 'Centennial Park\'s tiles not held' }, async () => {
   const { buildTileGarden, gardenMaterials } = await import('../js/garden.js');
   const water = [];
   for (const t of garden.filter((t) => /^[23]_[23]$/.test(t.key))) {
@@ -582,4 +605,77 @@ test('a lake is laid on the lawn\'s triangles: its water whole, round its island
   }
   assert.ok(n > 3000 && dry <= n * 0.002, `Busbys Pond's water missing at ${dry} of ${n} points`);
   assert.equal(wet, 0, 'water over an island');
+});
+
+// The parks laid out by rule (tools/build-garden.mjs's second pass): in a tile with any, `garden.byRule` is where their entries start in
+// its paths, lawns and plazas
+const ruleTiles = garden.filter((t) => t.garden.byRule);
+
+test('a park laid out by rule has its paths, and a formal one its raised lawn, but none of an area\'s beds, ponds, hedges, gates or sea walls', { skip: !ruleTiles.length && 'no park by rule in the tiles held' }, () => {
+  let pathsByRule = 0, lawnsByRule = 0;
+  for (const t of ruleTiles) {
+    const g = t.garden, [p, l, z] = g.byRule;
+    assert.ok(p <= g.paths.length && l <= (g.lawns?.length ?? 0) && z <= (g.plazas?.length ?? 0), `${t.key}: byRule ${JSON.stringify(g.byRule)} past its lists`);
+    pathsByRule += g.paths.length - p;
+    lawnsByRule += (g.lawns?.length ?? 0) - l;
+    // A tile with no hand-made area's entries has nothing but the parks by rule's
+    if (p || l || z) continue;
+    for (const k of ['beds', 'ponds', 'hedges', 'gates', 'seawalls', 'fountains', 'rockPonds', 'islands']) {
+      assert.ok(!(g[k]?.length), `${t.key}: ${g[k]?.length} ${k} in a tile of parks by rule alone`);
+    }
+  }
+  assert.ok(pathsByRule > 0, 'no path of a park by rule');
+  assert.ok(lawnsByRule > 0 || paths.filter((q) => q.byRule).every((q) => q.kind === 3), 'no raised lawn, though a park by rule has a paved path');
+});
+
+test('a park by rule is culled nearer than a hand-made area, apart from it: its kerbs first, then its raised lawn, then its paths', async () => {
+  const { SQUARE_CULL } = await import('../js/garden.js');
+  // A made-up garden on a held tile's lawn: a 20 m square of raised lawn with a path across it, once as an area's and once as a park's by
+  // rule, at the same place (each is its own cluster whatever the other)
+  let spot = null;
+  for (const t of heldTiles().filter((t) => t.placedLawns?.length).sort((a, b) => (a.key < b.key ? -1 : 1))) {
+    for (const rings of t.placedLawns) {
+      const ring = rings[0];
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (const q of ring) { x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); z0 = Math.min(z0, q.z); z1 = Math.max(z1, q.z); }
+      if (x1 - x0 < 40 || z1 - z0 < 40) continue;
+      const inLawn = (x, z) => rings.reduce((k, r, i) => {
+        let c = false;
+        for (let a = 0, b = r.length - 1; a < r.length; b = a++) if ((r[a].z > z) !== (r[b].z > z) && x < ((r[b].x - r[a].x) * (z - r[a].z)) / (r[b].z - r[a].z) + r[a].x) c = !c;
+        return i ? k && !c : c;
+      }, false);
+      for (let x = Math.ceil(x0) + 12; x < x1 - 12 && !spot; x += 5) {
+        for (let z = Math.ceil(z0) + 12; z < z1 - 12 && !spot; z += 5) {
+          if ([[-11, -11], [11, -11], [11, 11], [-11, 11], [0, 0]].every(([dx, dz]) => inLawn(x + dx, z + dz))) spot = { tile: t, x, z };
+        }
+      }
+      if (spot) break;
+    }
+    if (spot) break;
+  }
+  assert.ok(spot, 'no lawn to lay a made-up garden on');
+  const { tile, x, z } = spot;
+  const square = [x - 10, z - 10, x - 10, z + 10, x + 10, z + 10, x + 10, z - 10];
+  const path = [0, 1, 2, x - 10, z, x + 10, z];
+  // (Its lookup layer under a key of its own, and none of the tile's lakes)
+  const made = { ...tile, key: `${tile.key}-made-up`, lakes: [], garden: { paths: [path, path], lawns: [[0, square], [0, square]], plazas: [], gates: [], hedges: [], ponds: [], beds: [], byRule: [1, 1, 0] } };
+  const target = { children: [] };
+  const names = new Map(Object.entries(gardenMaterials()).map(([k, v]) => [v, k]));
+  const asked = [];
+  const it = buildTileGarden(made, target, (cells, group, material, { cullDistance }) => {
+    for (const [key, c] of cells.cells) {
+      if (!c.index.length) continue;
+      const mesh = { material, userData: {} };
+      group.children.push(mesh);
+      asked.push({ what: names.get(material), key, cullDistance, mesh });
+    }
+  });
+  while (!it.next().done);
+  const of = (what, byRule) => asked.filter((a) => a.what === what && typeof a.key === 'string' === byRule);
+  for (const [what, area, rule] of [['lawn', 900, SQUARE_CULL.lawn], ['paths', 900, SQUARE_CULL.paths], ['stone', 600, SQUARE_CULL.stone]]) {
+    assert.deepEqual(of(what, false).map((a) => [a.key, a.cullDistance]), [[0, area]], `the area's ${what}`);
+    assert.deepEqual(of(what, true).map((a) => [a.key, a.cullDistance]), [['r0', rule]], `the park by rule's ${what}`);
+    assert.ok(of(what, true).every((a) => a.mesh.userData.byRule) && !of(what, false).some((a) => a.mesh.userData.byRule), `${what}: which is the park by rule's`);
+  }
+  assert.ok(SQUARE_CULL.stone < SQUARE_CULL.lawn && SQUARE_CULL.lawn < SQUARE_CULL.paths, 'kerbs, then the raised lawn, then the paths');
 });

@@ -189,7 +189,7 @@ function populationContext() {
     // No grid of who lives where: every road full, as before js/places.js
     roadShare: () => 1, peopleAround: () => Infinity,
     // No garden paths (js/pedestrian-routes.js)
-    pedRoutes: { paths: [] }, gardenShare: () => 0, pathTrack: () => false, pathMetresNear: () => 0, PATH_METRES_A_PERSON: 40
+    pedRoutes: { paths: [] }, gardenShare: () => 0, pathTrack: () => false, pathMetresNear: () => ({ area: 0, byRule: 0 }), PATH_METRES_A_PERSON: 40
   };
   context.nearView = trafficFunction('nearView', context);
   return context;
@@ -241,6 +241,33 @@ test('long roads are available near their ends and spawn only in the local secti
   assert.equal(trafficFunction('spawnVehicle', context)(car, 0, 350, false), true);
   assert.ok(edge.sz + car.s <= 350);
   assert.ok(car.s >= car.half + 5);
+});
+
+test('a park laid out by rule is as busy as the streets round it: its paths count for no more than their footpaths', () => {
+  // 300 m of street (600 m of footpath, both sides), 30 people round it; a hand-made area's 400 m of path bring one every 40 m
+  const context = populationContext();
+  const edge = Object.assign(straightEdge(0, 300), { lanes: [0] });
+  Object.assign(context, { edges: [edge], nodes: [], nearX: Infinity, nearZ: Infinity, peopleAround: () => 30, peopleWanted: 0 });
+  const refreshNear = trafficFunction('refreshNear', context);
+  context.pathMetresNear = () => ({ area: 400, byRule: 0 });
+  refreshNear();
+  assert.equal(context.peopleWanted, 30 + 10, 'an area\'s paths: as they always were');
+  // 300 m of a park's paths by rule: half again the street's people; 5 km of them: no more than the footpaths' 600 m, twice them
+  for (const [metres, more] of [[300, 15], [5000, 30]]) {
+    Object.assign(context, { nearX: Infinity, nearZ: Infinity, pathMetresNear: () => ({ area: 400, byRule: metres }) });
+    refreshNear();
+    assert.equal(context.peopleWanted, 30 + 10 + more, `${metres} m of a park's paths by rule`);
+  }
+  // ...and of those out, the share on a garden's paths, the parks by rule's counted no further than the footpaths
+  const track = (len, byRule) => ({ ax: 10, az: 10, len, byRule });
+  const share = { NEAR_RADIUS: 350, focusX: 0, focusZ: 0, nearEdges: [edge], shareAt: { x: Infinity, z: Infinity, edges: -1 }, nearRule: [] };
+  const gardenShare = trafficFunction('gardenShare', share);
+  Object.assign(share, { areaPaths: [track(400, false)], rulePaths: [track(5000, true)] });
+  assert.ok(Math.abs(gardenShare() - (400 + 600) / (400 + 600 + 600)) < 1e-9, `a share of ${share.pathShare}`);
+  assert.ok(Math.abs(share.ruleShare - 600 / 1000) < 1e-9 && share.nearRule.length === 1, `the parks by rule's ${share.ruleShare}`);
+  // With no park by rule, as before: the areas' paths by their length
+  Object.assign(share, { rulePaths: [], shareAt: { x: Infinity, z: Infinity, edges: -1 } });
+  assert.ok(Math.abs(gardenShare() - 400 / 1000) < 1e-9 && share.ruleShare === 0, `a share of ${share.pathShare}`);
 });
 
 test('crossing pedestrians fall back to a sidewalk when nearby crosswalks are unusable', () => {

@@ -728,6 +728,7 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
     nearEdges.length = 0;
     nearSignals.length = 0;
     nearLaneMetres = 0;
+    let footpathMetres = 0;
     for (const e of edges) {
       const s = clamp((focusX - e.sx) * e.dx + (focusZ - e.sz) * e.dz, 0, e.len);
       const dx = e.sx + e.dx * s - focusX, dz = e.sz + e.dz * s - focusZ;
@@ -735,22 +736,28 @@ function* createTrafficSystem(scene, obstacles, signalIntersections, { numCars =
         nearEdges.push(e);
         if (!e.shareKnown) e.share = roadShare(e);
         nearLaneMetres += Math.min(e.len, NEAR_RADIUS * 2) * e.lanes.length * e.share;
+        if (!e.deck) footpathMetres += e.len * 2;
       }
     }
-    peopleWanted = peopleAround(focusX, focusZ) + Math.round(pathMetresNear(focusX, focusZ) / PATH_METRES_A_PERSON);
+    // A hand-made area's paths bring a person every PATH_METRES_A_PERSON; a park's laid out by rule, in every suburb, are as busy as the
+    // streets' footpaths round them, and count for no more metres than those (js/pedestrian-system.js gardenShare())
+    const around = peopleAround(focusX, focusZ), paths = pathMetresNear(focusX, focusZ);
+    const ruleMetres = Math.min(paths.byRule, footpathMetres);
+    peopleWanted = around + Math.round(paths.area / PATH_METRES_A_PERSON) + (ruleMetres > 0 ? Math.round((around * ruleMetres) / footpathMetres) : 0);
     for (const n of nodes) {
       const dx = n.x - focusX, dz = n.z - focusZ;
       if (n.signal && dx * dx + dz * dz < NEAR_RADIUS * NEAR_RADIUS) nearSignals.push(n);
     }
   }
 
-  /** How many metres of a garden's paths there are within NEAR_RADIUS of (x, z) */
+  /** How many metres of a garden's paths there are within NEAR_RADIUS of (x, z): { area, byRule }, the hand-made areas' and the parks' by rule */
   function pathMetresNear(x, z) {
-    let metres = 0;
+    const metres = { area: 0, byRule: 0 };
     for (const p of network.paths || []) {
+      const k = p.byRule ? 'byRule' : 'area';
       for (let i = 1; i < p.pts.length; i++) {
         const a = p.pts[i - 1], b = p.pts[i];
-        if ((a.x - x) ** 2 + (a.z - z) ** 2 < NEAR_RADIUS * NEAR_RADIUS) metres += Math.hypot(b.x - a.x, b.z - a.z);
+        if ((a.x - x) ** 2 + (a.z - z) ** 2 < NEAR_RADIUS * NEAR_RADIUS) metres[k] += Math.hypot(b.x - a.x, b.z - a.z);
       }
     }
     return metres;

@@ -2218,9 +2218,10 @@ async function initApp() {
         }
         return sides;
       },
-      // The people out within r of (x, z), each as [x, z, on a garden's path (js/pedestrian-routes.js)]
+      // The people out within r of (x, z), each as [x, z, on a garden's path (js/pedestrian-routes.js): 1 a hand-made area's, 2 a park's laid
+      // out by rule]
       walkers(x, z, r = 300) {
-        return (trafficSystem?.peds ?? []).filter((p) => p.placed && Math.hypot(p.x - x, p.z - z) <= r).map((p) => [p.x, p.z, p.path ? 1 : 0]);
+        return (trafficSystem?.peds ?? []).filter((p) => p.placed && Math.hypot(p.x - x, p.z - z) <= r).map((p) => [p.x, p.z, p.path ? (p.byRule ? 2 : 1) : 0]);
       },
       // Where the corridor heads from (x, z), for steering across the bridge
       bridgeAim(x, z, direction = 1) {
@@ -2514,7 +2515,7 @@ async function initApp() {
       // they cost
       gardenShown: (on) => scene.traverse((o) => { if (o.userData.garden) o.layers.set(on ? 0 : 31); }),
       // The garden's meshes drawn in the last frame, by material: those the culling showed (js/scene-culling.js) and in the camera's view,
-      // their triangles, and the reach of their bounds
+      // their triangles, and the reach of their bounds; and how many of them, and of their triangles, are the parks by rule's
       gardenMeshes() {
         const camera = cameraSystem.camera;
         const frustum = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
@@ -2524,10 +2525,15 @@ async function initApp() {
           let shown = o.layers.isEnabled(0);
           for (let p = o; p && shown; p = p.parent) shown = p.visible;
           if (!shown || !frustum.intersectsObject(o)) return;
-          const entry = by[o.userData.garden] ??= { meshes: 0, triangles: 0, reach: 0 };
+          const entry = by[o.userData.garden] ??= { meshes: 0, triangles: 0, reach: 0, ruleMeshes: 0, ruleTriangles: 0 };
+          const triangles = (o.geometry.index?.count ?? 0) / 3;
           entry.meshes++;
-          entry.triangles += (o.geometry.index?.count ?? 0) / 3;
+          entry.triangles += triangles;
           entry.reach = Math.max(entry.reach, Math.round(o.geometry.boundingSphere?.radius ?? 0));
+          if (o.userData.byRule) {
+            entry.ruleMeshes++;
+            entry.ruleTriangles += triangles;
+          }
         });
         return by;
       },

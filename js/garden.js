@@ -823,22 +823,51 @@ const CLUSTER_GAP = 60; // m
 // lawn under it is the same grass, 8 cm down.
 const BIG_CLUSTER = 1100; // m
 const SQUARE_CULL = { lawn: 400, paths: 700, beds: 500, pond: 1200, stone: 300, hedge: 600, walls: 900 };
+// The parks laid out by rule (tools/build-garden.mjs, after the hand-made areas: `byRule`, where their entries start in the tile's paths,
+// lawns and plazas) are in every suburb, a few to a square kilometre: each cluster of them is culled at SQUARE_CULL's distances, as a big
+// park's squares are, so their kerbs go first, then the raised lawn, and from further off only their paths and tracks are drawn. A
+// cluster of them wider or deeper than RULE_SQUARE (a tile of parks in a row along a foreshore, Glebe's; Sydney Park) is drawn in squares
+// that size. At five places in four suburbs' parks, each way and from above, the low level drew 13,300 of their triangles on average
+// (24,200 as one mesh a cluster, up to 40,300) in 8.4 draws (5.2); in the raised lawn's own squares, 8,900 triangles in 12.7 draws.
+const RULE_SQUARE = 2 * SQUARE; // m
 /**
  * (x, z) => the key of the cluster of `g`'s garden (x, z) is in: 0 for the first, or off them all; in a big one (BIG_CLUSTER), a string
- * naming the cluster and its square
+ * naming the cluster and its square. With `byRule` set on it, of the parks by rule's clusters instead, always a string: `r` and the
+ * cluster, and its square in a wide one (RULE_SQUARE).
  */
 function gardenClusters(g) {
-  const boxes = [];
-  const add = (flat, from = 0) => { if (flat.length >= from + 2) boxes.push(boxOf(pointsOf(flat, from))); };
-  for (const [, outer] of g.lawns ?? []) add(outer);
-  for (const [, outer] of g.plazas ?? []) add(outer);
-  for (const p of g.paths) add(p, 3);
-  for (const b of g.beds) add(b, 1);
-  for (const f of g.ponds) add(f);
-  for (const f of g.rockPonds ?? []) add(f);
-  for (const h of g.hedges) add(h, 2);
-  for (const w of g.seawalls ?? []) add(w, 1);
-  for (const [x, z] of g.gates) boxes.push({ x0: x, x1: x, z0: z, z1: z });
+  const [rulePaths, ruleLawns, rulePlazas] = g.byRule ?? [Infinity, Infinity, Infinity];
+  const areaBoxes = [], ruleBoxes = [];
+  const add = (boxes, flat, from = 0) => { if (flat.length >= from + 2) boxes.push(boxOf(pointsOf(flat, from))); };
+  (g.lawns ?? []).forEach(([, outer], i) => add(i < ruleLawns ? areaBoxes : ruleBoxes, outer));
+  (g.plazas ?? []).forEach(([, outer], i) => add(i < rulePlazas ? areaBoxes : ruleBoxes, outer));
+  g.paths.forEach((p, i) => add(i < rulePaths ? areaBoxes : ruleBoxes, p, 3));
+  for (const b of g.beds) add(areaBoxes, b, 1);
+  for (const f of g.ponds) add(areaBoxes, f);
+  for (const f of g.rockPonds ?? []) add(areaBoxes, f);
+  for (const h of g.hedges) add(areaBoxes, h, 2);
+  for (const w of g.seawalls ?? []) add(areaBoxes, w, 1);
+  for (const [x, z] of g.gates) areaBoxes.push({ x0: x, x1: x, z0: z, z1: z });
+  const areas = clustersOf(areaBoxes, BIG_CLUSTER), rules = clustersOf(ruleBoxes, RULE_SQUARE);
+  const find = (list, x, z) => {
+    const k = list.findIndex((c) => x >= c.x0 - CLUSTER_GAP && x <= c.x1 + CLUSTER_GAP && z >= c.z0 - CLUSTER_GAP && z <= c.z1 + CLUSTER_GAP);
+    return k < 0 ? 0 : k;
+  };
+  const square = (x, z, size = SQUARE) => `${Math.floor(x / size)},${Math.floor(z / size)}`;
+  const keyOf = (x, z) => {
+    if (keyOf.byRule) {
+      const k = find(rules, x, z);
+      return rules[k]?.big ? `r${k}:${square(x, z, RULE_SQUARE)}` : `r${k}`;
+    }
+    if (areas.length < 2 && !areas[0]?.big) return 0;
+    const k = find(areas, x, z);
+    return areas[k].big ? `${k}:${square(x, z)}` : k;
+  };
+  keyOf.byRule = false;
+  return keyOf;
+}
+/** Boxes joined into clusters where they come within CLUSTER_GAP, each `big` if it's wider or deeper than `big` */
+function clustersOf(boxes, big) {
   // Joined where they come within the gap, sweeping along x
   boxes.sort((a, b) => a.x0 - b.x0);
   const up = boxes.map((_, i) => i);
@@ -857,13 +886,8 @@ function gardenClusters(g) {
     else { c.x0 = Math.min(c.x0, b.x0); c.x1 = Math.max(c.x1, b.x1); c.z0 = Math.min(c.z0, b.z0); c.z1 = Math.max(c.z1, b.z1); }
   }
   const list = [...clusters.values()];
-  for (const c of list) c.big = c.x1 - c.x0 > BIG_CLUSTER || c.z1 - c.z0 > BIG_CLUSTER;
-  if (list.length < 2 && !list[0]?.big) return () => 0;
-  return (x, z) => {
-    let k = list.findIndex((c) => x >= c.x0 - CLUSTER_GAP && x <= c.x1 + CLUSTER_GAP && z >= c.z0 - CLUSTER_GAP && z <= c.z1 + CLUSTER_GAP);
-    if (k < 0) k = 0;
-    return list[k].big ? `${k}:${Math.floor(x / SQUARE)},${Math.floor(z / SQUARE)}` : k;
-  };
+  for (const c of list) c.big = c.x1 - c.x0 > big || c.z1 - c.z0 > big;
+  return list;
 }
 
 /**
@@ -937,28 +961,33 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
       if (due()) yield;
     }
   }
-  // A formal park's raised lawn, laid on the map's lawn's triangles, and the kerbs along its edges
+  // A formal park's raised lawn, laid on the map's lawn's triangles, and the kerbs along its edges: a big piece's two a step each
+  const [rulePaths, ruleLawns, rulePlazas] = g.byRule ?? [Infinity, Infinity, Infinity];
   const raised = new LaidSurface();
   const kerbTops = [];
-  for (const [kerb, ...flats] of g.lawns ?? []) {
+  for (const [i, [kerb, ...flats]] of (g.lawns ?? []).entries()) {
     const rings = flats.map((f) => pointsOf(f));
     if (rings[0].length < 3 || !wanted(rings[0][0].x, rings[0][0].z)) continue;
+    keyOf.byRule = i >= ruleLawns;
     const b = boxOf(rings[0]);
     const tris = lawnAt.trianglesIn(b.x0, b.z0, b.x1, b.z1);
     const laid = [];
     drapePolygon(rings, tris, RAISED_TOP, laid, 0, 0);
     raised.add(laid);
     addLaid(lawn, laid);
+    if (due()) yield;
     stone.tint = KERB_STONE[kerb] ?? KERB_STONE[0];
     kerbTops.push(addKerbs(stone, rings, tris, below));
     if (due()) yield;
   }
+  keyOf.byRule = false;
   yield;
   // Paved areas, laid as the paths are, on the lawn's and the paving's triangles at a footpath's height for what they're made of: the
   // raised lawn's kerbs stand along their edges
-  for (const [surface, ...flats] of g.plazas ?? []) {
+  for (const [i, [surface, ...flats]] of (g.plazas ?? []).entries()) {
     const rings = flats.map((f) => pointsOf(f));
     if (rings[0].length < 3 || !SURFACES[surface] || !wanted(rings[0][0].x, rings[0][0].z)) continue;
+    keyOf.byRule = i >= rulePlazas;
     paths.tint = SURFACES[surface];
     const top = pathTop(0, surface);
     const b = boxOf(rings[0]);
@@ -968,6 +997,7 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
     addLaid(paths, laid);
     if (due()) yield;
   }
+  keyOf.byRule = false;
   // Beds dug in the raised lawn, cut to it, or laid on the map's lawn where there's none
   for (const [kind, ...ring] of g.beds) {
     const pts = pointsOf(ring);
@@ -1068,9 +1098,10 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   // The paths, laid on the lawn's and the paving's triangles, a piece a segment: where both are drawn (the paving runs under the lawn's
   // edge) the one on the lawn is on top. A track is worn into the raised lawn, and into the map's lawn off it, where a paved path that
   // crosses it covers it
-  for (const [kind, surface, width, ...line] of g.paths) {
+  for (const [i, [kind, surface, width, ...line]] of g.paths.entries()) {
     const pts = pointsOf(line);
     if (pts.length < 2 || (surface === 4 && kind !== TRACK) || !SURFACES[surface] || !wanted(pts[0].x, pts[0].z)) continue;
+    keyOf.byRule = i >= rulePaths;
     // Steps in sandstone, whatever OSM says they're made of
     paths.tint = kind === 1 ? SANDSTONE : SURFACES[surface];
     const top = pathTop(kind, surface);
@@ -1090,6 +1121,7 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
     addLaid(paths, laid);
     if (due()) yield;
   }
+  keyOf.byRule = false;
   yield;
   // Hedges stand on the raised lawn where there is one
   const hedgeAt = (x, z) => {
@@ -1139,12 +1171,17 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
     trianglesOf(bank)]);
   yield;
   const before = target?.children.length ?? 0;
-  // A small cluster's meshes culled at `far`; a big one's squares (string keys, gardenClusters()) at SQUARE_CULL's
+  // A small cluster's meshes culled at `far`; a big one's squares, and the parks by rule's clusters (string keys, gardenClusters()), at
+  // SQUARE_CULL's. The parks by rule's are marked, for measuring what they cost (gardenMeshes())
+  const byRule = new Set();
   const build = (cells, material, far, near, cast = false) => {
-    const whole = { cells: new Map() }, squares = { cells: new Map() };
-    for (const [key, c] of cells.cells) (typeof key === 'string' ? squares : whole).cells.set(key, c);
+    const whole = { cells: new Map() }, squares = { cells: new Map() }, rule = { cells: new Map() };
+    for (const [key, c] of cells.cells) (typeof key !== 'string' ? whole : key[0] === 'r' ? rule : squares).cells.set(key, c);
     buildCells(whole, target, material, { cast, cullDistance: far });
     buildCells(squares, target, material, { cast, cullDistance: near });
+    const from = target?.children.length ?? 0;
+    buildCells(rule, target, material, { cast, cullDistance: near });
+    for (const mesh of target?.children.slice(from) ?? []) byRule.add(mesh);
   };
   build(lawn, mats.lawn, 900, SQUARE_CULL.lawn);
   build(paths, mats.paths, 900, SQUARE_CULL.paths);
@@ -1155,7 +1192,10 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   build(walls, mats.wall, 900, SQUARE_CULL.walls, true);
   // What's the garden's, by material, for measuring what it costs (__gameDebug.gardenShown(), gardenMeshes())
   const names = new Map(Object.entries(mats).map(([k, v]) => [v, k]));
-  for (const mesh of target?.children.slice(before) ?? []) mesh.userData.garden = names.get(mesh.material) ?? true;
+  for (const mesh of target?.children.slice(before) ?? []) {
+    mesh.userData.garden = names.get(mesh.material) ?? true;
+    if (byRule.has(mesh)) mesh.userData.byRule = true;
+  }
   // The lakes' water and banks, a mesh each for the tile, named apart
   const lakesFrom = target?.children.length ?? 0;
   buildCells(lakeWater, target, mats.pond, { cullDistance: LAKE_CULL.water });
@@ -1164,5 +1204,5 @@ function* buildTileGarden(tile, target, buildCells, wanted = () => true) {
   return colliders;
 }
 
-export { FOUNTAIN, PATH_TOP, POND_TOP, SURFACES as PATH_SURFACES, ROCKS as POND_ROCKS, TRACK, TRACK_TOP, buildTileGarden, gardenMaterials, lawnSurface, pathTop,
-  pavingSurface, useMapLawn };
+export { FOUNTAIN, PATH_TOP, POND_TOP, SURFACES as PATH_SURFACES, ROCKS as POND_ROCKS, SQUARE_CULL, TRACK, TRACK_TOP, buildTileGarden, gardenMaterials, lawnSurface,
+  pathTop, pavingSurface, useMapLawn };

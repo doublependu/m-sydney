@@ -16,7 +16,7 @@ function createPedestrianRoutes({ walkable, onSidewalk, edges = [], paths = [], 
   const segment = (a, b, extra = {}) => {
     const len = Math.hypot(b.x - a.x, b.z - a.z);
     return { ax: a.x, az: a.z, ux: (b.x - a.x) / len, uz: (b.z - a.z) / len,
-      len, node: null, side: 0, line: 0, path: false, top: null, ...extra };
+      len, node: null, side: 0, line: 0, path: false, top: null, byRule: false, ...extra };
   };
   const pathTracks = [], pathLinks = [], joinsByEdge = new Map();
   buildPaths();
@@ -88,7 +88,7 @@ function createPedestrianRoutes({ walkable, onSidewalk, edges = [], paths = [], 
           if (q.place && previous) { const to = placeAt(q.x, q.z); nodes.add(to); previous.to = to; to.ends.push({ track: previous, end: 1 }); previous = null; from = to; }
           continue;
         }
-        const track = segment(p, q, { path: true, block: blockAt(p.x, p.z), top: kept[li].top ?? null });
+        const track = segment(p, q, { path: true, block: blockAt(p.x, p.z), top: kept[li].top ?? null, byRule: !!kept[li].byRule });
         if (previous) { previous.after = track; track.before = previous; } else { track.from = from; from.ends.push({ track, end: 0 }); }
         pathTracks.push(track);
         previous = track;

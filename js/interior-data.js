@@ -312,8 +312,49 @@ function exitSpot(site, doors, rooms, footpath = null) {
   return { x: path.x, z: path.z, heading: Math.atan2(middle.x - path.x, middle.z - path.z), y, via: 'footpath', door: door.id };
 }
 
+/**
+ * A model's floors or walls in the squares of a grid (model frame, `cell` m) their boxes overlap: near(x0, z0, x1, z1) gives those whose
+ * boxes reach the box x0..x1, z0..z1, in their order in `items`, so a walk through them finds what a walk through all of them would there.
+ * A big outside's floors (the Art Gallery's forecourt is 366 of them, its levels 42 more) are looked through for every groundHeight()
+ * inside the site's box, the walkers' and the cars' too, and the camera's walls and floors every frame beside it.
+ */
+function gridOf(items, boxOf, cell = 4) {
+  const cells = new Map();
+  const key = (ix, iz) => ix * 100003 + iz;
+  items.forEach((item, i) => {
+    const [x0, z0, x1, z1] = boxOf(item);
+    for (let ix = Math.floor(x0 / cell); ix <= Math.floor(x1 / cell); ix++) {
+      for (let iz = Math.floor(z0 / cell); iz <= Math.floor(z1 / cell); iz++) {
+        const list = cells.get(key(ix, iz));
+        if (list) list.push(i);
+        else cells.set(key(ix, iz), [i]);
+      }
+    }
+  });
+  const none = [];
+  return {
+    near(x0, z0, x1 = x0, z1 = z0) {
+      const ix0 = Math.floor(x0 / cell), ix1 = Math.floor(x1 / cell), iz0 = Math.floor(z0 / cell), iz1 = Math.floor(z1 / cell);
+      if (ix0 === ix1 && iz0 === iz1) return (cells.get(key(ix0, iz0)) ?? none).map((i) => items[i]);
+      const found = new Set();
+      for (let ix = ix0; ix <= ix1; ix++) for (let iz = iz0; iz <= iz1; iz++) for (const i of cells.get(key(ix, iz)) ?? none) found.add(i);
+      return [...found].sort((a, b) => a - b).map((i) => items[i]);
+    }
+  };
+}
+/** A floor's box, and a wall's (its thickness round its line), for gridOf() */
+function floorBox(f) {
+  let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+  for (const [x, z] of f.poly) {
+    x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z);
+  }
+  return [x0, z0, x1, z1];
+}
+const wallBox = (w) => [Math.min(w.a[0], w.b[0]) - w.t / 2, Math.min(w.a[1], w.b[1]) - w.t / 2, Math.max(w.a[0], w.b[0]) + w.t / 2,
+  Math.max(w.a[1], w.b[1]) + w.t / 2];
+
 export {
-  DOOR_STEP, DOOR_TIME, REACH, SEAT_REACH, STEP_UP, WALKER, clearOf, doorCollider, doorInReach, doorStep, doorway, exitSpot, eyeReach, floorAt,
-  floorHeight, floorUnder, headroom, inPoly, leafAt, lineToWalls, roomAt, seatInReach, segmentCollider, standSpot, toLocal, toWorld, visibleRooms,
-  wallCollider
+  DOOR_STEP, DOOR_TIME, EYE_PAD, REACH, SEAT_REACH, STEP_UP, WALKER, clearOf, doorCollider, doorInReach, doorStep, doorway, exitSpot, eyeReach,
+  floorAt, floorBox, floorHeight, floorUnder, gridOf, headroom, inPoly, leafAt, lineToWalls, roomAt, seatInReach, segmentCollider, standSpot,
+  toLocal, toWorld, visibleRooms, wallBox, wallCollider
 };

@@ -326,3 +326,33 @@ test('a clock\'s hands turn by Sydney\'s time', async () => {
   assert.equal(sydneySeconds(midnight), at(10, 0));
   assert.equal(sydneySeconds(summer + 61 * 1000 * 1000), (at(11, 0) + 61000) % 86400);
 });
+
+test('a model\'s floors and walls looked up by square answer as all of them do: the Art Gallery\'s floor everywhere, the camera\'s reach', async () => {
+  const { EYE_PAD, floorBox, gridOf, wallBox } = await import('../js/interior-data.js');
+  const files = ['art-gallery', 'art-gallery-g', 'art-gallery-l1', 'art-gallery-l2', 'art-gallery-l3'].map(read);
+  const all = { floors: files.flatMap((d) => d.floors ?? []), walls: files.flatMap((d) => d.walls ?? []) };
+  const grid = { floors: gridOf(all.floors, floorBox), walls: gridOf(all.walls, wallBox) };
+  assert.ok(all.floors.length > 300 && all.walls.length > 300, `${all.floors.length} floors, ${all.walls.length} walls`);
+  // A seeded spread of points over the site, at each level's height and between them
+  let seed = 7;
+  const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const xs = all.floors.flatMap((f) => f.poly.map((p) => p[0])), zs = all.floors.flatMap((f) => f.poly.map((p) => p[1]));
+  const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
+  let found = 0;
+  for (let k = 0; k < 4000; k++) {
+    const x = x0 + (x1 - x0) * random(), z = z0 + (z1 - z0) * random(), ref = -20 + 25 * random();
+    const want = floorAt(all.floors, x, z, ref);
+    assert.equal(floorAt(grid.floors.near(x, z), x, z, ref), want, `the floor at (${x}, ${z}) for ${ref}`);
+    if (want !== null) found++;
+  }
+  assert.ok(found > 1000, `only ${found} points on a floor`);
+  // The camera from a head to an eye up to 5 m off, near the walls and floors round it
+  const m = EYE_PAD + 0.5;
+  for (let k = 0; k < 1500; k++) {
+    const from = { x: x0 + (x1 - x0) * random(), y: -18 + 22 * random(), z: z0 + (z1 - z0) * random() };
+    const to = { x: from.x + (random() - 0.5) * 10, y: from.y + (random() - 0.3) * 3, z: from.z + (random() - 0.5) * 10 };
+    const box = [Math.min(from.x, to.x) - m, Math.min(from.z, to.z) - m, Math.max(from.x, to.x) + m, Math.max(from.z, to.z) + m];
+    assert.deepEqual(eyeReach(grid.walls.near(...box), grid.floors.near(...box), from, to, 30), eyeReach(all.walls, all.floors, from, to, 30),
+      `the camera's reach from ${JSON.stringify(from)} to ${JSON.stringify(to)}`);
+  }
+});

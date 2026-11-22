@@ -10,8 +10,8 @@ import { addStillWater, removeStillWater } from './still-water.js';
 import { clearFloor, groundHeight, setFloor } from './surfaces.js';
 import { cityUniforms } from './tsl-materials.js';
 import {
-  DOOR_TIME, doorCollider, doorInReach, exitSpot as findExit, eyeReach, floorAt, floorUnder, leafAt, roomAt, seatInReach, standSpot, toLocal, toWorld,
-  visibleRooms, wallCollider
+  DOOR_TIME, EYE_PAD, doorCollider, doorInReach, exitSpot as findExit, eyeReach, floorAt, floorBox, floorUnder, gridOf, leafAt, roomAt, seatInReach,
+  standSpot, toLocal, toWorld, visibleRooms, wallBox, wallCollider
 } from './interior-data.js';
 
 // Buildings drawn from models of their own (js/model-sites.js), and the insides of those that have one.
@@ -402,9 +402,9 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     for (const door of doorsOf(site)) if (door.angle < 0.05) walls.push({ a: door.d.hinge, b: door.d.latch, t: 0.08, y0: door.d.y0, y1: door.d.y1 });
     return walls;
   }
-  /** What the camera keeps clear of: the walls, and every door's leaf where it's swung to */
-  function eyeWalls(site) {
-    const walls = [...(site.out?.data.walls ?? []), ...joined(site, 'walls')];
+  /** What the camera keeps clear of: the walls (those near `box`, [x0, z0, x1, z1], if it's given), and every door's leaf where it's swung to */
+  function eyeWalls(site, box = null) {
+    const walls = box && site.grid ? site.grid.walls.near(...box) : [...(site.out?.data.walls ?? []), ...joined(site, 'walls')];
     for (const door of doorsOf(site)) {
       for (const sign of door.d.leaves === 2 ? [1, -1] : [1]) {
         // a pair: two leaves, each half the doorway, the second hung from the latch side and turning the other way
@@ -417,6 +417,9 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
   }
   function placeFloors(site) {
     const floors = allFloors(site);
+    // ...and its floors and walls by where they are, for what's looked up many times a frame (gridOf())
+    const grid = { floors: gridOf(floors, floorBox), walls: gridOf([...(site.out?.data.walls ?? []), ...joined(site, 'walls')], wallBox) };
+    site.grid = grid;
     if (!floors.length) {
       clearFloor(site.id);
       return;
@@ -428,14 +431,14 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
       minZ: Math.min(...pts.map((p) => p.z)), maxZ: Math.max(...pts.map((p) => p.z)),
       at(x, z) {
         const p = toLocal(site, x, z);
-        const y = floorAt(floors, p.x, p.z, (site.ref ?? site.y) - site.y);
+        const y = floorAt(grid.floors.near(p.x, p.z), p.x, p.z, (site.ref ?? site.y) - site.y);
         return y === null ? null : y + site.y;
       },
       // A floor that moves (an escalator's steps, its `flow`): how fast it carries what stands on it, m/s over the ground in the
       // world's frame, { x, z }; null on one that stays still
       flow(x, z) {
         const p = toLocal(site, x, z);
-        const f = floorUnder(floors, p.x, p.z, (site.ref ?? site.y) - site.y)?.floor.flow;
+        const f = floorUnder(grid.floors.near(p.x, p.z), p.x, p.z, (site.ref ?? site.y) - site.y)?.floor.flow;
         return f ? { x: f[0] * c + f[1] * s, z: -f[0] * s + f[1] * c } : null;
       }
     });
@@ -561,6 +564,7 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     removeDoors(out.doors);
     dispose(out.group);
     clearFloor(site.id);
+    site.grid = null;
     removeStillWater(`site:${site.id}`);
     swimming?.removeSwimPools(site.id);
     // what's drawn in its place is worked out again straight after (update())
@@ -655,11 +659,14 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
         }
       }
       const group = groupFor(site, scene, `Inside_${site.id}_${file}`);
+      // Its rooms shown while it's revealed, so their shaders are compiled between frames (a hidden mesh isn't), then hidden till
+      // update() shows those seen. Hidden first, the inside's new shaders compiled in the frame that first drew them: a stall at the
+      // door of 250-360 ms on the phone profile's CPU.
+      await reveal(group);
       for (const r of data.rooms) {
         const node = scene.getObjectByName(r.node);
         if (node) node.visible = false;
       }
-      await reveal(group);
       if (site.insides.get(file) !== record) {
         dispose(group);
         sunlight?.dispose();
@@ -853,7 +860,10 @@ function createInteriors({ reveal, colliders, lights, tileBuilt, tileReady = () 
     const from = { x: a.x, y: head.y - site.y, z: a.z }, to = { x: b.x, y: eye.y - site.y, z: b.z };
     // where there's no floor over it, no higher than the top floor's ceiling: over a stairwell too, which is open up to that
     const roof = here ? Math.max(...joined(site, 'rooms').map((r) => r.y1)) - 0.7 : Infinity;
-    const reach = eyeReach(eyeWalls(site), allFloors(site), from, to, roof);
+    // what's near the line from your head to the camera, a ball's width and more round it
+    const m = EYE_PAD + 0.5;
+    const box = [Math.min(from.x, to.x) - m, Math.min(from.z, to.z) - m, Math.max(from.x, to.x) + m, Math.max(from.z, to.z) + m];
+    const reach = eyeReach(eyeWalls(site, box), site.grid ? site.grid.floors.near(...box) : allFloors(site), from, to, roof);
     const length = Math.hypot(to.x - from.x, reach.y - from.y, to.z - from.z);
     const want = reach.t * length;
     held = want < held ? want : Math.min(want, held + EYE_EASE * dt);

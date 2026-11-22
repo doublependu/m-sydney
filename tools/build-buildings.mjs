@@ -519,6 +519,78 @@ buildings.push(...pieces);
     + ` ${whole - buildings.length} records gone; ${splits.length} inside a piece that starts partway up them`);
 }
 
+// --- Street addresses ---------------------------------------------------------------------------------------------------
+// The street each building faces and its numbers, from G-NAF's points (tools/fetch-data.mjs overture_addresses), matched to the buildings
+// and roads by tools/addresses.mjs, after the pieces are stacked and the rows cut (below), in the tiles' order: worked out once here, so
+// the tiles, the floors and the lots all read the same answer. Street names G-NAF spells otherwise than OSM are aliased by hand
+// (tools/local/, `streets`).
+const ADDRESSES = dataPath('overture_addresses.json');
+const addressData = await (async () => {
+  if (!fs.existsSync(ADDRESSES)) {
+    console.warn('[buildings] no overture_addresses.json (node tools/fetch-data.mjs overture_addresses): no street addresses, and no rows cut');
+    return null;
+  }
+  const { parseNumber, streetKey } = await import('../js/addresses.js');
+  const { GEO } = await import(path.join(path.dirname(OUT), 'geodata.js'));
+  const RG = GEO.roadGraph;
+  const roads = RG.links.map(([a, b, ni, , , , inner, , deck, kind = 0]) => {
+    const pts = [[RG.nodes[a * 2], RG.nodes[a * 2 + 1]]];
+    for (let k = 0; k < inner.length; k += 2) pts.push([inner[k], inner[k + 1]]);
+    pts.push([RG.nodes[b * 2], RG.nodes[b * 2 + 1]]);
+    return { name: streetKey(RG.names[ni]), pts, onGround: !kind && !deck };
+  });
+  const aliases = new Map(), aliasOf = new Map();
+  for (const area of localAreas()) {
+    for (const edit of area.streets || []) {
+      aliases.set(streetKey(edit.address), streetKey(edit.road));
+      aliasOf.set(streetKey(edit.address), { area, edit });
+    }
+  }
+  const points = [];
+  for (const a of jsonLines(ADDRESSES)) {
+    const [x, z] = toWorld(a.lon, a.lat);
+    points.push({ x, z, street: streetKey(a.street), number: parseNumber(a.number), addresses: a.addresses || 1 });
+  }
+  return { roads, aliases, aliasOf, points };
+})();
+// The buildings as tools/addresses.mjs takes them, outlines in metres as the tiles have them
+const addressRecords = () => buildings.map((r) => ({
+  outline: r.polygons.map(([outer, ...holes]) => ({ outer: outer.map(([qx, qz]) => ({ x: qx * PRECISION, z: qz * PRECISION })),
+    holes: holes.map((ring) => ring.map(([qx, qz]) => ({ x: qx * PRECISION, z: qz * PRECISION }))) })),
+  area: r.area, height: r.height, kind: r.kind, group: r.group || 0, bottom: r.bottom || 0, house: !r.part && !!HOUSE_STYLES[r.style || 0]?.look,
+  terrace: !r.part && !!HOUSE_STYLES[r.style || 0]?.look?.terrace
+}));
+
+// Rows of terraces the map draws as one footprint, cut into their houses at their addresses (tools/terrace-rows.mjs): square to the row's
+// front, halfway between each two numbers' points along it. Each piece is a house of its own, with its own floor, look and number. A hand
+// edit of one building (`at`) on a row that's cut stops the build: the edit would land on one house of it.
+if (addressData) {
+  const { cutRows } = await import('./terrace-rows.mjs');
+  const { cuts, stats } = cutRows(addressRecords(), addressData.points, addressData.roads, { aliases: addressData.aliases });
+  const bySuburb = new Map();
+  for (let i = buildings.length - 1; i >= 0; i--) {
+    const pieces = cuts.get(i);
+    if (!pieces) continue;
+    const r = buildings[i];
+    if (r.edit) throw new Error(`${r.edit} is on a row of ${pieces.length} houses that's cut into them (tools/terrace-rows.mjs): move the edit to the house it means, or keep the row whole`);
+    const sa2 = (r.block >= 0 && places?.blocks[r.block]?.sa2) || '-';
+    const n = bySuburb.get(sa2) || bySuburb.set(sa2, { rows: 0, houses: 0 }).get(sa2);
+    n.rows++;
+    n.houses += pieces.length;
+    buildings.splice(i, 1, ...pieces.map(({ outer }) => {
+      const ring = outer.map(({ x, z }) => [Math.round(x / PRECISION), Math.round(z / PRECISION)]);
+      let a = 0;
+      for (let k = 0, j = outer.length - 1; k < outer.length; j = k++) a += outer[j].x * outer[k].z - outer[k].x * outer[j].z;
+      return { ...r, polygons: [[ring]], area: Math.abs(a / 2), cx: outer.reduce((sum, p) => sum + p.x, 0) / outer.length,
+        cz: outer.reduce((sum, p) => sum + p.z, 0) / outer.length };
+    }));
+  }
+  console.log(`[buildings] rows of terraces cut into their houses: ${stats.cut} rows into ${stats.houses} houses; of ${stats.rows} with addresses in them, left whole:`
+    + ` ${stats.oneNumber} of one number on their street, ${stats.onePlace} with their numbers in one place, ${stats.shape} that wouldn't cut into simple outlines,`
+    + ` ${stats.holes} with courtyards or in parts, ${stats.within} with another building standing in them, ${stats.noStreet + stats.noFront} with no street or front found; ${stats.outOfOrder} cut with their numbers out of order. By suburb: `
+    + [...bySuburb].sort((p, q) => q[1].houses - p[1].houses).slice(0, 25).map(([n, { rows, houses }]) => `${n} ${rows} into ${houses}`).join(', '));
+}
+
 // Real awnings: the City of Sydney's plan of them. A building fronted by one gets it (js/street-details.js), not a made-up one
 const AWNING_REACH = 4;
 const awningCells = new Map();
@@ -563,45 +635,13 @@ const order = (r) => {
 };
 buildings.sort((p, q) => order(p) - order(q));
 
-// --- Street addresses ---------------------------------------------------------------------------------------------------
-// The street each building faces and its numbers, from G-NAF's points (tools/fetch-data.mjs overture_addresses), matched to the buildings
-// and roads by tools/addresses.mjs, after the pieces are stacked and in the tiles' order: worked out once here, so the tiles, the floors
-// and the lots all read the same answer. Street names G-NAF spells otherwise than OSM are aliased by hand (tools/local/, `streets`).
-const ADDRESSES = dataPath('overture_addresses.json');
-if (!fs.existsSync(ADDRESSES)) console.warn('[buildings] no overture_addresses.json (node tools/fetch-data.mjs overture_addresses): no street addresses');
-else {
+// Each building's streets and numbers (above), in the tiles' order
+if (addressData) {
   const { matchAddresses, FIND } = await import('./addresses.mjs');
-  const { parseNumber, streetKey } = await import('../js/addresses.js');
-  const { GEO } = await import(path.join(path.dirname(OUT), 'geodata.js'));
-  const RG = GEO.roadGraph;
-  const roads = RG.links.map(([a, b, ni, , , , inner, , deck, kind = 0]) => {
-    const pts = [[RG.nodes[a * 2], RG.nodes[a * 2 + 1]]];
-    for (let k = 0; k < inner.length; k += 2) pts.push([inner[k], inner[k + 1]]);
-    pts.push([RG.nodes[b * 2], RG.nodes[b * 2 + 1]]);
-    return { name: streetKey(RG.names[ni]), pts, onGround: !kind && !deck };
-  });
-  const aliases = new Map(), aliasOf = new Map();
-  for (const area of localAreas()) {
-    for (const edit of area.streets || []) {
-      aliases.set(streetKey(edit.address), streetKey(edit.road));
-      aliasOf.set(streetKey(edit.address), { area, edit });
-    }
-  }
-  const points = (function* () {
-    for (const a of jsonLines(ADDRESSES)) {
-      const [x, z] = toWorld(a.lon, a.lat);
-      yield { x, z, street: streetKey(a.street), number: parseNumber(a.number), addresses: a.addresses || 1 };
-    }
-  })();
-  const records = buildings.map((r) => ({
-    outline: r.polygons.map(([outer, ...holes]) => ({ outer: outer.map(([qx, qz]) => ({ x: qx * PRECISION, z: qz * PRECISION })),
-      holes: holes.map((ring) => ring.map(([qx, qz]) => ({ x: qx * PRECISION, z: qz * PRECISION }))) })),
-    area: r.area, height: r.height, kind: r.kind, group: r.group || 0, bottom: r.bottom || 0, house: !r.part && !!HOUSE_STYLES[r.style || 0]?.look
-  }));
-  const { address, stats, notFound, aliased } = matchAddresses(records, points, roads, { aliases });
+  const { address, stats, notFound, aliased } = matchAddresses(addressRecords(), addressData.points, addressData.roads, { aliases: addressData.aliases });
   for (const [i, list] of address) buildings[i].address = list;
   // An alias each building it's there for finds its road by: `expect` [lo, hi] buildings, or the data under it has changed
-  for (const [name, { area, edit }] of aliasOf) {
+  for (const [name, { area, edit }] of addressData.aliasOf) {
     const n = aliased.get(name) || 0, [lo, hi] = edit.expect;
     if (n < lo || n > hi) throw new Error(`tools/local/${area.file}: ${n} buildings on ${edit.address} found ${edit.road} by its alias, not ${lo}-${hi}: check the alias (${edit.why})`);
     console.log(`[buildings] tools/local/${area.file}: ${n} buildings on ${edit.address} found ${edit.road}`);

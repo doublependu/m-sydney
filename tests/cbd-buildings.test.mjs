@@ -10,7 +10,7 @@ import { readModel, triangles } from './helpers/glb.mjs';
 globalThis.fetch = async (url) => new Response(fs.readFileSync(new URL(url)));
 const { MODEL_SITES, clearOfSites, cutsOf, toWorldOf } = await import('../js/model-sites.js');
 const { heldTiles } = await import('../js/geodata.js');
-const { groundHeight } = await import('../js/surfaces.js');
+const { groundHeight, structuresAt, STRUCTURES, KIND, TUNNEL_HEIGHT } = await import('../js/surfaces.js');
 const { floorAt } = await import('../js/interior-data.js');
 const { TOWER_SIGNS, placeTowerSign } = await import('../js/tower-signs.js');
 
@@ -529,10 +529,10 @@ test('Naala Badu\'s cuts take in every room under the ground, each in one of the
   }
 });
 
-test('Naala Badu: up the steps to its doors from the Art Garden\'s paths, and the stair to the bay down to Lincoln Crescent', () => {
+test('Naala Badu: up the steps to its doors from the forecourt\'s paving, and the stair to the bay down to Lincoln Crescent', () => {
   const out = read('art-gallery-new');
   const sloped = out.floors.filter((f) => f.plane);
-  // the paths: on the ground, by a little, everywhere (the map's lawn never through them)
+  // the forecourt's paving: on the ground, by a little, everywhere (the map's lawn never through it)
   const paths = sloped.filter((f) => f.poly.every(([x]) => x < -40) && Math.abs(f.plane[1]) < 0.2 && Math.abs(f.plane[2]) < 0.2);
   assert.ok(paths.length > 20, `${paths.length} path cells`);
   for (const f of paths) {
@@ -555,6 +555,57 @@ test('Naala Badu: up the steps to its doors from the Art Garden\'s paths, and th
   const w = toWorldOf(badu, x, foot - 1.0);
   const over = paving - (groundHeight(w.x, w.z) - badu.y);
   assert.ok(over > 0.1 && over < 0.6, `the paving at the stair's foot is ${over.toFixed(2)} m over the ground`);
+});
+
+// Its south-west half, on the land bridge over the motorway's tunnels (tools/local/art-gallery.json's `cover`): the forecourt under its
+// canopy, walked from Art Gallery Road; and nothing of the outside down in a tunnel, here or on tiles where the land bridge's tunnel is
+// still open (its road the same)
+test('Naala Badu: from Art Gallery Road across the forecourt under its canopy to the front doors, a step at a time', () => {
+  const out = read('art-gallery-new'), ground = read('art-gallery-new-g');
+  const floors = [...out.floors, ...ground.floors];
+  const street = (x, z) => {
+    const w = toWorldOf(badu, x, z);
+    return groundHeight(w.x, w.z) + 0.22 - badu.y;
+  };
+  const front = out.doors.find((d) => d.id === 'front');
+  const [dx, dz] = [(front.hinge[0] + front.latch[0]) / 2, (front.hinge[1] + front.latch[1]) / 2];
+  // the forecourt's west edge, by the road's footpath (its sloped cells reaching furthest west); from the lawn 4 m out, east across it,
+  // then north to the doors and in
+  const west = Math.min(...out.floors.filter((f) => f.plane).flatMap((f) => f.poly.map((p) => p[0])));
+  assert.ok(west < -60, `the forecourt reaches ${west} m west, not out towards Art Gallery Road`);
+  const path = [[west - 4.0, 4.0], [west + 2.0, 4.0], [dx, 4.0], [dx, dz + 3.0], [dx, dz], [dx, dz - 3.0]];
+  const ys = walkHeights(floors, path, street(...path[0]), street);
+  const steps = ys.slice(1).map((y, i) => y - ys[i]);
+  // a kerb up onto the paving from the lawn, and otherwise no step over a stair's
+  const big = steps.filter((d) => Math.abs(d) >= 0.3);
+  assert.ok(big.length <= 1 && big.every((d) => d > 0 && d < 0.6), `steps of ${big.map((d) => d.toFixed(2)).join(', ')} m on the way in`);
+  assert.equal(ys.at(-1), 0, `${ys.at(-1)} m in, not on the ground floor`);
+});
+
+test('Naala Badu over the land bridge: nothing of its outside down in a tunnel under it, nor its walls for the game', async () => {
+  const tube = (x, z, margin) => {
+    let top = null;
+    for (const st of structuresAt(x, z, margin)) if (STRUCTURES[st.sid]?.kind === KIND.TUNNEL) top = Math.max(top ?? -Infinity, st.y + TUNNEL_HEIGHT);
+    return top;
+  };
+  const low = [];
+  for (const t of triangles(await readModel('art-gallery-new'))) {
+    for (const v of [t.a, t.b, t.c]) {
+      const w = toWorldOf(badu, v[0], v[2]), c = tube(w.x, w.z, 0);
+      if (c !== null && badu.y + v[1] < c - 0.02) low.push(`(${v[0].toFixed(1)}, ${v[1].toFixed(2)}, ${v[2].toFixed(1)}) under ${(c - badu.y).toFixed(2)}`);
+    }
+  }
+  assert.deepEqual([...new Set(low)].slice(0, 6), [], `${new Set(low).size} of its points down in a tunnel`);
+  // its walls for the game: over a tunnel's ceiling, so a car in it never meets them
+  const walls = [];
+  for (const w of read('art-gallery-new').walls) {
+    const n = Math.max(1, Math.ceil(Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1])));
+    for (let i = 0; i <= n; i++) {
+      const p = toWorldOf(badu, w.a[0] + ((w.b[0] - w.a[0]) * i) / n, w.a[1] + ((w.b[1] - w.a[1]) * i) / n), c = tube(p.x, p.z, 0);
+      if (c !== null && badu.y + w.y0 < c - 0.02) walls.push(`${JSON.stringify(w.a)}-${JSON.stringify(w.b)} from ${w.y0} under ${(c - badu.y).toFixed(2)}`);
+    }
+  }
+  assert.deepEqual([...new Set(walls)].slice(0, 6), [], `${new Set(walls).size} of its walls down in a tunnel`);
 });
 
 // Both galleries' openings between rooms, arches and doorways: the sides drawn through each wall where the wall stops for it (its walls

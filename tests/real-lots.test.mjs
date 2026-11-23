@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { FENCE_BACK, FOOTPATH, acrossAt, squareLots } from '../js/house-lots.js';
 import { STYLE } from '../js/house-styles.js';
@@ -177,4 +178,34 @@ test('with no real lot for any house, the lots are as the map alone gives them',
   const none = runAll(squareLots(Object.values(HOUSES).map((b) => ({ b, tile })), { ...ENV, realLots: () => null, realLotsIn: () => [] }, SQUARE));
   const shape = (r) => JSON.stringify({ lots: r.lots.map((l) => ({ pts: l.pts.map((p) => [p.x, p.z]), drive: l.drive })), fences: r.fences, panels: r.panels, slabs: r.slabs });
   assert.equal(shape(none), shape(plain));
+});
+
+// Two cabins on one real lot by a side street, B St along z at x = 300: their address street is A St, so B St's footpath clips their lots,
+// and its line, 8.2 m from B St's middle, leaves nothing of the lot (x 292-299.5). Each house's share then has no lot, and the square's
+// lots are still worked out (on the whole map's lot files, 9 of the CBD window's 236 squares threw here)
+test('houses sharing a lot that another street\'s footpath line takes all of: no lot for them, and the square still worked out', () => {
+  const B = road('B St', [[300, -80], [300, 400]]);
+  const roads = [ROADS[0], B];
+  const cabins = { H1: building(box(292.2, 12, 293.8, 18)), H2: building(box(294.2, 12, 295.8, 18)) };
+  const file = { ix: 0, iz: 0, homes: Object.values(cabins).map((b) => ({ x: b.cx, z: b.cz, rule: 'several' })),
+    lots: [{ kind: 'several', homes: [0, 1], ...rect(292, 8.5, 299.5, 25, ['front', 'bound', 'bound', 'bound']) }] };
+  const lots = runAll(realLotsFrom([file]));
+  const env = { ...ENV, streetOf: (w) => nearestOn(roads[0], w.cx, w.cz), roadsNear: (x, z, r) => roads.map((l) => nearestOn(l, x, z)).filter((n) => n.d <= r),
+    realLots: (w) => lots.homeAt(w.cx, w.cz), realLotsIn: lots.lotsIn, lines: true };
+  const out = runAll(squareLots(Object.values(cabins).map((b) => ({ b, tile })), env, { x0: 200, z0: -100, x1: 400, z1: 200 }));
+  assert.equal(out.measure.rules.several, 2, 'both take the shared lot');
+  for (const [name, b] of Object.entries(cabins)) assert.ok(!out.lots.some((l) => l.home.pieces.includes(b)), `${name} has no lot`);
+});
+
+// The cadastre's licence asks what's made from it to mark the day it was extracted: the pause screen's credit gives the lot files' day
+test('the pause screen credits the lot files with the day the cadastre was extracted', (t) => {
+  let index;
+  try { index = JSON.parse(readFileSync(new URL('../public/lots/index.json', import.meta.url), 'utf8')); } catch {
+    return t.skip('no lot files in public/lots/');
+  }
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const foot = html.match(/<p class="pause-foot">[\s\S]*?<\/p>/)?.[0] ?? '';
+  assert.ok(index.cadastre, 'index.json names the day');
+  assert.ok(foot.includes('State of New South Wales'), 'the pause screen credits the State of New South Wales');
+  assert.ok(foot.includes(`extracted ${index.cadastre}`), `the pause screen gives the day, ${index.cadastre}`);
 });

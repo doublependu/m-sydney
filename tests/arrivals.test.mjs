@@ -136,7 +136,7 @@ test('flying off the deck clears the arch', () => {
   assert.deepEqual([a.x, a.z, a.heading], [p.x, p.z, 1.2]);
 });
 
-// Out of a vehicle, beside it (plan 9.5): a spot in its frame, metres to its right and ahead of its middle
+// Out of a vehicle, beside it: a spot in its frame, metres to its right and ahead of its middle
 const inFrame = (v, a) => {
   const fx = Math.sin(v.heading), fz = Math.cos(v.heading), dx = a.x - v.x, dz = a.z - v.z;
   return { right: -fz * dx + fx * dz, ahead: fx * dx + fz * dz };

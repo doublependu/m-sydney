@@ -2844,14 +2844,16 @@ export const SCENARIOS = {
     }
   },
 
-  // Roads over roads, on each level: the Argyle Cut, Pier St, Central, and the Cahill over Circular Quay and back
+  // Roads over roads, on each level: the Argyle Cut, Pier St, Central, the Cahill over Circular Quay and back, and the Eastern
+  // Distributor's off-ramp through the tube under Naala Badu's land bridge
   'stacked-roads': {
     fast: true,
     query: 'wholeCity=1', // about the roads, not about fetching them, and too quick for fetching to keep up
     minutes: 20,
     async run({ human, page, metric, expect }) {
       await human.wait(1000);
-      await driveLevels(human, page, metric, expect, ['cumberland', 'argyleEast', 'pierStreet', 'zollnerCircuit', 'colonnade', 'eddyAvenue', 'cahillEast', 'cahillWest']);
+      await driveLevels(human, page, metric, expect, ['cumberland', 'argyleEast', 'pierStreet', 'zollnerCircuit', 'colonnade', 'eddyAvenue', 'cahillEast', 'cahillWest',
+        'cowperWharfOff']);
     }
   },
 

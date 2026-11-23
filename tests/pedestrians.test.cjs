@@ -719,7 +719,7 @@ test('poseCharacters draws only the one you are: nobody on a parked bike, no wal
   const car = { type: 'car', position: { x: 3.6, y: 0, z: 0 }, carState: { value: { x: 0, w: 0 } } };
   controller.entities = { person, cyclist, car };
 
-  // A parked bicycle stands empty, no rider and no helmet, however near (plan 9.5). Nobody walks about unless it's the player
+  // A parked bicycle stands empty, no rider and no helmet, however near. Nobody walks about unless it's the player
   cyclist._parked = true;
   for (let i = 0; i < 5; i++) controller.poseCharacters(1 / 60, { x: 0, y: 2, z: 0 });
   assert.equal(personUpdates, 0);

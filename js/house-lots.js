@@ -732,9 +732,9 @@ function* squareLots(entries, env, square) {
       roadClips.set(h, clips);
     }
     for (const [a, b, c] of clips) poly = clipHalf(poly, a, b, c, 'road');
-    if (h.several) poly = frontOf(h, poly);
+    if (h.several) poly = frontOf(h, poly); // null where nothing's left of the shared lot
     else if (realNear && poly.length >= 3) poly = offReal(h, poly, realNear(boxOf(poly)));
-    return poly.length >= 3 && inRing(poly, h.cx, h.cz) ? poly : null;
+    return poly && poly.length >= 3 && inRing(poly, h.cx, h.cz) ? poly : null;
   };
 
   // Every house's lot, then the overlaps: a house, building or site a lot covers OVERLAP m² of, or another lot, becomes a pair, unless no

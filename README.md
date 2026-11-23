@@ -30,6 +30,7 @@ Which test when:
 |---|---|---|
 | `npm run check` | About 40 s | Every change: unit tests, build, ground, how the roads drive, roads on two levels, how traffic moves, deploy size, on the 80 km² around the CBD |
 | `npm run check -- --full` | About 10 min | When the map changes: the same over the whole map, and how many tiles pass |
+| `npm run test:all` | About 5 min | When the map changes: the unit tests over the whole map, three files at a time, with nothing heavy beside them |
 | `npm run play` | About 5 min | Before saying something works: the key scenarios, no video |
 | `npm run play -- --changed` | Varies | After a larger change: the scenarios `git diff` says it can affect |
 | `npm run play -- --full` | About 12 min | At the end of a phase: everything but the soak, a few browsers at a time, long drives on the fast clock |
@@ -109,17 +110,30 @@ node tools/fetch-data.mjs overture_density             # for the horizon: 90 s
 node tools/fetch-elevation.mjs --cell=100              # for the horizon: 4 min
 node tools/fetch-elevation.mjs --cell=5 --box=$BOX     # about 1 GB, 15 min
 node tools/fetch-data.mjs abs_counts,abs_meshblocks,nsw_zoning   # who lives where and the zoning: 50 MB, 1 min
-npm run data:build                                     # about 30 min. Leave 16 GB of memory free for it
+node tools/fetch-data.mjs nsw_cadastre                 # houses' lots (NSW's cadastre): 539 requests, one a second, 11 min, 240 MB
+npm run data:build                                     # about 40 min. Leave 16 GB of memory free for it
 npm run data:map                                       # the map screen's images: 2 min
 ```
+
+Houses' real lots are files of their own, not in the tiles: one for each tile with houses, in `public/lots/` in the tiles' folders, and
+`public/lots/index.json` naming each and the day the cadastre was extracted. `tools/build-lots.mjs` fits each house to its lot from the
+tiles just built (their houses are the game's), so it runs after `data:build`, and again after any change to the buildings:
+
+```bash
+node --max-old-space-size=18000 tools/build-lots.mjs public/lots   # 22 min and 12 GB at most: nothing else heavy beside it
+```
+
+The game asks for them only if `public/lots/index.json` is there when it's built (`npm run build` again after adding or taking them
+away); without them it works each house's lot out from the map. A new fetch of the cadastre changes the files' `cadastre` date and most
+of the files, and the date in the pause screen's credit (`index.html`) has to follow it: `tests/real-lots.test.mjs` checks the two agree.
 
 Hand edits to the map are in `tools/local/`, a file for each area (`tools/local-edits.mjs` says what one holds): OSM ways' tags, as the
 Harbour Bridge's ramps, a style of house for an area's buildings, as Millers Point's terraces, and one building's height and style, as
 Circular Quay West's, trees planted by hand in a garden, as Bronte Park's palms and pines, and rock where OSM has none, as Bronte's
 shelves. Each names what it expects to find, so the build stops when the data under it has changed. A change to buildings
 alone needs only the build's later steps, about 3.5 minutes on the last build's data: `tools/build-buildings.mjs`, `build-garden.mjs`,
-`build-trees.mjs`, `build-awnings.mjs`, then `build-tiles.mjs`; a change to the gardens only `build-garden.mjs`, `build-trees.mjs` and
-`build-tiles.mjs`; a change to the beaches `build-sand.mjs` (2 minutes) and then the gardens'. `tools/tile-diff.mjs` checks that only tiles in the areas edited by hand, the gardens and the model sites changed.
+`build-trees.mjs`, `build-awnings.mjs`, then `build-tiles.mjs` and `build-lots.mjs`; a change to
+the gardens only `build-garden.mjs`, `build-trees.mjs` and `build-tiles.mjs` (8 minutes); a change to the beaches `build-sand.mjs` (2 minutes) and then the gardens'. `tools/tile-diff.mjs` checks that only tiles in the areas edited by hand, the gardens and the model sites changed.
 
 The beaches (`tools/build-sand.mjs`): every beach OSM has (`natural=beach`, `sand`, `shingle`) is sand, and along the coast, within 150 m
 of the shore, its bare rock and a strip either side of each cliff's line are sandstone, and rock in the sea a shelf a little over it. Each
@@ -133,7 +147,15 @@ by what it says they are or what grows round them; each garden OSM names, and th
 the world from the ones it has, to about 20 m), is planted by its kind: roses, herbs, succulents, natives, palms, rainforest, beds. Along
 the parks' shores (not the boxes round the Opera House and the Quay) a sandstone parapet tops the sea wall, open where steps or a jetty
 reach the water, and none where a beach does. Still water in a garden is its pond, untagged as OSM may leave it, not the sea (`tools/build-geodata.mjs`). The areas
-are a list in `tools/garden-areas.mjs`, so more can be added; the rest of the map's footpaths wait, as they'd change where everyone walks.
+are a list in `tools/garden-areas.mjs`, so more can be added. Every other park with paths (`ruleParks()` there: parks, nature reserves,
+protected areas and public gardens) is laid out after them by rule, a 240 m square at a time (`tools/garden/`): its paths, and where it's
+formal, not bush, its lawn raised between kerbs; no beds, plants or gates. A park put right by hand from the aerial is in
+`PARK_OVERRIDES`. `build-garden.mjs --no-parks` lays out the areas alone, `--tiles=` only the squares in those tiles.
+
+The ponds (`tools/build-ponds.mjs`): still water the sea's rule takes out of the sea (`tools/sea-water.mjs`), and every other pond, lake,
+basin or reservoir over 200 m² outside the gardens, or untagged, but not one tagged intermittent, a detention basin, covered or a pool
+(`pondWaters()`; hand edits in `tools/local/ponds.json`). Each is flat at its level, from NSW's 5 m elevation model where it has the
+water lying flat, and `build-tiles` grades the ground to it (`tools/tiles/pond-grade.mjs`).
 
 The generators write the whole map to `tools/data/generated/`, and `tools/build-tiles.mjs` cuts it up. What needs a 1 m raster is done a region at a
 time, each 7.2 km square with a margin, in worker threads (`tools/geodata/`), since one raster of it all wouldn't fit in memory. Lawns and
@@ -146,12 +168,13 @@ what it did.
 |---|---|---|
 | `tiles/world.json` | What the whole map shares: tile list, structures, the bridge's deck | At start |
 | `tiles/far-heights.bin.gz` | The ground on a very coarse grid, for where nothing better is held | At start |
-| `tiles/<X>_<Z>/<x>_<z>.<hash>.bin.gz` | A tile, in the folder of the 8 km square it's in: roads with their shapes and OSM class, kerbs, where the land and shore are (and which of the shore is a beach's), the beaches and the coast's rock, buildings with each house's style, trees, heights, tunnel mouths, a 5 m grid of how far the ground moves to meet the roads, and a 100 m grid of residents, homes, workers, land use and zoning | When the player's near |
+| `tiles/<X>_<Z>/<x>_<z>.<hash>.bin.gz` | A tile, in the folder of the 8 km square it's in: roads with their shapes and OSM class, kerbs, where the land and shore are (and which of the shore is a beach's), the beaches and the coast's rock, the ponds, the gardens and parks laid out, buildings with each house's style and each one's street address (its street, the wall its door is on, its numbers), trees, heights, tunnel mouths, a 5 m grid of how far the ground moves to meet the roads, and a 100 m grid of residents, homes, workers, land use and zoning | When the player's near |
 | `tiles/far/far_<x>_<z>.<hash>.bin.gz` | 4 km of the far level: every building as a few points, plain ground with its own land and heights, main roads | Near the player, after the first frame |
 | `tiles/far.json.gz` | Land beyond the map, suburbs' names, and the streets around the Harbour Bridge | After the first frame |
 | `tiles/horizon.bin.gz` | The whole box out to Katoomba, coarsely | After the first frame |
 | `tiles/map.json.gz` | Where every named street is, for the map screen's names and search | When the map is first opened |
 | `map/<m>/<x>_<z>.webp`, `map/2/<X>_<Z>/<x>_<z>.webp` | All of the map as images, at 32, 8 and 2 m a pixel, the 2 m ones in the tiles' folders | As they come into view on the map |
+| `lots/index.json`, `lots/<X>_<Z>/<x>_<z>.<hash>.bin.gz` | Houses' real lots, a file for each tile with houses | A square's, before its lots are worked out near the player |
 
 ## License and data
 
@@ -173,8 +196,8 @@ Map data keeps its own licences:
 - © State of New South Wales ([Spatial Services](https://www.spatial.nsw.gov.au), a business unit of the Department of Customer Service
   NSW), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/): lot boundaries, from the cadastre's
   [NSW Land Parcel and Property Theme](https://portal.spatial.nsw.gov.au/portal/home/item.html?id=d94d44aff3024f9899dccc3dea609c38)
-  (its Lot layer), shifted and their lines moved to fit the map's houses; the date they were extracted is in `public/lots/index.json`
-  (`cadastre`)
+  (its Lot layer), shifted and their lines moved to fit the map's houses, in the lot files (`public/lots/`, "Map data"); extracted on
+  2026-11-23, the date in `public/lots/index.json` (`cadastre`) and in the pause screen's credit
 - [Australian Bureau of Statistics](https://www.abs.gov.au/census/guide-census-data/mesh-block-counts/2021), CC BY 4.0: residents, dwellings
   and land use, from the 2021 Census's Mesh Block counts and ASGS Edition 3 boundaries
 - [NSW Department of Planning, Housing and Infrastructure](https://www.planningportal.nsw.gov.au/opendata/dataset/environment-planning-instrument-local-environmental-plan-land-zoning),

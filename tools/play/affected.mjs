@@ -8,7 +8,7 @@ export const COVERS = {
   'harbour-bridge': { files: /^js\/(bridge|harbour-bridge|traffic|structures)\.js$/, area: [-400, 300, -3500, -1300] },
   'bridge-ways': { files: /^js\/(bridge|harbour-bridge|surfaces|structures|road-network)\.js$|^tools\/local\//, area: [-500, 500, -3500, -600] },
   tunnel: { files: /^js\/(tunnel-mouths|structures|lighting)\.js$/, area: [1150, 2000, -50, 200] },
-  'stacked-roads': { files: /^js\/(structures|road-paint)\.js$/, area: [-750, 500, -1800, 1050] },
+  'stacked-roads': { files: /^js\/(structures|road-paint)\.js$/, area: [-750, 1050, -1800, 1050] },
   motorways: { files: /^js\/(structures|traffic)\.js$/, area: [-500, 0, -2200, -350] },
   'hill-start': { files: /^js\/(vehicle-physics|surfaces)\.js$/, area: null },
   'loading-bar': { files: /^js\/(progress|world-jobs|main)\.js$/, area: null },
@@ -16,7 +16,7 @@ export const COVERS = {
   'deck-seams': { files: /^js\/(surfaces|structures|controllers)\.js$/, area: [360, 420, -1350, -1310] },
   'bridge-south': { files: /^js\/(surfaces|bridge|structures|controllers)\.js$/, area: [-345, -280, -1530, -1350] },
   'under-the-bridge': { files: /^js\/(bridge|harbour-bridge|surfaces)\.js$/, area: [-250, 250, -2800, -1700] },
-  'tile-streaming': { files: /^js\/(geodata|terrain|surfaces|city-config|city-grid|buildings|far-level|main|scene-culling)\.js$|^js\/tiles\/|^public\/tiles\//, area: null },
+  'tile-streaming': { files: /^js\/(geodata|terrain|surfaces|city-config|city-grid|buildings|far-level|main|scene-culling|real-lots|house-lots|lot-details)\.js$|^js\/tiles\/|^public\/(tiles|lots)\//, area: null },
   'keeps-left': { files: /^js\/(traffic|road-network)\.js$/, area: null },
   'long-flight': { files: /^js\/(main|far-level|horizon)\.js$/, area: null },
   'long-drive-north': { files: /^js\/(main|surfaces)\.js$/, area: null },
@@ -100,7 +100,7 @@ export const COVERS = {
   soak: { files: /^$/, area: null }
 };
 
-const MAP_DATA = /^(js\/geodata\.js|public\/tiles\/.*)$/;
+const MAP_DATA = /^(js\/geodata\.js|public\/(tiles|lots)\/.*)$/;
 const tileArea = (tile, size = 1000) => {
   const [ix, iz] = tile.split('_').map(Number);
   return [ix * size, (ix + 1) * size, iz * size, (iz + 1) * size];

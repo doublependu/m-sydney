@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "SYDNEY_TILES=-4,-6,3,3 node --test \"tests/**/*.test.*\"",
-    "test:all": "node --test \"tests/**/*.test.*\"",
+    "test:all": "node --test --test-concurrency=3 \"tests/**/*.test.*\"",
     "deploy": "npm run build && node tools/check-dist.mjs && wrangler deploy",
     "play": "node tools/play/run.mjs",
     "bench": "node tools/play/bench.mjs",

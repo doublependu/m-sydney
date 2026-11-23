@@ -668,7 +668,7 @@ test('successive mode teleports keep parked vehicles out of the arrival and defa
       assert.ok(Math.hypot(dx + along, dz) > radii[parked.type] + 0.5, 'the complete default chase corridor must be clear');
     }
     assert.deepEqual([car.position.x, car.position.z], [0, 0], 'switching modes leaves the parked car in place');
-    // The walker is only ever where you are (plan 9.5): left behind, it isn't in anyone's way
+    // The walker is only ever where you are: left behind, it isn't in anyone's way
     if (mode !== 'person') arrivals.push(ent);
   }
 });
@@ -988,7 +988,7 @@ test('on foot you stand on what\'s drawn under you, or on the paving\'s height o
   assert.equal(controller.getGroundHeight(6, 1, 'car'), 0, 'a car\'s wheels are js/ground-geometry.js wheelContacts()\'s');
 });
 
-// Changing how you travel (plan 9.5): every mode's entity, enough of each for switchMode(), teleportActiveTo() and update(). js/arrivals.js
+// Changing how you travel: every mode's entity, enough of each for switchMode(), teleportActiveTo() and update(). js/arrivals.js
 // is stood in for: `spots.beside` is what besideVehicle() finds (or null), `spots.arrival` what arrivalFor() does, each given what was asked
 function switchHarness({ colliders = [], water = undefined } = {}) {
   const spots = { beside: null, arrival: null, asked: [] };
@@ -1173,7 +1173,7 @@ test('a car or bike left for the helicopter stands there 10 s too', () => {
   assert.equal(car._parked, false);
 });
 
-// The bike (plan 9.5, part 2): you ride it, you get off beside it, and it stands empty on its stand
+// The bike: you ride it, you get off beside it, and it stands empty on its stand
 test('off the bike you stand beside it, where besideVehicle() puts you with the bike\'s spots', () => {
   const { controller, spots, person, cyclist } = switchHarness();
   controller.activeMode = 'cyclist';

@@ -322,17 +322,20 @@ const MODEL_SITES = [
       y: -18.4
     }
   },
-  // The Art Gallery of New South Wales, its new (north) building, Naala Badu (2022), north of the old one across the motorway's cutting:
-  // white pavilions stepping down the slope towards Woolloomooloo Bay, their glass, roof terraces on each one's roof, and the oil tank
-  // of the war under the lowest. In place of the map's box of its outline. Its frame: the world's, its middle where the map's lawn and
-  // paving are cut into 240 m squares (x 960, z -720), so each of its two cuts is in one square; its ground level, the entrance
-  // pavilion's, a step up from its garden to the south, by Art Gallery Road. Inside, a file a level (each fetched at the door to it: the
-  // entrance's, and the door at the head of each way down): the ground with the entrance pavilion and the Yiribana Gallery; lower levels
-  // 1 and 2, the galleries; lower level 4, the Tank, down a spiral stair. Out onto the roof terraces, and down a stair from lower level 2
-  // to Lincoln Crescent, the walk to the bay. Its art is made in the browser (js/artworks.js).
+  // The Art Gallery of New South Wales, its new (north) building, Naala Badu (2022), north of the old one on the land bridge over the
+  // motorway: white pavilions stepping down the slope towards Woolloomooloo Bay, their glass, roof terraces on each one's roof, and the
+  // oil tank of the war under the lowest. In place of the map's box of its outline. Its south-west half stands over the tunnels under the
+  // land bridge (tools/local/art-gallery.json's `cover`), with no rooms there: the forecourt under a glass canopy, a box with a brown
+  // roof and a lower one, and the Art Garden's walk past them. Its frame: the world's, its middle where the map's lawn and paving are
+  // cut into 240 m squares (x 960, z -720), so each of its two cuts is in one square; its ground level, the entrance pavilion's, a step
+  // up from the forecourt to the south, by Art Gallery Road. Inside, a file a level (each fetched at the door to it: the entrance's, and
+  // the door at the head of each way down): the ground with the entrance pavilion and the Yiribana Gallery; lower levels 1 and 2, the
+  // galleries; lower level 4, the Tank, down a spiral stair. Out onto the roof terraces, and down a stair from lower level 2 to Lincoln
+  // Crescent, the walk to the bay. Its art is made in the browser (js/artworks.js).
   {
     id: 'art-gallery-new', file: 'models/art-gallery-new', x: 960, z: -720, yaw: 0, y: 21.8, far: true, replaces: [[0, -40]], reach: 110,
-    clear: [[-46, -25.5, 3.0]], exit: 'door',
+    // before the front doors, and the forecourt under the canopy (no street tree through its glass)
+    clear: [[-46, -25.5, 3.0], [-59, -12, 7.5]], exit: 'door',
     cut: [
       { poly: [[-36.3, -60.3], [-0.02, -60.3], [-0.02, -27.1], [-36.3, -27.1]], y: -6.4 },
       { poly: [[1.7, -68.3], [8.3, -68.3], [8.3, -62.3], [42.3, -62.3], [42.3, -3.7], [1.7, -3.7]], y: -19.6 }

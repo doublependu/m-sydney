@@ -75,3 +75,22 @@ test('a deck isn\'t moved over a street beside it, nor into a building, and move
     { pts: [[8, -30], [8, 0]], kind: GROUND }, { pts: along(8), y: 3 }, { pts: [[8, 600], [8, 630]], kind: GROUND }]);
   assert.equal(separateDecks(RG3).links, 0);
 });
+
+test('decks of one structure move apart where they aren\'t joined within 80 m, and stay where they join sooner', () => {
+  // Two decks along z, 3 m apart in height, one structure by a loop of bridge 200 m long joining their far ends: they move apart
+  const loop = [{ pts: [[0, 600], [0, 700], [8, 700]], y: 1.5 }, { pts: [[8, 700], [8, 600]], y: 3 }];
+  const RG = map([
+    { pts: [[0, -30], [0, 0]], kind: GROUND }, { pts: along(0) }, { pts: [[8, -30], [8, 0]], kind: GROUND }, { pts: along(8), y: 3 },
+    ...loop
+  ]);
+  const r = separateDecks(RG);
+  assert.ok(r.links >= 2, JSON.stringify(r));
+  const a = xAt(RG, RG.links[1], 300), b = xAt(RG, RG.links[3], 300);
+  assert.ok(b - a >= 11.7 && b - a < 12.5, `${a} ${b}`);
+  // Joined by an 8 m bridge at their far ends (a ramp coming together with the road it joins): left to the heights
+  const RG2 = map([
+    { pts: [[0, -30], [0, 0]], kind: GROUND }, { pts: along(0) }, { pts: [[8, -30], [8, 0]], kind: GROUND }, { pts: along(8), y: 3 },
+    { pts: [[0, 600], [8, 600]], y: 1.5 }
+  ]);
+  assert.equal(separateDecks(RG2).links, 0);
+});

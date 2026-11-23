@@ -261,6 +261,64 @@ test('the Cowper Wharf Rd off-ramp is a tube under Naala Badu\'s land bridge, fr
   }
 });
 
+// Roads OSM draws overlapping, moved apart by hand (tools/local/north-sydney.json, woolloomooloo-moves.json): every 2 m along one, at its
+// middle and its edges, whether the point is inside the other's carriageway at more than a step (1.5 m) from its height there
+const overlapping = (a, b, [x0, z0, x1, z1]) => {
+  const inBox = (p) => p.x >= x0 && p.x <= x1 && p.z >= z0 && p.z <= z1;
+  const ground = (l) => l.kind === KIND.GROUND || (l.kind === KIND.TUNNEL && !tunnelCovered(l, 0));
+  const As = LINKS.filter((l) => l.name === a && l.kind === KIND.GROUND && l.pts.some(inBox));
+  const Bs = LINKS.filter((l) => b.includes(l.name) && ground(l) && l.pts.some(inBox));
+  const yAt = (l, x, z) => (l.kind === KIND.GROUND && !l.cut ? groundHeight(x, z) : roadHeight(l, x, z));
+  let metres = 0;
+  for (const l of As) {
+    for (let i = 1; i < l.pts.length; i++) {
+      const p = l.pts[i - 1], q = l.pts[i], L = Math.hypot(q.x - p.x, q.z - p.z), ux = (q.x - p.x) / L, uz = (q.z - p.z) / L;
+      for (let d = 1; d < L; d += 2) {
+        const cx = p.x + ux * d, cz = p.z + uz * d;
+        if (!inBox({ x: cx, z: cz })) continue;
+        const y = yAt(l, cx, cz);
+        const into = [-l.width / 2 + 0.1, 0, l.width / 2 - 0.1].some((off) => {
+          const x = cx - uz * off, z = cz + ux * off;
+          return Bs.some((o) => passes(o, x, z, o.width / 2) && Math.abs(yAt(o, x, z) - y) > 1.5);
+        });
+        if (into) metres += 2;
+      }
+    }
+  }
+  return metres;
+};
+const MOVED = [
+  // [road, the roads beside it, box, a point on its moved line and where OSM has it, for tiles from before the edit]
+  ['Palmer Street', ['Eastern Distributor'], [955, -400, 1000, -215], [-300, 973.2, 976.1]],
+  ['Sir John Young Crescent', ['Macquarie Street Offramp'], [790, -775, 865, -725], null],
+  ['Sir John Young Crescent', ['Cahill Expressway Offramp'], [895, -460, 965, -380], null],
+  ['Alfred Street North', ['Alfred Street', 'Bent Street'], [-140, -4240, -100, -3950], [-4120, -124.7, -123.7]],
+  ['Alfred Street North', ['Cahill Expressway'], [-150, -3800, -120, -3755], null]
+];
+
+test('roads OSM drew overlapping are moved apart: Palmer St, Sir John Young Cres and Alfred St North are clear of the roads beside them', (t) => {
+  if (!isHeld(tileKeyAt(975, -300)) || !isHeld(tileKeyAt(-120, -4100))) return t.skip('Woolloomooloo or North Sydney isn\'t held');
+  // Tiles from before the edits have Palmer St and Alfred St North on OSM's lines
+  for (const [road, , , probe] of MOVED) {
+    if (!probe) continue;
+    const [z, moved, osm] = probe;
+    const l = LINKS.find((o) => o.name === road && o.kind === KIND.GROUND && passes(o, (moved + osm) / 2, z, 3));
+    const i = l ? l.pts.findIndex((p, k) => k && (p.z - z) * (l.pts[k - 1].z - z) <= 0) : -1;
+    const a = l?.pts[i - 1], b = l?.pts[i], x = i > 0 ? a.x + ((b.x - a.x) * (z - a.z)) / (b.z - a.z || 1) : NaN;
+    if (!(Math.abs(x - osm) >= Math.abs(x - moved))) return t.skip(`the tiles are from before tools/local/'s moves (${road})`);
+  }
+  for (const [road, beside, box] of MOVED) assert.ok(overlapping(road, beside, box) <= 2, `${road} overlaps ${beside.join(' or ')} ${overlapping(road, beside, box)} m`);
+});
+
+test('Falcon St\'s deck over the Warringah Fwy is a bridge from its middle to Military Rd\'s junction, not a road on the ground at its height', (t) => {
+  if (!isHeld(tileKeyAt(-28, -4860))) return t.skip('Falcon St isn\'t held');
+  const at = LINKS.filter((l) => l.name === 'Falcon Street' && passes(l, -27, -4860.5, 1));
+  assert.ok(at.length, 'no Falcon St at (-27, -4860)');
+  // Tiles from before tools/local/falcon-st.json have the piece end 0.9 m short of the freeway's line, a road on the ground
+  if (at.every((l) => l.kind === KIND.GROUND) && at.some((l) => Math.abs(l.pts[0].x + 32.1) < 0.3)) return t.skip('the tiles are from before tools/local/falcon-st.json');
+  assert.ok(at.every((l) => l.kind === KIND.BRIDGE), `Falcon St at (-27, -4860) is ${at.map((l) => l.kind).join(', ')}`);
+});
+
 test('a street overlapping a cutting alongside leaves its road alone, and digs no pit beside it', () => {
   // William St's cutting, under the edge of the wide William St beside it
   const road = LINKS.find((l) => l.cut && l.name === 'William Street' && l.pts.some((p) => Math.hypot(p.x - 1383, p.z - 58) < 1));

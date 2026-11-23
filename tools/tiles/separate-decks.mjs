@@ -4,7 +4,9 @@
 // other's, a metre or three lower, and its barrier stands in them. This moves each deck sideways, away from any deck of another structure
 // whose carriageway overlaps its own alongside, more than one surface's 1.5 m and less than a stacked road's room above or below it
 // (js/surfaces.js DECK_DEPTH and a truck), till their barriers are a wall's width apart. Each moves half the way, 3 m at most. Two decks
-// crossing aren't side by side, and the Harbour Bridge's structure is left as it is.
+// crossing aren't side by side, and the Harbour Bridge's structure is left as it is. Decks of one structure are moved apart too where
+// they aren't joined within JOIN m along the decks (the Western Distributor's ramps beside its viaduct at Darling Harbour, which join it
+// further on): nearer their join, a ramp is meant to come together with the road it joins, and is left to the heights.
 //
 // What moves is every point of a deck inside it: the points along its links, and the nodes where only bridge links meet. A structure's
 // ends stay where they are, a node where it meets a road on the ground, and so does the first stretch in from each, so nothing on the
@@ -21,6 +23,7 @@ const EASE = 60; // m over which a move eases in and out
 const KEEP_ENDS = 40; // m in from a structure's end that doesn't move
 const ALONGSIDE = 0.87; // cos of the angle under which two decks run side by side: about 30 degrees
 const MOST = 3; // m a deck moves at most: where one side can't move, the other doesn't go on alone
+const JOIN = 80; // m along the decks within which two decks of one structure are joined, and left to come together
 const half = (l) => l[3] / 2 + 0.6; // to the barrier: js/surfaces.js linkFromRecord()
 
 /** Each bridge link's structure, as tools/build-tiles.mjs works them out for bridges: bridge links joined where they share a node */
@@ -80,6 +83,28 @@ function separateDecks(RG, { iterations = 14, building = () => false } = {}) {
       if (fromEnd.get(b) + t.length < fromEnd.get(a)) { fromEnd.set(a, fromEnd.get(b) + t.length); changed = true; }
     }
   }
+  // Each deck's neighbours in its own structure: the decks joined to it within JOIN m along the decks, from either of its ends
+  const decksAt = new Map();
+  for (const t of decks) for (const p of [t.pts[0], t.pts[t.pts.length - 1]]) (decksAt.get(p) || decksAt.set(p, []).get(p)).push(t);
+  for (const t of decks) {
+    t.near = new Set([t]);
+    const dist = new Map([[t.pts[0], 0], [t.pts[t.pts.length - 1], 0]]);
+    const queue = [t.pts[0], t.pts[t.pts.length - 1]];
+    while (queue.length) {
+      queue.sort((a, b) => dist.get(a) - dist.get(b));
+      const n = queue.shift();
+      for (const u of decksAt.get(n) || []) {
+        if (u.group !== t.group) continue;
+        t.near.add(u);
+        const other = u.pts[0] === n ? u.pts[u.pts.length - 1] : u.pts[0];
+        const d = dist.get(n) + u.length;
+        if (d < JOIN && !(dist.get(other) <= d)) {
+          dist.set(other, d);
+          queue.push(other);
+        }
+      }
+    }
+  }
   // Every vertex that can move, with how much it may: none at an end, all of it from KEEP_ENDS + EASE in
   const movable = new Map();
   for (const t of decks) {
@@ -110,8 +135,8 @@ function separateDecks(RG, { iterations = 14, building = () => false } = {}) {
     }
     return cells;
   }
-  // The push point p of deck t (running along ux, uz) wants, as a vector: away from the nearest deck of another structure crowding it
-  // alongside, by half of what's missing
+  // The push point p of deck t (running along ux, uz) wants, as a vector: away from the nearest deck of another structure, or of its own
+  // not joined to it within JOIN m, crowding it alongside, by half of what's missing
   // Only where their carriageways overlap (`overlap`, the first time round), so decks merely close together stay where they are;
   // then on till their barriers are a wall apart
   const pushAt = (cells, t, p, ux, uz, overlap = false) => {
@@ -119,7 +144,7 @@ function separateDecks(RG, { iterations = 14, building = () => false } = {}) {
     for (let i = -1; i <= 1; i++) {
       for (let j = -1; j <= 1; j++) {
         for (const [u, a, b] of cells.get(key(p.x + i * G, p.z + j * G)) || []) {
-          if (u.group === t.group) continue;
+          if (t.near.has(u)) continue;
           const dx = b.x - a.x, dz = b.z - a.z, L2 = dx * dx + dz * dz || 1, L = Math.sqrt(L2);
           if (Math.abs((dx * ux + dz * uz) / L) < ALONGSIDE) continue; // crossing, not alongside
           const f = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.z - a.z) * dz) / L2));
@@ -136,11 +161,11 @@ function separateDecks(RG, { iterations = 14, building = () => false } = {}) {
             ax = (-dz / L) * side;
             az = (dx / L) * side;
           }
-          worst = { into, ax, az };
+          worst = { into, ax, az, same: u.group === t.group };
         }
       }
     }
-    return worst && { x: worst.ax * (worst.into / 2 + 0.05), z: worst.az * (worst.into / 2 + 0.05) };
+    return worst && { x: worst.ax * (worst.into / 2 + 0.05), z: worst.az * (worst.into / 2 + 0.05), same: worst.same };
   };
   // A vertex's direction along its deck
   const dirAt = (t, i) => {
@@ -210,13 +235,14 @@ function separateDecks(RG, { iterations = 14, building = () => false } = {}) {
   for (const t of decks) t.pts.forEach((p, i) => { if (!placeOf.has(p)) placeOf.set(p, [t, i]); });
   for (let it = 0; it < iterations; it++) {
     const cells = index();
-    // What each vertex wants, then spread over its neighbours of the same structure so the deck bends gently
+    // What each vertex wants, then spread over its neighbours of the same structure so the deck bends gently: away from a deck of its own
+    // structure, only along the decks joined to it, as the other is pushed the other way
     const wants = [];
     for (const [p, m] of movable) {
       const [t, i] = placeOf.get(p);
       if (it && !involved.has(p)) continue;
       const v = pushAt(cells, m.t, p, ...dirAt(t, i), !it);
-      if (v) wants.push({ p, v, group: m.group });
+      if (v) wants.push({ p, v, group: m.group, t: m.t });
       if (v && !it) involved.add(p);
     }
     if (!wants.length) break;
@@ -233,7 +259,7 @@ function separateDecks(RG, { iterations = 14, building = () => false } = {}) {
     for (const [p, m] of movable) {
       let best = null, size = 0;
       for (const w of near.get(key(p.x, p.z)) || []) {
-        if (w.group !== m.group) continue;
+        if (w.group !== m.group || (w.v.same && !w.t.near.has(placeOf.get(p)[0]))) continue;
         const f = Math.max(0, 1 - Math.hypot(w.p.x - p.x, w.p.z - p.z) / EASE);
         const s = Math.hypot(w.v.x, w.v.z) * f;
         if (s > size) { size = s; best = { x: w.v.x * f, z: w.v.z * f }; }

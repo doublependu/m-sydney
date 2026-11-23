@@ -1,0 +1,12 @@
+{
+  "name": "Falcon St over the Warringah Fwy",
+  "box": [
+    -80,
+    -4900,
+    20,
+    -4820
+  ],
+  "move": [
+    {"id":1083074695,"points":[[-33.6,-4860.6],[-22.64,-4860.32]],"expect":{"from":[-32.1,-4860.6],"to":[-22.6,-4860.3]},"why":"Falcon St's deck over the Warringah Fwy, the piece from the bridge's middle to Military Rd's junction: OSM tags it a bridge, but it's 9.5 m long and its end node is 0.9 m short of the freeway's line under it, so the build took it for a short bridge over nothing, a road on the ground at the deck's height, 6.3-6.8 m over the freeway and 5.7 m over its on-ramp (check-layers: the ground 5.68 m over the on-ramp's lane at (-15, -4859)). Its west node, a junction on the deck, moved 1.5 m west along Falcon St, over the freeway's line: a bridge like the rest of the deck"}
+  ]
+}

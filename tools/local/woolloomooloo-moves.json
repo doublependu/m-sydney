@@ -1,0 +1,17 @@
+{
+  "name": "Woolloomooloo: Palmer St and Sir John Young Cres beside the motorways' cuttings, moved apart (the levels round them are woolloomooloo.json's)",
+  "box": [
+    760,
+    -800,
+    1010,
+    -200
+  ],
+  "move": [
+    {"id":174276873,"points":[[971.13,-244.26],[972.48,-277.2],[974.04,-312.34],[974.19,-316.78],[978.41,-398.36]],"expect":{"from":[973.4,-244.1],"to":[980.4,-398.3]},"why":"Palmer St beside the Eastern Distributor's cutting, from William St's exit to Sir John Young Cres: OSM draws it 2.6-2.8 m east of its kerbs in NSW's aerial, its carriageway 2.2-3.2 m into the motorway's, which is up to 5 m lower (overlaps: 4.1 m at (977, -243)). Moved west 2.3-2.8 m, to its kerbs, 2 m at its junction with Sir John Young Cres"},
+    {"id":173914710,"points":[[983.33,-215.16],[982.06,-246.37],[986.24,-339.9],[989.46,-372.45],[990.57,-389.47]],"expect":{"from":[983.3,-215.2],"to":[990.5,-389.5]},"why":"The Eastern Distributor northbound coming up out of its tunnel beside Palmer St: OSM draws it 1-1.5 m west of its lanes in NSW's aerial. Moved east 0.6 m along its middle, its first 30 m, its portal and its junction at Sir John Young Cres kept, so Palmer St (above) is a wall from it and William St's exit on its other side isn't crowded"},
+    {"id":97187846,"points":[[859.99,-728.93],[851.24,-734.79],[841.11,-740.95],[831.16,-746.46],[821.55,-751.24]],"expect":{"from":[861.2,-730.7],"to":[822.5,-753.1]},"why":"The Macquarie St off-ramp from its portal under the Domain west to where Sir John Young Cres leaves it, beside Sir John Young Cres's own ramp to its tunnel: OSM draws them 4.1-4.4 m apart, each 5 m wide, 1.9 m apart in height where their tunnels part (overlaps: 2.0 m at (825, -754)). Moved 2.1 m south-west, away from it, into the Domain's bank; the Cahill's lanes are on the ramp's other side, at its height"},
+    {"id":97175686,"points":[[821.55,-751.24],[807.13,-758],[790.1,-765.73],[772,-773.2]],"expect":{"from":[822.5,-753.1],"to":[772,-773.2]},"why":"The Macquarie St off-ramp from where Sir John Young Cres leaves it back to the Cahill Expressway, beside Sir John Young Cres's ramp: moved 2.1 m south-west with the stretch east of it (above), back onto OSM's line where the two come together at one height"},
+    {"id":31093760,"points":[[959.99,-444.36],[953.59,-435.93],[939.96,-418.5],[934.72,-411.77],[929.06,-404.55],[924.68,-399.05],[918.05,-390.62],[915.45,-387.4],[914.56,-386.35]],"expect":{"from":[959.1,-445],"to":[914,-386.8]},"why":"Sir John Young Cres from Palmer St to the Cahill Expressway's off-ramp's portal, beside the off-ramp climbing out of its cutting: OSM draws them 5.8-7.1 m apart where the street is 9.1 m wide and the ramp 5 m, up to 3.9 m apart in height (overlaps: 3.9 m at (918, -400)). Moved east up to 2.2 m, away from the ramp"},
+    {"id":26028087,"points":[[907.41,-390.72],[920.53,-407.21],[929.21,-418.33],[943.96,-437.22],[957.03,-454.13],[961.23,-460.06],[965.17,-466.94],[967.65,-472.27],[971.46,-482.75],[973.49,-489.89]],"expect":{"from":[907.7,-390.5],"to":[973.5,-489.9]},"why":"The Cahill Expressway's off-ramp out of its cutting beside Sir John Young Cres: moved 0.4 m west, the room there is to Sir John Young Cres's other carriageway, so the street (above) moves less"}
+  ]
+}

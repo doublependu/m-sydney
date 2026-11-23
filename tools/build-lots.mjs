@@ -99,6 +99,22 @@ for (const lot of result.lots) {
     entry.homes.add(h);
   }
 }
+// The lots each tile's measure reads, as fetched and as shifted: those reaching within 100 m of it, which any line inside its houses is
+// (over the whole map, every lot read for every tile would take hours)
+const MEASURE_REACH = 100;
+const allNear = new Map(targets.map((t) => [t.key, []]));
+for (const lot of result.all) {
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const ring of lot.rings) {
+    for (const v of ring) {
+      x0 = Math.min(x0, v.x0, v.xs); x1 = Math.max(x1, v.x0, v.xs);
+      z0 = Math.min(z0, v.z0, v.zs); z1 = Math.max(z1, v.z0, v.zs);
+    }
+  }
+  for (let ix = Math.floor((x0 - MEASURE_REACH) / 1000); ix <= Math.floor((x1 + MEASURE_REACH) / 1000); ix++) {
+    for (let iz = Math.floor((z0 - MEASURE_REACH) / 1000); iz <= Math.floor((z1 + MEASURE_REACH) / 1000); iz++) allNear.get(`${ix}_${iz}`)?.push(lot);
+  }
+}
 fs.mkdirSync(OUT, { recursive: true });
 const indexFile = path.join(OUT, 'index.json');
 const index = fs.existsSync(indexFile) ? JSON.parse(fs.readFileSync(indexFile, 'utf8')) : { tiles: {} };
@@ -129,7 +145,7 @@ for (const t of targets) {
   const edges = {};
   for (const l of tileLots) for (const ring of l.edges) for (const e of ring) edges[e] = (edges[e] || 0) + 1;
   report.tiles[t.key] = { houses: own.length, rules: count(own, (h) => h.rule), lots: tileLots.length, kinds: count(tileLots, (l) => l.kind), edges,
-    bytes: homes.length ? packed.length : 0, inside: insideLines({ all: result.all, lots: tileLots }, own.map((h) => h.house)) };
+    bytes: homes.length ? packed.length : 0, inside: insideLines({ all: allNear.get(t.key), lots: tileLots }, own.map((h) => h.house)) };
 }
 index.cadastre = days.length ? (days[0] === days[days.length - 1] ? days[0] : `${days[0]} to ${days[days.length - 1]}`) : null;
 index.tiles = Object.fromEntries(Object.entries(index.tiles).sort());

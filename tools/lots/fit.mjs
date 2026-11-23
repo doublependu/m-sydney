@@ -1,8 +1,9 @@
 // Houses fitted to their real lots, NSW's cadastre (tools/build-lots.mjs). The lots are surveyed; the map's houses are mostly roofs traced
 // from photos, 1-4 m out, and several houses of a pair or a row can be one outline. So:
 // - The lots are shifted to the houses: each CELL m square of the map takes the shift, within MAX_SHIFT m, that leaves the least of the
-//   lots' lines inside houses; a square with fewer than FEW houses takes the houses of the squares round it too. Each point of a lot moves
-//   by the squares' shifts blended between their middles, so lots that share a line still share it.
+//   lots' lines inside houses, each metre of it costing SHIFT_COST of the line; a square with fewer than FEW houses takes the houses of
+//   the squares round it too. Each point of a lot moves by the squares' shifts blended between their middles, so lots that share a line
+//   still share it.
 // - Each house's lot is the one holding most of it. A house within IN m of its lot is in it. One over by MOVE_MOST m or less has each line
 //   it's over moved into the gap between its outline and the next house's, halfway, CLEAR m from each where there's room, and MOVE_MOST m
 //   at most: the line stays straight, and its ends slide along the lines they meet, so the lots round it follow. One on two lots or more,
@@ -17,6 +18,10 @@ import { clipHalf, inRing, insideSpans } from '../../js/house-lots.js';
 const CELL = 250; // m: the squares each with a shift of their own
 const MAX_SHIFT = 5; // m a square's lots may be shifted, at most
 const FEW = 20; // houses: a square with fewer takes the squares' round it
+// Of the line left inside houses, what each metre of shift costs. Rows of houses repeat every 5 m or so along a street, so in the inner
+// city a shift of one house along leaves nearly as little line as none (2-8% less at 4-5 m), where a suburb's outlines that are really
+// 3-5 m off the lots leave half as much or less: a shift must cut the line by 2% a metre to be taken.
+const SHIFT_COST = 0.02;
 const IN = 0.3; // m a house may stand over its lot's line and be in it
 const MOVE_MOST = 2; // m a house may stand over a line that's moved for it
 const CLEAR = 0.3; // m a moved line keeps from each outline, where there's room
@@ -163,7 +168,8 @@ function cellShifts(houses, lines, lineGrid) {
       if (set.length >= FEW) break;
     }
     if (!set.length) continue;
-    // The least line, and of shifts that leave as little, the least shift (a centimetre of line for each metre)
+    // The least line, each metre of shift costing SHIFT_COST of it, and of shifts that leave as little, the least (a centimetre of line
+    // for each metre)
     let best = { dx: 0, dz: 0, m: score(set, 0, 0), cost: 0 };
     best.cost = best.m;
     const at0 = best.m;
@@ -173,7 +179,7 @@ function cellShifts(houses, lines, lineGrid) {
         for (let dz = c.dz - R; dz <= c.dz + R + 1e-9; dz += step) {
           const off = Math.hypot(dx, dz);
           if (off > MAX_SHIFT + 1e-9 || (dx === c.dx && dz === c.dz)) continue;
-          const m = score(set, dx, dz), cost = m + 0.01 * off;
+          const m = score(set, dx, dz), cost = m * (1 + SHIFT_COST * off) + 0.01 * off;
           if (cost < best.cost - 1e-9) best = { dx, dz, m, cost };
         }
       }
@@ -271,17 +277,30 @@ function fitLots({ lots: fetched, houses, others = [], roads = [], fitted = () =
   const inBox = (l, x, z) => x >= l.box.x0 && x <= l.box.x1 && z >= l.box.z0 && z <= l.box.z1;
   const lotsAt = (x, z) => [...lotGrid.near(x, z, x, z)].filter((l) => inBox(l, x, z) && inLot(l, x, z));
 
+  // A lot with no edge within a centimetre of a box holds all of the box or none of it. A park's or a reserve's lot of thousands of points
+  // round thousands of houses is then asked once a house, not at each of its points (over the whole map, most of the time otherwise)
+  const sameOver = (l, b) => {
+    for (const ring of l.rings) {
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const p = ring[j], q = ring[i];
+        if (Math.max(p.x, q.x) >= b.x0 - 0.01 && Math.min(p.x, q.x) <= b.x1 + 0.01 && Math.max(p.z, q.z) >= b.z0 - 0.01 && Math.min(p.z, q.z) <= b.z1 + 0.01) return false;
+      }
+    }
+    return true;
+  };
   // Each house sampled against the lots: which holds most of it, how much each holds, how far it stands over its main one
   const sampleOf = (h) => {
     const counts = new Map();
     const pts = [];
     let total = 0, overlapping = 0;
     const cand = [...lotGrid.near(h.box.x0, h.box.z0, h.box.x1, h.box.z1)];
+    const held = new Map(); // lot -> whether it holds the whole box, where it's the same over it
+    for (const l of cand) if (sameOver(l, h.box)) held.set(l, inLot(l, (h.box.x0 + h.box.x1) / 2, (h.box.z0 + h.box.z1) / 2));
     for (let x = h.box.x0 + SAMPLE / 2; x < h.box.x1; x += SAMPLE) {
       for (let z = h.box.z0 + SAMPLE / 2; z < h.box.z1; z += SAMPLE) {
         if (!h.rings.some((r) => inRing(r, x, z))) continue;
         total++;
-        const holding = cand.filter((l) => inBox(l, x, z) && inLot(l, x, z));
+        const holding = cand.filter((l) => inBox(l, x, z) && (held.get(l) ?? inLot(l, x, z)));
         if (holding.length > 1) overlapping++;
         const l = holding.length > 1 ? holding.reduce((p, q) => (q.area0 < p.area0 ? q : p)) : holding[0] || null;
         counts.set(l, (counts.get(l) || 0) + 1);
@@ -498,17 +517,28 @@ function fitLots({ lots: fetched, houses, others = [], roads = [], fitted = () =
   }
 
   lap('rules');
-  // The lots kept, each edge's kind
-  const onLine = (list, a, b) => {
+  // The lots kept, each edge's kind. The lines moved and the walls found, in grids: an edge is along one when its middle is within 0.1 m
+  // of it (over the whole map there are tens of thousands, and millions of edges)
+  const segmentGrid = (list) => {
+    const grid = boxGrid(20);
+    for (const m of list) {
+      const b = boxOf([m.a, m.b]);
+      grid.add(m, { x0: b.x0 - 0.1, x1: b.x1 + 0.1, z0: b.z0 - 0.1, z1: b.z1 + 0.1 });
+    }
+    return grid;
+  };
+  const movedGrid = segmentGrid(movedLines), blockedGrid = segmentGrid(blockedLines);
+  const onLine = (grid, a, b) => {
     const mx = (a.x + b.x) / 2, mz = (a.z + b.z) / 2, L = Math.hypot(b.x - a.x, b.z - a.z);
     if (L < 1e-6) return false;
     const d = { x: (b.x - a.x) / L, z: (b.z - a.z) / L };
-    return list.some((m) => {
+    for (const m of grid.near(mx, mz, mx, mz)) {
       const ml = Math.hypot(m.b.x - m.a.x, m.b.z - m.a.z);
       const md = { x: (m.b.x - m.a.x) / ml, z: (m.b.z - m.a.z) / ml };
       const t = (mx - m.a.x) * md.x + (mz - m.a.z) * md.z, s = (mx - m.a.x) * md.z - (mz - m.a.z) * md.x;
-      return Math.abs(d.x * md.z - d.z * md.x) < 0.05 && t > -0.05 && t < ml + 0.05 && Math.abs(s) < 0.1;
-    });
+      if (Math.abs(d.x * md.z - d.z * md.x) < 0.05 && t > -0.05 && t < ml + 0.05 && Math.abs(s) < 0.1) return true;
+    }
+    return false;
   };
   const roadGrid = boxGrid(40);
   for (const r of roads) {
@@ -536,8 +566,8 @@ function fitLots({ lots: fetched, houses, others = [], roads = [], fitted = () =
       const other = lotsAt(mx + nx * 0.3, mz + nz * 0.3).find((l) => l !== lot);
       if (other) {
         if ((homesOf.get(other) || []).some((h) => hs.includes(h))) return 'wall';
-        if (onLine(movedLines, a, b)) return 'moved';
-        if (onLine(blockedLines, a, b)) return 'wall';
+        if (onLine(movedGrid, a, b)) return 'moved';
+        if (onLine(blockedGrid, a, b)) return 'wall';
         return 'side';
       }
       return frontage(mx, mz) ? 'front' : 'bound';
@@ -599,4 +629,4 @@ function insideLines(result, houses) {
   return { fetched: r(out.fetched), shifted: r(out.shifted), fitted: Object.fromEntries(Object.entries(out.fitted).map(([k, v]) => [k, r(v)])) };
 }
 
-export { CELL, CLEAR, FEW, IN, MAX_SHIFT, MOVE_MOST, SPAN, SPAN_LOT, fitLots, inLot, insideLines, shiftAt };
+export { CELL, CLEAR, FEW, IN, MAX_SHIFT, MOVE_MOST, SHIFT_COST, SPAN, SPAN_LOT, fitLots, inLot, insideLines, shiftAt };

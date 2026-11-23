@@ -6,8 +6,12 @@
 //   node --max-old-space-size=8000 tools/build-ponds.mjs [--also=way/1,relation/2,...] [--out=file]
 // Each is cut to the curb islands' ground (the lawns and paving tools/build-geodata.mjs made, on the land): never on a road. Pieces are
 // cut to the lawns' 240 m squares, so each lies on a square's lawn, cheap to lay on its triangles, and built only near the player. Waters
-// that meet are one pond, at one level: the lowest of the surveyed ground (the height grid, tools/build-heights.mjs) round its edge, where
-// it would spill, so the water lies flat over a hollow and never stands over its bank.
+// that meet are one pond, at one level. The sea's rule's still water: the lowest of the surveyed ground (the height grid,
+// tools/build-heights.mjs) round its edge, where it would spill, so the water lies flat over a hollow and never stands over its bank. The
+// ponds' rule's (`graded`): where most of its water lies in NSW's 5 m elevation model, which has a lake flat at its height where the 20 m
+// grid has its banks across it and its valley past a dam, and cut back off the ground the model has over that (a dune or a bank its outline
+// takes in); or, where the model hasn't it lying flat (`untrusted`: on a slope, under trees or reeds), the lowest ground round its edge.
+// tools/tiles/pond-grade.mjs grades the ground under and round it to its level, so its water lies flat and meets the bank.
 // A still water the last build's land still has as the sea (land.bin: a build from before the rule) is left out: there's no ground there
 // to lay it on. --also draws more still water than the rule's, under lawn in the last build, for trying the drawing out.
 import fs from 'node:fs';
@@ -136,23 +140,35 @@ for (const group of groups.values()) {
     area: Math.round(group.reduce((t, w) => t + w.outer.reduce((s, r) => s + Math.abs(ringArea(r)), 0) - w.inner.reduce((s, r) => s + Math.abs(ringArea(r)), 0), 0)),
     ...(group.some((w) => w.also) && { also: true }) };
   ponds.push(record);
-  const cut = cutPond(group, { groundIn, landIn, terrainAt });
+  const graded = !group.some((w) => w.also || w.why === 'out of the sea');
+  const cut = cutPond(group, { groundIn, landIn, terrainAt, ...(graded && { surveyAt: (x, z) => dem(...fromWorld(x, z)) }) });
   if (cut.sea) {
     record.sea = true;
     leftOut++;
     continue;
   }
-  if (!cut.pieces.length) {
+  const steps = cut.steps ?? [];
+  if (!cut.pieces.length && !steps.length) {
     record.none = true;
     continue;
   }
   record.level = Math.round(cut.level * 100) / 100;
-  record.pieces = cut.pieces.length;
-  record.drawn = Math.round(cut.pieces.reduce((t, rings) => t + rings.reduce((s, r, k) => s + (k ? -1 : 1) * Math.abs(ringArea(r)), 0), 0));
-  for (const rings of cut.pieces) pieces.push([record.level, ...rings.map(flat)]);
+  const all = [...cut.pieces.map((rings) => [record.level, rings]), ...steps.flatMap((step) => step.pieces.map((rings) => [step.level, rings]))];
+  record.pieces = all.length;
+  record.drawn = Math.round(all.reduce((t, [, rings]) => t + rings.reduce((s, r, k) => s + (k ? -1 : 1) * Math.abs(ringArea(r)), 0), 0));
+  if (graded) {
+    Object.assign(record, { graded: true, first: pieces.length, survey: cut.survey, clipped: Math.round(cut.clipped), ...(cut.untrusted && { untrusted: true }) });
+    if (steps.length) record.steps = steps.map((step) => step.level);
+  }
+  for (const [level, rings] of all) pieces.push([level, ...rings.map(flat)]);
 }
 const drawn = ponds.filter((p) => p.pieces);
 log(`${waters.length} still waters (${waters.filter((w) => w.also).length} more asked for) in ${ponds.length} ponds: ${drawn.length} drawn in ${pieces.length} pieces, ${(drawn.reduce((t, p) => t + p.drawn, 0) / 1e4).toFixed(1)} ha;`
   + ` ${leftOut} on the last build's water (land.bin: the sea's rule's, which tools/build-geodata.mjs takes out of it, or water the sea's outline has)${ponds.some((p) => p.none) ? `; ${ponds.filter((p) => p.none).length} on no ground` : ''}`);
+const gradedPonds = drawn.filter((p) => p.graded);
+log(`${gradedPonds.length} graded to their level (the 5 m survey's water): ${(gradedPonds.reduce((t, p) => t + p.drawn, 0) / 1e4).toFixed(1)} ha drawn,`
+  + ` ${(gradedPonds.reduce((t, p) => t + p.clipped, 0) / 1e4).toFixed(1)} ha cut back off the ground over it; ${gradedPonds.filter((p) => p.steps).length}`
+  + ` with water a step up, at a level of its own; ${gradedPonds.filter((p) => p.untrusted).length} (${(gradedPonds.filter((p) => p.untrusted).reduce((t, p) => t + p.drawn, 0) / 1e4).toFixed(1)} ha)`
+  + ' not flat in the survey, at the lowest ground round their edges');
 fs.writeFileSync(OUT, JSON.stringify({ pieces, ponds }));
 log(`wrote ${path.relative(ROOT, OUT)} (${(fs.statSync(OUT).size / 1024).toFixed(0)} KB) in ${((Date.now() - started) / 1000).toFixed(1)} s`);

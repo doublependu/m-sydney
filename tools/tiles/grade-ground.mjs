@@ -3,8 +3,10 @@
 // to the terrain over BLEND metres beyond it. Each tile gets a 5 m grid of the difference, so the game's groundHeight() stays a quick
 // lookup: working this out as the game runs would be far too slow on a phone.
 // A beach's sand is graded down to the water too: the survey has it a metre or two over the sea where it meets it, which is 2.2 m under
-// the survey's zero (js/city-config.js), so the sand would end in a step. And the ground over a tunnel under a cover drawn by hand with
-// a `top` (a land bridge, tools/local/*.json) is raised over the tube's ceiling, so the tube can't be seen into from above.
+// the survey's zero (js/city-config.js), so the sand would end in a step. The ground under and round a pond the ponds' rule draws is graded
+// to its level (tools/tiles/pond-grade.mjs), so its water lies flat and meets its bank, but not within POND_KEEP of a road, which keeps
+// its own. And the ground over a tunnel under a cover drawn by hand with a `top` (a land bridge, tools/local/*.json) is raised over the
+// tube's ceiling, so the tube can't be seen into from above.
 import fs from 'node:fs';
 
 globalThis.fetch = async (url) => new Response(fs.readFileSync(new URL(url)));
@@ -13,6 +15,7 @@ const { KIND, LINKS, TUNNEL_HEIGHT, roadHeight } = await import('../../js/surfac
 const { localCovers } = await import('../local-edits.mjs');
 const { rawTerrainHeight } = await import('../../js/terrain.js');
 const { CITY_BOUNDS, landAt } = await import('../../js/city-config.js');
+const { generatedPondGrading } = await import('./pond-grade.mjs');
 
 const { size, cell, unit } = GEO.ground;
 const BLEND = 8; // m beyond the kerb
@@ -170,6 +173,12 @@ function lidRaise(x, z, ground) {
 }
 if (lids.length) console.log(`[ground] ${lids.length} covers over tunnels with a top (tools/local/)`);
 
+// --- Ponds: the ground under and round each graded pond at its level, faded out near a road, which keeps its own ---------------------
+const POND_KEEP = [3, 8]; // m past a road's edge: no grading nearer, all of it past
+const pondAt = generatedPondGrading();
+let pondCells = 0, pondDown = 0, pondUp = 0;
+if (pondAt) console.log('[ground] ponds graded to their levels (tools/data/generated/ponds.json)');
+
 const smooth = (t) => t * t * (3 - 2 * t);
 function moved(x, z) {
   const terrain = rawTerrainHeight(x, z);
@@ -198,7 +207,15 @@ function moved(x, z) {
     weight += w;
   }
   const roads = weight ? sum / weight : 0;
-  const graded = roads + beachDrop(x, z, terrain + roads, roadEdge);
+  let graded = roads + beachDrop(x, z, terrain + roads, roadEdge);
+  // On the land only: the ground under the sea beside a pond stays as the beaches leave it
+  const pond = pondAt && landAt(x, z) ? pondAt(x, z, terrain + graded) : null;
+  if (pond !== null) {
+    const keep = roadEdge === Infinity ? 1 : smooth(Math.max(0, Math.min(1, (roadEdge - POND_KEEP[0]) / (POND_KEEP[1] - POND_KEEP[0]))));
+    const by = (pond - terrain - graded) * keep;
+    graded += by;
+    if (Math.abs(by) >= 0.05) { pondCells++; pondDown = Math.min(pondDown, by); pondUp = Math.max(pondUp, by); }
+  }
   return lids.length ? graded + lidRaise(x, z, terrain + graded) : graded;
 }
 
@@ -219,3 +236,4 @@ for (const tile of heldTiles()) {
 }
 fs.writeFileSync(process.argv[2], JSON.stringify(out));
 console.log(`[ground] ${((movedCells / total) * 100).toFixed(0)}% of the ground moved for the roads`);
+if (pondAt) console.log(`[ground] ${pondCells} points of the 5 m grid moved 5 cm or more for the ponds, by ${pondDown.toFixed(2)} to +${pondUp.toFixed(2)} m`);

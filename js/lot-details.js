@@ -6,6 +6,7 @@ import { PATH_SURFACES, lawnSurface, pavingSurface } from './garden.js';
 import { MODEL_SITES, cutsOf, toWorldOf } from './model-sites.js';
 import { GEO, TILE, heldList, heldTiles, isHeld, tileExists, tileKey } from './geodata.js';
 import { MARGIN, squareLots } from './house-lots.js';
+import { lotsReady, realLotsOf, releaseLots } from './real-lots.js';
 import { houseEntry } from './house-entry.js';
 import { lotThings } from './lot-things.js';
 import { squareVerge, walkLine } from './verge.js';
@@ -20,7 +21,8 @@ import { dropLayers, setLayer } from './drawn-ground.js';
 // (js/quality.js), nearest first, once the city round you is complete; and the fences' colliders, which hold the walker and nothing else
 // (js/controllers.js addWalkerColliders()).
 // - The map is worked out in SQUARE m squares, one at a time, as the world's jobs have time (js/main.js), each once every tile within
-//   MARGIN of it is built, and kept while those tiles are.
+//   MARGIN of it is built, and kept while those tiles are; and once those tiles' real lots are here, where the build has them
+//   (js/real-lots.js), each tile's file asked for then and let go of with its tile.
 // - What's drawn is four instanced meshes: every fence panel (front fences' too), every slab of concrete (driveways, crossovers,
 //   laybacks, paths), and every box of the lots' things (js/lot-things.js: carports, garages, brick walls, hedges, shrubs, letterboxes,
 //   verandahs), the small ones only within the level's SMALL m; the verges (js/verge.js), the nature strips' lawn and their
@@ -113,8 +115,9 @@ function tilesFor(square) {
 }
 
 /**
- * What js/house-lots.js squareLots() needs for a square, from the tiles held: its buildings and the world round them, { entries, env }.
- * `tiles`: the held tiles, by key. In steps; squareWorkNow() all at once.
+ * What js/house-lots.js squareLots() needs for a square, from the tiles held: its buildings and the world round them, { entries, env },
+ * with the real lots of its tiles whose lot files are here (js/real-lots.js). `tiles`: the held tiles, by key. In steps; squareWorkNow()
+ * all at once.
  */
 function* squareWork(square, tiles) {
   const x0 = square.x0 - MARGIN, x1 = square.x1 + MARGIN, z0 = square.z0 - MARGIN, z1 = square.z1 + MARGIN;
@@ -182,6 +185,8 @@ function* squareWork(square, tiles) {
     if (common.length && roll < 0.8) return common[0][0];
     return STREET_MIX[Math.floor(roll * STREET_MIX.length) % STREET_MIX.length];
   };
+  // The real lots, where there are any: a house's by its middle, and those near a point
+  const real = yield* realLotsOf(tilesFor(square));
   const busStops = [];
   const stops = heldList('busShelters');
   for (let i = 0; i < stops.length; i += 2) if (stops[i] >= x0 && stops[i] <= x1 && stops[i + 1] >= z0 && stops[i + 1] <= z1) busStops.push({ x: stops[i], z: stops[i + 1] });
@@ -290,6 +295,8 @@ function* squareWork(square, tiles) {
       return road ? roadHeight(road, x, z) : groundHeight(x, z);
     },
     sites: sitesNear((square.x0 + square.x1) / 2, (square.z0 + square.z1) / 2, SQUARE + MARGIN),
+    realLots: real ? (w) => real.homeAt(w.cx, w.cz) : undefined,
+    realLotsIn: real?.lotsIn,
     // For each lot's things and the verges
     lotThings: (lot, near) => lotThings(lot, near, env),
     links: [...links],
@@ -449,7 +456,8 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
   /** One step of work, if there's any near (x, z): a square's lots, or what's drawn chosen again. Whether it did something. */
   function* work(x, z) {
     const r = reach();
-    // Squares no longer wanted, or whose tiles have gone
+    let waiting = false;
+    // Squares no longer wanted, or whose tiles have gone; and those tiles' real lots
     for (const [key, entry] of squares) {
       const far = Math.max(entry.square.x0 - x, x - entry.square.x1, entry.square.z0 - z, z - entry.square.z1) > r + KEEP;
       if (far || !entry.keys.every((k) => isHeld(k))) {
@@ -458,6 +466,7 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
         changed = true;
       }
     }
+    releaseLots(isHeld);
     // A square near you that's ready, nearest first
     let next = null;
     for (let ix = Math.floor((x - r) / SQUARE); ix <= Math.floor((x + r) / SQUARE); ix++) {
@@ -469,10 +478,12 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
         if (d > r) continue;
         const keys = tilesFor(square);
         if (!keys.every((k) => built(k))) continue;
+        // Its tiles' real lots asked for, if they haven't come
+        if (!lotsReady(keys)) { waiting = true; continue; }
         if (!next || d < next.d) next = { key, square, keys, d };
       }
     }
-    pending = !!next;
+    pending = !!next || waiting;
     if (next) {
       activity.label = 'houses\' lots';
       const { entries, env } = yield* squareWork(next.square, heldByKey());

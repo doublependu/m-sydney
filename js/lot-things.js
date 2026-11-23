@@ -7,6 +7,7 @@ import { LAWN_TOP, PANEL, SLAB, SLAB_PIECE, acrossAt, alongOf, depthOf, hashOf, 
 // What stands in a house's lot besides its fences between neighbours (js/house-lots.js), by the house's era (js/house-styles.js):
 // - The car: a carport (a flat roof on two or four posts) beside post-war, triple-fronted and beach houses, at their driveway's end; a
 //   single garage at the back of Federation houses and bungalows, its driveway taken on to it. A project home's garage is in its wall.
+//   Neither where the driveway comes up a lot's handle (js/house-lots.js handleOf()).
 // - A front fence along the front line, with a gap for the driveway and a gate for the path: timber pickets (Federation), a low brick
 //   wall on piers (bungalows, triple-fronted), an iron palisade (terraces), wire (post-war), each on some of the style's lots only; none
 //   for project homes and beach houses. It holds the walker, as the fences between neighbours do.
@@ -108,7 +109,7 @@ function lotThings(lot, obstacles, env) {
   };
 
   // --- The car: a garage at the back, or a carport beside -------------------------------------------------------------------
-  if (drive && drive.side && !drive.shed && GARAGE_STYLES.has(name) && roll(1) < 0.6) {
+  if (drive && drive.side && !drive.shed && !drive.handle && GARAGE_STYLES.has(name) && roll(1) < 0.6) {
     // Its outer wall in line with the driveway's outer edge, the rest of it behind the house
     const gc = drive.a + drive.side * (drive.w / 2 + 0.1 - 1.6);
     const a0 = gc - 1.6, a1 = gc + 1.6, g0 = h.ext.d1 + 1.0, g1 = g0 + 6.0;
@@ -135,7 +136,7 @@ function lotThings(lot, obstacles, env) {
       const mid = at(gc, (g0 + g1) / 2);
       out.fences.push({ box: { cx: mid.x, cz: mid.z, ux: f.tx, uz: f.tz, hx: 1.6, hz: 3.0 }, hold: 2.5, a: at(a0, (g0 + g1) / 2), b: at(a1, (g0 + g1) / 2) });
     }
-  } else if (drive && drive.side && !drive.shed && CARPORT_STYLES.has(name) && roll(1) < 0.7) {
+  } else if (drive && drive.side && !drive.shed && !drive.handle && CARPORT_STYLES.has(name) && roll(1) < 0.7) {
     const d0 = Math.max(lot.front + 1.5, h.ext.d0 - 0.5), d1 = Math.min(drive.d1, d0 + 5.6);
     if (d1 - d0 >= 4.5) {
       const w = drive.w + 0.3, a0 = drive.a - w / 2, a1 = drive.a + w / 2;

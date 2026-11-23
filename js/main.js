@@ -2568,7 +2568,7 @@ async function initApp() {
         const xz = (p) => [+p.x.toFixed(2), +p.z.toFixed(2)];
         return {
           lots: lots.map((l) => ({ x: +l.home.cx.toFixed(1), z: +l.home.cz.toFixed(1), style: l.style, front: +l.front.toFixed(2), frame: l.frame, ext: l.home.ext,
-            pts: l.pts.map(xz), drive: l.drive })),
+            pts: l.pts.map(xz), drive: l.drive, real: l.home.real ? l.home.real.rule : l.home.several ? 'several' : null })),
           fences: fences.map((f) => [...xz(f.a), ...xz(f.b), f.kind])
         };
       },

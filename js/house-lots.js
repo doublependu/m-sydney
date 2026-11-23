@@ -23,6 +23,24 @@ import { houseEntry } from './house-entry.js';
 //   never through a building or into a model's site, nor on the footpath (off the lawn as drawn, or in the inner city, which is paved
 //   right through, within the footpath's width of the kerb). A corner house standing over its side street's line has its fence along that
 //   street only behind it, from its back wall; one over a road's line behind it, the fence either side of it, up to its walls.
+// Where a house has its real lot (NSW's cadastre, fitted to the map's houses by tools/build-lots.mjs: js/real-lots.js), that's its lot
+// instead, how the file says it fits:
+// - A house in its lot, or with a line moved for it, or standing on two lots or more (a pair or a row the map drew as one): its lots,
+//   put together, cut off at its front line, which stays the map's. Where the real frontage on its street is a little behind that, the
+//   lot is brought forward to it, so the front yard is the lot's. Its other frontages are fenced as a road's side is.
+// - Its fences: along every side but the front, from FENCE_BACK behind the front line, each line between two lots once; along a line
+//   that's a shared wall (between two lots one house stands on, or two houses drawn into each other), only behind the house, from where
+//   the line leaves its back wall; a row of terraces keeps its facade's cut between its houses instead (rowFences()). A line through
+//   another house (one the file couldn't fit, or one standing in a lot) stops at it, on its longer side; a house built to its boundary
+//   meets it. Nothing further than RURAL_REACH from the house.
+// - Its driveway: up the side gap, as above, or up its handle where its lot is set behind another's (the land in front of the house
+//   is the other lot's).
+// - A house that stands in another house's lot (a granny flat, a shed the map styles as a house) has no lot of its own.
+// - Several houses on one lot (a strata scheme, a block on one big lot): each its lot as above, within the real lot, and with only the
+//   lot's own houses for neighbours.
+// - A house the file can't fit (one well over another's lot, or on no lot), or with no file, has its lot as above, kept off the real lots
+//   round it: cut along the line of each one it covers, the one that leaves it most.
+// - A house with a real lot and no street near (in the bush, say) has its lot's fences, and no front, driveway or things.
 // Everything is in steps (a generator, as js/buildings.js addBuildings() is), a square of the map at a time, near you (js/lot-details.js).
 
 const FOOTPATH = 3.5; // m paved from the kerb before the lawn
@@ -46,6 +64,11 @@ const PAVING_TOP = 0.22; // m: the footpath's
 const SLAB = 0.015; // m a driveway lies over the lawn
 const CROSSOVER = 0.03; // m a crossover lies over the footpath
 const SLAB_PIECE = 3; // m: driveways in pieces this long, each laid on the lawn under it
+const RURAL_REACH = 60; // m round a house that its real lot's fences reach, at most: a rural lot's run for hundreds of metres
+const FRONT_SLACK = 3; // m behind the front line that a real lot's frontage on its street may be, for the lot to be brought forward to it
+const WALL_IN = 1; // m of a real lot's side line inside houses for it to be a shared wall, fenced only behind them
+const IN_LINE = 0.3; // m a house may stand over a real line and be on it, built to its boundary (as tools/lots/fit.mjs has a house in its lot)
+const OVERSHOOT = 0.5; // m of its house that a lot worked out from the map may leave beyond the line of a real lot it's kept off
 
 // The house styles from after the war on have Colorbond between them; older ones timber palings
 const COLORBOND_STYLES = new Set(['Post-war fibro', 'Triple-fronted brick veneer', 'Project home', 'Beach house']);
@@ -167,6 +190,216 @@ function keptSpans(gone) {
   }
   if (at < 1) kept.push([at, 1]);
   return kept;
+}
+
+/** The convex hull of points */
+function convexHull(points) {
+  const pts = [...points].sort((p, q) => p.x - q.x || p.z - q.z);
+  if (pts.length < 3) return pts;
+  const cross = (o, p, q) => (p.x - o.x) * (q.z - o.z) - (p.z - o.z) * (q.x - o.x);
+  const lower = [], upper = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
+}
+
+const pointOn = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t });
+
+/** How far rings stand over the line from a to b on their lesser side, within its length: 0 where they're all on one side */
+function overLine(rings, a, b) {
+  const L = Math.hypot(b.x - a.x, b.z - a.z), ux = (b.x - a.x) / L, uz = (b.z - a.z) / L;
+  let left = 0, right = 0;
+  for (const ring of rings) {
+    for (const p of ring) {
+      const t = (p.x - a.x) * ux + (p.z - a.z) * uz;
+      if (t < 0 || t > L) continue;
+      const d = (p.x - a.x) * uz - (p.z - a.z) * ux;
+      if (d > left) left = d;
+      if (-d > right) right = -d;
+    }
+  }
+  return Math.min(left, right);
+}
+
+/** Where along a segment from a to b (0-1) it's within box { x0, x1, z0, z1 }: [t0, t1], or null */
+function spanInBox(a, b, box) {
+  let t0 = 0, t1 = 1;
+  const dx = b.x - a.x, dz = b.z - a.z;
+  for (const [p, q] of [[-dx, a.x - box.x0], [dx, box.x1 - a.x], [-dz, a.z - box.z0], [dz, box.z1 - a.z]]) {
+    if (p === 0) { if (q < 0) return null; continue; }
+    const t = q / p;
+    if (p < 0) t0 = Math.max(t0, t); else t1 = Math.min(t1, t);
+    if (t0 > t1) return null;
+  }
+  return [t0, t1];
+}
+
+// --- Real lots (js/real-lots.js) -------------------------------------------------------------------------------------------------
+
+const vertexKey = (p) => `${Math.round(p.x * 100)},${Math.round(p.z * 100)}`;
+
+/** A real lot's outer rings (counter-clockwise, as js/tiles/lot-file.js has them), each point with its edge's kind and line */
+function outerRings(lot) {
+  const out = [];
+  lot.rings.forEach((ring, r) => {
+    if (ringSigned(ring) <= 0) return;
+    out.push(ring.map((p, i) => ({ x: p.x, z: p.z, kind: lot.edges[r][i], line: lot.lines[r][i] })));
+  });
+  return out;
+}
+
+/** Of rings, the one that holds (x, z), or else the biggest */
+function ringAt(rings, x, z) {
+  return rings.find((r) => inRing(r, x, z)) || rings.reduce((best, r) => (!best || ringArea(r) > ringArea(best) ? r : best), null);
+}
+
+/**
+ * The lots one house stands on, put together: { ring, walls }, the ring round them all that holds its middle (x, z) (or the biggest),
+ * and the edges they share, each once ({ a, b, kind, line }). Their shared edges are the same corners both ways round (js/real-lots.js),
+ * so what's left of their edges once those are taken out goes round them. Null where it doesn't come out as rings.
+ */
+function lotsTogether(lots, x, z) {
+  const rings = lots.flatMap(outerRings);
+  if (lots.length === 1) return rings.length ? { ring: ringAt(rings, x, z), walls: [] } : null;
+  const edges = [];
+  for (const ring of rings) ring.forEach((a, i) => edges.push({ a, b: ring[(i + 1) % ring.length], ka: vertexKey(a), kb: vertexKey(ring[(i + 1) % ring.length]) }));
+  const forward = new Set(edges.map((e) => `${e.ka}|${e.kb}`));
+  const walls = [], from = new Map();
+  for (const e of edges) {
+    if (e.ka === e.kb) continue;
+    if (forward.has(`${e.kb}|${e.ka}`)) {
+      if (e.ka < e.kb) walls.push({ a: e.a, b: e.b, kind: e.a.kind, line: e.a.line });
+      continue;
+    }
+    if (from.has(e.ka)) return null; // two ways on from one corner: lots that only touch there
+    from.set(e.ka, e);
+  }
+  const out = [], used = new Set();
+  for (const start of from.values()) {
+    if (used.has(start)) continue;
+    const ring = [];
+    for (let e = start; e && !used.has(e); e = from.get(e.kb)) {
+      used.add(e);
+      ring.push(e.a);
+    }
+    if (ring.length < 3 || from.get(vertexKey(ring[ring.length - 1]))?.kb !== vertexKey(ring[0])) return null;
+    out.push(ring);
+  }
+  const outer = out.filter((r) => ringSigned(r) > 0);
+  return outer.length ? { ring: ringAt(outer, x, z), walls } : null;
+}
+
+/**
+ * How a house's real lot fits it (env.realLots(w), js/real-lots.js), kept on the house: `real`, its own lots together ({ rule, ring,
+ * walls }); `several`, the lot it shares with other houses ({ lot, ring }); `inside`, where it stands in another house's lot. Returns
+ * which, or 'fallback' or 'none' where it has no real lot.
+ */
+function realOf(w, env) {
+  const home = env.realLots(w);
+  if (!home) return 'none';
+  if (home.rule === 'fallback' || !home.lots.length) return 'fallback';
+  if (home.rule === 'several') {
+    const ring = ringAt(outerRings(home.lots[0]), w.cx, w.cz);
+    if (!ring) return 'fallback';
+    w.several = { lot: home.lots[0], ring };
+    return 'several';
+  }
+  const own = home.lots.filter((l) => l.homes[0] === home);
+  if (!own.length) {
+    w.inside = true;
+    return 'inside';
+  }
+  // Lots that don't come out as one ring together: the one the house's middle is on
+  const together = lotsTogether(own, w.cx, w.cz)
+    || lotsTogether([own.find((l) => outerRings(l).some((r) => inRing(r, w.cx, w.cz))) || own[0]], w.cx, w.cz);
+  if (!together) return 'fallback';
+  w.real = { rule: home.rule, ...together };
+  return 'real';
+}
+
+/**
+ * A real lot's ring as a lot's points (each tagged { real: its edge's kind, line }), brought forward to the front line where its frontage
+ * on the house's street is a little behind it: each stretch of that frontage goes on, square to the street, past the front line, which
+ * then cuts it there
+ */
+function forward(h, ring) {
+  const f = h.frame, n = ring.length;
+  const pts = ring.map((p) => ({ x: p.x, z: p.z, tag: { real: p.kind, line: p.line } }));
+  const frontage = (i) => {
+    const p = ring[i], q = ring[(i + 1) % n];
+    if (p.kind !== 'front') return false;
+    const L = Math.hypot(q.x - p.x, q.z - p.z);
+    if (L < 0.05) return false;
+    return Math.abs((q.x - p.x) * f.tx + (q.z - p.z) * f.tz) / L > 0.5 && depthOf(f, (p.x + q.x) / 2, (p.z + q.z) / 2) <= h.front + FRONT_SLACK;
+  };
+  const start = ring.findIndex((_, i) => !frontage(i));
+  if (start < 0) return pts;
+  const out = [];
+  const ahead = (p) => {
+    const d = depthOf(f, p.x, p.z) - (h.front - 0.05);
+    return { x: p.x - f.nx * d, z: p.z - f.nz * d, tag: 'front' };
+  };
+  for (let k = 1; k <= n; k++) {
+    const i = (start + k) % n;
+    if (!frontage(i)) { out.push(pts[i]); continue; }
+    // A stretch of frontage from i on: its first corner, out to past the front line, along it, and back to its last corner
+    let j = i;
+    while (frontage((j + 1) % n) && (j + 1) % n !== start) j = (j + 1) % n;
+    const first = pts[i], last = pts[(j + 1) % n];
+    if (depthOf(f, first.x, first.z) > h.front - 0.05 || depthOf(f, last.x, last.z) > h.front - 0.05) {
+      out.push({ ...first, tag: 'front' }, ahead(first), { ...ahead(last), tag: 'front' });
+    } else {
+      for (let m = i; m !== (j + 1) % n; m = (m + 1) % n) out.push(pts[m]);
+    }
+    k += (j - i + n) % n;
+  }
+  return out;
+}
+
+/** A real lot cut off at the front line: its frontages on other streets are fenced as a road's side is. Null where nothing's left */
+function frontOf(h, poly) {
+  for (const p of poly) if (p.tag?.real === 'front') p.tag = 'road';
+  return poly.length >= 3 ? poly : null;
+}
+
+/**
+ * A lot worked out from the map (`poly`, convex) kept off the real lots near it: cut along the line of an edge of each one it covers
+ * OVERLAP m² of, the edge with the house outside it (but for OVERSHOOT) that leaves the lot most, a few times over for a lot that isn't
+ * convex. The cut is tagged with that edge's line, so its fence is the real lot's. A house well over a real lot stays over it.
+ */
+function offReal(h, poly, lots) {
+  for (const lot of lots) {
+    for (const ring of outerRings(lot)) {
+      if (inRing(ring, h.cx, h.cz)) continue;
+      for (let k = 0; k < 3; k++) {
+        if (areaInside(ring, poly) < OVERLAP) break;
+        let best = null;
+        for (let i = 0; i < ring.length; i++) {
+          const a = ring[i], b = ring[(i + 1) % ring.length], L = Math.hypot(b.x - a.x, b.z - a.z);
+          if (L < 0.05) continue;
+          // Out of a counter-clockwise ring is to the right of its edge
+          const nx = (b.z - a.z) / L, nz = -(b.x - a.x) / L;
+          if ((h.cx - a.x) * nx + (h.cz - a.z) * nz < 0.05) continue;
+          // Not through its own house
+          if (h.pts.some((p) => (p.x - a.x) * nx + (p.z - a.z) * nz < -OVERSHOOT)) continue;
+          const cut = clipHalf(poly, -nx, -nz, nx * a.x + nz * a.z, { real: 'side', line: a.line });
+          if (cut.length < 3) continue;
+          const area = ringArea(cut);
+          if (!best || area > best.area) best = { cut, area };
+        }
+        if (!best) break;
+        poly = best.cut;
+      }
+    }
+  }
+  return poly;
 }
 
 // --- A house's frame and its neighbours ----------------------------------------------------------------------------------------
@@ -310,13 +543,16 @@ function pairLine(a, b) {
  *   roadAt(x, z): the road's surface
  *   sites: [{ rings }]: the model sites, which nothing of a lot reaches into, and which bound their neighbours' lots
  *   lotThings(lot, obstacles): what else stands in a lot (js/lot-things.js), { boxes, slabs, panels, fences }, or none
+ *   realLots(whole): a house's real lot, as js/real-lots.js realLotsFrom() homeAt() gives it, or null; none where there are no lot files
+ *   realLotsIn(x0, z0, x1, z1): the real lots near, for the lots worked out from the map to keep off
  *   lines: true for the fences as the lots' edges have them, before they're cut, for measuring them
  * Yields as it goes; returns { lots, fences, panels, slabs, things, treads, plates, fronting }: `plates`, its letterboxes' street numbers
  * (js/street-numbers.js); `fronting`, every building near that faces a street and bounds a lot, for the verges (js/verge.js
  * squareVerge()). With `lines`, also `lines`, each fence before the cut ({ a, b, homes, kind:
- * 'pair' with its `line`, 'back', 'road' or 'row', own: whether it's the square's }), and `measure`: { obstacles, pairs, rounds, added,
- * unseparated, left }, the pairs the overlaps added, those no line separates, and the overlaps still left after ROUNDS, each { home,
- * other, why: 'building' or 'lot' }.
+ * 'pair' with its `line`, 'back', 'road' or 'row', or a real lot's 'side', 'moved', 'bound' or 'wall', own: whether it's the square's }),
+ * and `measure`: { obstacles, pairs, rounds, added, unseparated, left, rules }, the pairs the overlaps added, those no line separates, and
+ * the overlaps still left after ROUNDS, each { home, other, why: 'building' or 'lot' }; and with real lots, how many houses near took each
+ * (real, inside, several, fallback, none, and bare: real with no street).
  */
 const PICK_MARGIN = 160; // m: houses whose neighbours are looked for, round the square
 const LOT_MARGIN = 80; // m: houses whose lots are kept, and their fences drawn
@@ -328,19 +564,31 @@ function* squareLots(entries, env, square) {
   yield;
   const homes = [];
   const partners = [];
+  const bare = []; // houses with a real lot and no street near: their lots' fences alone
+  const rules = { real: 0, inside: 0, several: 0, fallback: 0, none: 0, bare: 0 };
   let seen = 0;
   for (const w of wholes) {
     if (++seen % 64 === 0) yield;
     if (w.house && within(w, PICK_MARGIN)) {
+      if (env.realLots) rules[realOf(w, env)]++;
       const street = env.streetOf(w);
       if (street) {
         w.street = street;
         w.frame = frameOf(w, street);
         homes.push(w);
+      } else if (w.real) {
+        bare.push(w);
+        rules.bare++;
       }
     }
     if (w.house || (w.kind !== SHED && w.area >= PARTNER_AREA)) partners.push(w);
   }
+  // The real lots that houses' own lots stay off, round a lot worked out from the map
+  const realNear = env.realLotsIn ? (b) => env.realLotsIn(b.x0, b.z0, b.x1, b.z1) : null;
+  // Whether q may be h's neighbour: houses with real lots have none, and a lot worked out from the map stays off the real lots round
+  // it, so its neighbours are those without one; several houses on one real lot have the lot's own buildings
+  const sameLot = (h, q) => q.several?.lot === h.several.lot || (!q.house && !q.site && inRing(h.several.ring, q.cx, q.cz));
+  const mayPair = (h, q) => (h.several ? sameLot(h, q) : !(q.real || q.inside || q.several));
   const obstacles = wholes.map((w) => {
     const small = !w.house && (w.kind === SHED || w.area < PARTNER_AREA);
     return { rings: w.rings, box: w.box, whole: w, small, partner: small ? null : w };
@@ -420,10 +668,11 @@ function* squareLots(entries, env, square) {
   };
   let count = 0;
   for (const h of homes) {
+    if (h.real || h.inside) continue;
     const { a0, a1, d0, d1 } = h.ext;
     let left = null, right = null, back = null;
     for (const q of partnersNear(h.cx, h.cz, NEAR + 30)) {
-      if (q === h) continue;
+      if (q === h || !mayPair(h, q)) continue;
       const e = extentIn(h.frame, q.pts);
       const deep = overlap(Math.max(d0, h.front), d1, e.d0, e.d1);
       if (deep >= Math.min(2, 0.3 * (d1 - d0))) {
@@ -457,10 +706,13 @@ function* squareLots(entries, env, square) {
   // footpath; null where its middle isn't in that
   const roadClips = new Map(); // home -> [[a, b, c]], its other roads' lines
   const lotShape = (h) => {
+    if (h.inside) return null;
     const f = h.frame;
-    const half = Math.max(h.box.x1 - h.box.x0, h.box.z1 - h.box.z0) / 2 + BACK_MOST + 15;
-    let poly = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sz]) => ({ x: h.cx + sx * half, z: h.cz + sz * half, tag: 'square' }));
     const pdot = f.px * f.nx + f.pz * f.nz;
+    if (h.real) return frontOf(h, clipHalf(forward(h, h.real.ring), -f.nx, -f.nz, pdot + h.front, 'front'));
+    const half = Math.max(h.box.x1 - h.box.x0, h.box.z1 - h.box.z0) / 2 + BACK_MOST + 15;
+    let poly = h.several ? forward(h, h.several.ring)
+      : [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sz]) => ({ x: h.cx + sx * half, z: h.cz + sz * half, tag: 'square' }));
     poly = clipHalf(poly, -f.nx, -f.nz, pdot + h.front, 'front');
     poly = clipHalf(poly, f.nx, f.nz, -(pdot + h.ext.d1 + BACK_MOST), 'back');
     for (const q of pairs.get(h) || []) {
@@ -480,6 +732,8 @@ function* squareLots(entries, env, square) {
       roadClips.set(h, clips);
     }
     for (const [a, b, c] of clips) poly = clipHalf(poly, a, b, c, 'road');
+    if (h.several) poly = frontOf(h, poly);
+    else if (realNear && poly.length >= 3) poly = offReal(h, poly, realNear(boxOf(poly)));
     return poly.length >= 3 && inRing(poly, h.cx, h.cz) ? poly : null;
   };
 
@@ -494,7 +748,8 @@ function* squareLots(entries, env, square) {
   const refused = new Map(); // home -> Set of those no line separates it from
   const isRefused = (a, b) => refused.get(a)?.has(b) || refused.get(b)?.has(a);
   const added = [], unseparated = [], left = [];
-  let rounds = 1, changed = homes;
+  // A real lot is as it is: only the lots worked out from the map look for what they cover
+  let rounds = 1, changed = homes.filter((h) => !h.real && !h.inside);
   for (;;) {
     const LCELL = 40, lgrid = new Map(), lbox = new Map();
     for (const [h, poly] of shapes) {
@@ -517,10 +772,12 @@ function* squareLots(entries, env, square) {
       if (!poly) continue;
       if (++n % 16 === 0) yield;
       const b = lbox.get(h), mine = pairs.get(h);
+      // Several houses' lots within a real lot needn't be convex: their hull for what they cover
+      const clip = h.several ? convexHull(poly) : poly;
       for (const o of obstaclesIn(b.x0, b.z0, b.x1, b.z1)) {
         const q = o.partner;
-        if (!q || q === h || mine?.has(q) || isRefused(h, q)) continue;
-        if (o.rings.reduce((sum, r) => sum + areaInside(r, poly), 0) >= OVERLAP) found.push({ home: h, other: q, why: 'building' });
+        if (!q || q === h || mine?.has(q) || isRefused(h, q) || (h.several && !sameLot(h, q))) continue;
+        if (o.rings.reduce((sum, r) => sum + areaInside(r, clip), 0) >= OVERLAP) found.push({ home: h, other: q, why: 'building' });
       }
       const near = new Set();
       for (let ix = Math.floor(b.x0 / LCELL); ix <= Math.floor(b.x1 / LCELL); ix++) {
@@ -529,9 +786,10 @@ function* squareLots(entries, env, square) {
       for (const g of near) {
         // Each pair once: from the first of the two in the homes' order, where both are looked at
         if (g === h || mine?.has(g) || isRefused(h, g) || (recheck.has(g) && order.get(g) < order.get(h))) continue;
+        if (h.several && g.several?.lot !== h.several.lot) continue;
         const gb = lbox.get(g);
         if (gb.x0 >= b.x1 || gb.x1 <= b.x0 || gb.z0 >= b.z1 || gb.z1 <= b.z0) continue;
-        if (areaInside(shapes.get(g), poly) >= OVERLAP) found.push({ home: h, other: g, why: 'lot' });
+        if (areaInside(shapes.get(g), clip) >= OVERLAP) found.push({ home: h, other: g, why: 'lot' });
       }
     }
     if (!found.length) break;
@@ -556,7 +814,7 @@ function* squareLots(entries, env, square) {
     }
     if (!next.size) break;
     rounds++;
-    changed = homes.filter((h) => next.has(h));
+    changed = homes.filter((h) => next.has(h) && !h.real && !h.inside);
     for (const [i, h] of changed.entries()) {
       shapes.set(h, lotShape(h));
       if (i % 32 === 31) yield;
@@ -566,9 +824,37 @@ function* squareLots(entries, env, square) {
 
   const lots = [], lotOf = new Map();
   const fenceSpans = new Map(); // a pair's line -> [{ s0, s1 }] from each of the two lots
+  const realSpans = new Map(); // a real lot's line, by its key -> { line, kind, spans, homes }, from each lot along it
   const fences = [];
+  // A real lot's fence from a to b, only within RURAL_REACH of its house; each line once, from whichever lots have it (and along a shared
+  // wall only behind the houses, shared() below)
+  const nearHouse = (h, a, b) => {
+    const t = spanInBox(a, b, { x0: h.box.x0 - RURAL_REACH, x1: h.box.x1 + RURAL_REACH, z0: h.box.z0 - RURAL_REACH, z1: h.box.z1 + RURAL_REACH });
+    return t ? [[pointOn(a, b, t[0]), pointOn(a, b, t[1])]] : [];
+  };
+  const addReal = (h, tag, a, b) => {
+    const { line, real: kind } = tag;
+    for (const [p, q] of nearHouse(h, a, b)) {
+      // Within the edge: a lot kept off a real lot is cut along its edge's whole line
+      const s0 = (p.x - line.ax) * line.ux + (p.z - line.az) * line.uz, s1 = (q.x - line.ax) * line.ux + (q.z - line.az) * line.uz;
+      const lo = Math.max(0, Math.min(s0, s1)), hi = Math.min(line.length, Math.max(s0, s1));
+      if (hi - lo < 0.05) continue;
+      if (!realSpans.has(line.key)) realSpans.set(line.key, { line, kind, spans: [], homes: [] });
+      const entry = realSpans.get(line.key);
+      entry.spans.push([lo, hi]);
+      if (!entry.homes.includes(h)) entry.homes.push(h);
+    }
+  };
+  // An edge of several houses' lot within a real lot that runs outside that lot (the cut along a line across a corner that turns in)
+  const outside = (ring, p, q) => {
+    const L = Math.hypot(q.x - p.x, q.z - p.z);
+    if (L < 1e-6) return true;
+    const mx = (p.x + q.x) / 2, mz = (p.z + q.z) / 2, nx = (q.z - p.z) / L * 0.05, nz = -(q.x - p.x) / L * 0.05;
+    return !inRing(ring, mx + nx, mz + nz) && !inRing(ring, mx - nx, mz - nz);
+  };
   for (const h of homes) {
-    if (!within(h, LOT_MARGIN)) continue;
+    // A real lot's fences reach RURAL_REACH from its house, so its lot is worked out that much further round the square
+    if (!within(h, h.real ? LOT_MARGIN + RURAL_REACH : LOT_MARGIN)) continue;
     const f = h.frame;
     const poly = shapes.get(h);
     if (!poly) {
@@ -576,6 +862,8 @@ function* squareLots(entries, env, square) {
       continue;
     }
     const lot = { home: h, pts: poly, front: h.front, kerb: h.kerb, frame: f, style: h.house };
+    // A real lot, or a part of one, needn't be convex (acrossAt())
+    if (h.real || h.several) lot.real = true;
     lots.push(lot);
     lotOf.set(h, lot);
     // A row of terraces drawn as one footprint: its lot cut where its facade cuts it into houses, and a fence between their back yards
@@ -584,12 +872,22 @@ function* squareLots(entries, env, square) {
       lot.units = unitsOf(lot, row);
       for (const fence of rowFences(lot, row)) fences.push({ ...fence, kind: 'row' });
     }
+    // The shared walls inside a house's real lots, from behind it: a row's are its facade's instead
+    if (h.real && !row) {
+      for (const w of h.real.walls) {
+        const from = h.front + FENCE_BACK, dp = depthOf(f, w.a.x, w.a.z), dq = depthOf(f, w.b.x, w.b.z);
+        if (dp < from && dq < from) continue;
+        const t = dp < from || dq < from ? (from - dp) / (dq - dp) : null;
+        addReal(h, { real: 'wall', line: w.line }, dp < from ? pointOn(w.a, w.b, t) : w.a, dq < from ? pointOn(w.a, w.b, t) : w.b);
+      }
+    }
 
     // The fences along it: every side but the front, from FENCE_BACK behind the front line
     for (let i = 0; i < poly.length; i++) {
       const p = poly[i], q = poly[(i + 1) % poly.length];
       const tag = p.tag;
       if (tag === 'front' || tag === 'square') continue;
+      if (h.several && outside(h.several.ring, p, q)) continue;
       // A terrace's side to a street is the end house's own wall, or more of a row the map drew as one footprint, whose doors are on it
       if (tag === 'road' && HOUSE_STYLES[h.house]?.look?.terrace) continue;
       if (typeof tag === 'object' && tag.gap < NO_FENCE) continue;
@@ -612,7 +910,12 @@ function* squareLots(entries, env, square) {
           if (Math.hypot(b.x - a.x, b.z - a.z) < 0.3) continue;
         }
       }
-      if (typeof tag === 'object') {
+      if (tag.real) {
+        addReal(h, tag, a, b);
+      } else if (h.real) {
+        // Its frontages on other streets
+        for (const [p0, q0] of nearHouse(h, a, b)) fences.push({ a: p0, b: q0, homes: [h], kind: tag });
+      } else if (typeof tag === 'object') {
         // Along the pair's own line, from either lot's side of it
         const line = tag.line;
         const wx = -line.uz, wz = line.ux;
@@ -635,6 +938,71 @@ function* squareLots(entries, env, square) {
       if (cur && cur[1] - cur[0] > 0.3) {
         fences.push({ a: { x: line.ux * line.m + wx * cur[0], z: line.uz * line.m + wz * cur[0] },
           b: { x: line.ux * line.m + wx * cur[1], z: line.uz * line.m + wz * cur[1] }, homes: owners, kind: 'pair', line });
+      }
+    };
+    for (const s of spans) {
+      if (cur && s[0] <= cur[1] + 0.05) cur[1] = Math.max(cur[1], s[1]);
+      else { flush(); cur = [...s]; }
+    }
+    flush();
+  }
+  // A house with a real lot and no street near: its lot's fences, with no front (and none along a shared wall, with no front to be behind)
+  for (const h of bare) {
+    if (!within(h, LOT_MARGIN + RURAL_REACH)) continue;
+    const ring = h.real.ring;
+    ring.forEach((p, i) => {
+      const q = ring[(i + 1) % ring.length];
+      if (p.kind === 'front') for (const [a, b] of nearHouse(h, p, q)) fences.push({ a, b, homes: [h], kind: 'road' });
+      else if (p.kind !== 'wall') addReal(h, { real: p.kind, line: p.line }, p, q);
+    });
+  }
+  // A line that's a shared wall (between two lots one house stands on, or two houses drawn into each other), or that runs WALL_IN or
+  // more inside the houses of the lots either side of it (a house built to its boundary): up the side of the house it's in most, only
+  // behind those houses, from where it leaves the last of them at the back; along a shared wall clear of them, only behind their middles.
+  // Where that house has no street to be behind from, the longest stretch of the line clear of them; along the street, as it is (a house
+  // over its back line meets it).
+  const shared = (kind, owners, a, b) => {
+    const L = Math.hypot(b.x - a.x, b.z - a.z);
+    const inside = insideSpans(a, b, owners.flatMap((w) => w.rings)).filter(([t0, t1]) => (t1 - t0) * L > 0.05);
+    const metres = (w) => insideSpans(a, b, w.rings).reduce((sum, [t0, t1]) => sum + (t1 - t0) * L, 0);
+    if (kind !== 'wall' && inside.reduce((sum, [t0, t1]) => sum + (t1 - t0) * L, 0) < WALL_IN) return [[a, b]];
+    const h = inside.length ? owners.map((w) => [metres(w), w]).sort((p, q) => q[0] - p[0])[0][1] : owners.find((w) => w.frame);
+    if (!h?.frame) {
+      if (!inside.length) return kind === 'wall' ? [] : [[a, b]];
+      const clear = keptSpans(inside.map((s) => [...s])).sort((p, q) => q[1] - q[0] - (p[1] - p[0]))[0];
+      return clear ? [[pointOn(a, b, clear[0]), pointOn(a, b, clear[1])]] : [];
+    }
+    const f = h.frame;
+    if (kind !== 'wall' && Math.abs((b.x - a.x) * f.nx + (b.z - a.z) * f.nz) < 0.7 * L) return [[a, b]];
+    if (!inside.length) return depthOf(f, (a.x + b.x) / 2, (a.z + b.z) / 2) > (h.ext.d0 + h.ext.d1) / 2 ? [[a, b]] : [];
+    const deeper = depthOf(f, b.x, b.z) >= depthOf(f, a.x, a.z);
+    const t = deeper ? Math.max(...inside.map((s) => s[1])) : Math.min(...inside.map((s) => s[0]));
+    return deeper ? (t < 1 ? [[pointOn(a, b, t), b]] : []) : (t > 0 ? [[a, pointOn(a, b, t)]] : []);
+  };
+  // And through another house (one the file couldn't fit, or one standing in a lot), WALL_IN or more inside it and more than IN_LINE
+  // over it: only the longer stretch, the one side of it. A house standing on the line (built to its boundary) meets it.
+  const pastOthers = (owners, a, b) => {
+    let pieces = [[a, b]];
+    for (const o of obstaclesIn(Math.min(a.x, b.x), Math.min(a.z, b.z), Math.max(a.x, b.x), Math.max(a.z, b.z))) {
+      if (!o.whole?.house || owners.includes(o.whole)) continue;
+      pieces = pieces.flatMap(([p, q]) => {
+        const L = Math.hypot(q.x - p.x, q.z - p.z);
+        const inside = insideSpans(p, q, o.rings);
+        if (inside.reduce((sum, [t0, t1]) => sum + (t1 - t0) * L, 0) < WALL_IN || overLine(o.rings, p, q) <= IN_LINE) return [[p, q]];
+        const t0 = Math.min(...inside.map((s) => s[0])), t1 = Math.max(...inside.map((s) => s[1]));
+        return t0 >= 1 - t1 ? [[p, pointOn(p, q, t0)]] : [[pointOn(p, q, t1), q]];
+      });
+    }
+    return pieces;
+  };
+  for (const { line, kind, spans, homes: owners } of realSpans.values()) {
+    spans.sort((x, y) => x[0] - y[0]);
+    let cur = null;
+    const flush = () => {
+      if (!cur || cur[1] - cur[0] <= 0.3) return;
+      const a = { x: line.ax + line.ux * cur[0], z: line.az + line.uz * cur[0] }, b = { x: line.ax + line.ux * cur[1], z: line.az + line.uz * cur[1] };
+      for (const [p0, q0] of shared(kind, owners, a, b)) {
+        for (const [p, q] of pastOthers(owners, p0, q0)) if (Math.hypot(q.x - p.x, q.z - p.z) > 0.3) fences.push({ a: p, b: q, homes: owners, kind });
       }
     };
     for (const s of spans) {
@@ -754,7 +1122,7 @@ function* squareLots(entries, env, square) {
     if (street) fronting.push({ street, house: 0, terrace: false, yard: 0, frontage: [[w.cx, w.cz], [w.cx, w.cz]], cx: w.cx, cz: w.cz, lot: null });
   }
   const result = { lots: mine, fences: finished, panels, slabs, things, treads, plates, fronting };
-  if (before) Object.assign(result, { lines: before, measure: { obstacles, pairs, rounds, added, unseparated, left } });
+  if (before) Object.assign(result, { lines: before, measure: { obstacles, pairs, rounds, added, unseparated, left, rules: env.realLots ? rules : null } });
   return result;
 }
 
@@ -809,6 +1177,12 @@ function driveOf(lot, obstacles) {
   if (!look || look.terrace) return null;
   const roll = hashOf(keyOf(h.cx, h.cz));
   const strips = STRIP_STYLES.has(HOUSE_STYLES[h.house].name) && roll < 0.55;
+  // A real lot set behind another's (the land in front of the house is the other lot's): up its handle from the street
+  if (lot.real && h.ext.d0 - lot.front > 6) {
+    const yard = (lot.front + h.ext.d0) / 2, at = (a) => ({ x: f.px + f.tx * a + f.nx * yard, z: f.pz + f.tz * a + f.nz * yard });
+    const { a0: e0, a1: e1 } = h.ext;
+    if ([0.25, 0.5, 0.75].every((s) => { const p = at(e0 + (e1 - e0) * s); return !inRing(lot.pts, p.x, p.z); })) return handleOf(lot, obstacles, strips);
+  }
   // A project home's garage door, in its front wall facing the street
   if (look.garage && h.frontWall) {
     const entry = houseEntry(h.frontWall, h.house);
@@ -869,9 +1243,56 @@ function driveOf(lot, obstacles) {
   return { a: s.a, w: s.w, d0: s.d0, d1: s.d1, side: s.side, strips, shed: s.shed };
 }
 
-/** A lot's extent across its frame at depth d: [least, most] along its road, or [Infinity, -Infinity] where it doesn't reach that deep */
-function acrossAt(lot, d) {
+/**
+ * The driveway of a lot set behind another's, `lot` (a real one), up its handle: from the front line, as long as the handle runs straight
+ * and wide enough, and a little into the lot where it opens out, short of the house and of anything in its way; or null
+ */
+function handleOf(lot, obstacles, strips) {
+  const h = lot.home, f = lot.frame;
+  const [lo, hi] = acrossAt(lot, lot.front + 0.3);
+  if (!(hi - lo >= DRIVE_GAP)) return null;
+  const a = (lo + hi) / 2, w = Math.min(3.0, hi - lo - 0.6), most = h.ext.d0 - 0.5;
+  let end = lot.front + 0.3;
+  for (let d = lot.front + 1; d < most; d += 1) {
+    const [l, r] = acrossAt(lot, d, a);
+    if (!(l <= a - w / 2 && r >= a + w / 2)) break; // the handle turns, or narrows
+    end = d;
+    if (r - l > hi - lo + 2) { end = Math.min(d + 3, most); break; } // out of it, into the lot
+  }
+  for (const o of obstacles) {
+    if (o.whole === h) continue;
+    const e = extentIn(f, o.rings.flat());
+    if (overlap(a - w / 2, a + w / 2, e.a0, e.a1) > 0 && e.d1 > lot.front && e.d0 - 0.3 < end) end = e.d0 - 0.3;
+  }
+  if (end - lot.front < 4) return null;
+  return { a, w, d0: lot.front, d1: end, side: a < alongOf(f, h.cx, h.cz) ? -1 : 1, strips, shed: false, handle: true };
+}
+
+/**
+ * A lot's extent across its frame at depth d: [least, most] along its road, or [Infinity, -Infinity] where it doesn't reach that deep.
+ * A real lot needn't be convex: there it's the stretch across it that holds `at` (m along its road; its house's middle by default), or
+ * else the nearest.
+ */
+function acrossAt(lot, d, at = null) {
   const f = lot.frame, pts = lot.pts;
+  if (lot.real) {
+    const xs = [];
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i], q = pts[(i + 1) % pts.length];
+      const dp = depthOf(f, p.x, p.z), dq = depthOf(f, q.x, q.z);
+      if ((dp <= d) === (dq <= d)) continue;
+      const t = (d - dp) / (dq - dp);
+      xs.push(alongOf(f, p.x + (q.x - p.x) * t, p.z + (q.z - p.z) * t));
+    }
+    xs.sort((u, v) => u - v);
+    const a = at ?? alongOf(f, lot.home.cx, lot.home.cz);
+    let best = [Infinity, -Infinity], far = Infinity;
+    for (let i = 0; i + 1 < xs.length; i += 2) {
+      const off = a < xs[i] ? xs[i] - a : a > xs[i + 1] ? a - xs[i + 1] : 0;
+      if (off < far) { far = off; best = [xs[i], xs[i + 1]]; }
+    }
+    return best;
+  }
   let lo = Infinity, hi = -Infinity;
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i], q = pts[(i + 1) % pts.length];

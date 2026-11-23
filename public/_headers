@@ -22,3 +22,10 @@
 
 /tiles/world.json
   Cache-Control: public, max-age=0, must-revalidate
+
+# Houses' real lots: each file's name has a hash of its contents too, and the index names them
+/lots/*.bin.gz
+  Cache-Control: public, max-age=31536000, immutable
+
+/lots/index.json
+  Cache-Control: public, max-age=0, must-revalidate

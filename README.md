@@ -170,6 +170,11 @@ Map data keeps its own licences:
 - [Overture Maps](https://docs.overturemaps.org/attribution/) (OpenStreetMap and Microsoft ML footprints): buildings
 - [City of Sydney](https://data.cityofsydney.nsw.gov.au), CC BY 4.0: trees, building height controls
 - [NSW Spatial Services](https://www.spatial.nsw.gov.au), © State of NSW, CC BY 3.0: terrain, from the 5 m elevation model
+- © State of New South Wales ([Spatial Services](https://www.spatial.nsw.gov.au), a business unit of the Department of Customer Service
+  NSW), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/): lot boundaries, from the cadastre's
+  [NSW Land Parcel and Property Theme](https://portal.spatial.nsw.gov.au/portal/home/item.html?id=d94d44aff3024f9899dccc3dea609c38)
+  (its Lot layer), shifted and their lines moved to fit the map's houses; the date they were extracted is in `public/lots/index.json`
+  (`cadastre`)
 - [Australian Bureau of Statistics](https://www.abs.gov.au/census/guide-census-data/mesh-block-counts/2021), CC BY 4.0: residents, dwellings
   and land use, from the 2021 Census's Mesh Block counts and ASGS Edition 3 boundaries
 - [NSW Department of Planning, Housing and Infrastructure](https://www.planningportal.nsw.gov.au/opendata/dataset/environment-planning-instrument-local-environmental-plan-land-zoning),

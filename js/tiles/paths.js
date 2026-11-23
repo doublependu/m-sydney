@@ -18,4 +18,10 @@ const farFile = (key, hash) => `far/far_${key}.${hash}.bin.gz`;
 /** A map image, relative to map/: at 2 m a pixel there's one per tile, so those go in the tiles' folders */
 const mapImageFile = (m, ix, iz) => (m === 2 ? `2/${tileFolder(ix, iz)}/${ix}_${iz}.webp` : `${m}/${ix}_${iz}.webp`);
 
-export { FOLDER_TILES, farFile, mapImageFile, tileFile, tileFolder };
+/** A tile's houses' lots on NSW's cadastre (tools/build-lots.mjs), from its key and its hash, relative to lots/: in the tiles' folders */
+function lotFile(key, hash) {
+  const [ix, iz] = key.split('_').map(Number);
+  return `${tileFolder(ix, iz)}/${key}.${hash}.bin.gz`;
+}
+
+export { FOLDER_TILES, farFile, lotFile, mapImageFile, tileFile, tileFolder };

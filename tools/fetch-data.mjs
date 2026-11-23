@@ -141,6 +141,80 @@ if (wanted('overture_addresses')) {
   console.log('overture_addresses written');
 }
 
+// NSW's cadastre: every lot's outline, from Spatial Services' Lot layer (NSW Land Parcel and Property Theme, its multiCRS service), for
+// the houses' lots (tools/build-lots.mjs). In GDA94, which the map's own frame matches more nearly than GDA2020: its outlines were traced
+// from photos aligned to GDA94, and the lots in GDA2020 are about 1.5 m north of them. Asked for in squares of the map (CADASTRE_SQUARE m,
+// each tile of public/tiles/world.json in its square), up to 4,000 lots a request, one request a second, with a generic client. JSON
+// lines, a lot each: its cadastre id, its plan's kind (DP, SP...: no plan or lot number), its class and stratum, and its rings in
+// lon/lat. It picks up where it stopped: squares done are listed in nsw_cadastre.done, each with the day it was asked for (the licence
+// asks for the date of the extraction on what's made from it), and lots already written aren't written again.
+// CADASTRE_TILES=ix_iz,... asks for those tiles alone, each grown by CADASTRE_MARGIN m.
+if (wanted('nsw_cadastre')) {
+  const LOT = 'https://portal.spatial.nsw.gov.au/server/rest/services/NSW_Land_Parcel_Property_Theme_multiCRS/FeatureServer/8/query';
+  const { fromWorld } = await import('./geo-common.mjs');
+  const out = path.join(DATA, 'nsw_cadastre.json'), doneFile = path.join(DATA, 'nsw_cadastre.done');
+  const size = Number(process.env.CADASTRE_SQUARE ?? 2000), margin = Number(process.env.CADASTRE_MARGIN ?? 100);
+  const squares = new Map();
+  if (process.env.CADASTRE_TILES) {
+    for (const key of process.env.CADASTRE_TILES.split(',')) {
+      const [ix, iz] = key.split('_').map(Number);
+      const sq = [ix * 1000 - margin, iz * 1000 - margin, (ix + 1) * 1000 + margin, (iz + 1) * 1000 + margin];
+      squares.set(sq.join('_'), sq);
+    }
+  } else {
+    const world = JSON.parse(fs.readFileSync(path.join(ROOT, 'public/tiles/world.json'), 'utf8'));
+    for (const key of Object.keys(world.tiles)) {
+      const [x, z] = key.split('_').map((v) => Math.floor((Number(v) * 1000) / size) * size);
+      squares.set(`${x}_${z}_${x + size}_${z + size}`, [x, z, x + size, z + size]);
+    }
+  }
+  const done = new Set(fs.existsSync(doneFile) ? fs.readFileSync(doneFile, 'utf8').split('\n').filter(Boolean).map((line) => line.split(' ')[0]) : []);
+  const ids = new Set();
+  if (fs.existsSync(out)) for (const line of fs.readFileSync(out, 'utf8').split('\n')) if (line) ids.add(JSON.parse(line).id);
+  let last = 0, requests = 0;
+  const ask = async (body) => {
+    for (let attempt = 0; ; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, Math.max(0, last + 1000 - Date.now())));
+      last = Date.now();
+      requests++;
+      const response = await fetch(LOT, { method: 'POST', body, headers: { 'User-Agent': 'map-client' } }).catch((error) => ({ ok: false, status: error.message }));
+      const page = response.ok ? await response.json().catch(() => null) : null;
+      if (page && !page.error) return page;
+      // Refused or limited: stop, keeping what's written, rather than ask harder
+      if ([401, 403, 429].includes(response.status) || attempt === 3) throw new Error(`cadastre: ${response.status} ${JSON.stringify(page?.error ?? '')}`);
+      await new Promise((resolve) => setTimeout(resolve, 5000 * (attempt + 1)));
+    }
+  };
+  const r7 = (v) => Math.round(v * 1e7) / 1e7;
+  let written = 0;
+  for (const [key, [x0, z0, x1, z1]] of squares) {
+    if (done.has(key)) continue;
+    const ring = [[x0, z0], [x1, z0], [x1, z1], [x0, z1], [x0, z0]].map(([x, z]) => fromWorld(x, z).map(r7));
+    const lines = [];
+    for (let offset = 0; ;) {
+      const page = await ask(new URLSearchParams({
+        geometry: JSON.stringify({ rings: [ring], spatialReference: { wkid: 4283 } }), geometryType: 'esriGeometryPolygon', inSR: '4283',
+        spatialRel: 'esriSpatialRelIntersects', where: '1=1', outFields: 'cadid,planlabel,classsubtype,hasstratum,stratumlevel',
+        returnGeometry: 'true', outSR: '4283', orderByFields: 'cadid', resultType: 'standard', resultOffset: String(offset),
+        resultRecordCount: '4000', f: 'json'
+      }));
+      for (const { attributes: a, geometry } of page.features) {
+        if (ids.has(a.cadid) || !geometry?.rings?.length) continue;
+        ids.add(a.cadid);
+        lines.push(JSON.stringify({ id: a.cadid, plan: (a.planlabel || '').replace(/[^A-Z]/g, ''), cls: a.classsubtype, stratum: a.hasstratum,
+          level: a.stratumlevel, rings: geometry.rings.map((r) => r.map(([lon, lat]) => [r7(lon), r7(lat)])) }));
+      }
+      offset += page.features.length;
+      if (!page.features.length || (!page.exceededTransferLimit && page.features.length < 4000)) break;
+    }
+    if (lines.length) fs.appendFileSync(out, lines.join('\n') + '\n');
+    fs.appendFileSync(doneFile, `${key} ${new Date().toISOString().slice(0, 10)}\n`);
+    written += lines.length;
+    console.log(`nsw_cadastre: square ${key}, ${lines.length} lots (${ids.size} in all, ${requests} requests)`);
+  }
+  console.log(`nsw_cadastre: ${written} lots written, ${ids.size} in all`);
+}
+
 // Overture building parts: where a tower's real height and shape are, while its building record often holds only its podium
 if (wanted('overture_parts')) {
   const { DuckDBInstance } = await import('@duckdb/node-api');

@@ -174,6 +174,12 @@ Map data keeps its own licences:
   and land use, from the 2021 Census's Mesh Block counts and ASGS Edition 3 boundaries
 - [NSW Department of Planning, Housing and Infrastructure](https://www.planningportal.nsw.gov.au/opendata/dataset/environment-planning-instrument-local-environmental-plan-land-zoning),
   CC BY 4.0: land zoning
+- Incorporates [G-NAF Core](https://geoscape.com.au/data/g-naf-core/) © Geoscape Australia
+  ([Copyright and Disclaimer Notice](https://geoscape.com.au/data-copyright-disclaimer/)), licensed by Geoscape Australia under the
+  [Open G-NAF Core End User Licence Agreement](https://data.gov.au/data/dataset/geocoded-national-address-file-g-naf) (CC BY 4.0's terms,
+  with one use restriction: not for compiling addresses to send mail to), by way of OpenAddresses and
+  [Overture Maps](https://docs.overturemaps.org/attribution/)' addresses theme: street addresses, matched to the buildings: the street
+  each faces and its numbers, which its plates show
 
 ## Backed by
 

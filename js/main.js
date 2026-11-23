@@ -2503,9 +2503,9 @@ async function initApp() {
       lots(lines = null) {
         if (!lotDetails) return null;
         if (lines !== null) lotDetails.debugLines(lines);
-        const { squares, lots, fences, drives, panels, slabs, things, lawn, path, sides, trees, colliders } = lotDetails.state();
+        const { squares, lots, fences, drives, panels, slabs, things, plates, lawn, path, sides, trees, colliders } = lotDetails.state();
         const strips = sides.filter((s) => s.strip);
-        return { squares, lots: lots.length, fences: fences.length, drives: drives.length, panels, slabs, things, lawn, path, colliders,
+        return { squares, lots: lots.length, fences: fences.length, drives: drives.length, panels, slabs, things, plates, lawn, path, colliders,
           sides: { paving: sides.length - strips.length, strip: strips.filter((s) => !s.path).length, path: strips.filter((s) => s.path).length },
           trees, planted: plantedTrees.version === lotDetails.treesState().version, reach: quality.houseDetail };
       },
@@ -2558,6 +2558,9 @@ async function initApp() {
         return lotDetails.state(x, z, r).sides.map((s) => ({ x: Math.round(s.x), z: Math.round(s.z), name: s.name, side: s.side,
           length: Math.round(s.length), strip: s.strip, path: s.path }));
       },
+      // The street numbers' plates worked out within r of (x, z) (js/street-numbers.js), nearest first: where each is, facing which way,
+      // its text and kind
+      numbers: (x, z, r = 60) => lotDetails?.platesNear(x, z, r) ?? null,
       // The lots within r of (x, z), for scripts that walk among them: each house's middle, its lot, its driveway, and the fences
       lotsNear(x, z, r = 60) {
         if (!lotDetails) return null;

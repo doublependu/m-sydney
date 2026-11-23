@@ -4,6 +4,7 @@ import { polygonContains } from './building-collision.js';
 import { HOUSE_STYLES } from './house-styles.js';
 import { entrancesOn, streetWalls } from './addresses.js';
 import { frontWallOf, oneHouse } from './house-entry.js';
+import { numberPlates } from './street-numbers.js';
 import { CITY_SILL, ENTRANCE_HALF, WINDOW_CLEAR, bayCount, bayEdges, cityBays, hides, houseBays, mostOver, packKind, wallLine } from './wall-ground.js';
 
 function partyWallHeight(record, a, b, neighbours) {
@@ -319,7 +320,8 @@ function wallSeed(record, index) {
 // Where the tile gives its street addresses (record.address, js/addresses.js), they decide: a house's front is the wall facing its main
 // street, a terrace's other fronts only those another of its address streets faces that meet the ground, and a terrace of one number is
 // one house, never cut into a row (js/house-entry.js oneHouse()); a low-rise flat or shop (one with a wall to its street) has entrances
-// and shopfronts only on its walls to its address streets, the others plain (WALL_KINDS.side). Without them, as before.
+// and shopfronts only on its walls to its address streets, the others plain (WALL_KINDS.side). Without them, as before. Its street
+// numbers' plates are left on its record as `plates` (js/street-numbers.js numberPlates()), where its address has numbers.
 function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMaterials = null, { groundAt = null, groundTop = null, storey = null } = {}) {
   const cells = new Map();
   for (const [index, record] of records.entries()) {
@@ -371,6 +373,7 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
     const toStreets = !record.house && address?.some((a) => a.wall >= 0)
       ? streetWalls(outer, address, record.cx, record.cz, (street) => houseFront(outer, street, record.cx, record.cz)) : null;
 
+    const shops = new Set(); // its walls with shopfronts
     for (const { rings, walls } of shapes) {
       // A pitched roof over a footprint with no courtyard, simple enough for one
       const frame = record.pitched && roofMaterials && rings.length === 1 && !bottom ? roofFrame(rings[0], record) : null;
@@ -390,6 +393,7 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
           const reverse = (Math.abs(dz) >= Math.abs(dx) ? dz : dx) < 0;
           // Kept for whatever needs to know where its door is (js/house-entry.js): the wall, which end its bays count from, its digits
           if (wall === front) record.frontWall = frontWallOf(wall, Math.floor(seed) % 1000, single);
+          if (kind === WALL_KINDS.shop) shops.add(wall);
           // Where the ground runs up it over its floor, in pieces at its bays' edges, each with the line the facade hides windows under
           // (js/wall-ground.js); a party wall is solid anyway
           const pieces = groundAt && !bottom && storey && kind !== WALL_KINDS.lotLine
@@ -444,6 +448,11 @@ function* createBuildingFootprintsSteps(material, records, getNeighbours, roofMa
         cell.walls.push(0, 0, WALL_KINDS.front);
       }
       for (const [a, b, c] of triangles) cell.indices.push(offset + a, offset + c, offset + b);
+    }
+    // Its street numbers' plates, where its address has numbers (js/street-numbers.js): by its doors, entrances and walls as drawn
+    if (address && !bottom) {
+      record.plates = numberPlates(record, outer, { base, shops, fronts, digits: Math.floor(seed) % 1000, groundAt: groundUnder,
+        frontOf: (street) => houseFront(outer, street, record.cx, record.cz) });
     }
   }
 

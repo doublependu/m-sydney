@@ -1,6 +1,7 @@
 import { HOUSE_STYLES } from './house-styles.js';
 import { houseEntry } from './house-entry.js';
 import { DOOR_KEEP } from './building-floor.js';
+import { letterboxPlate } from './street-numbers.js';
 import { LAWN_TOP, PANEL, SLAB, SLAB_PIECE, acrossAt, alongOf, depthOf, hashOf, inRing, insideSpans, keyOf, slab } from './house-lots.js';
 
 // What stands in a house's lot besides its fences between neighbours (js/house-lots.js), by the house's era (js/house-styles.js):
@@ -10,8 +11,9 @@ import { LAWN_TOP, PANEL, SLAB, SLAB_PIECE, acrossAt, alongOf, depthOf, hashOf, 
 //   wall on piers (bungalows, triple-fronted), an iron palisade (terraces), wire (post-war), each on some of the style's lots only; none
 //   for project homes and beach houses. It holds the walker, as the fences between neighbours do.
 // - A path to the door, from the driveway, or from the front gate where there's none.
-// - A letterbox at the front line. Shrubs along the front wall on about half the lots; a low hedge along the front line on about half of
-//   those without a front fence, holding the walker as a fence would.
+// - A letterbox at the front line, with the house's street number on it where its address has one (js/street-numbers.js). Shrubs along
+//   the front wall on about half the lots; a low hedge along the front line on about half of those without a front fence, holding the
+//   walker as a fence would.
 // - A verandah on terraces and Federation houses, a porch on bungalows (on brick piers) and post-war houses (over the door), a deck
 //   to the street on beach houses.
 // - Steps up to a door its floor left over the ground: where its street address set the floor at its door and the cut into the slope
@@ -19,7 +21,7 @@ import { LAWN_TOP, PANEL, SLAB, SLAB_PIECE, acrossAt, alongOf, depthOf, hashOf, 
 //   up to STEPS_TO; their treads go to the ground's lookup (`treads`), so a walker climbs them, and their open sides hold the walker.
 // Boxes go to js/lot-details.js' instanced box of things ({ x, y, z: the middle of its foot; a: its length along, b: its width across,
 // each a vector, with a rise in y for a slope; h: how high; kind (THING); colour; small: drawn only near }); paths go with the driveways'
-// concrete; front fences' panels with the other fences'.
+// concrete; front fences' panels with the other fences'; the letterbox's number plate to `plates`.
 
 const THING = { paint: 0, brick: 1, leaves: 2, iron: 3, boards: 4, door: 5 };
 const FENCE = { picket: 2, palisade: 3, wire: 4 }; // js/tsl-materials.js createFenceMaterial()'s kinds
@@ -66,7 +68,7 @@ const IRON_ROOFS = [0x8a8f92, 0x9a3e30, 0x6c7a6a];
  */
 function lotThings(lot, obstacles, env) {
   const h = lot.home, f = lot.frame, style = HOUSE_STYLES[h.house], look = style?.look;
-  const out = { boxes: [], slabs: [], panels: [], fences: [], treads: [], steps: null };
+  const out = { boxes: [], slabs: [], panels: [], fences: [], treads: [], plates: [], steps: null };
   if (!look) return out;
   const name = style.name;
   const unit = lot.unit ?? null;
@@ -295,13 +297,21 @@ function lotThings(lot, obstacles, env) {
     if (a !== null) {
       const d = lot.front + (fenced ? 0.45 : 0.3), p = at(a, d);
       if (inLot(p) && !blocked([p], others)) {
-        if (OLDER.has(name) || name === 'Triple-fronted brick veneer') {
+        const pier = OLDER.has(name) || name === 'Triple-fronted brick veneer';
+        if (pier) {
           box(a - 0.21, a + 0.21, d - 0.21, d + 0.21, 1.05, THING.brick, pick(BRICKS[name] || BRICKS.other, 17), { small: true });
         } else {
           box(a - 0.04, a + 0.04, d - 0.04, d + 0.04, 0.85, THING.paint, pick(TRIM, 18), { small: true });
           const g = ground(p.x, p.z);
           out.boxes.push({ x: p.x, y: g + 0.85, z: p.z, ax: f.tx * 0.42, ay: 0, az: f.tz * 0.42, bx: f.nx * 0.32, by: 0, bz: f.nz * 0.32, h: 0.3,
             kind: THING.paint, colour: pick(COLORBOND, 19), small: true });
+        }
+        // Its number on its face to the street: a brick pier's at about knee height over its slot, a box's on its front. Not on a house
+        // of a row drawn as one footprint: its number is the row's, by the first house's door
+        if (!unit) {
+          const face = at(a, d - (pier ? 0.21 : 0.16) - 0.012), g = ground(face.x, face.z);
+          const plate = letterboxPlate({ ...face, y: g + (pier ? 0.72 : 1.0), nx: -f.nx, nz: -f.nz }, h.address);
+          if (plate && plate.w <= 0.4) out.plates.push(plate);
         }
       }
     }

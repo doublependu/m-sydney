@@ -5,8 +5,9 @@
 //   ways: [{ ids: [OSM way id, ...], expect: { tag: value }, tags: { tag: value | null }, remove: true, why }],
 //   buildings: [{ area: [[x, z], ...], kinds: [...], maxHeight, style, why }]: a style of house (js/house-styles.js) for the buildings in
 //   an area of those kinds (tools/build-buildings.mjs KIND) and no taller (tools/build-buildings.mjs); or [{ at: [x, z], expect: [lo, hi],
-//   height, style, why }]: the one building with that point inside it, which the build has between lo and hi m tall, made `height` m,
-//   and given that house style if it says;
+//   height, style, numbers: false, why }]: the one building with that point inside it, which the build has between lo and hi m tall, made
+//   `height` m, given that house style, and with no street numbers' plates (js/street-numbers.js; its streets still give its doors and
+//   floor), each if it says;
 //   plants: [{ kind, height: [lo, hi], every, line: [[x, z], ...] | at: [[x, z], ...], apart, why }]: trees planted by hand in a garden's
 //   area (tools/garden-areas.mjs, tools/build-garden.mjs), of the tree system's kinds, in a row every `every` m or at points, none nearer
 //   another tree than `apart` m (4 unless it says);

@@ -44,10 +44,11 @@ const houseStyles = require('./helpers/house-styles.cjs');
 const addresses = loadModule(readFileSync(join(__dirname, '../js/addresses.js'), 'utf8'));
 const houseEntry = loadModule(readFileSync(join(__dirname, '../js/house-entry.js'), 'utf8'), { imports: { './house-styles.js': houseStyles, './addresses.js': addresses } });
 const wallGround = loadModule(readFileSync(join(__dirname, '../js/wall-ground.js'), 'utf8'));
+const streetNumbers = loadModule(readFileSync(join(__dirname, '../js/street-numbers.js'), 'utf8'), { imports: { './addresses.js': addresses, './house-entry.js': houseEntry } });
 const { createBuildingFootprints } = loadModule(readFileSync(join(__dirname, '../js/building-footprints.js'), 'utf8'), {
   imports: { 'three/webgpu': THREE, './tsl-materials.js': { WALL_KINDS, ONE_HOUSE },
     './building-collision.js': collision, './house-styles.js': houseStyles, './addresses.js': addresses, './house-entry.js': houseEntry,
-    './wall-ground.js': wallGround }
+    './wall-ground.js': wallGround, './street-numbers.js': streetNumbers }
 });
 const p = (x, z) => ({ x, z });
 const square = (x = 0) => [p(x, 0), p(x + 10, 0), p(x + 10, 10), p(x, 10)];
@@ -522,4 +523,53 @@ test('a low-rise shop with an address has entrances and shopfronts only on its w
   const tower = record(square(), { height: 40, kind: 3, storefronts: true });
   tower.address = [{ x: 5, z: -10, wall: -1, number: '20' }];
   assert.ok(wallsOf(build([tower]).children[0]).every((w) => w.kind === WALL_KINDS.shop));
+});
+
+test('a building with an address keeps its street numbers\' plates: a house\'s beside its door, a shop\'s over its sign, a tower\'s 3 m up its street\'s wall', () => {
+  // A house facing z < 0, its door where the facade draws it (js/house-entry.js)
+  const outer = [p(0, 0), p(12, 0), p(12, 9), p(0, 9)];
+  const h = house(outer, { front: { x: 6, z: -8 }, seed: 4321, base: 2 });
+  h.address = [{ x: 6, z: -8, wall: facing(h.polygons, 0, -1), number: '12A' }];
+  build([h]);
+  const entry = houseEntry.houseEntry(h.frontWall, h.house);
+  assert.equal(h.plates.length, 1);
+  const [plate] = h.plates;
+  assert.equal(plate.text, '12A');
+  assert.equal(plate.kind, 'house');
+  close(plate.nz, -1);
+  assert.ok(plate.z < 0 && plate.z > -0.05, `on the wall's face: ${plate.z}`);
+  close(plate.y, 2 + 0.22 + 1.5);
+  const off = Math.abs(plate.x - entry.door.x);
+  assert.ok(off > 0.53 + plate.w / 2 && off < 0.53 + 0.36 + 0.2 + plate.w / 2, `beside the door: ${off} m from its middle`);
+  // A shop's over its sign, at the entrance nearest its street's point; and a second street on its own wall
+  const shop = record(square(), { height: 6, kind: 3, storefronts: true, base: 0 });
+  shop.address = [{ x: 3, z: -10, wall: facing(shop.polygons, 0, -1), number: '20-24' }, { x: 20, z: 5, wall: facing(shop.polygons, 1, 0), number: '1' }];
+  build([shop]);
+  assert.equal(shop.plates.length, 2);
+  assert.equal(shop.plates[0].kind, 'shop');
+  assert.ok(shop.plates[0].y - shop.plates[0].h * 0.8 > 0.22 + 3.36, 'over the sign');
+  close(shop.plates[0].x, 5); // a 10 m wall has one entrance, in its middle
+  close(shop.plates[1].nx, 1);
+  // A tower's: on the wall facing its street, not one against a neighbour, 3 m up
+  const tower = record(square(), { height: 40, kind: 2, storefronts: false, base: 0 });
+  tower.address = [{ x: 7, z: -10, wall: -1, number: '100' }];
+  build([tower]);
+  assert.equal(tower.plates[0].kind, 'other');
+  close(tower.plates[0].nz, -1);
+  close(tower.plates[0].y, 0.22 + 3);
+  close(tower.plates[0].x, 7);
+  const neighbour = record([p(0, -10), p(10, -10), p(10, 0), p(0, 0)], { height: 40 });
+  const held = record(square(), { height: 40, kind: 2, storefronts: false, base: 0 });
+  held.address = [{ x: 7, z: -10, wall: -1, number: '100' }];
+  build([held], () => [reserve(held), reserve(neighbour)]);
+  assert.ok(Math.abs(held.plates[0].nz + 1) > 0.5, 'not on the wall against its neighbour');
+  // No number, no plate; one wall twice, one plate
+  const none = record(square(), { height: 40, base: 0 });
+  none.address = [{ x: 7, z: -10, wall: -1, number: null }];
+  build([none]);
+  assert.equal(none.plates.length, 0);
+  const twice = record(square(), { height: 40, base: 0 });
+  twice.address = [{ x: 7, z: -10, wall: -1, number: '3' }, { x: 2, z: -10, wall: -1, number: '5' }];
+  build([twice]);
+  assert.equal(twice.plates.length, 1);
 });

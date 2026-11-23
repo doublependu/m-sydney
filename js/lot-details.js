@@ -9,7 +9,8 @@ import { MARGIN, squareLots } from './house-lots.js';
 import { houseEntry } from './house-entry.js';
 import { lotThings } from './lot-things.js';
 import { squareVerge, walkLine } from './verge.js';
-import { createConcreteMaterial, createFenceMaterial, createLotThingMaterial, createParkLawnMaterial } from './tsl-materials.js';
+import { createConcreteMaterial, createFenceMaterial, createLotThingMaterial, createNumberPlateMaterial, createParkLawnMaterial } from './tsl-materials.js';
+import { HIGH } from './street-numbers.js';
 import { outsideTunnelMouths } from './tunnel-mouths.js';
 import { anchorToOrigin, onOriginMove, origin } from './world-origin.js';
 import { activity, runToEnd } from './world-jobs.js';
@@ -20,21 +21,23 @@ import { dropLayers, setLayer } from './drawn-ground.js';
 // (js/controllers.js addWalkerColliders()).
 // - The map is worked out in SQUARE m squares, one at a time, as the world's jobs have time (js/main.js), each once every tile within
 //   MARGIN of it is built, and kept while those tiles are.
-// - What's drawn is three instanced meshes: every fence panel (front fences' too), every slab of concrete (driveways, crossovers,
+// - What's drawn is four instanced meshes: every fence panel (front fences' too), every slab of concrete (driveways, crossovers,
 //   laybacks, paths), and every box of the lots' things (js/lot-things.js: carports, garages, brick walls, hedges, shrubs, letterboxes,
-//   verandahs), the small ones only within the level's SMALL m; and the verges (js/verge.js), the nature strips' lawn and their
-//   footpaths, as two meshes. They're refilled from the squares held when you've moved REFILL m, nearest first, as many as the level has
-//   room for. The trees the verges add go to the street furniture's tree field (js/street-details.js), within houseDetail of you.
+//   verandahs), the small ones only within the level's SMALL m; the verges (js/verge.js), the nature strips' lawn and their
+//   footpaths, as two meshes; and the street numbers' plates (js/street-numbers.js) of the squares' buildings and the lots' letterboxes,
+//   a quad each, each only as far as its digits can be read (its `far`). They're refilled from the squares held when
+//   you've moved REFILL m, nearest first, as many as the level has room for. The trees the verges add go to the street furniture's tree
+//   field (js/street-details.js), within houseDetail of you.
 
 const SQUARE = 500; // m: two to a tile's side
 const REFILL = 15; // m moved before what's drawn is chosen again
 const HOLD = 120; // m round you that fences hold the walker
 const FENCE_HOLD = 1.8; // m: a fence's collider, where it doesn't say
 const KEEP = 300; // m past houseDetail that a square's lots are kept
-// Instances each level has room for: a panel is 2 triangles, a slab 10; fences cast shadows on medium and high
-const ROOM = { low: { panels: 1600, slabs: 900, things: 1200, lawn: 30000, path: 15000 },
-  medium: { panels: 4500, slabs: 2200, things: 3000, lawn: 90000, path: 45000 },
-  high: { panels: 6500, slabs: 3000, things: 4200, lawn: 140000, path: 70000 } }; // things are boxes of 12 triangles; lawn and path in vertices
+// Instances each level has room for: a panel is 2 triangles, a slab 10, a plate 2; fences cast shadows on medium and high
+const ROOM = { low: { panels: 1600, slabs: 900, things: 1200, lawn: 30000, path: 15000, plates: 300 },
+  medium: { panels: 4500, slabs: 2200, things: 3000, lawn: 90000, path: 45000, plates: 500 },
+  high: { panels: 6500, slabs: 3000, things: 4200, lawn: 140000, path: 70000, plates: 700 } }; // things are boxes of 12 triangles; lawn and path in vertices
 const SMALL = { low: 50, medium: 70, high: 90 }; // m: the lots' small things (letterboxes, shrubs, posts) drawn within this of you
 const THINGS = { low: 70, medium: 110, high: 130 }; // m: and the rest of them, and the paths to the doors
 // The verges' trees planted, the nearest: each is most of a thousand triangles near, with its shadows
@@ -412,7 +415,15 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
   things.castShadow = shadows;
   things.receiveShadow = true;
   things.setColorAt(0, new THREE.Color(1, 1, 1));
-  for (const mesh of [fences, slabs, things]) {
+  // The street numbers: a quad facing +z each, its characters and colours in `plate` (js/tsl-materials.js createNumberPlateMaterial())
+  const plateData = new THREE.InstancedBufferAttribute(new Float32Array(room.plates * 4), 4);
+  const plateGeo = new THREE.PlaneGeometry(1, 1);
+  plateGeo.setAttribute('plate', plateData);
+  const numbers = new THREE.InstancedMesh(plateGeo, createNumberPlateMaterial(), room.plates);
+  numbers.name = 'StreetNumbers';
+  numbers.castShadow = false;
+  numbers.receiveShadow = true;
+  for (const mesh of [fences, slabs, things, numbers]) {
     mesh.userData.lifted = true; // written on the ground already
     mesh.count = 0;
     group.add(mesh);
@@ -468,6 +479,9 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
       const result = yield* squareLots(entries, env, next.square);
       result.verge = yield* squareVerge(result.fronting, env, next.square);
       result.fronting = null;
+      // The street numbers: the square's buildings', worked out with their walls (js/buildings.js), and its letterboxes'
+      const { x0: sx0, x1: sx1, z0: sz0, z1: sz1 } = next.square;
+      for (const { b } of entries) if (b.plates && b.cx >= sx0 && b.cx < sx1 && b.cz >= sz0 && b.cz < sz1) result.plates.push(...b.plates);
       treesVersion++;
       // Let go of while it was worked out
       if (next.keys.every((k) => isHeld(k))) {
@@ -507,7 +521,7 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
     filledAt = { x, z };
     changed = false;
     originMoved = false;
-    const panels = [], concrete = [], boxes = [], lawnChunks = [], pathChunks = [], pieces = [];
+    const panels = [], concrete = [], boxes = [], lawnChunks = [], pathChunks = [], pieces = [], plates = [];
     for (const { result } of squares.values()) {
       for (const p of result.panels) {
         const d = Math.hypot(p.x - x, p.z - z);
@@ -530,6 +544,10 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
       for (const f of result.fences) {
         const d = Math.hypot((f.a.x + f.b.x) / 2 - x, (f.a.z + f.b.z) / 2 - z);
         if (d <= HOLD) pieces.push(f);
+      }
+      for (const p of result.plates) {
+        const d = Math.hypot(p.x - x, p.z - z);
+        if (d <= Math.min(r, p.far)) plates.push([d, p]);
       }
     }
     const P = nearest(panels, room.panels), S = nearest(concrete, room.slabs), B = nearest(boxes, room.things);
@@ -561,10 +579,20 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
       td[i * 4 + 2] = Math.hypot(b.bx, b.by, b.bz);
       td[i * 4 + 3] = b.kind;
     }
+    // A plate: along its wall as you read it, up, and out of the wall
+    const N = nearest(plates, room.plates), pd = plateData.array;
+    for (let i = 0; i < N.length; i++) {
+      const p = N[i][1], high = HIGH * p.h;
+      m.set(p.nz * p.w, 0, p.nx, p.x - origin.x, 0, high, 0, p.y, -p.nx * p.w, 0, p.nz, p.z - origin.z, 0, 0, 0, 1);
+      numbers.setMatrixAt(i, m);
+      pd.set(p.codes, i * 4);
+      pd[i * 4 + 3] = p.n + 16 * p.palette;
+    }
     fences.count = P.length;
     slabs.count = S.length;
     things.count = B.length;
-    for (const [mesh, n] of [[fences, P.length], [slabs, S.length], [things, B.length]]) {
+    numbers.count = N.length;
+    for (const [mesh, n] of [[fences, P.length], [slabs, S.length], [things, B.length], [numbers, N.length]]) {
       update(mesh.instanceMatrix, n, 16);
       mesh.boundingSphere = null;
       if (n) mesh.computeBoundingSphere();
@@ -572,6 +600,7 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
     }
     update(fenceData, P.length, 4);
     update(thingData, B.length, 4);
+    update(plateData, N.length, 4);
     // The verges, a chunk at a time, nearest first, as many vertices as there's room for
     for (const [mesh, chunks, capacity] of [[lawns, lawnChunks, room.lawn], [paths, pathChunks, room.path]]) {
       chunks.sort((a, b) => a[0] - b[0]);
@@ -657,15 +686,27 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
       for (const sd of result.verge.sides) if (Math.hypot(sd.x - x, sd.z - z) <= r) sides.push(sd);
       for (const t of result.verge.trees) if (Math.hypot(t.x - x, t.z - z) <= r) added++;
     }
-    return { squares: squares.size, lots, fences: fenceList, drives, panels: fences.count, slabs: slabs.count, things: things.count,
+    return { squares: squares.size, lots, fences: fenceList, drives, panels: fences.count, slabs: slabs.count, things: things.count, plates: numbers.count,
       lawn: lawns.geometry.drawRange.count / 3, path: paths.geometry.drawRange.count / 3, sides, trees: added, colliders: held.size };
+  }
+
+  /** For the scripts: the street numbers' plates worked out within r of (x, z), nearest first, each { x, y, z, nx, nz, text, kind, h, d } */
+  function platesNear(x, z, r = 60) {
+    const out = [];
+    for (const { result } of squares.values()) {
+      for (const p of result.plates) {
+        const d = Math.hypot(p.x - x, p.z - z);
+        if (d <= r) out.push({ x: p.x, y: p.y, z: p.z, nx: p.nx, nz: p.nz, text: p.text, kind: p.kind, h: p.h, far: p.far, d });
+      }
+    }
+    return out.sort((a, b) => a.d - b.d);
   }
 
   /** Hidden or shown, at once (for measuring what they cost) */
   let shown = true;
   function setShown(on) {
     shown = !!on;
-    fences.visible = slabs.visible = things.visible = shown;
+    fences.visible = slabs.visible = things.visible = numbers.visible = shown;
     lawns.visible = shown && lawns.geometry.drawRange.count > 0;
     paths.visible = shown && paths.geometry.drawRange.count > 0;
   }
@@ -676,7 +717,7 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
     dropLayers('lots:');
     if (walker) walker.remove([...held]);
     held = new Set();
-    fences.count = slabs.count = things.count = 0;
+    fences.count = slabs.count = things.count = numbers.count = 0;
     lawns.geometry.setDrawRange(0, 0);
     paths.geometry.setDrawRange(0, 0);
     changed = true;
@@ -718,7 +759,7 @@ function createLotDetails({ level = 'high', reach = () => 260, built = () => fal
 
   // Positions are written from the origin, as js/buildings.js writes its pools
   const anchor = () => anchorToOrigin(group);
-  return { group, anchor, work, state, setShown, clear, debugLines, squares, trees, treesState, walkAt };
+  return { group, anchor, work, state, setShown, clear, debugLines, squares, trees, treesState, walkAt, platesNear };
 }
 
 // houseEntry() too, for the seasons (js/seasons.js ctx.houses), which import nothing of the game's

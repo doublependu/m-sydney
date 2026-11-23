@@ -311,8 +311,9 @@ function pairLine(a, b) {
  *   sites: [{ rings }]: the model sites, which nothing of a lot reaches into, and which bound their neighbours' lots
  *   lotThings(lot, obstacles): what else stands in a lot (js/lot-things.js), { boxes, slabs, panels, fences }, or none
  *   lines: true for the fences as the lots' edges have them, before they're cut, for measuring them
- * Yields as it goes; returns { lots, fences, panels, slabs, things, fronting }: `fronting`, every building near that faces a street and
- * bounds a lot, for the verges (js/verge.js squareVerge()). With `lines`, also `lines`, each fence before the cut ({ a, b, homes, kind:
+ * Yields as it goes; returns { lots, fences, panels, slabs, things, treads, plates, fronting }: `plates`, its letterboxes' street numbers
+ * (js/street-numbers.js); `fronting`, every building near that faces a street and bounds a lot, for the verges (js/verge.js
+ * squareVerge()). With `lines`, also `lines`, each fence before the cut ({ a, b, homes, kind:
  * 'pair' with its `line`, 'back', 'road' or 'row', own: whether it's the square's }), and `measure`: { obstacles, pairs, rounds, added,
  * unseparated, left }, the pairs the overlaps added, those no line separates, and the overlaps still left after ROUNDS, each { home,
  * other, why: 'building' or 'lot' }.
@@ -715,7 +716,7 @@ function* squareLots(entries, env, square) {
 
   // The driveways, crossovers and laybacks, and each lot's own things (env.lotThings, js/lot-things.js): a garage at the back takes
   // its driveway on to it. A crossover just over the square's edge is known too, for the verge (js/verge.js) to leave its paving.
-  const slabs = [], things = [], treads = [];
+  const slabs = [], things = [], treads = [], plates = [];
   const mine = lots.filter((lot) => owns(lot.home.cx, lot.home.cz));
   const NEAR_EDGE = 20; // m
   for (const lot of lots) {
@@ -727,7 +728,7 @@ function* squareLots(entries, env, square) {
     // A row's things house by house, each in its own stretch of the lot
     const parts = env.lotThings ? (lot.units ? lot.units.map((unit) => env.lotThings({ ...lot, pts: unit.pts, unit }, near)) : [env.lotThings(lot, near)]).filter(Boolean) : [];
     const own = parts.length ? { slabs: parts.flatMap((o) => o.slabs), panels: parts.flatMap((o) => o.panels), boxes: parts.flatMap((o) => o.boxes),
-      fences: parts.flatMap((o) => o.fences), treads: parts.flatMap((o) => o.treads || []) } : null;
+      fences: parts.flatMap((o) => o.fences), treads: parts.flatMap((o) => o.treads || []), plates: parts.flatMap((o) => o.plates || []) } : null;
     if (lot.drive) slabs.push(...laid(lot, lot.drive, env));
     if (own) {
       slabs.push(...own.slabs);
@@ -735,6 +736,7 @@ function* squareLots(entries, env, square) {
       things.push(...own.boxes);
       finished.push(...own.fences);
       treads.push(...own.treads);
+      plates.push(...own.plates);
     }
     yield;
   }
@@ -751,7 +753,7 @@ function* squareLots(entries, env, square) {
     const street = env.streetOf(w);
     if (street) fronting.push({ street, house: 0, terrace: false, yard: 0, frontage: [[w.cx, w.cz], [w.cx, w.cz]], cx: w.cx, cz: w.cz, lot: null });
   }
-  const result = { lots: mine, fences: finished, panels, slabs, things, treads, fronting };
+  const result = { lots: mine, fences: finished, panels, slabs, things, treads, plates, fronting };
   if (before) Object.assign(result, { lines: before, measure: { obstacles, pairs, rounds, added, unseparated, left } });
   return result;
 }

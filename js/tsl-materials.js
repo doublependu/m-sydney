@@ -68,6 +68,7 @@ import { patternXZ } from './world-origin.js';
 import { CITY_BOUNDS } from './city-config.js';
 import { HOUSE_STYLES } from './house-styles.js';
 import { CITY_SILL, WINDOW_CLEAR } from './wall-ground.js';
+import { CELL, GLYPHS, HIGH, PAD, PALETTE } from './street-numbers.js';
 
 // Procedural city materials: facades and interiors, vegetation, roads, water and lighting effects.
 
@@ -3149,6 +3150,73 @@ function createConcreteMaterial() {
   return m;
 }
 
+// Street numbers' plates (js/street-numbers.js), drawn by js/lot-details.js as a quad each: its characters from an atlas of cells 32 px
+// wide and 64 high, 16 to a row, a blank first and then GLYPHS, white on black: the ink. A plate's `plate` attribute: its characters four
+// to a number, 6 bits each, and their count + 16 times its colours' entry in PALETTE. Its colour where there's no ink; opaque.
+let _numberAtlas = null;
+function numberAtlas() {
+  if (_numberAtlas) return _numberAtlas;
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 512, 256);
+  ctx.fillStyle = '#fff';
+  // Digits 1/HIGH of the cell's height: 40 px of 64
+  ctx.font = 'bold 56px sans-serif';
+  ctx.textAlign = 'center';
+  const m = ctx.measureText('8');
+  const scale = 64 / HIGH / Math.max(1, m.actualBoundingBoxAscent + m.actualBoundingBoxDescent);
+  ctx.font = `bold ${Math.round(56 * scale)}px sans-serif`;
+  const fit = ctx.measureText('8');
+  [...GLYPHS].forEach((c, i) => {
+    const cell = i + 1, x = (cell % 16) * 32 + 16, top = Math.floor(cell / 16) * 64;
+    ctx.fillText(c, x, top + 32 + (fit.actualBoundingBoxAscent - fit.actualBoundingBoxDescent) / 2, 27);
+  });
+  _numberAtlas = new THREE.CanvasTexture(canvas);
+  _numberAtlas.anisotropy = 4;
+  return _numberAtlas;
+}
+
+function createNumberPlateMaterial() {
+  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.4 });
+  // The same on every pixel of a plate, exactly: its characters are whole numbers up to 2^24, which an interpolated varying can be a unit off
+  const data = varying(attribute('plate', 'vec4'), 'vNumberPlate')
+    .setInterpolation(THREE.InterpolationSamplingType.FLAT, THREE.InterpolationSamplingMode.EITHER);
+  const count = mod(data.w, 16.0), entry = floor(data.w.mul(1 / 16));
+  const p = uv();
+  // Along the plate in characters, from the first one's left edge; its padding either end
+  const u = p.x.mul(count.add((2 * PAD) / CELL)).sub(PAD / CELL);
+  const k = floor(u);
+  const inside = step(0.0, u).mul(step(u, count.sub(0.0001)));
+  // The k-th character: its number's 6 bits, by multiplying by exact powers of two
+  const word = mix(mix(data.x, data.y, step(3.5, k)), data.z, step(7.5, k));
+  const j = mod(k, 4.0);
+  const shift = mix(mix(float(1), float(1 / 64), step(0.5, j)), mix(float(1 / 4096), float(1 / 262144), step(2.5, j)), step(1.5, j));
+  const above = floor(word.mul(shift));
+  const code = above.sub(floor(above.mul(1 / 64)).mul(64.0)).mul(inside);
+  const row = floor(code.mul(1 / 16)), col = code.sub(row.mul(16.0));
+  const atlasUV = vec2(col.add(fract(u)).mul(1 / 16), float(3).sub(row).add(p.y).mul(0.25));
+  // The mip level from the plate's own coordinates: fract() jumps at each character's edge
+  const lod = log2(max(fwidth(u).mul(32.0), fwidth(p.y).mul(64.0)).max(1e-4)).clamp(0, 4);
+  const ink = texture(numberAtlas(), atlasUV).level(lod).r;
+  const is = (e) => step(e - 0.5, entry).mul(step(entry, e + 0.5));
+  let plate = vec3(0), digits = vec3(0);
+  PALETTE.forEach(({ plate: pc, ink: ic }, e) => {
+    plate = plate.add(color(pc).mul(is(e)));
+    digits = digits.add(color(ic).mul(is(e)));
+  });
+  m.colorNode = vec4(mix(plate, digits, ink), 1.0);
+  // Brass a metal, the rest glazed
+  m.metalnessNode = is(2).mul(0.65);
+  m.roughnessNode = mix(float(0.35), float(0.45), is(2));
+  m.polygonOffset = true;
+  m.polygonOffsetFactor = -1;
+  m.polygonOffsetUnits = -4;
+  return m;
+}
+
 export {
   cityUniforms,
   WALL_KINDS,
@@ -3180,5 +3248,6 @@ export {
   createBlobShadowMaterial,
   createFenceMaterial,
   createLotThingMaterial,
-  createConcreteMaterial
+  createConcreteMaterial,
+  createNumberPlateMaterial
 };

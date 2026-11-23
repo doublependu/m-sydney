@@ -333,17 +333,25 @@ for (const r of buildings) {
       if (r.height < lo || r.height > hi) {
         throw new Error(`tools/local/${area.file}: the building at (${x}, ${z}) is ${r.height.toFixed(1)} m, not ${lo}-${hi}: check the edit (${edit.why})`);
       }
-      console.log(`[buildings] tools/local/${area.file}: (${x}, ${z}) from ${r.height.toFixed(1)} m to ${edit.height} m${edit.style ? `, ${edit.style}` : ''}`);
+      if (edit.height === undefined && !edit.style && edit.numbers !== false) throw new Error(`tools/local/${area.file}: the edit at (${x}, ${z}) changes nothing (${edit.why})`);
+      console.log(`[buildings] tools/local/${area.file}: (${x}, ${z}) ${edit.height !== undefined ? `from ${r.height.toFixed(1)} m to ${edit.height} m` : `${r.height.toFixed(1)} m`}`
+        + `${edit.style ? `, ${edit.style}` : ''}${edit.numbers === false ? ', no street numbers' : ''}`);
       // ...and a house style (js/house-styles.js) for its walls and roof, if it says
       if (edit.style) {
         if (STYLE[edit.style] === undefined) throw new Error(`tools/local/${area.file}: no house style called ${edit.style} (js/house-styles.js)`);
         r.style = STYLE[edit.style];
         r.styledByHand = true;
       }
-      // A building that had parts over it keeps its group number though they're under it now, so no other building's changes
-      if ((partsOf.get(r.b.id) || []).some((q) => q.top > r.height + 1)) r.keepGroup = true;
-      r.height = edit.height;
-      r.guess = false;
+      // ...and no street numbers' plates (js/street-numbers.js), where it's a landmark of a kind the tiles leave in
+      if (edit.numbers === false) r.noNumbers = `tools/local/${area.file}: the building at (${x}, ${z})`;
+      // (one that only leaves its numbers off can be joined to another as its piece: its numbers are left off all of them)
+      r.numbersOnly = edit.height === undefined && !edit.style;
+      if (edit.height !== undefined) {
+        // A building that had parts over it keeps its group number though they're under it now, so no other building's changes
+        if ((partsOf.get(r.b.id) || []).some((q) => q.top > r.height + 1)) r.keepGroup = true;
+        r.height = edit.height;
+        r.guess = false;
+      }
       r.edit = `tools/local/${area.file}: the building at (${x}, ${z})`;
     }
   }
@@ -489,7 +497,7 @@ buildings.push(...pieces);
         r.joined = true;
       }
     }
-    if (r.edit && (out[i] >= 0 || on[i].length)) {
+    if (r.edit && (out[i] >= 0 || (on[i].length && !r.numbersOnly))) {
       throw new Error(`${r.edit} is ${out[i] >= 0 ? 'left out' : 'now a piece of another'}: it stands inside another building, over the same heights (tools/stack-pieces.mjs). Move the edit to that one`);
     }
     if (bottom[i] !== records[i].bottom) r.bottom = bottom[i];
@@ -508,7 +516,7 @@ buildings.push(...pieces);
     if (numbers.length > 1) merged++;
     const group = numbers.length ? Math.min(...numbers) : (fresh++, ++groups);
     for (const i of members) {
-      if (buildings[i].edit) throw new Error(`${buildings[i].edit} now has another building as a piece of it (tools/stack-pieces.mjs): check the edit`);
+      if (buildings[i].edit && !buildings[i].numbersOnly) throw new Error(`${buildings[i].edit} now has another building as a piece of it (tools/stack-pieces.mjs): check the edit`);
       buildings[i].group = group;
     }
   }
@@ -640,6 +648,18 @@ if (addressData) {
   const { matchAddresses, FIND } = await import('./addresses.mjs');
   const { address, stats, notFound, aliased } = matchAddresses(addressRecords(), addressData.points, addressData.roads, { aliases: addressData.aliases });
   for (const [i, list] of address) buildings[i].address = list;
+  // A building edited by hand to have no numbers (`numbers: false`) keeps its streets, so its doors and floor, but shows no number; nor
+  // does any other piece of it, which may hold its address
+  const unnumbered = new Set(buildings.filter((r) => r.noNumbers && r.group).map((r) => r.group));
+  for (const r of buildings) {
+    if (!(r.noNumbers || (r.group && unnumbered.has(r.group)))) continue;
+    if (r.noNumbers && !buildings.some((q) => q.address && (q === r || (r.group && q.group === r.group)))) {
+      throw new Error(`${r.noNumbers} has no street address to leave its numbers off: check the edit`);
+    }
+    if (!r.address) continue;
+    for (const s of r.address) s.number = null;
+    console.log(`[buildings] ${r.noNumbers || `a piece of ${buildings.find((q) => q.noNumbers && q.group === r.group).noNumbers}`}: its numbers left off`);
+  }
   // An alias each building it's there for finds its road by: `expect` [lo, hi] buildings, or the data under it has changed
   for (const [name, { area, edit }] of addressData.aliasOf) {
     const n = aliased.get(name) || 0, [lo, hi] = edit.expect;

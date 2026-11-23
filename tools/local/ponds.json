@@ -1,0 +1,32 @@
+{
+  "name": "Still water the ponds' rule (tools/sea-water.mjs pondWaters()) reads wrong, from NSW's aerial (2026-11): drawn as a pond, or not",
+  "water": [
+    { "id": "way/179719048", "pond": true, "expect": { "natural": "water", "water": "basin", "intermittent": "yes" }, "why": "Kurnell's sand-mining lake, 50 ha of open water behind the beach (1512, 17648), tagged as coming and going" },
+    { "id": "way/1210662612", "pond": true, "expect": { "natural": "water", "water": "basin", "intermittent": "yes" }, "why": "Open water in the sand quarry at Kurnell (861, 17123), tagged as coming and going" },
+    { "id": "way/179719052", "pond": true, "expect": { "natural": "water", "intermittent": "yes" }, "why": "A lake among the dunes at Kurnell (4277, 16758), dark water, tagged as coming and going" },
+    { "id": "way/945295357", "pond": true, "expect": { "natural": "water", "water": "pond", "intermittent": "yes" }, "why": "A full pond between the motorway and a depot (-1577, 4981), tagged as coming and going" },
+    { "id": "way/1391518319", "pond": true, "expect": { "natural": "water", "water": "basin", "intermittent": "yes" }, "why": "A pond under the trees below a park's terraced lawn (-6615, -3005), full on the aerial, tagged as coming and going" },
+    { "id": "way/242486088", "pond": true, "expect": { "natural": "water", "water": "basin", "intermittent": "yes" }, "why": "A park's wetland ponds, open water among the reeds (-8484, 1264), tagged as coming and going" },
+    { "id": "way/1248781963", "pond": true, "expect": { "natural": "water", "intermittent": "yes" }, "why": "A walled pool on the harbour's edge (312, -2660), full on the aerial, tagged as coming and going" },
+    { "id": "way/1210224676", "pond": true, "expect": { "natural": "water", "water": "wastewater" }, "why": "A long open settling pond in the quarry at Kurnell (-155, 17320): brown water in the ground, not a treatment works' tank" },
+    { "id": "way/1210224677", "pond": true, "expect": { "natural": "water", "water": "wastewater" }, "why": "A long open settling pond in the quarry at Kurnell (8, 17234), beside the last" },
+    { "id": "way/1210224675", "pond": true, "expect": { "natural": "water", "water": "wastewater" }, "why": "Two open settling ponds in the quarry at Kurnell (-593, 17158)" },
+    { "id": "way/1210224680", "pond": true, "expect": { "natural": "water", "water": "wastewater" }, "why": "An open settling pond in the quarry at Kurnell (-119, 17244)" },
+    { "id": "way/242905083", "pond": true, "expect": { "natural": "water", "water": "wastewater" }, "why": "An open lagoon at a treatment works in the bush (-17006, -21657), dug in the ground, not a tank" },
+    { "id": "way/242905091", "pond": true, "expect": { "natural": "water", "water": "wastewater" }, "why": "The second lagoon there (-16983, -21622), aerated, in the ground" },
+    { "id": "way/1357106523", "pond": true, "expect": { "natural": "water", "water": "wastewater" }, "why": "A golf course's recycled water pond (-9234, -715), open water by a fairway" },
+    { "id": "way/614132835", "pond": false, "expect": { "natural": "water" }, "why": "Dry heath and scrub in a reserve (4634, 5938): no water on the aerial, 3.3 ha of it" },
+    { "id": "way/979448183", "pond": false, "expect": { "natural": "water", "golf": "water_hazard" }, "why": "A golf course's edge under trees and rough (-17756, 1713), no water on the aerial: a creek's line drawn 1.2 ha wide" },
+    { "id": "way/965512232", "pond": false, "expect": { "natural": "water", "golf": "water_hazard" }, "why": "A drain 4 m wide across a fairway (-8151, 9957), grass on the aerial" },
+    { "id": "way/1329031268", "pond": false, "expect": { "natural": "water" }, "why": "Under a building's roof at Darling Harbour (-504, -306)" },
+    { "id": "way/207844005", "pond": false, "expect": { "natural": "water", "water": "reservoir" }, "why": "A planted swale beside the motorway (-2447, -6299), no open water" },
+    { "id": "way/865853343", "pond": false, "expect": { "natural": "water", "water": "reservoir" }, "why": "A garden's lawn and beds (-22287, -24199), no water on the aerial" },
+    { "id": "way/258465534", "pond": false, "expect": { "natural": "water", "water": "reservoir" }, "why": "A plant nursery's beds (2061, -21821), no water on the aerial" },
+    { "id": "way/76562043", "pond": false, "expect": { "natural": "water", "water": "reservoir" }, "why": "A grown-over basin by the airport's apron (-2581, 6656), no open water" },
+    { "id": "way/1296212468", "pond": false, "expect": { "natural": "water", "water": "reservoir" }, "why": "Dry scrub on a slope (-750, -19976), no water on the aerial" },
+    { "id": "way/952163717", "pond": false, "expect": { "natural": "water", "water": "reservoir" }, "why": "A bare earth pad beside a dam (-5063, -20591): the dam is beside it, not in it" },
+    { "id": "way/584322277", "pond": false, "expect": { "natural": "water", "water": "reservoir" }, "why": "A round tank with a roof by the railway (3194, 4275)" },
+    { "id": "way/993375074", "pond": false, "expect": { "natural": "water", "water": "reservoir" }, "why": "A round tank among a works' tanks (-17318, 22584), standing over the ground" },
+    { "id": "way/1415875190", "pond": false, "expect": { "natural": "water", "water": "reservoir" }, "why": "A dry basin of bare earth between the motorway's ramps (-10676, 599)" }
+  ]
+}

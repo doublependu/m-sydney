@@ -18,8 +18,9 @@
 //   hand, the ways it runs along in order (tools/build-heights.mjs, tools/heights/levels.mjs): the road passes through each point at its
 //   height y and runs at a straight grade between two, and the solve fits the roads round it. Each point lies on one of the ways;
 //   water: [{ id: 'way/1' | 'relation/1', sea: true | false, expect: { tag: value }, why }]: a water area the sea's rule
-//   (tools/sea-water.mjs) reads wrong, put in the sea (drawn at its level, tools/build-geodata.mjs) or taken out of it (a pond,
-//   tools/build-ponds.mjs);
+//   (tools/sea-water.mjs seaWaters()) reads wrong, put in the sea (drawn at its level, tools/build-geodata.mjs) or taken out of it (a pond,
+//   tools/build-ponds.mjs); or [{ id, pond: true | false, expect, why }]: still water the ponds' rule (pondWaters()) reads wrong, drawn as
+//   a pond (a quarry's settling pond, a lake tagged as coming and going) or not (a basin that's dry ground, a tank);
 //   move: [{ id: OSM way id, points: [[x, z], ...], expect: { from: [x, z], to: [x, z] }, why }]: a road OSM draws where it overlaps
 //   another, moved: each of the way's nodes, in OSM's order and ends included, to its point. A node moves for every way through it, so
 //   a junction takes its other roads with it; two edits moving one node must agree. `expect` is where its first and last nodes are in
@@ -109,11 +110,14 @@ export function localCovers(areas = localAreas()) {
   }));
 }
 
-/** Every area's water edits: [{ key: 'way/1' | 'relation/1', sea, expect, why, file }]. tools/sea-water.mjs checks them against OSM. */
+/** Every area's water edits: [{ key: 'way/1' | 'relation/1', sea or pond, expect, why, file }]. tools/sea-water.mjs checks them against OSM. */
 export function localWater(areas = localAreas()) {
   return areas.flatMap((area) => (area.water || []).map((edit) => {
-    if (!/^(way|relation)\/\d+$/.test(edit.id) || typeof edit.sea !== 'boolean') throw new Error(`tools/local/${area.file}: a water edit needs an id ('way/1' or 'relation/1') and sea: true or false (${edit.why})`);
-    return { key: edit.id, sea: edit.sea, expect: edit.expect, why: edit.why, file: area.file };
+    if (!/^(way|relation)\/\d+$/.test(edit.id) || (typeof edit.sea === 'boolean') === (typeof edit.pond === 'boolean')) {
+      throw new Error(`tools/local/${area.file}: a water edit needs an id ('way/1' or 'relation/1') and one of sea or pond, true or false (${edit.why})`);
+    }
+    if (!edit.why) throw new Error(`tools/local/${area.file}: the water edit for ${edit.id} needs a why`);
+    return { key: edit.id, ...(typeof edit.sea === 'boolean' ? { sea: edit.sea } : { pond: edit.pond }), expect: edit.expect, why: edit.why, file: area.file };
   }));
 }
 

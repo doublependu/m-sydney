@@ -1,6 +1,8 @@
 // tools/build-ponds.mjs: still water outside the gardens, drawn at a level of its own (js/garden.js): the lakes and ponds the sea's rule
-// (tools/sea-water.mjs) leaves out of the sea, which tools/build-geodata.mjs makes land. Writes tools/data/generated/ponds.json;
-// tools/build-tiles.mjs puts each piece in its tile (`lakes`), and tools/build-trees.mjs plants no tree in them.
+// (tools/sea-water.mjs) leaves out of the sea, which tools/build-geodata.mjs makes land, and the still water the ponds' rule picks of what
+// the sea's never reads (pondWaters(): lakes, dams and golf courses' hazards; not dry basins, tanks or wastewater), on the land already.
+// Writes tools/data/generated/ponds.json; tools/build-tiles.mjs puts each piece in its tile (`lakes`), and tools/build-trees.mjs plants no
+// tree in them. tools/build-garden.mjs lays a park by rule's paths and raised lawn round them.
 //   node --max-old-space-size=8000 tools/build-ponds.mjs [--also=way/1,relation/2,...] [--out=file]
 // Each is cut to the curb islands' ground (the lawns and paving tools/build-geodata.mjs made, on the land): never on a road. Pieces are
 // cut to the lawns' 240 m squares, so each lies on a square's lawn, cheap to lay on its triangles, and built only near the player. Waters
@@ -17,7 +19,7 @@ import { heightSampler } from './fetch-elevation.mjs';
 import { gardenAreas, inGardenArea } from './garden-areas.mjs';
 import { localWater } from './local-edits.mjs';
 import { SQUARE, cutPond } from './pond-pieces.mjs';
-import { seaWaters, shoreLines } from './sea-water.mjs';
+import { pondWaters, seaWaters, shoreLines } from './sea-water.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const GENERATED = path.join(ROOT, 'tools/data/generated');
@@ -37,8 +39,11 @@ const osmLand = load('land.json').elements;
 const dem = heightSampler(5);
 const gardens = gardenAreas(osmLand);
 const inGarden = (ring) => inGardenArea(gardens, ring.reduce((t, p) => t + p[0], 0) / ring.length, ring.reduce((t, p) => t + p[1], 0) / ring.length);
-const { still } = seaWaters(osmLand, { heightAt: (x, z) => dem(...fromWorld(x, z)), inGarden, shore: shoreLines(), edits: localWater() });
-const waters = still.map((c) => ({ key: c.key, name: c.e.tags?.name || null, outer: c.outer, inner: c.inner }));
+const edits = localWater();
+const seaRule = seaWaters(osmLand, { heightAt: (x, z) => dem(...fromWorld(x, z)), inGarden, shore: shoreLines(), edits });
+const waters = pondWaters(osmLand, { seaRule, inGarden, edits }).map((c) => ({ key: c.key, name: c.e.tags?.name || null, outer: c.outer, inner: c.inner, why: c.why }));
+const byWhy = waters.reduce((m, w) => (m[w.why] = (m[w.why] || 0) + 1, m), {});
+log(`still water: ${Object.entries(byWhy).map(([why, n]) => `${n} ${why}`).join(', ')}`);
 for (const key of ALSO) {
   if (waters.some((w) => w.key === key)) continue;
   const [type, id] = key.split('/');
@@ -148,6 +153,6 @@ for (const group of groups.values()) {
 }
 const drawn = ponds.filter((p) => p.pieces);
 log(`${waters.length} still waters (${waters.filter((w) => w.also).length} more asked for) in ${ponds.length} ponds: ${drawn.length} drawn in ${pieces.length} pieces, ${(drawn.reduce((t, p) => t + p.drawn, 0) / 1e4).toFixed(1)} ha;`
-  + ` ${leftOut} still the sea's in the last build's land (tools/build-geodata.mjs takes them out of it)${ponds.some((p) => p.none) ? `; ${ponds.filter((p) => p.none).length} on no ground` : ''}`);
+  + ` ${leftOut} on the last build's water (land.bin: the sea's rule's, which tools/build-geodata.mjs takes out of it, or water the sea's outline has)${ponds.some((p) => p.none) ? `; ${ponds.filter((p) => p.none).length} on no ground` : ''}`);
 fs.writeFileSync(OUT, JSON.stringify({ pieces, ponds }));
 log(`wrote ${path.relative(ROOT, OUT)} (${(fs.statSync(OUT).size / 1024).toFixed(0)} KB) in ${((Date.now() - started) / 1000).toFixed(1)} s`);

@@ -32,19 +32,40 @@ const crossing = (p, q, r, s) => {
   return t > 0.01 && t < 0.99 && u > 0.01 && u < 0.99 ? { x: p.x + (q.x - p.x) * t, z: p.z + (q.z - p.z) * t } : null;
 };
 // Every place two links cross with no shared node, and how far apart their surfaces are there
+// The segments by 50 m cell, so only those sharing a cell are tried (every pair of links is hours over the whole map); in the order every
+// pair would give them
 const crossings = [];
-for (let i = 0; i < LINKS.length; i++) {
-  const A = LINKS[i];
-  for (let j = i + 1; j < LINKS.length; j++) {
-    const B = LINKS[j];
-    if (A.a === B.a || A.a === B.b || A.b === B.a || A.b === B.b) continue;
-    for (let k = 1; k < A.pts.length; k++) {
-      for (let m = 1; m < B.pts.length; m++) {
-        const X = crossing(A.pts[k - 1], A.pts[k], B.pts[m - 1], B.pts[m]);
-        if (X) crossings.push({ A, B, ...X, apart: Math.abs(heightOn(A, X.x, X.z) - heightOn(B, X.x, X.z)) });
+{
+  const CELL = 50, cells = new Map(), found = [], seen = new Set();
+  for (let i = 0; i < LINKS.length; i++) {
+    const p = LINKS[i].pts;
+    for (let k = 1; k < p.length; k++) {
+      for (let cx = Math.floor(Math.min(p[k - 1].x, p[k].x) / CELL); cx <= Math.floor(Math.max(p[k - 1].x, p[k].x) / CELL); cx++) {
+        for (let cz = Math.floor(Math.min(p[k - 1].z, p[k].z) / CELL); cz <= Math.floor(Math.max(p[k - 1].z, p[k].z) / CELL); cz++) {
+          const key = cx * 100000 + cz;
+          (cells.get(key) || cells.set(key, []).get(key)).push([i, k]);
+        }
       }
     }
   }
+  for (const list of cells.values()) {
+    for (let s = 0; s < list.length; s++) {
+      for (let t = s + 1; t < list.length; t++) {
+        let [i, k] = list[s], [j, m] = list[t];
+        if (i === j) continue;
+        if (i > j) [i, k, j, m] = [j, m, i, k];
+        const A = LINKS[i], B = LINKS[j];
+        if (A.a === B.a || A.a === B.b || A.b === B.a || A.b === B.b) continue;
+        const id = `${i},${k},${j},${m}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const X = crossing(A.pts[k - 1], A.pts[k], B.pts[m - 1], B.pts[m]);
+        if (X) found.push({ i, j, k, m, c: { A, B, ...X, apart: Math.abs(heightOn(A, X.x, X.z) - heightOn(B, X.x, X.z)) } });
+      }
+    }
+  }
+  found.sort((p, q) => p.i - q.i || p.j - q.j || p.k - q.k || p.m - q.m);
+  for (const f of found) crossings.push(f.c);
 }
 const stack = (over, under) => crossings.filter((c) => (c.A.name.startsWith(over) && c.B.name.startsWith(under)) || (c.B.name.startsWith(over) && c.A.name.startsWith(under)));
 

@@ -10,13 +10,13 @@ import test from 'node:test';
 const { heldTiles, heldTrees } = await import('../js/geodata.js');
 const { groundRoadAt } = await import('../js/surfaces.js');
 const { createPedestrianRoutes } = await import('../js/pedestrian-routes.js');
-const { MODEL_SITES } = await import('../js/model-sites.js');
+const { MODEL_SITES, SITE_CUTS } = await import('../js/model-sites.js');
 
 const garden = heldTiles().filter((t) => t.garden);
 const paths = garden.flatMap((t) => t.garden.paths.map(([kind, surface, width, ...line], i) => {
   const pts = [];
   for (let i = 0; i + 1 < line.length; i += 2) pts.push({ x: line[i], z: line[i + 1] });
-  return { kind, surface, width, pts, byRule: i >= (t.garden.byRule?.[0] ?? Infinity) };
+  return { kind, surface, width, pts, byRule: i >= (t.garden.byRule?.[0] ?? Infinity), tile: t };
 }));
 // The Royal Botanic Garden's tile, and with it the CBD's gardens: what's counted by the CBD's paths and plants needs it. A test of one place
 // needs every tile its boxes reach held, or it counts short at the window's edge
@@ -51,6 +51,28 @@ test('no path runs along a road on the ground: the footpaths beside streets are 
     }
   }
   assert.ok(on / all < 0.01, `${on} of ${all} path points on a road`);
+});
+
+// Only tiles built since the parks by rule keep the areas' paths out of the cuts too (tools/build-garden.mjs), so the test waits for those
+test('no path runs into a model site\'s cut, where its rooms are under the ground: the crowd would walk up through them', { skip: !garden.some((t) => t.garden.byRule) && 'tiles from before the parks by rule' }, () => {
+  const cuts = SITE_CUTS.map((c) => ({ id: c.id, ring: c.poly.map((p) => [p.x, p.z]) }));
+  const inRing = (r, x, z) => {
+    let c = false;
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) if ((r[i][1] > z) !== (r[j][1] > z) && x < ((r[j][0] - r[i][0]) * (z - r[i][1])) / (r[j][1] - r[i][1]) + r[i][0]) c = !c;
+    return c;
+  };
+  const inside = [];
+  for (const p of paths) {
+    for (let i = 1; i < p.pts.length; i++) {
+      const a = p.pts[i - 1], b = p.pts[i], n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z)));
+      for (let k = 0; k <= n; k++) {
+        const x = a.x + ((b.x - a.x) * k) / n, z = a.z + ((b.z - a.z) * k) / n;
+        const cut = cuts.find((c) => inRing(c.ring, x, z));
+        if (cut) inside.push(`${cut.id} (${x.toFixed(0)}, ${z.toFixed(0)})`);
+      }
+    }
+  }
+  assert.equal(inside.length, 0, `path points in a cut: ${inside.slice(0, 5).join(', ')}`);
 });
 
 test('no garden plant stands on a path, and the small ones are planted close', () => {
@@ -229,8 +251,12 @@ test('the garden\'s paths lie over the lawn as it\'s drawn, so the lawn doesn\'t
   assert.ok(under / (over + under) < 0.02, `${under} of ${over + under} path triangles within half a centimetre of the lawn, or under it`);
 });
 
+// Over the whole map (npm run test:all) the raised lawn's tests below take the CBD's window alone (-4..3, -6..3, as npm test holds it):
+// they look at every piece, plaza and kerbed path held against every other, which over the thousand tiles with parks by rule is hours
+// and more than node's heap. On a window of a hundred garden tiles or fewer, all of them
+const inWindow = garden.length > 100 ? (t) => t.ix >= -4 && t.ix <= 3 && t.iz >= -6 && t.iz <= 3 : () => true;
 // A formal park's raised lawn (tools/build-garden.mjs): the map's lawn in it less a corridor along each kerbed path, its ponds left out
-const raisedPieces = garden.flatMap((t) => (t.garden.lawns || []).map(([kerb, ...flats]) => {
+const raisedPieces = garden.filter(inWindow).flatMap((t) => (t.garden.lawns || []).map(([kerb, ...flats]) => {
   const rings = flats.map((f) => {
     const pts = [];
     for (let i = 0; i + 1 < f.length; i += 2) pts.push({ x: f[i], z: f[i + 1] });
@@ -256,7 +282,7 @@ const onRaised = (x, z) => raisedPieces.some((p) => {
   }
   return k;
 });
-const kerbedPaths = paths.filter((p) => p.kind !== 3 && p.surface !== 4);
+const kerbedPaths = paths.filter((p) => inWindow(p.tile) && p.kind !== 3 && p.surface !== 4);
 // A garden's paved areas (OSM's pedestrian areas, and those drawn by hand): cut out of the raised lawn, as its paths are
 const piecesOf = (list) => list.map(([value, ...flats]) => {
   const rings = flats.map((f) => {
@@ -268,7 +294,7 @@ const piecesOf = (list) => list.map(([value, ...flats]) => {
   for (const p of rings[0]) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z); }
   return { value, rings, x0, x1, z0, z1 };
 });
-const plazaPieces = piecesOf(garden.flatMap((t) => t.garden.plazas || []));
+const plazaPieces = piecesOf(garden.filter(inWindow).flatMap((t) => t.garden.plazas || []));
 const inPiece = (p, x, z) => {
   if (x < p.x0 || x > p.x1 || z < p.z0 || z > p.z1) return false;
   let k = false;
@@ -435,8 +461,9 @@ test('Bradfield Park, Prince Alfred Park, Tumbalong Park and the Chinese Garden 
   for (const [x, z, what] of [[140, -2694.2, 'Bradfield Park, under the bridge'], [-53, 1726, 'Prince Alfred Park'], [-441, 359, 'Tumbalong Park'], [-305, 442.9, 'the Chinese Garden']]) {
     assert.ok(paths.some((p) => p.pts.some((q, i) => i && segDist(x, z, p.pts[i - 1], q) < p.width / 2 + 1)), `no path at ${what} (${x}, ${z})`);
   }
-  // Concrete (7) in Prince Alfred Park, Tumbalong Park and the Chinese Garden alone: the older gardens' concrete is drawn as asphalt still
-  const concrete = paths.filter((p) => p.surface === 7);
+  // Concrete (7) in Prince Alfred Park, Tumbalong Park and the Chinese Garden alone of the hand-made areas: the older gardens' concrete is
+  // drawn as asphalt still. The parks by rule draw OSM's concrete as concrete, anywhere
+  const concrete = paths.filter((p) => p.surface === 7 && !p.byRule);
   assert.ok(concrete.length > 20, `${concrete.length} concrete paths`);
   for (const p of concrete) {
     const { x, z } = p.pts[0];

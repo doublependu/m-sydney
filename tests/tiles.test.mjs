@@ -74,6 +74,16 @@ test('with no tile there, the coarse grid answers, near the fine one', async () 
   assert.ok(Math.abs(heldAround - fine) < 6, `${heldAround} against ${fine}`);
 });
 
+test('a hair short of a tile\'s far edge the ground is as on the edge, not past the end of its grid', () => {
+  // There x less the tile's corner rounds to the tile's whole width: the 5 m grid of how far the ground was moved was read a row past
+  // its last (NaN, at z -4.4e-16) or a column past it (the next row's first)
+  for (const [x, z, ex, ez] of [[1943.75, -4.4e-16, 1943.75, 0], [-4.4e-16, -1500.25, 0, -1500.25]]) {
+    const near = terrainHeight(x, z), on = terrainHeight(ex, ez);
+    assert.ok(Number.isFinite(near) && Math.abs(near - on) < 0.06, `${near} at (${x}, ${z}) against ${on} on the edge`);
+    assert.ok(Math.abs(groundHeight(x, z) - groundHeight(ex, ez)) < 0.06, `the ground ${groundHeight(x, z)} at (${x}, ${z})`);
+  }
+});
+
 test('a damaged tile is an error', () => {
   const [key, hash] = Object.entries(GEO.tiles)[0];
   const data = zlib.gunzipSync(fs.readFileSync(new URL(tileFile(key, hash), DIR)));

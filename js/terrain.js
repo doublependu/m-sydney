@@ -59,7 +59,8 @@ function groundMoved(x, z) {
     lastMoved = g;
   }
   const fx = (x - g.ox) / G.cell, fz = (z - g.oz) / G.cell;
-  const i = fx | 0, j = fz | 0, tx = fx - i, tz = fz - j;
+  // A hair short of the tile's far edge, x - ox can round to the tile's whole width: that's the grid's last cell, not one past it
+  const i = Math.min(fx | 0, G.size - 2), j = Math.min(fz | 0, G.size - 2), tx = fx - i, tz = fz - j;
   const k = j * G.size + i, C = g.cells;
   const a = C[k] + (C[k + 1] - C[k]) * tx;
   const b = C[k + G.size] + (C[k + G.size + 1] - C[k + G.size]) * tx;

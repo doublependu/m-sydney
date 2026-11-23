@@ -16,8 +16,9 @@ const built = (x, z) => {
 
 test('a garden\'s path, its lawn, a footpath\'s paving and the road, as each is drawn', { skip: !(held('1_-2') && held('0_-2')) && 'its tiles aren\'t held' }, async () => {
   const { buildTileGarden, lawnSurface, pavingSurface } = await import('../js/garden.js');
-  // Each garden tile's paths, steps and beds, as its ground builds them
-  for (const tile of heldTiles().filter((t) => t.garden)) {
+  // Each garden tile's paths, steps and beds round the places looked at, as its ground builds them (not every garden held: over the
+  // whole map, with the parks by rule, that's a thousand tiles' gardens and 9 GB)
+  for (const tile of heldTiles().filter((t) => t.garden && t.ix >= -1 && t.ix <= 2 && t.iz >= -3 && t.iz <= 0)) {
     const it = buildTileGarden(tile, null, () => {});
     while (!it.next().done);
   }

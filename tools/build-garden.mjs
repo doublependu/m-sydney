@@ -107,6 +107,12 @@ const { ROOM } = await import('../js/surfaces.js');
 const GATE_ROOM = 2.6; // m: a gate's pillars and their caps, 2.24 m
 const landBits = BitRaster.load(path.join(GENERATED, 'land.bin'));
 const inBuilding = (x, z) => walls.at(x, z) === 1;
+// ...and the model sites' cuts (js/model-sites.js), where a model's rooms are under the ground: the garden isn't drawn there (js/garden.js
+// leaveOutCuts()), but a path kept there would still be a way for the crowd (js/road-network.js), up onto the model's floors and
+// through its rooms, as at Naala Badu's north-east pavilions, where an area's path runs through a notch in OSM's outline
+const { SITE_CUTS } = await import('../js/model-sites.js');
+const cuts = SITE_CUTS.map((c) => c.poly.map((p) => [p.x, p.z]));
+const inCut = (x, z) => cuts.some((c) => pointInRing(c, x, z));
 
 // --- Paths ---------------------------------------------------------------------------------------------------------------------------
 // Kinds: 0 a footpath, 1 steps, 2 a cycleway, 3 a track (by its area's kind and its surface: tools/garden-areas.mjs pathKind()).
@@ -176,8 +182,10 @@ for (const e of pathsSource) {
   }
   const surface = surfaceOf(t, areaAt(first[0], first[1], REACH));
   wayGeom.set(e.id, { pts, nodes: e.nodes, width: widthOf(t, kind, surface) });
-  // Kept where it's in an area, off the roads, out of buildings and not under a deck too low to walk under: in runs
-  const keep = (x, z) => areaAt(x, z, REACH) && roadClear(x, z) > 0.6 && !inBuilding(x, z) && landBits.at(x, z) === 1 && roomOver(x, z) >= ROOM.foot;
+  // Kept where it's in an area, off the roads, out of buildings and the model sites' cuts, and not under a deck too low to walk under:
+  // in runs
+  const keep = (x, z) => areaAt(x, z, REACH) && roadClear(x, z) > 0.6 && !inBuilding(x, z) && !inCut(x, z) && landBits.at(x, z) === 1
+    && roomOver(x, z) >= ROOM.foot;
   let run = [];
   const flush = () => {
     if (run.length > 1) {
@@ -778,9 +786,7 @@ const RULE = { name: 'the parks by rule', surfaces: { concrete: 'concrete' } };
 const parkList = [], parkOut = { paths: [], lawns: [], plazas: [] };
 if (!NO_PARKS) {
   const t0 = Date.now();
-  const { SITE_CUTS } = await import('../js/model-sites.js');
   const { TILE, tileExists } = await import('../js/geodata.js');
-  const cuts = SITE_CUTS.map((c) => c.poly.map((p) => [p.x, p.z]));
   // Where a park is bush: OSM's wood and scrub, and the bush land in NSW's zoning
   const zoningFile = dataPath('nsw_zoning.json');
   if (!fs.existsSync(zoningFile)) console.warn('[garden] no nsw_zoning.json: the parks by rule are bush only where OSM has wood (npm run data:fetch)');
@@ -833,7 +839,6 @@ if (!NO_PARKS) {
   };
   const pondPieces = loadPonds(GENERATED).pieces;
   const inLake = pondTest(pondPieces);
-  const inCut = (x, z) => cuts.some((c) => pointInRing(c, x, z));
   // ...and a beach's sand and the coast's rock, drawn over the lawn a path is laid on (tools/build-sand.mjs): a path there would be under them
   const onSand = pondTest(sandPieces.filter(([kind]) => kind <= 1));
   const clear = (x, z) => offRoads(x, z) && !inBuilding(x, z) && landBits.at(x, z) === 1 && !inLake(x, z) && !onSand(x, z) && !inCut(x, z)
